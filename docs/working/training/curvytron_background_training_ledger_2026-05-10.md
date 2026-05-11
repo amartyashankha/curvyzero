@@ -1157,7 +1157,9 @@ player observations:
   per controlled player before normalization; policy row shape stays [4,64,64].
 
 to_play:
-  LightZero collect/eval calls now pass player_id instead of -1.
+  do not use CurvyTron public player ids 0/1 as LightZero to_play values;
+  native-compatible scalar rows should use -1 unless a tested board-game 1/2
+  contract exists.
 
 survival targets:
   replay rows preserve episode_id;

@@ -89,6 +89,13 @@ Training and policy-quality claims stay in the [training state index](../trainin
 - Full GPU env/obs/model/search has no known fundamental blocker, but the
   current source env is a CPU object graph; a GPU env/obs rewrite needs a new
   tensor runtime plus parity tests.
+- Be precise about GPU claims. The current native LightZero GPU entrypoint puts
+  model inference and learner tensors on CUDA. MCTS is LightZero-native, but it
+  is a CPU/C++ tree with CUDA model calls, not a pure CUDA tree-search kernel.
+  CurvyTron env reset/step/render/stack and replay storage are CPU/NumPy today.
 - Do not promote GPU env work, native rewrites, distributed actors, or larger
   batches until wall-clock shares and p95/p99 action latency justify them.
 - Link to source evidence; do not duplicate experiment logs here.
+- For optimizer speed profiles, prefer `--mode profile` with
+  `--disable-death-for-profile` when the question is steady-state long-game
+  cost. Bad early policies otherwise hide env/search/replay work.

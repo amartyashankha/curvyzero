@@ -21,11 +21,18 @@ source_state_fixed_opponent
 It is still fixed-opponent single-ego training, not simultaneous current-policy
 self-play. The env metadata says that explicitly.
 
-`source_state_turn_commit` should be read as stock LightZero plumbing/control,
-not a learning-quality self-play proof. Its pending/player0 scalar step has no
-physics advance and reward `0`; the commit/player1 scalar step advances physics
-and gets survival reward, so normal GameSegment value targets may create reward
-credit leakage.
+`source_state_turn_commit` should be read as stock LightZero plumbing
+smoke/profile only,
+not a learning-quality self-play proof. Target audit showed fake pending rows
+and bad reward credit: the pending/player0 scalar step has no physics advance
+and reward `0`; the commit/player1 scalar step advances physics and gets
+survival reward, so normal GameSegment value targets may credit the pending row.
+`mode=train` is blocked for this variant.
+
+Turing recommendation, candidate/control only until tested: a 9-action
+centralized joint-action wrapper: one scalar action -> `(p0,p1)`, one real
+CurvyTron tick, one reward, `to_play=-1`, `action_space_size=9`. Loud caveat:
+centralized control, not true competitive self-play.
 
 The useful speed picture after the 2026-05-11 optimizer pass:
 
@@ -35,6 +42,13 @@ The useful speed picture after the 2026-05-11 optimizer pass:
   observation stack.
 - The train model is actually on CUDA in GPU runs; observed model parameter
   device samples include `cuda:0`.
+- This does not mean the whole loop is on GPU. Current status:
+  - model inference and learner tensors are CUDA-backed on `gpu-l4-t4`;
+  - LightZero MCTS uses a CPU/C++ tree with CUDA neural-network calls inside
+    search;
+  - replay storage and target-batch construction are mostly CPU/NumPy;
+  - CurvyTron env reset/step/render/stack are CPU/NumPy, usually hidden behind
+    DI-engine subprocess workers.
 - The GPU is still underfed because LightZero search is receiving small root
   batches. Wider collector batches improve throughput without changing MuZero.
 - `collector_env_num` and `n_episode` are the immediate speed knobs. Keep them
@@ -281,6 +295,126 @@ workers, so detailed env-step breakdowns require `--env-manager-type base`.
 The end-to-end summaries and action telemetry stayed clean. Profile-mode and
 small train-mode runs can print ignored `BrokenPipeError` messages during
 LightZero subprocess cleanup; the summaries still returned `ok=true`.
+
+### Current Reprofile After Coach/Environment Churn
+
+These profiles were rerun after the source-state turn-commit cleanup and the
+latest natural-source environment changes. They are optimizer timing evidence,
+not learning claims.
+
+```text
+run_id=opt-fixed-current-reprofile-s20260511f
+attempt_id=fixed-sub-c16-sim16-steps240-matched
+env_variant=source_state_fixed_opponent
+mode=profile
+death_mode=profile_no_death
+env_manager_type=subprocess
+collector_env_num=16
+n_episode=16
+num_simulations=16
+source_max_steps=240
+```
+
+Result:
+
+```text
+ok=true
+called_train_muzero=true
+env_steps_collected=3840
+train_muzero wall=25.21s
+collected steps/s=152.35
+MCTS search=10.87s
+policy forward collect=13.93s
+model recurrent inference=6.09s
+learner train=1.75s
+replay sample=0.10s
+sampled telemetry rows=96
+physical rows=96
+pending rows=0
+target audit=collected
+model device samples include cuda:0
+```
+
+Plain read: the current no-death fixed-opponent path is not slower than the
+older c16/subprocess no-death profile at the same `source_max_steps=240`
+(`48.20s` wall in the previous table). The big caveat is that timing profiles
+are noisy and the current run skipped meaningful evaluator time, so this is a
+regression smoke, not a perfect benchmark. The useful Amdahl read remains the
+same: search/model/collector dominate; learner, replay, and checkpointing are
+small. Env work still matters for long games, but subprocess hides its internal
+breakdown.
+
+Current subprocess width sweep:
+
+```text
+run_id=opt-fixed-current-width-sweep-s20260511f
+env_variant=source_state_fixed_opponent
+mode=profile
+death_mode=profile_no_death
+num_simulations=16
+source_max_steps=240
+batch_size=32
+stop_after_learner_train_calls=5
+```
+
+```text
+collectors  steps   wall    steps/s  root batch  MCTS    policy collect  learner  replay
+16          3840    25.21s  152.35   16.0        10.87s  13.93s          1.75s    0.10s
+32          7680    39.90s  192.46   16.5        19.92s  14.20s          1.78s    0.09s
+64          15360   67.51s  227.53   32.5        31.63s  25.82s          1.95s    0.16s
+```
+
+Plain read: wider subprocess collection still helps on the current env, but it
+is not a free 2x per doubling. Throughput improves about `1.26x` from c16 to
+c32 and `1.18x` from c32 to c64. Learner and replay stay small. Search and
+collector forward are still the main wall-clock buckets. This points toward
+actor/search fanout or better batched search before a GPU-env rewrite, unless a
+future base-manager profile shows env step becoming the dominant share at
+longer survival horizons.
+
+The same pass also profiled turn-commit as requested, despite its reward-credit
+caveat:
+
+```text
+run_id=opt-turncommit-mainlane-reprofile-s20260511f
+attempt_id=mainlane-profile-c16-sim16-steps128
+env_variant=source_state_turn_commit
+mode=profile
+death_mode=profile_no_death
+env_manager_type=subprocess
+env_steps_collected=4096 scalar LightZero steps
+train_muzero wall=46.58s
+MCTS search=28.66s
+policy forward collect=18.00s
+policy forward eval=16.47s
+learner train=1.73s
+replay sample=0.14s
+sampled telemetry rows=2278
+physical rows=2176
+pending rows=102
+target audit=collected
+model device samples include cuda:0
+```
+
+A small base-manager turn-commit profile exposed env internals:
+
+```text
+run_id=opt-turncommit-mainlane-base-reprofile-s20260511f
+attempt_id=mainlane-base-c4-sim8-steps64
+env_steps_collected=512 scalar LightZero steps
+train_muzero wall=18.11s
+MCTS search=6.25s
+policy forward collect=4.25s
+evaluator eval=5.45s
+env vector step=0.63s
+env runtime step_many=0.40s
+render gray64=0.24s
+```
+
+Plain read: turn-commit can be profiled through stock `train_muzero`, but it is
+still profile/smoke only. The reward-credit problem does not block optimizer
+timing; it does block learning claims and normal `mode=train` under the current
+guard.
 
 Historical blocker: before Environment added the missing source-default bonus
 effects, the same route failed before learner/replay on unsupported

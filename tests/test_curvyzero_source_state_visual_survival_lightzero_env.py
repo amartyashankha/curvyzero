@@ -10,6 +10,10 @@ from curvyzero.env.vector_multiplayer_env import NATURAL_BONUS_EFFECT_TYPE_NAMES
 from curvyzero.env.vector_multiplayer_env import NATURAL_BONUS_ENV_IMPL_ID
 from curvyzero.env.vector_multiplayer_env import PUBLIC_NATURAL_BONUS_ENV_CONTRACT_ID
 from curvyzero.env.vector_multiplayer_env import VectorMultiplayerEnv
+from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_RENDERER_IMPL_ID
+from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_SCHEMA_HASH
+from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_SCHEMA_ID
+from curvyzero.env.vector_visual_observation import SourceStateGray64Renderer
 from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
     CurvyZeroSourceStateVisualSurvivalLightZeroEnv,
     CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv,
@@ -159,6 +163,10 @@ def test_source_state_visual_survival_step_and_terminal_telemetry(tmp_path):
     assert timestep.reward in {0.0, 1.0}
     assert timestep.obs["observation"].shape == STACKED_SOURCE_STATE_GRAY64_SHAPE
     np.testing.assert_array_equal(
+        timestep.obs["action_mask"],
+        np.array([0, 0, 0], dtype=np.int8),
+    )
+    np.testing.assert_array_equal(
         timestep.obs["observation"][-2],
         reset_observation["observation"][-1],
     )
@@ -182,7 +190,46 @@ def test_source_state_visual_survival_step_and_terminal_telemetry(tmp_path):
     assert "death_cause_name" in timestep.info
     assert "death_hit_owner" in timestep.info
     assert timestep.info["final_observation"] is not None
+    np.testing.assert_array_equal(
+        timestep.info["final_observation"]["observation"],
+        timestep.obs["observation"],
+    )
     assert timestep.info["eval_episode_return"] == timestep.reward
+
+    terminal_raw = env.raw_observation()
+    terminal_raw_from_render = env.render("source_state_raw_visual_tensor")
+    terminal_player_perspective_raw = env.raw_observation(player_perspective=True)
+    assert terminal_raw is not None
+    assert terminal_raw_from_render is not None
+    assert terminal_player_perspective_raw is not None
+    assert terminal_raw.shape == (1, 64, 64)
+    assert terminal_raw.dtype == np.uint8
+    np.testing.assert_array_equal(terminal_raw, terminal_raw_from_render)
+    np.testing.assert_array_equal(
+        terminal_raw,
+        SourceStateGray64Renderer(validate_state=False).render(env._env.state, row=0),
+    )
+    np.testing.assert_allclose(
+        timestep.info["final_observation"]["observation"][-1],
+        terminal_player_perspective_raw[0].astype(np.float32) / np.float32(255.0),
+        rtol=0.0,
+        atol=1e-7,
+    )
+
+    assert timestep.info["single_frame_schema_id"] == SOURCE_STATE_GRAY64_SCHEMA_ID
+    assert timestep.info["single_frame_schema_hash"] == SOURCE_STATE_GRAY64_SCHEMA_HASH
+    assert timestep.info["raw_observation_schema_id"] == SOURCE_STATE_GRAY64_SCHEMA_ID
+    assert timestep.info["raw_observation_schema_hash"] == SOURCE_STATE_GRAY64_SCHEMA_HASH
+    assert timestep.info["raw_observation_available"] is True
+    assert timestep.info["raw_observation_accessors"] == [
+        "raw_observation()",
+        "render('source_state_raw_visual_tensor')",
+    ]
+    assert timestep.info["raw_observation_dtype"] == "uint8"
+    assert timestep.info["renderer_impl_id"] == SOURCE_STATE_GRAY64_RENDERER_IMPL_ID
+    assert timestep.info["browser_pixel_fidelity"] is False
+    assert timestep.info["uses_ale"] is False
+    assert timestep.info["ale_usage"] == "none"
 
     runtime_info = env._env.last_step_info
     assert runtime_info is not None

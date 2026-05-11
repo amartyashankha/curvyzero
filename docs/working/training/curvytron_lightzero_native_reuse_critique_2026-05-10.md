@@ -6,7 +6,8 @@ No pytest was run.
 
 The earlier correction was still too strong. We do not need to own a full
 trainer just because CurvyTron actions are simultaneous, but the turn-commit
-wrapper is not yet proven learning-quality current-policy self-play.
+wrapper is smoke/profile only after target audit. It is not trainable/default
+and not learning-quality current-policy self-play.
 
 The useful stock-plumbing trick is a small turn-commit env wrapper:
 
@@ -46,6 +47,17 @@ rows:    36 scalar rows = 18 pending rows + 18 physical commit rows
 claim:   plumbing only; reward credit still untrusted
 ```
 
+Target audit after that smoke:
+
+```text
+run:     curvytron-source-state-turncommit-audit-smoke-s20260511c
+attempt: profile-audit-smoke-sim2-c2-steps64-20260511c
+result:  target_audit.json captured collector segments and replay sample
+finding: GameSegments contain alternating pending/commit rewards like 0,1,0,1
+         and sampled value targets back those commit rewards through pending rows
+decision: source_state_turn_commit is profile/smoke only; mode=train is blocked
+```
+
 The custom two-seat trainer should now be treated as diagnostic scaffolding,
 not the main lane.
 
@@ -78,7 +90,22 @@ artifacts. We should move as much as possible back there and keep the two-seat
 adapter as a narrow self-play experiment or diagnostic harness.
 
 For `source_state_turn_commit`, "good enough" currently means stock plumbing
-smoke/control, not proven current-policy self-play.
+smoke/profile only. The target audit showed fake pending rows and bad reward
+credit; `mode=train` is blocked.
+
+Turing recommendation, candidate/control only until tested:
+`source_state_joint_action`, a 9-action centralized joint-action wrapper. One
+LightZero scalar action maps to `(p0_action, p1_action)`, one real CurvyTron
+tick, one reward, `to_play=-1`, and `action_space_size=9`. Loud caveat:
+centralized control, not true competitive self-play.
+
+Current diagnostic reward for that wrapper is one scalar: `+1` if both players
+are alive after the real tick, else `0`. This keeps the stock LightZero step
+semantics clean, but it is not per-player credit and not a zero-sum game reward.
+Do not describe it as two-seat self-play or reuse two-seat winner/loser target
+schemas on it without adding a real per-player target surface.
+
+Current board: [Training Coach Active Board](../training_coach_active_board_2026-05-10.md).
 
 ## Can CurvyTron Look Like Pong To LightZero?
 
@@ -344,6 +371,6 @@ move is to make it smaller until only the missing LightZero abstraction remains.
    ego action, while live two-seat self-play needs one current policy to choose
    a full simultaneous joint action before `env.step`.
 5. The simplest next path is native `train_muzero` plus frozen or lagged
-   checkpoint opponents, using turn-commit only as stock plumbing/control, while
-   designing one small custom collector or replay boundary fix for true
+   checkpoint opponents, using turn-commit only as stock plumbing smoke/profile,
+   while designing one small custom collector or replay boundary fix for true
    joint-action current-policy play.

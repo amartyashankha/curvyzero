@@ -22,8 +22,8 @@ Updated 2026-05-11 21:08 EDT.
 - Pong is now a control/reference lane, not the main training lane.
 - CurvyTron is the active Coach lane. The source-state turn-commit wrapper,
   `env_variant=source_state_turn_commit`, is useful as a stock LightZero
-  plumbing smoke/control path. It is not yet a proven learning-quality
-  current-policy self-play path.
+  plumbing smoke/profile path only. It is not a trainable/default path and not
+  learning-quality current-policy self-play.
 - Turn-commit shape: player 0's scalar step records a private pending action,
   does not advance physics, and gets reward `0`; player 1's scalar step commits
   the full joint action, advances the real source tick, and gets the survival
@@ -47,15 +47,21 @@ Updated 2026-05-11 21:08 EDT.
   `updates_per_iteration=8`, `num_simulations=4`, `max_ticks=16384`, and
   checkpoint every `100` iterations. Active containers were visible in
   `modal container list` after launch.
-- CurvyTron native LightZero trainer now exposes `source_state_turn_commit` in
-  addition to fixed-opponent controls. Treat fixed/frozen opponent runs and
-  source-state turn-commit runs as controls until the reward-credit issue is
-  resolved or disproven by targeted evidence.
+- CurvyTron native LightZero trainer now exposes `source_state_turn_commit` and
+  `source_state_joint_action` in addition to fixed-opponent controls. Treat
+  fixed/frozen opponent, turn-commit, and centralized joint-action runs as
+  controls. None of those are true current-policy competitive self-play.
 - Source-state turn-commit plumbing smoke passed after cleanup:
   `curvytron-source-state-turncommit-smoke-s20260511b` /
   `profile-smoke-sim2-c2-steps64-20260511b`. It used stock LightZero
   `train_muzero`, GPU model/search, MCTS, replay sample, one learner step, and
   copied `iteration_0`.
+- Target/replay audit smoke then confirmed the blocker:
+  `curvytron-source-state-turncommit-audit-smoke-s20260511c` /
+  `profile-audit-smoke-sim2-c2-steps64-20260511c`. LightZero GameSegments
+  stored fake pending rows with alternating rewards like `0,1,0,1`, and sampled
+  value targets backed those commit rewards through pending rows. `mode=train`
+  is blocked for `source_state_turn_commit` until reward credit is redesigned.
 - That smoke wrote env-step telemetry: `36` scalar rows, `18` pending rows,
   `18` physical-commit rows, balanced acting-player rows (`18/18`), natural
   source mechanics, and no action collapse in sampled rows.
@@ -98,8 +104,14 @@ There are now two important variants:
 - `env_variant=source_state_fixed_opponent`: fixed/frozen opponent control, not
   self-play.
 - `env_variant=source_state_turn_commit`: stock LightZero `train_muzero` with a
-  lightweight turn-commit env wrapper. This is a native plumbing smoke/control,
-  not yet a learning-quality self-play claim.
+  lightweight turn-commit env wrapper. This is a native plumbing smoke/profile,
+  not a learning-quality self-play claim. The trainer now blocks
+  `mode=train` for this variant after the target audit.
+- `env_variant=source_state_joint_action`: stock LightZero control candidate
+  where one scalar action indexes the centralized pair
+  `(player_0_action, player_1_action)`. This is one real source tick per
+  transition and avoids turn-commit pending rows, but it is centralized control,
+  not true competitive self-play.
 - Both use non-ALE visual stack `[4,64,64]`.
 
 Optimizer smoke evidence:
@@ -117,8 +129,23 @@ gets zero reward because physics has not advanced yet. The second scalar step
 commits the real tick and gets the physical-step survival reward. Because stock
 LightZero stores both scalar steps as normal transitions, value targets can
 credit the pending/player0 state for player1 survival. Use turn-commit for
-stock plumbing smoke/control until this is fixed or directly ruled out; do not
-call it proven current-policy self-play.
+stock plumbing smoke/profile only; do not call it trainable or current-policy
+self-play.
+
+Turing recommendation, candidate/control only until tested: a 9-action
+centralized joint-action wrapper. One LightZero scalar action maps to
+`(p0_action, p1_action)`, one real CurvyTron tick, one reward,
+`to_play=-1`, and `action_space_size=9`. Loud caveat: centralized control, not
+true competitive self-play.
+
+Implementation note: the first diagnostic scalar is `+1` only while both
+players are alive after the real tick, otherwise `0`. That is a single control
+reward for the centralized policy. It is not per-player reward, not zero-sum,
+and not a competitive self-play objective. Do not apply two-seat
+winner/loser-return shaping to this wrapper unless it grows an honest per-player
+target surface.
+
+Related cleanup ref: [native reuse critique](training/curvytron_lightzero_native_reuse_critique_2026-05-10.md).
 
 Reward-shaping note: a shared `+1 per survived step` signal is acceptable as a
 short-term diagnostic, but log sparse outcome and shaped survival separately.

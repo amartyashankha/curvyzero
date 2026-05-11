@@ -17,8 +17,9 @@ No pytest was run for this docs-only index.
   Pong replication passed the basic survival-signal gate. Pong checkpoints and
   eval manifests remain on the Volume. CurvyTron remains active.
 - Current CurvyTron correction: stop treating
-  `env_variant=source_state_turn_commit` as proven learning-quality
-  current-policy self-play. It is useful stock LightZero plumbing/control:
+  `env_variant=source_state_turn_commit` as trainable/default or
+  learning-quality current-policy self-play. It is useful stock LightZero
+  smoke/profile plumbing only:
   player 0 records a pending action with no physics advance and reward `0`;
   player 1 commits the real joint action and gets survival reward. Stock
   GameSegment storage can let value targets credit player 0 states for player 1
@@ -32,6 +33,15 @@ No pytest was run for this docs-only index.
   MCTS, replay sample, one learner step, copied `iteration_0`, and wrote
   telemetry with pending and physical-commit rows. This is still plumbing
   evidence only because reward credit remains untrusted.
+- 2026-05-11 21:18 EDT: target/replay audit confirmed the reward-credit
+  blocker. GameSegments stored fake pending rows as normal scalar transitions
+  (`0,1,0,1...`), and sampled value targets backed commit rewards through
+  pending rows. `source_state_turn_commit` is now blocked for
+  `mode=train`; keep it as profile/smoke only.
+- Turing recommendation, candidate/control only until tested: a 9-action
+  centralized joint-action wrapper: one scalar action -> `(p0,p1)`, one real
+  CurvyTron tick, one reward, `to_play=-1`, `action_space_size=9`. Loud caveat:
+  centralized control, not true competitive self-play.
 - Reward-design note: shared survival reward is acceptable as a short-term
   diagnostic. Keep sparse outcome and shaped survival logged separately; the
   long-loss-vs-short-win scale issue is recorded for later shaping, not the
@@ -79,8 +89,8 @@ No pytest was run for this docs-only index.
   (in progress): concrete table of native `train_muzero` behavior versus
   custom CurvyTron/two-seat trainer behavior.
 - [CurvyTron LightZero native reuse critique](curvytron_lightzero_native_reuse_critique_2026-05-10.md):
-  correction that turn-commit is stock plumbing/control, not yet proven
-  learning-quality current-policy self-play.
+  correction that turn-commit is stock plumbing smoke/profile only; train mode
+  is blocked after target audit.
 - [Modal training lifecycle footguns](modal_training_run_lifecycle_footguns_2026-05-11.md)
   (in progress): safe launch, Volume, and checkpoint verification pattern for
   long Modal training jobs.

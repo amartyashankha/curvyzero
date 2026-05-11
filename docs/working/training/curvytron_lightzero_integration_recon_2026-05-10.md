@@ -185,7 +185,9 @@ reward = 1.0 if ego is alive after the wrapper step, else 0.0
   scaffold yet.
 - No survival-time trainer run or scorecard exists.
 - The scalar wrapper is toy/project `CurvyTronEnv`, not source-fidelity CurvyTron.
-- The visual wrapper is debug occupancy only, not source-faithful pixels.
+- The old visual wrapper was debug occupancy only. The active current target is
+  source-state gray64 `uint8[1,64,64]` / stacked training tensor; browser/canvas
+  pixels are optional later debug/human evidence.
 - The original debug visual wrapper emits `[1,64,64]`; no installed LightZero
   stack proof exists for it.
 - The new stacked debug visual survival wrapper emits `[4,64,64]`, but the

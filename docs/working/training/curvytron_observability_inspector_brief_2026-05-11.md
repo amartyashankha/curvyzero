@@ -39,7 +39,8 @@ Important recent fixes:
 
 - Player-perspective visual input: each policy row now sees "self" and "other"
   consistently.
-- `to_play` now uses the actual player id.
+- `to_play` should not use CurvyTron public player ids `0/1`; use `-1` for
+  single-agent/bot-style rows unless a tested board-game `1/2` contract exists.
 - Survival return targets now use episode ids, so targets are not accidentally
   cut at outer training iteration boundaries.
 

@@ -226,9 +226,10 @@ Required practical surface:
 
 For non-board games, LightZero examples use `to_play=-1` and an all-ones mask
 for fully legal discrete actions. Board-game examples use `to_play` for the
-current player and have modes such as `self_play_mode`, `play_with_bot_mode`,
-and `eval_mode`. That board-game path is alternating-turn, not simultaneous
-multiplayer.
+current player, with ids like `1/2`, and have modes such as `self_play_mode`,
+`play_with_bot_mode`, and `eval_mode`. That board-game path is alternating-turn,
+not simultaneous multiplayer. Do not use CurvyTron public player ids `0/1` as
+`to_play`.
 
 ### 2. What the Self-Play Loop Calls Per Step
 

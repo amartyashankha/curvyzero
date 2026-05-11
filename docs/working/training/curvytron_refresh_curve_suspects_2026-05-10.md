@@ -105,9 +105,10 @@ fidelity or policy-quality claim.
    Small check: graph by env steps collected or learner train calls from
    summaries.
 
-12. **Debug visual encoding may be too lossy** `[model/input issue]`  
-    The current surface is debug occupancy, not source-faithful pixels or richer
-    egocentric state. It may be enough for plumbing but unstable for learning.  
+12. **Observation encoding may be too lossy** `[model/input issue]`
+    The active current surface is source-state gray64, not browser/canvas
+    pixels. It may still be too lossy for learning if source-state/event
+    goldens or training diagnostics expose missing behavior.
     Small check: compare one frozen-opponent stage against scalar/ray rows or a
     small oracle-feature side channel.
 

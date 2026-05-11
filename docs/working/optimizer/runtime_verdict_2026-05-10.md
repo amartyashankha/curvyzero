@@ -22,19 +22,19 @@ single local trainer loop. See
 ## Primary CurvyTron Target
 
 The main CurvyTron training path should be visual LightZero-style stacked
-frames and is non-ALE. The current optimizer-owned visual profiler target is
-only `debug_visual_tensor` / `curvyzero_debug_occupancy_gray64/v0`: raw
-`uint8[1,64,64]` CHW occupancy smoke frames, with optional normalized
-`float32[1,64,64]` CHW LightZero-facing payloads. It is useful for bounded
-smoke/profiling and adapter plumbing, not browser/canvas/source-faithful visual
-truth.
+frames and is non-ALE. The active current visual profiler/training target is
+source-state gray64 `uint8[1,64,64]` / stacked training tensor. Browser/canvas
+pixels are optional later debug/human evidence; source-state/event goldens are
+the fidelity blocker. The old `debug_visual_tensor` /
+`curvyzero_debug_occupancy_gray64/v0` occupancy surface is historical smoke
+data, not the active target.
 
 The scalar-ray `[B,2,106]` work below is a diagnostic sidecar for
 timing, source-adapter pressure, and boundary probes. It is not the current
 coach-facing optimizer target and should not displace the visual path without a
 separate evidence gate.
 
-Current active visual smoke baseline:
+Historical debug visual smoke baseline:
 
 ```text
 CurvyTronSourceEnv seeded source reset
@@ -54,11 +54,12 @@ snapshot `0.0131s`, render `0.0391s`, normalize `0.0056s`, stack+copy
 at about `0.07s` and excluded from loop throughput. Policy/search, replay,
 learner, and evaluator were not included.
 
-Read: one obvious debug renderer Python-loop tax is gone. Stop optimizing this
-surface as its own project. It is only a debug occupancy workload, useful for
-LightZero visual adapter plumbing and denominator discipline. The next
-optimizer question is whole-loop timing around the visual adapter and real
-policy/search/replay/learner buckets, not more polishing of debug pixels.
+Read: one obvious debug renderer Python-loop tax was removed in the historical
+smoke path. Stop optimizing this surface as its own project. It is only a debug
+occupancy workload, useful for plumbing and denominator discipline. The next
+optimizer question is whole-loop timing around the source-state gray64 adapter
+and real policy/search/replay/learner buckets, not more polishing of debug
+pixels.
 
 Installed-runtime no-train visual adapter smoke now passes on Modal for
 `curvyzero_debug_visual_tensor_lightzero`: LightZero `0.2.0`, DI-engine

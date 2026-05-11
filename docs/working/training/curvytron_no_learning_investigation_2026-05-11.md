@@ -36,8 +36,9 @@ The two-seat path was giving both players the same global visual frame. The
 current fix remaps the raw player pixels into a player perspective before
 normalization, without changing the model input shape. For each policy row:
 controlled player pixels become "self" values and the other player's pixels
-become "other" values. The policy calls now also pass `to_play=player_id`
-instead of `-1`.
+become "other" values. Do not treat the old `to_play=player_id` custom-path
+note as native-compatible; use `to_play=-1` for single-agent/bot-style rows,
+and only use LightZero board-game ids `1/2` in a tested board-game contract.
 
 Local probe passed: player-frame delta is nonzero after reset and after one
 step.

@@ -21,39 +21,71 @@ This is a remaining-gap catalog, not a status victory lap. A hole is closed only
   original browser/canvas pixel parity.
 - `scripts/compare_2p_raw_visual_observation.py` now compares a 2P
   source-env snapshot raster against the `VectorMultiplayerEnv` raw gray64
-  raster. On 2026-05-11, the long no-bonus wall scenario matched exactly for
-  112 frames through terminal (`max_abs_diff=0`, `mismatch_pixels=0`), and the
-  original-JS reset source-state check also matched. This is a source-state
-  raster gate, not browser/canvas pixel parity.
+  raster. On 2026-05-11, the core 2P source-state gray64 suite passed across
+  26 scenarios: long wall terminal, movement traces, normal wall/draw cases,
+  collision-order cases, borderless wrap cases, `BonusSelfSmall`
+  catch/no-catch/expiry/wall-death cases, `BonusGameClear`, and
+  `BonusGameBorderless`, plus the four natural bonus spawn/retry/cap fixtures.
+  The long no-bonus wall scenario matched exactly for 112 frames through
+  terminal (`max_abs_diff=0`, `mismatch_pixels=0`), and the suite-level result
+  is exact (`max_abs_diff=0`, `mismatch_pixels=0`). This is the current raw
+  visual gate.
+- Fixture accounting: 26 total 2P step fixtures exist. The `core2p` visual
+  suite covers 25 of those step fixtures plus the long no-bonus wall rollout,
+  for 26 visual scenarios total. `source_print_manager_random_call_order_step`
+  is intentionally outside gray64 because it proves RNG/event order, not a
+  distinct rendered state.
 - Current gray64 values distinguish 2P player trails and heads, but all active
   map bonuses collapse to one value (`208`). That is acceptable for the current
   geometry/fidelity gate, but it is not a full visual policy signal for natural
-  bonus play because the model cannot see bonus type before contact.
+  bonus play because the model cannot see bonus type before contact. The model
+  tensor also has no explicit ego bonus stack/status channels.
+
+## Next-Work Checklist
+
+The current source-state visual gate passes: 26/26 `core2p` gray64 scenarios
+match exactly. The PrintManager RNG canary is intentionally not a gray64 case;
+it proves random/event ordering, not a distinct rendered state.
+
+1. Decide and prove typed bonus visual/status sufficiency beyond gray64 v0.
+2. Add bonus stack/death stress across timers, PrintManager, and terminal frames.
+3. Add 2P survivor-movement warmdown source/public coverage.
+4. Promote final/replay bonus state beyond metadata-only audit rows.
+5. Add broader 2P trail/body canaries if they are still open after the current
+   collision-order and visual coverage audit.
 
 ## Remaining Holes
 
-### P0 - Raw Visual Observation Comparison Top Gate
+### P0 - Typed Bonus Visual And Status Sufficiency
 
-Hole: there is no raw 2P browser/canvas pixel comparison against the original CurvyTron client. The current source-state raw 64x64 path is useful internal evidence for the learned observation raster, but it is not browser pixel fidelity and cannot promote a learned visual observation claim by itself. Source-state snapshots from JS are not the same thing as browser canvas golden frames.
+Hole: source-state raw 64x64 comparison is now real and the current 26/26
+`core2p` gray64 gate passes exactly. The only intentionally excluded 2P step
+fixture is `source_print_manager_random_call_order_step`, because gray64 does
+not encode PrintManager random-call order or event order. The remaining visual
+promotion question is typed bonus visual/status sufficiency: gray64 v0 proves
+covered geometry/occupancy parity, but it does not expose active bonus type or
+ego stack/status needed for natural-bonus policy decisions. Warmdown survivor
+movement, bonus stack/death stress, final observation/replay handoff, and
+broader trail/body canaries also remain outside the current gate.
 
 How to test against source/original:
 
-- Build a 2P original-client render harness for deterministic states from
-  existing source fixtures, starting with warmup/PrintManager start, long wall
-  terminal, and both 2P collision-order canaries. Existing tooling under
-  `tools/reference_oracle` and `tools/js_reuse_probe` can produce golden
-  source-state snapshots, but there is no finished browser/canvas pixel
-  golden-frame harness yet.
-- Capture original canvas frames at exact source times and matching viewport/device-scale settings.
-- Render the CurvyZero observation for the same source state and compare raw pixels, dimensions, palette, body/head/trail positions, and terminal/final frame selection with an explicit tolerance or mask policy.
-- Keep this as a top gate: no trainer visual claim should graduate until source-state parity and raw visual comparison both pass.
+- Use existing JS/source-state fixtures and `CurvyTronSourceEnv` snapshots as
+  the source truth for training-observation fidelity.
+- Render the source snapshot to gray64 and compare it to `VectorMultiplayerEnv`
+  gray64 for the same state and scripted actions.
+- Keep browser/canvas pixels as optional later human/debug evidence only. They
+  are not a blocker for the current source-state training observation.
+- Expand the visual/status schema before claiming natural-bonus visual
+  sufficiency.
 
 Measurement policy:
 
 - Use exact checks for short source-state probes: same input state, same tick,
   same dimensions, same semantic body/head/trail/final-frame fields.
-- Use tolerant checks for browser/canvas pixels. Small antialiasing, device-scale,
-  or canvas backend noise should be measured, not treated as automatic failure.
+- If browser/canvas checks are added later, use tolerant checks. Small
+  antialiasing, device-scale, or canvas backend noise should be measured, not
+  treated as automatic failure.
 - For long rollouts, expect tiny physics/rendering differences to compound.
   Report trajectory divergence instead of claiming frame-for-frame visual parity
   after the first divergent tick.
@@ -74,18 +106,72 @@ Future comparison metrics checklist:
 
 Current source-state gate:
 
-- Command: `uv run python scripts/compare_2p_raw_visual_observation.py --format plain`
-- Latest result: exact source-vs-vector gray64 match for the long 2P no-bonus
-  wall rollout, 112 compared frames, JS reset source-state check pass.
+- Command: `uv run python scripts/compare_2p_raw_visual_observation.py --suite core2p --format plain`
+- Latest result: exact source-vs-vector gray64 match across 26 core 2P
+  scenarios, including the long no-bonus wall rollout through terminal and the
+  four natural bonus spawn/retry/cap fixtures.
+- Step-fixture coverage: 25 of 26 total 2P step fixtures are in `core2p`.
+  The remaining fixture is `source_print_manager_random_call_order_step`, which
+  is verified by source/event-order tests rather than gray64.
 - What this proves: the learned raw source-state raster can be regenerated from
-  both source-shaped state and fast vector state for this 2P fixture.
+  both source-shaped state and fast vector state for these covered fixtures.
 - What this does not prove: original browser/canvas pixels, antialiasing,
   sprite colors, viewport scaling, or bonus-type visual sufficiency.
+- Natural bonus spawn/retry/cap now uses a separate reset/tape path in the
+  visual harness, because the ordinary forced-state seeding path consumes the
+  wrong RNG.
+
+Natural-bonus policy sufficiency:
+
+- Gray64 v0 is a geometry/fidelity gate. It proves source-shaped and vector
+  rasters agree for covered body/head/trail/bonus occupancy states.
+- Gray64 v0 remains the current gate: 26/26 `core2p` gray64 scenarios, exact
+  match, one intentionally excluded PrintManager RNG canary. Do not silently
+  replace this gate with a new tensor. Any richer tensor must get its own schema
+  id, hashes, comparison command, fixture list, and promotion note.
+- It is not enough to promote natural-bonus visual training. All active map
+  bonuses look identical (`208`), and the learned tensor does not expose ego
+  stack/status such as speed, radius, inverse, straight-angle, borderless,
+  invincibility, color ownership, or expiry timing.
+- v1 should be a separate bonus-aware observation proposal, not a mutation of
+  v0 gray64. The simple first proposal is `float32[22,64,64]`, CHW, source-state
+  backed, normalized to `[0,1]`, and explicitly not browser/canvas pixels.
+- Draft 22-channel budget:
+  - 4 geometry channels: ego trail/body, opponent trail/body, ego live head,
+    opponent live head.
+  - 12 active map-bonus channels, one for each source-default type:
+    `BonusSelfSmall`, `BonusSelfSlow`, `BonusSelfFast`, `BonusSelfMaster`,
+    `BonusEnemySlow`, `BonusEnemyFast`, `BonusEnemyBig`,
+    `BonusEnemyInverse`, `BonusEnemyStraightAngle`, `BonusGameBorderless`,
+    `BonusAllColor`, and `BonusGameClear`.
+  - 6 broadcast status channels for the effective current state needed by a
+    policy: ego speed, opponent speed, ego radius, opponent radius, ego control
+    or protection flags, and opponent control or protection flags. These six
+    channels are a proposal, not proof; if inverse, straight-angle,
+    invincibility/printing, borderless, color remap, or expiry timing cannot be
+    represented without lossy packing, widen or revise v1 rather than hiding
+    the loss.
+- v1 tests are required before promotion. At minimum they need schema/hash
+  checks, source-snapshot-vs-vector channel parity, one typed map-bonus mask
+  check for every source-default bonus type, catch-frame status checks,
+  expiry/restore checks, `BonusGameClear` clear coupling, `BonusGameBorderless`
+  active/expired boundary behavior, `BonusAllColor` overlap/restore behavior,
+  terminal/final observation before autoreset, and replay/LightZero wrapper
+  propagation of the same channels.
+- Until those tests pass, this gap should block claims of source-default
+  bonus-faithful training observations. It should not block no-bonus training
+  work, no-bonus replay/final-observation plumbing, or clearly labeled limited
+  v0 gray64 source-state plumbing.
+- Promotion tests must include natural spawn/retry/cap fixtures whose rendered
+  observation exposes active bonus identity and position, catch frames that show
+  the ego status/stack effect, expiry/restore frames, terminal/final observation
+  before autoreset, and replay/trainer schema checks that preserve the same
+  channels through the LightZero wrapper.
 
 Likely code area:
 
 - `src/curvyzero/env/vector_visual_observation.py`
-- New original-client/browser oracle tooling under the reference-oracle/scenario path
+- `scripts/compare_2p_raw_visual_observation.py`
 - `tests/test_vector_visual_observation.py` or a new browser-pixel parity test file
 
 ### P1 - Trainer/Learned Observation And Final Observation Contract
@@ -97,8 +183,8 @@ How to test against source/original:
 - Add 2P observation manifests for wall terminal, collision-order terminal, body/trail gap cases after 2P fixtures exist, borderless wrap, bonus catch/expiry, and natural bonus terminal paths.
 - Compare semantic observation fields to trusted source state before testing raster output.
 - Assert terminal rows carry final observation before autoreset, with schema, player/ego mapping, mask/reward metadata, and replay identifiers.
-- For visual final observations, first compare source-state raw 64x64 before
-  autoreset, then pass the browser/canvas raw pixel gate above.
+- For visual final observations, compare source-state raw 64x64 before
+  autoreset; browser/canvas pixels are only a later optional debug check.
 
 Likely code area:
 
@@ -238,12 +324,12 @@ Likely code area:
 
 ## Priority Order For Fixing
 
-1. P0 raw visual observation comparison top gate.
-2. P1 trainer/learned observation and final observation contract.
-3. P1 bonus replay and final-state facts.
-4. P1 bonus timer, stack, and death stress.
-5. P2 2P warmdown-frame survivor lifecycle.
-6. P2 2P body/trail collision canaries beyond collision order.
+1. P0 typed bonus visual/status sufficiency.
+2. P1 bonus timer, stack, and death stress.
+3. P2 2P warmdown-frame survivor lifecycle.
+4. P1 bonus replay and final-state facts.
+5. P2 2P body/trail collision canaries beyond collision order, if still open.
+6. P1 trainer/learned observation and final observation contract.
 7. P2 row-local RNG and replay history.
 8. P3 fully blocked generated bonus-position policy.
 9. P3 true two-seat training/replay surface.

@@ -77,9 +77,10 @@ Required fields where applicable:
 
 - `environment_impl_id`;
 - `observation_schema_id`, shape, dtype, and whether history/frame stack exists;
-- visual surface identity, for example `debug_visual_tensor` with
-  `curvyzero_debug_occupancy_gray64/v0`, plus raw dtype/shape and
-  LightZero-facing dtype/shape when they differ;
+- visual surface identity, for example source-state gray64
+  `uint8[1,64,64]` / stacked training tensor, plus raw dtype/shape and
+  LightZero-facing dtype/shape when they differ. Old
+  `curvyzero_debug_occupancy_gray64/v0` rows must be labeled historical smoke;
 - `action_space_id`, action count, action order, and legal-mask dtype;
 - `reward_schema_id`, reward semantics, shaping status, and discount;
 - `terminal_semantics`: `done`, `terminated`, `truncated`, timeout policy;

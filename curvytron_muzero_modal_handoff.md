@@ -131,7 +131,7 @@ This matters because the first RL environment should probably not include the fu
 | --- | --- | --- |
 | Exact source frame timing and wrapper action repeat | Determines episode length and training horizon. | Inspect JS constants; run browser fork; decide training decision interval independent of render FPS. |
 | Turn-rate/curvature dynamics | Defines how actions map to position; affects collision and control. | Extract from code or choose clone parameters and document them. |
-| Trace thickness and collision geometry | Naive segment checks are slow and can disagree with original game. | Build tests for wall, own-trail, opponent-trail, and near-miss cases; use occupancy grid or swept-circle approximation. |
+| Trace thickness and collision geometry | Naive segment checks are slow and can disagree with original game. | Historical advice favored occupancy-grid or swept-circle approximations. Current fidelity work should pin endpoint-circle/source behavior with source-state/event goldens first, then choose any faster backend only behind parity tests. |
 | Head-head / simultaneous death scoring | Affects reward fairness and multiplayer policy learning. | Use upstream issue #194 as a warning; choose deterministic tie behavior and test it. |
 | Round scoring versus match scoring | CurvyTron 2 awards points per enemy dying before you; MuZero reward can use per-round rank or full-match win. | Decide whether one RL episode is a round or an entire match. Start with one round. |
 | Bonuses and powerups | Adds stochasticity, partial observability, and non-stationarity. | Disable in v0; add one bonus at a time after baseline competence. |
@@ -224,10 +224,10 @@ class StepResult:
 - Discrete actions: left/right if matching CurvyTron 2 exactly; optionally add straight for a training variant, but document that it is a variant.
 - Fixed speed and turn rate; no acceleration except future bonuses.
 - Wrapper action repeat: one model decision held across a documented source-frame window to reduce horizon and search cost.
-- Occupancy-grid or swept-segment collision; no O(history) segment checks in the hot loop.
-- Egocentric local raster observation or ray-distance features; start with compact observation before raw pixels.
+- Source-faithful endpoint-circle/source behavior first, backed by source-state/event goldens. Treat old occupancy-grid or swept-segment collision advice as historical optimization guidance until it matches those goldens.
+- Active current training observation target: source-state gray64 `uint8[1,64,64]` frames, stacked into the trainer tensor. Browser/canvas pixels are optional later debug/human evidence, not the P0 training observation blocker.
 ## 11.3 Collision implementation note
-CurvyTron-like games are deceptively sensitive to collision details. Because players move continuously and leave thick trails, a naive point-at-new-position check can miss fast crossings. Use either a swept-circle/line-segment test or a high-resolution occupancy grid updated with rasterized trail thickness. Then create golden tests for tunneling, grazing, head-head collisions, and simultaneous deaths. The original CurvyTron issue about inconsistent head-collision scoring is exactly the kind of ambiguity that should become an explicit test, not an afterthought.
+CurvyTron-like games are deceptively sensitive to collision details. The old swept-circle/line-segment and high-resolution occupancy-grid advice is historical optimization guidance, not the current source-fidelity target. Current parity should be anchored in endpoint-circle/source behavior with source-state/event goldens for wall, body/trail, head-head, same-frame, scoring, and source-order cases. The original CurvyTron issue about inconsistent head-collision scoring is exactly the kind of ambiguity that should become an explicit source-backed test, not an afterthought.
 # 12. Multi-agent formulation: choose this before MuZero details
 | Formulation | Compute cost | Learning behavior | Recommendation |
 | --- | --- | --- | --- |

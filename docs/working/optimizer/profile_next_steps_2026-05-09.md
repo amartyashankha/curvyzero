@@ -12,12 +12,12 @@ denominators.
 
 Current CurvyTron hook verdict: visual CurvyTron is the main optimizer bench.
 It is not Atari/ALE and not a stock Atari ROM env. It should be a CurvyTron
-visual adapter shaped for LightZero, but the current profiler target is only
-`debug_visual_tensor` / `curvyzero_debug_occupancy_gray64/v0`: raw
-`uint8[1,64,64]` CHW occupancy smoke frames, optionally normalized to
-`float32[1,64,64]` CHW for LightZero-facing payloads. This is not
-source-faithful visual truth. The source-backed scalar/ray profile remains
-useful as a diagnostic sidecar, not the main training target.
+visual adapter shaped for LightZero. The active current target is source-state
+gray64 `uint8[1,64,64]` / stacked training tensor. Browser/canvas pixels are
+optional later debug/human evidence, and the old `debug_visual_tensor` /
+`curvyzero_debug_occupancy_gray64/v0` surface is historical smoke data. The
+source-backed scalar/ray profile remains useful as a diagnostic sidecar, not
+the main training target.
 
 Latest reorientation: Optimizer work is CurvyTron-only. Environment has a
 narrow strict public scalar/ray slice, not full visual CurvyTron. Coach/Pong
@@ -41,14 +41,13 @@ as side evidence.
 
 ## Immediate Profile Sequence
 
-1. Keep profiling the bounded visual smoke/profiler around
-   `debug_visual_tensor`, not source-faithful visual truth. The first active
-   source baseline after one-pass renderer vectorization is
+1. Treat the bounded `debug_visual_tensor` profile as historical smoke data,
+   not source-faithful visual truth. The old post-vectorization baseline was
    `B=32,T=64,stack+copy`, loop `0.0927s`, throughput `22087/s`, render
    `0.0391s`, stack+copy `0.0130s`, normalize `0.0056s`, env step `0.0174s`.
    Reset/startup advance is timed separately; policy/search/replay are not
-   included. Do not keep optimizing this debug renderer unless whole-loop visual
-   adapter timing still points there.
+   included. Do not keep optimizing this debug renderer unless a specific
+   source-state visual adapter timing question points there.
 2. Record raw render, stack update/copy, dtype/range normalization,
    source-lifecycle startup advance, final-frame staging, and replay payload
    size separately.

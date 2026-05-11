@@ -159,14 +159,14 @@ target.
 
 ## Copyable Short Handoff
 
-Optimizer boundary: use `debug_visual_tensor` /
-`curvyzero_debug_occupancy_gray64/v0` as the current visual smoke/profiling
-target, with raw `uint8[1,64,64]` CHW frames and optional normalized
-`float32[1,64,64]` CHW LightZero payloads. Use strict
+Optimizer boundary: use source-state gray64 `uint8[1,64,64]` / stacked
+training tensor as the active visual training/profiling target. Treat
+`debug_visual_tensor` / `curvyzero_debug_occupancy_gray64/v0` as historical
+smoke data. Use strict
 `VectorTrainerEnv1v1NoBonus` `[B,2,106]` and source-backed
 `CurvyTronSourceEnv -> source_snapshot_to_vector_trainer_state(...)` reports as
 scalar/ray diagnostics. Do not treat any of these surfaces as learning evidence
-or full CurvyTron visual fidelity. Coach owns checkpoint/eval quality.
+or browser/canvas pixel fidelity. Coach owns checkpoint/eval quality.
 Environment/RAM owns source truth and whether fast/vector/visual paths are
 faithful.
 Every report must identify env impl, ruleset/hash, source claim, feature flags,

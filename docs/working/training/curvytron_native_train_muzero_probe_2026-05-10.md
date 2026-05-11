@@ -131,7 +131,8 @@ opponent inside env: yes
 Exact remaining mismatches:
 
 ```text
-source-faithful pixels: no, debug-fidelity occupancy only
+browser/canvas pixels: no, optional later debug/human evidence
+source-state gray64 target: yes, active current observation path
 native LightZero frame stacking proof for unstacked CurvyTron frames: no
 current-policy two-seat self-play: no
 ```

@@ -100,6 +100,8 @@ Action masks:
 `to_play` and player identity:
 
 - For the first non-board-game LightZero adapter, use `to_play=-1`.
+- LightZero board-game paths use player ids like `1/2`; do not use CurvyTron
+  public player ids `0/1` as `to_play`.
 - Keep CurvyTron ego identity in sidecar metadata: ego player id, env row id,
   player row id, and any seat/opponent policy identity.
 - Do not leak stable player index or color into the learned observation unless a
@@ -177,8 +179,9 @@ First target:
 
 Open questions:
 
-- Raster source: render from the source-faithful state arrays, a browser/canvas
-  reference, or a project-owned renderer?
+- Raster source: active current target is source-state gray64
+  `uint8[1,64,64]` / stacked training tensor. Browser/canvas pixels are optional
+  later debug/human evidence, not the P0 training observation.
 - Frame stack ownership: let LightZero stack one-frame env observations, or
   return pre-stacked observations from the wrapper?
 - Color mode: grayscale for LightZero parity, RGB for easier debugging, or both
@@ -239,8 +242,10 @@ Open questions:
   visual rendering, and performance integration are not ready. Current
   replay-v0 is 1v1; 3P/4P needs a generalized schema with opponent policy
   ids/actions and wrapper action sidecars.
-- No source-faithful visual renderer exists yet.
-- A debug visual smoke exists as `debug_visual_tensor` /
+- The active current target is source-state gray64 `uint8[1,64,64]` / stacked
+  training tensor. Browser/canvas pixels are optional later debug/human
+  evidence; source-state/event goldens are the fidelity blocker.
+- Historical debug visual smoke exists as `debug_visual_tensor` /
   `curvyzero_debug_occupancy_gray64/v0`: raw `uint8[1,64,64]` CHW occupancy,
   normalized to `float32[1,64,64]` CHW for LightZero-facing payloads. It must
   not claim source visual fidelity.
@@ -261,9 +266,9 @@ Open questions:
 
 ## Concrete TODO
 
-1. Build and profile the first visual CurvyTron adapter surface:
-   debug occupancy `(1,64,64)` now, eventual source-faithful grayscale
-   `(1,64,64)` frame later -> LightZero stack `(4,64,64)` -> conv-style config.
+1. Build and profile the source-state gray64 CurvyTron adapter surface:
+   raw source-state `uint8[1,64,64]` -> stacked training tensor -> conv-style
+   config. Keep old debug occupancy as historical smoke only.
 2. Define the LightZero adapter contract in one place: observation dict,
    `action_mask`, `to_play`, optional `timestep`, reward, done, and required
    `info` fields.

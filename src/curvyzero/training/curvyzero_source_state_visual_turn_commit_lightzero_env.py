@@ -146,6 +146,7 @@ SOURCE_STATE_TURN_COMMIT_RUNTIME_TOPOLOGY = (
 SOURCE_STATE_TURN_COMMIT_UNDERLYING_ENV_CLASS = "VectorMultiplayerEnv"
 TURN_COMMIT_LEARNING_QUALITY_CLAIM = False
 TURN_COMMIT_REWARD_CREDIT_STATUS = "untrusted_scalar_turn_commit_reward_credit"
+TURN_COMMIT_TRAINING_STATUS = "plumbing_smoke_only"
 
 
 class CurvyZeroSourceStateVisualTurnCommitLightZeroLocalEnv:
@@ -160,8 +161,9 @@ class CurvyZeroSourceStateVisualTurnCommitLightZeroLocalEnv:
         "source_fidelity_claim": "source_state_backed_non_browser_pixel",
         "env_variant": ENV_VARIANT_SOURCE_STATE_TURN_COMMIT,
         "runtime_topology": SOURCE_STATE_TURN_COMMIT_RUNTIME_TOPOLOGY,
-        "two_seat_self_play": True,
-        "two_seat_self_play_status": "plumbing_smoke_reward_credit_untrusted",
+        "two_seat_self_play": False,
+        "current_policy_two_seat_action_collection": True,
+        "two_seat_self_play_status": TURN_COMMIT_TRAINING_STATUS,
         "trusted_current_policy_self_play": False,
         "learning_quality_claim": TURN_COMMIT_LEARNING_QUALITY_CLAIM,
         "reward_credit_status": TURN_COMMIT_REWARD_CREDIT_STATUS,
@@ -207,6 +209,7 @@ class CurvyZeroSourceStateVisualTurnCommitLightZeroLocalEnv:
         self._raw_frame = np.zeros(SOURCE_STATE_GRAY64_SHAPE, dtype=np.uint8)
         self._perspective_frame = np.zeros(SOURCE_STATE_GRAY64_SHAPE, dtype=np.uint8)
         self._normalized_frame = np.zeros(SOURCE_STATE_GRAY64_SHAPE, dtype=np.float32)
+        self._perspective_luts = tuple(_player_perspective_lut(player) for player in range(2))
         self._stack = np.zeros((2, *STACKED_SOURCE_STATE_GRAY64_SHAPE), dtype=np.float32)
         self._turn_player_ids = ("player_0", "player_1")
         self._active_player_index = 0
@@ -401,6 +404,7 @@ class CurvyZeroSourceStateVisualTurnCommitLightZeroLocalEnv:
             raw,
             controlled_player=player_index,
             out=self._perspective_frame,
+            lut=self._perspective_luts[player_index],
         )
         normalized = normalize_source_state_gray64(
             perspective,
@@ -582,11 +586,13 @@ class CurvyZeroSourceStateVisualTurnCommitLightZeroLocalEnv:
             "current_policy_self_play_blocker": None,
             "current_policy_self_play_caveat": TURN_COMMIT_REWARD_CREDIT_CAVEAT,
             "learning_quality_claim": TURN_COMMIT_LEARNING_QUALITY_CLAIM,
+            "training_status": TURN_COMMIT_TRAINING_STATUS,
             "reward_credit_status": TURN_COMMIT_REWARD_CREDIT_STATUS,
             "trusted_current_policy_self_play": TURN_COMMIT_TRUSTED_SELF_PLAY_CLAIM,
             "simultaneous_game_theory_claim": TURN_COMMIT_SIMULTANEOUS_GAME_THEORY_CLAIM,
-            "two_seat_self_play": True,
-            "two_seat_self_play_status": "plumbing_smoke_reward_credit_untrusted",
+            "two_seat_self_play": False,
+            "current_policy_two_seat_action_collection": True,
+            "two_seat_self_play_status": TURN_COMMIT_TRAINING_STATUS,
             "fixed_opponent_is_two_seat_self_play": False,
             "episode_seed": self._episode_seed,
             "source_tick_index": int(self._source_tick_index),
@@ -647,10 +653,14 @@ class CurvyZeroSourceStateVisualTurnCommitLightZeroLocalEnv:
             "current_policy_self_play": info.get("current_policy_self_play"),
             "trusted_current_policy_self_play": info.get("trusted_current_policy_self_play"),
             "learning_quality_claim": info.get("learning_quality_claim"),
+            "training_status": info.get("training_status"),
             "reward_credit_status": info.get("reward_credit_status"),
             "reward_credit_caveat": info.get("reward_credit_caveat"),
             "simultaneous_game_theory_claim": info.get("simultaneous_game_theory_claim"),
             "two_seat_self_play": info.get("two_seat_self_play"),
+            "current_policy_two_seat_action_collection": info.get(
+                "current_policy_two_seat_action_collection"
+            ),
             "two_seat_self_play_status": info.get("two_seat_self_play_status"),
             "physical_env_advanced": physical_env_advanced,
             "pending_action_count": info.get("pending_action_count"),
@@ -743,18 +753,25 @@ def _normalize_player_perspective(
     *,
     controlled_player: int,
     out: np.ndarray,
+    lut: np.ndarray | None = None,
 ) -> np.ndarray:
-    np.copyto(out, frame)
-    source_canvas = frame[0]
-    target_canvas = out[0]
+    mapping = _player_perspective_lut(controlled_player) if lut is None else lut
+    np.take(mapping, frame, out=out)
+    return out
+
+
+def _player_perspective_lut(controlled_player: int) -> np.ndarray:
+    mapping = np.arange(256, dtype=np.uint8)
     for source_player in range(2):
         body_value = SOURCE_BODY_VALUE_BASE + source_player * SOURCE_BODY_VALUE_STEP
         head_value = SOURCE_HEAD_VALUE_BASE + source_player * SOURCE_HEAD_VALUE_STEP
-        target_body = SELF_BODY_VALUE if source_player == controlled_player else OTHER_BODY_VALUE
-        target_head = SELF_HEAD_VALUE if source_player == controlled_player else OTHER_HEAD_VALUE
-        target_canvas[source_canvas == body_value] = np.uint8(target_body)
-        target_canvas[source_canvas == head_value] = np.uint8(target_head)
-    return out
+        mapping[body_value] = (
+            SELF_BODY_VALUE if source_player == controlled_player else OTHER_BODY_VALUE
+        )
+        mapping[head_value] = (
+            SELF_HEAD_VALUE if source_player == controlled_player else OTHER_HEAD_VALUE
+        )
+    return mapping
 
 
 def _validate_action(action: Any) -> int:
@@ -790,4 +807,5 @@ __all__ = [
     "STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID",
     "STACKED_SOURCE_STATE_GRAY64_SCHEMA_HASH",
     "STACKED_SOURCE_STATE_GRAY64_SHAPE",
+    "TURN_COMMIT_TRAINING_STATUS",
 ]

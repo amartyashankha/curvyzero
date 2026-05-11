@@ -14,13 +14,13 @@ the older no-train profile language below as pre-trainer context. Optimizer
 still cannot infer policy quality from those runs; Coach owns eval and
 checkpoint claims.
 
-The primary target is non-ALE visual LightZero-style stacked frames. The current
-visual profiling target is only `debug_visual_tensor` /
-`curvyzero_debug_occupancy_gray64/v0`: raw `uint8[1,64,64]` CHW occupancy smoke
-frames, optionally normalized to `float32[1,64,64]` CHW for a LightZero-facing
-payload and wrapper-stacked to `float32[4,64,64]` for the current profile. It is
-not source-faithful visual truth. A bounded installed-runtime profile now proves
-CurvyTron debug visual rows can run through LightZero conv MuZero
+The primary target is non-ALE visual LightZero-style stacked frames. The active
+current target is source-state gray64 `uint8[1,64,64]` / stacked training
+tensor. Browser/canvas pixels are optional later debug/human evidence. The old
+`debug_visual_tensor` / `curvyzero_debug_occupancy_gray64/v0` occupancy smoke
+surface is historical and not source-faithful visual truth. A bounded
+installed-runtime profile proved CurvyTron debug visual rows can run through
+LightZero conv MuZero
 eval-mode MCTS/search, replay-row construction, sampled `[B,4,64,64]` batch,
 and no-step `learn_mode.forward` loss. That no-train profile still does not
 call `train_muzero`, `collector.collect`, `MuZeroGameBuffer`, or any optimizer

@@ -1,10 +1,11 @@
 """Modal trainer for CurvyTron source-state visual survival LightZero MuZero.
 
 This module still carries the original stacked-debug filename, but the live
-``source_state_fixed_opponent`` variant routes through the source-state visual
-wrapper over ``VectorMultiplayerEnv``. The older debug-fidelity variants
-remain available only for explicit legacy smoke/debug runs; they are not the
-product runtime path.
+source-state variants route through source-state visual wrappers over
+``VectorMultiplayerEnv``. The default ``source_state_fixed_opponent`` lane is
+an explicit fixed-opponent control. ``source_state_turn_commit`` is only a stock
+LightZero plumbing smoke/control path; train mode is blocked for it because its
+pending/commit scalar rewards have bad credit semantics.
 
 Dry config check:
 
@@ -95,7 +96,22 @@ from curvyzero.training.curvyzero_stacked_debug_visual_survival_lightzero_smoke 
     TURN_COMMIT_TRUSTED_SELF_PLAY_CLAIM,
 )
 from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
+    ALL_PLAYERS_ALIVE_DIAGNOSTIC_REWARD_SCHEMA_ID,
+)
+from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
     DEFAULT_DECISION_MS as SOURCE_STATE_DEFAULT_DECISION_MS,
+)
+from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
+    JOINT_ACTION_COUNT as SOURCE_STATE_JOINT_ACTION_COUNT,
+)
+from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
+    LIGHTZERO_SOURCE_STATE_VISUAL_JOINT_ACTION_ENV_ID,
+)
+from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
+    LIGHTZERO_SOURCE_STATE_VISUAL_JOINT_ACTION_ENV_TYPE,
+)
+from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
+    LIGHTZERO_SOURCE_STATE_VISUAL_JOINT_ACTION_IMPORT_NAMES,
 )
 from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
     LIGHTZERO_SOURCE_STATE_VISUAL_SURVIVAL_ENV_ID,
@@ -116,6 +132,15 @@ from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env imp
     SOURCE_STATE_FIXED_OPPONENT_UNDERLYING_ENV_CLASS,
 )
 from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
+    SOURCE_STATE_JOINT_ACTION_ADAPTER_IMPL_ID,
+)
+from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
+    SOURCE_STATE_JOINT_ACTION_RUNTIME_TOPOLOGY,
+)
+from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
+    SOURCE_STATE_JOINT_ACTION_TRAINING_STATUS,
+)
+from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
     STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID,
 )
 from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
@@ -132,6 +157,9 @@ from curvyzero.training.curvyzero_source_state_visual_turn_commit_lightzero_env 
 )
 from curvyzero.training.curvyzero_source_state_visual_turn_commit_lightzero_env import (
     SOURCE_STATE_TURN_COMMIT_ADAPTER_IMPL_ID,
+)
+from curvyzero.training.curvyzero_source_state_visual_turn_commit_lightzero_env import (
+    TURN_COMMIT_TRAINING_STATUS,
 )
 from curvyzero.training.curvyzero_survival_time_lightzero_smoke import (
     SURVIVAL_TIME_REWARD_SCHEMA_ID,
@@ -175,22 +203,28 @@ ENV_VARIANT_FIXED_OPPONENT = "fixed_opponent"
 ENV_VARIANT_TURN_COMMIT = "turn_commit"
 ENV_VARIANT_SOURCE_STATE_TURN_COMMIT = "source_state_turn_commit"
 ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT = "source_state_fixed_opponent"
+ENV_VARIANT_SOURCE_STATE_JOINT_ACTION = "source_state_joint_action"
 ENV_VARIANT_CHOICES = (
     ENV_VARIANT_FIXED_OPPONENT,
     ENV_VARIANT_TURN_COMMIT,
     ENV_VARIANT_SOURCE_STATE_TURN_COMMIT,
     ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT,
+    ENV_VARIANT_SOURCE_STATE_JOINT_ACTION,
 )
 DEFAULT_ENV_VARIANT = ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT
 DEFAULT_EGO_ACTION_STRAIGHT_OVERRIDE_PROBABILITY = 0.0
 DEFAULT_CONTROL_NOISE_PROFILE_ID = "none"
 DEFAULT_DISABLE_DEATH_FOR_PROFILE = False
+OPPONENT_POLICY_KIND_NONE_CENTRALIZED_JOINT_ACTION = (
+    "none_centralized_joint_action"
+)
 DEFAULT_OPPONENT_POLICY_KIND = OPPONENT_POLICY_KIND_FIXED_STRAIGHT
 OPPONENT_POLICY_KIND_CHOICES = (
     OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
     OPPONENT_POLICY_KIND_FROZEN_LIGHTZERO_CHECKPOINT,
+    OPPONENT_POLICY_KIND_NONE_CENTRALIZED_JOINT_ACTION,
 )
-DEFAULT_BACKGROUND_EVAL_ENABLED = False
+DEFAULT_BACKGROUND_EVAL_ENABLED = True
 DEFAULT_BACKGROUND_EVAL_COMPUTE = "cpu"
 DEFAULT_BACKGROUND_EVAL_ID_PREFIX = "live_checkpoint"
 DEFAULT_BACKGROUND_EVAL_SEED_COUNT = 4
@@ -199,6 +233,12 @@ DEFAULT_BACKGROUND_EVAL_MAX_STEPS = 256
 DEFAULT_BACKGROUND_EVAL_STEP_DETAIL_LIMIT = 4
 DEFAULT_BACKGROUND_EVAL_NUM_SIMULATIONS = DEFAULT_NUM_SIMULATIONS
 DEFAULT_BACKGROUND_EVAL_BATCH_SIZE = 64
+DEFAULT_BACKGROUND_GIF_ENABLED = True
+DEFAULT_BACKGROUND_GIF_SEED_OFFSET = 10_000
+DEFAULT_BACKGROUND_GIF_MAX_STEPS = 256
+DEFAULT_BACKGROUND_GIF_FRAME_STRIDE = 1
+DEFAULT_BACKGROUND_GIF_FPS = 8.0
+DEFAULT_BACKGROUND_GIF_SCALE = 4
 DEFAULT_BACKGROUND_CHECKPOINT_WAIT_TIMEOUT_SEC = 30 * 60
 DEFAULT_BACKGROUND_CHECKPOINT_WAIT_POLL_SEC = 10.0
 BACKGROUND_EVAL_LAUNCH_HOOK = "hook"
@@ -212,6 +252,23 @@ DEFAULT_BACKGROUND_EVAL_POLL_INTERVAL_SEC = 10.0
 DEFAULT_BACKGROUND_EVAL_POLL_STABLE_POLLS = 1
 DEFAULT_BACKGROUND_EVAL_POLLER_MAX_RUNTIME_SEC = 8 * 60 * 60
 DEFAULT_BACKGROUND_EVAL_POLLER_IDLE_AFTER_DONE_SEC = 60.0
+
+
+def _normalize_opponent_policy_kind_for_env(
+    *,
+    env_variant: str,
+    opponent_policy_kind: str,
+    opponent_checkpoint_ref: str | None,
+) -> str:
+    if (
+        env_variant == ENV_VARIANT_SOURCE_STATE_JOINT_ACTION
+        and opponent_policy_kind == DEFAULT_OPPONENT_POLICY_KIND
+        and opponent_checkpoint_ref is None
+    ):
+        return OPPONENT_POLICY_KIND_NONE_CENTRALIZED_JOINT_ACTION
+    return opponent_policy_kind
+
+
 CHEAP_GPU_RESOURCE = ["L4", "T4"]
 COMPUTE_CHOICES = ("cpu", "gpu-l4-t4")
 BACKGROUND_EVAL_COMPUTE_CHOICES = ("cpu",)
@@ -252,10 +309,18 @@ PROFILE_COUNT_KEYS = (
     "mcts_search_node_budget_sum",
 )
 LIGHTZERO_RESUME_STATE_DIRNAME = "lightzero_resume_state"
+TARGET_AUDIT_MAX_SEGMENTS = 4
+TARGET_AUDIT_MAX_STEPS_PER_SEGMENT = 8
+TARGET_AUDIT_MAX_REPLAY_SAMPLES = 3
 
 image = (
     modal.Image.debian_slim(python_version="3.11")
-    .uv_pip_install(f"LightZero=={LIGHTZERO_VERSION}", "numpy>=1.26", "cloudpickle>=3")
+    .uv_pip_install(
+        f"LightZero=={LIGHTZERO_VERSION}",
+        "numpy>=1.26",
+        "cloudpickle>=3",
+        "pillow>=10",
+    )
     .env({"PYTHONPATH": str(REMOTE_ROOT / "src")})
     .add_local_dir(Path.cwd() / "src", remote_path=str(REMOTE_ROOT / "src"), copy=True)
 )
@@ -1788,6 +1853,474 @@ def _runtime_compute_summary(*, requested_compute: str) -> dict[str, Any]:
     return summary
 
 
+def _audit_len(value: Any) -> int | None:
+    try:
+        return len(value)
+    except Exception:
+        return None
+
+
+def _audit_get_item(value: Any, index: int, default: Any = None) -> Any:
+    try:
+        return value[index]
+    except Exception:
+        return default
+
+
+def _audit_shape(value: Any) -> list[int] | None:
+    shape = getattr(value, "shape", None)
+    if shape is None:
+        return None
+    try:
+        return [int(dim) for dim in shape]
+    except Exception:
+        return None
+
+
+def _audit_total_size(shape: list[int] | None) -> int | None:
+    if not shape:
+        return None
+    total = 1
+    for dim in shape:
+        total *= int(dim)
+    return total
+
+
+def _audit_compact_value(value: Any, *, depth: int = 3, max_items: int = 8) -> Any:
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if depth <= 0:
+        shape = _audit_shape(value)
+        return {
+            "type": f"{type(value).__module__}.{type(value).__qualname__}",
+            "shape": shape,
+        }
+    shape = _audit_shape(value)
+    if shape is not None:
+        result: dict[str, Any] = {
+            "type": f"{type(value).__module__}.{type(value).__qualname__}",
+            "shape": shape,
+        }
+        total = _audit_total_size(shape)
+        if total is not None and total <= 128 and hasattr(value, "tolist"):
+            try:
+                result["values"] = _audit_compact_value(
+                    value.tolist(),
+                    depth=depth - 1,
+                    max_items=max_items,
+                )
+            except Exception as exc:
+                result["values_error"] = f"{type(exc).__name__}: {exc}"
+        elif hasattr(value, "__getitem__") and shape:
+            try:
+                result["sample"] = _audit_compact_value(
+                    value[: min(int(shape[0]), max_items)],
+                    depth=depth - 1,
+                    max_items=max_items,
+                )
+            except Exception as exc:
+                result["sample_error"] = f"{type(exc).__name__}: {exc}"
+        return result
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except Exception:
+            pass
+    if isinstance(value, dict):
+        items = list(value.items())[:max_items]
+        return {
+            str(key): _audit_compact_value(item, depth=depth - 1, max_items=max_items)
+            for key, item in items
+        }
+    if isinstance(value, (list, tuple)):
+        return [
+            _audit_compact_value(item, depth=depth - 1, max_items=max_items)
+            for item in list(value)[:max_items]
+        ]
+    return repr(value)
+
+
+def _audit_observation_summary(value: Any) -> dict[str, Any]:
+    shape = _audit_shape(value)
+    summary: dict[str, Any] = {
+        "type": f"{type(value).__module__}.{type(value).__qualname__}",
+        "shape": shape,
+    }
+    if isinstance(value, dict):
+        summary["keys"] = sorted(str(key) for key in value.keys())
+        for key in ("timestep", "to_play", "info"):
+            if key in value:
+                summary[key] = _audit_compact_value(value[key], depth=2)
+    elif shape is None:
+        summary["value"] = _audit_compact_value(value, depth=2)
+    return summary
+
+
+def _audit_segment_sequence_field(
+    segment: Any,
+    field: str,
+    *,
+    max_items: int = TARGET_AUDIT_MAX_STEPS_PER_SEGMENT,
+) -> dict[str, Any]:
+    values = getattr(segment, field, None)
+    if values is None:
+        return {"present": False}
+    length = _audit_len(values)
+    return {
+        "present": True,
+        "length": length,
+        "first": [
+            _audit_compact_value(_audit_get_item(values, index), depth=3)
+            for index in range(min(length or 0, max_items))
+        ],
+    }
+
+
+def _audit_segment_summary(
+    segment: Any,
+    *,
+    collect_call_index: int,
+    segment_index: int,
+    metadata: Any,
+) -> dict[str, Any]:
+    fields = {
+        field: _audit_segment_sequence_field(segment, field)
+        for field in (
+            "action_segment",
+            "reward_segment",
+            "to_play_segment",
+            "child_visit_segment",
+            "root_value_segment",
+            "action_mask_segment",
+            "obs_segment",
+        )
+    }
+    lengths = {
+        field: details.get("length")
+        for field, details in fields.items()
+        if details.get("present")
+    }
+    step_count = min(
+        TARGET_AUDIT_MAX_STEPS_PER_SEGMENT,
+        max([int(value) for value in lengths.values() if value is not None] or [0]),
+    )
+    steps: list[dict[str, Any]] = []
+    for step_index in range(step_count):
+        obs_value = _audit_get_item(getattr(segment, "obs_segment", None), step_index)
+        row = {
+            "step_index": step_index,
+            "action": _audit_compact_value(
+                _audit_get_item(getattr(segment, "action_segment", None), step_index),
+                depth=3,
+            ),
+            "reward": _audit_compact_value(
+                _audit_get_item(getattr(segment, "reward_segment", None), step_index),
+                depth=3,
+            ),
+            "to_play": _audit_compact_value(
+                _audit_get_item(getattr(segment, "to_play_segment", None), step_index),
+                depth=3,
+            ),
+            "child_visit": _audit_compact_value(
+                _audit_get_item(getattr(segment, "child_visit_segment", None), step_index),
+                depth=3,
+            ),
+            "root_value": _audit_compact_value(
+                _audit_get_item(getattr(segment, "root_value_segment", None), step_index),
+                depth=3,
+            ),
+            "action_mask": _audit_compact_value(
+                _audit_get_item(getattr(segment, "action_mask_segment", None), step_index),
+                depth=3,
+            ),
+        }
+        if obs_value is not None:
+            row["obs"] = _audit_observation_summary(obs_value)
+        steps.append(row)
+    return {
+        "collect_call_index": collect_call_index,
+        "segment_index": segment_index,
+        "segment_type": f"{type(segment).__module__}.{type(segment).__qualname__}",
+        "len": _audit_len(segment),
+        "action_space_size": _audit_compact_value(getattr(segment, "action_space_size", None)),
+        "field_lengths": lengths,
+        "fields": fields,
+        "first_steps": steps,
+        "metadata": _audit_compact_value(metadata, depth=3),
+    }
+
+
+def _audit_result_segments(result: Any) -> tuple[list[Any], list[Any], str]:
+    if not isinstance(result, (list, tuple)):
+        return [], [], f"collector result type {type(result).__name__} is not list/tuple"
+    result_items = list(result)
+    if result_items and isinstance(result_items[0], (list, tuple)):
+        segments = list(result_items[0])
+        metadata = list(result_items[1]) if len(result_items) > 1 and isinstance(result_items[1], (list, tuple)) else []
+        return segments, metadata, "tuple/list first item"
+    if any(hasattr(item, "action_segment") for item in result_items):
+        return result_items, [], "direct list"
+    return [], [], "collector result did not expose GameSegment-like items"
+
+
+def _audit_sample_summary(result: Any, *, sample_call_index: int, args: tuple[Any, ...]) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "sample_call_index": sample_call_index,
+        "requested_batch_size": _audit_compact_value(args[0], depth=1) if args else None,
+        "result_type": f"{type(result).__module__}.{type(result).__qualname__}",
+    }
+    if isinstance(result, (list, tuple)) and len(result) >= 2:
+        current_batch = result[0]
+        target_batch = result[1]
+        summary["current_batch"] = {
+            "obs": _audit_compact_value(_audit_get_item(current_batch, 0), depth=2),
+            "actions": _audit_compact_value(_audit_get_item(current_batch, 1), depth=3),
+            "masks": _audit_compact_value(_audit_get_item(current_batch, 2), depth=3),
+            "batch_indices": _audit_compact_value(_audit_get_item(current_batch, 3), depth=3),
+            "weights": _audit_compact_value(_audit_get_item(current_batch, 4), depth=3),
+        }
+        summary["target_batch"] = {
+            "rewards": _audit_compact_value(_audit_get_item(target_batch, 0), depth=3),
+            "values": _audit_compact_value(_audit_get_item(target_batch, 1), depth=3),
+            "policies": _audit_compact_value(_audit_get_item(target_batch, 2), depth=3),
+        }
+    else:
+        summary["result"] = _audit_compact_value(result, depth=3)
+    return summary
+
+
+class _LightZeroTargetAudit:
+    """Passive target/replay audit; records compact data and returns originals."""
+
+    def __init__(self, *, mode: str, env_variant: str):
+        self.mode = mode
+        self.env_variant = env_variant
+        self.installed_hooks: list[str] = []
+        self.notes: list[str] = []
+        self.errors: list[str] = []
+        self.collect_calls = 0
+        self.replay_sample_calls = 0
+        self.replay_push_calls = 0
+        self.segments_seen = 0
+        self.segments_recorded: list[dict[str, Any]] = []
+        self.replay_samples: list[dict[str, Any]] = []
+
+    def add_installed_hook(self, hook: str) -> None:
+        if hook not in self.installed_hooks:
+            self.installed_hooks.append(hook)
+
+    def add_note(self, note: str) -> None:
+        if note not in self.notes and len(self.notes) < 30:
+            self.notes.append(note)
+
+    def add_error(self, error: str) -> None:
+        if len(self.errors) < 20:
+            self.errors.append(error)
+
+    def record_collect_result(self, result: Any) -> None:
+        collect_call_index = self.collect_calls
+        self.collect_calls += 1
+        try:
+            segments, metadata, source = _audit_result_segments(result)
+            self.add_note(f"collector result source: {source}")
+            self.segments_seen += len(segments)
+            remaining = TARGET_AUDIT_MAX_SEGMENTS - len(self.segments_recorded)
+            for segment_index, segment in enumerate(segments[: max(0, remaining)]):
+                segment_metadata = metadata[segment_index] if segment_index < len(metadata) else {}
+                self.segments_recorded.append(
+                    _audit_segment_summary(
+                        segment,
+                        collect_call_index=collect_call_index,
+                        segment_index=segment_index,
+                        metadata=segment_metadata,
+                    )
+                )
+        except Exception as exc:  # pragma: no cover - remote audit only.
+            self.add_error(f"collect audit failed: {type(exc).__name__}: {exc}")
+
+    def record_replay_push(self, args: tuple[Any, ...]) -> None:
+        self.replay_push_calls += 1
+        if args:
+            pushed = _audit_len(args[0])
+            if pushed is not None:
+                self.add_note(f"replay push saw {pushed} game segments")
+
+    def record_replay_sample(self, result: Any, *, args: tuple[Any, ...]) -> None:
+        sample_call_index = self.replay_sample_calls
+        self.replay_sample_calls += 1
+        if len(self.replay_samples) >= TARGET_AUDIT_MAX_REPLAY_SAMPLES:
+            return
+        try:
+            self.replay_samples.append(
+                _audit_sample_summary(
+                    result,
+                    sample_call_index=sample_call_index,
+                    args=args,
+                )
+            )
+        except Exception as exc:  # pragma: no cover - remote audit only.
+            self.add_error(f"replay sample audit failed: {type(exc).__name__}: {exc}")
+
+    def summary(self) -> dict[str, Any]:
+        status = "collected" if self.segments_recorded or self.replay_samples else "missing"
+        if self.mode == "dry":
+            status = "not_installed"
+        reason = None
+        if status == "missing":
+            reason = (
+                "No GameSegment or replay sample summaries were captured. Check installed_hooks "
+                "and notes; the intended hook point is Collector.collect after the original "
+                "LightZero collect call returns, plus MuZeroGameBuffer.sample after the original "
+                "sample call returns."
+            )
+        return {
+            "schema_id": "curvyzero_lightzero_target_replay_audit/v0",
+            "status": status,
+            "missing_reason": reason,
+            "mode": self.mode,
+            "env_variant": self.env_variant,
+            "training_behavior_changed": False,
+            "hook_point": (
+                "Passive wrappers around LightZero Collector.collect returns and "
+                "GameBuffer.push_game_segments/sample returns."
+            ),
+            "limits": {
+                "max_segments": TARGET_AUDIT_MAX_SEGMENTS,
+                "max_steps_per_segment": TARGET_AUDIT_MAX_STEPS_PER_SEGMENT,
+                "max_replay_samples": TARGET_AUDIT_MAX_REPLAY_SAMPLES,
+            },
+            "counts": {
+                "collector_collect_calls": self.collect_calls,
+                "game_segments_seen": self.segments_seen,
+                "game_segments_recorded": len(self.segments_recorded),
+                "replay_push_calls": self.replay_push_calls,
+                "replay_sample_calls": self.replay_sample_calls,
+                "replay_samples_recorded": len(self.replay_samples),
+            },
+            "installed_hooks": self.installed_hooks,
+            "notes": self.notes,
+            "errors": self.errors,
+            "game_segments": self.segments_recorded,
+            "replay_samples": self.replay_samples,
+            "caveat": (
+                "Audit artifact only. It mirrors compact fields from in-memory LightZero "
+                "objects and sampled target batches when accessible; it does not prove reward "
+                "credit correctness or change learner inputs."
+            ),
+        }
+
+
+def _install_lightzero_target_audit(
+    *,
+    train_muzero: Any,
+    audit: _LightZeroTargetAudit,
+) -> Any:
+    originals: list[tuple[Any, str, Any]] = []
+    patched_methods: set[tuple[int, str]] = set()
+
+    def hook_label(obj: Any, method_name: str) -> str:
+        module = getattr(obj, "__module__", type(obj).__module__)
+        qualname = getattr(obj, "__qualname__", getattr(obj, "__name__", type(obj).__name__))
+        return f"{module}.{qualname}.{method_name}"
+
+    def patch_method(cls: Any, method_name: str, wrapped: Any) -> None:
+        owner = next(
+            (base for base in inspect.getmro(cls) if method_name in getattr(base, "__dict__", {})),
+            None,
+        )
+        if owner is None:
+            audit.add_note(f"{hook_label(cls, method_name)} missing for target audit")
+            return
+        key = (id(owner), method_name)
+        if key in patched_methods:
+            return
+        original = owner.__dict__[method_name]
+        originals.append((owner, method_name, original))
+        setattr(owner, method_name, wrapped(original))
+        patched_methods.add(key)
+        audit.add_installed_hook(hook_label(owner, method_name))
+
+    def restore() -> None:
+        for obj, name, original in reversed(originals):
+            setattr(obj, name, original)
+
+    globals_map = getattr(train_muzero, "__globals__", {})
+
+    collector_cls = globals_map.get("Collector")
+    if not inspect.isclass(collector_cls):
+        try:
+            worker_module = importlib.import_module("lzero.worker")
+            collector_cls = getattr(worker_module, "MuZeroCollector", None)
+        except Exception as exc:  # pragma: no cover - remote diagnosis only.
+            audit.add_note(f"could not import lzero.worker.MuZeroCollector: {type(exc).__name__}: {exc}")
+            collector_cls = None
+    if inspect.isclass(collector_cls):
+        def make_collect_wrapped(original: Any) -> Any:
+            def wrapped(self: Any, *args: Any, **kwargs: Any) -> Any:
+                result = original(self, *args, **kwargs)
+                audit.record_collect_result(result)
+                return result
+
+            return wrapped
+
+        patch_method(collector_cls, "collect", make_collect_wrapped)
+    else:
+        audit.add_note("target audit missing Collector hook: no Collector class found")
+
+    buffer_classes: list[Any] = []
+    buffer_names = (
+        "MuZeroGameBuffer",
+        "EfficientZeroGameBuffer",
+        "SampledEfficientZeroGameBuffer",
+        "SampledMuZeroGameBuffer",
+        "GumbelMuZeroGameBuffer",
+        "StochasticMuZeroGameBuffer",
+    )
+    for buffer_name in buffer_names:
+        candidate = globals_map.get(buffer_name)
+        if inspect.isclass(candidate):
+            buffer_classes.append(candidate)
+    try:
+        mcts_module = importlib.import_module("lzero.mcts")
+    except Exception as exc:  # pragma: no cover - remote diagnosis only.
+        audit.add_note(f"could not import lzero.mcts for target audit: {type(exc).__name__}: {exc}")
+    else:
+        for buffer_name in buffer_names:
+            candidate = getattr(mcts_module, buffer_name, None)
+            if inspect.isclass(candidate):
+                buffer_classes.append(candidate)
+
+    seen_buffer_classes: set[int] = set()
+    for buffer_cls in buffer_classes:
+        if id(buffer_cls) in seen_buffer_classes:
+            continue
+        seen_buffer_classes.add(id(buffer_cls))
+
+        def make_push_wrapped(original: Any) -> Any:
+            def wrapped(self: Any, *args: Any, **kwargs: Any) -> Any:
+                result = original(self, *args, **kwargs)
+                audit.record_replay_push(args)
+                return result
+
+            return wrapped
+
+        def make_sample_wrapped(original: Any) -> Any:
+            def wrapped(self: Any, *args: Any, **kwargs: Any) -> Any:
+                result = original(self, *args, **kwargs)
+                audit.record_replay_sample(result, args=args)
+                return result
+
+            return wrapped
+
+        patch_method(buffer_cls, "push_game_segments", make_push_wrapped)
+        patch_method(buffer_cls, "sample", make_sample_wrapped)
+
+    if not seen_buffer_classes:
+        audit.add_note("target audit missing replay hook: no LightZero GameBuffer classes found")
+
+    return restore
+
+
 def _run_visual_survival_train(
     *,
     mode: str,
@@ -1828,6 +2361,12 @@ def _run_visual_survival_train(
     background_eval_step_detail_limit: int | None,
     background_eval_num_simulations: int,
     background_eval_batch_size: int,
+    background_gif_enabled: bool,
+    background_gif_seed_offset: int,
+    background_gif_max_steps: int,
+    background_gif_frame_stride: int,
+    background_gif_fps: float,
+    background_gif_scale: int,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     if mode not in MODE_CHOICES:
@@ -1838,6 +2377,11 @@ def _run_visual_survival_train(
         raise ValueError(
             f"unknown env_variant {env_variant!r}; expected one of {ENV_VARIANT_CHOICES!r}"
         )
+    opponent_policy_kind = _normalize_opponent_policy_kind_for_env(
+        env_variant=env_variant,
+        opponent_policy_kind=opponent_policy_kind,
+        opponent_checkpoint_ref=opponent_checkpoint_ref,
+    )
     if opponent_policy_kind not in OPPONENT_POLICY_KIND_CHOICES:
         raise ValueError(
             f"unknown opponent_policy_kind {opponent_policy_kind!r}; "
@@ -1858,6 +2402,18 @@ def _run_visual_survival_train(
             f"unknown env_manager_type {env_manager_type!r}; "
             f"expected one of {ENV_MANAGER_TYPE_CHOICES!r}"
         )
+    if env_variant == ENV_VARIANT_SOURCE_STATE_JOINT_ACTION:
+        if opponent_policy_kind != OPPONENT_POLICY_KIND_NONE_CENTRALIZED_JOINT_ACTION:
+            raise ValueError(
+                "source_state_joint_action controls both players with one "
+                "centralized action; use opponent_policy_kind="
+                f"{OPPONENT_POLICY_KIND_NONE_CENTRALIZED_JOINT_ACTION!r}"
+            )
+    elif opponent_policy_kind == OPPONENT_POLICY_KIND_NONE_CENTRALIZED_JOINT_ACTION:
+        raise ValueError(
+            f"{OPPONENT_POLICY_KIND_NONE_CENTRALIZED_JOINT_ACTION!r} is only valid "
+            "with env_variant='source_state_joint_action'"
+        )
     if env_variant in (
         ENV_VARIANT_TURN_COMMIT,
         ENV_VARIANT_SOURCE_STATE_TURN_COMMIT,
@@ -1870,6 +2426,13 @@ def _run_visual_survival_train(
         raise ValueError("ego_action_straight_override_probability must be in [0, 1]")
     if bool(disable_death_for_profile) and mode != "profile":
         raise ValueError("disable_death_for_profile is only allowed in mode='profile'")
+    if env_variant == ENV_VARIANT_SOURCE_STATE_TURN_COMMIT and mode == "train":
+        raise ValueError(
+            "source_state_turn_commit is plumbing-smoke-only after target audit: "
+            "stock LightZero stores pending and commit scalar steps as normal "
+            "transitions, so reward credit is untrusted. Use mode='profile' for "
+            "smokes or build a one-source-tick-per-transition path before training."
+        )
     for name, value in (
         ("max_env_step", max_env_step),
         ("max_train_iter", max_train_iter),
@@ -1887,9 +2450,14 @@ def _run_visual_survival_train(
         ("background_eval_max_steps", background_eval_max_steps),
         ("background_eval_num_simulations", background_eval_num_simulations),
         ("background_eval_batch_size", background_eval_batch_size),
+        ("background_gif_max_steps", background_gif_max_steps),
+        ("background_gif_frame_stride", background_gif_frame_stride),
+        ("background_gif_scale", background_gif_scale),
     ):
         if int(value) < 1:
             raise ValueError(f"{name} must be at least 1")
+    if float(background_gif_fps) <= 0.0:
+        raise ValueError("background_gif_fps must be positive")
     packages = {
         "LightZero": _version_or_missing("LightZero", "lightzero"),
         "DI-engine": _version_or_missing("DI-engine", "ding"),
@@ -1940,7 +2508,9 @@ def _run_visual_survival_train(
         "env_variant": env_variant,
         "env_type": env_spec["env_type"],
         "env_id": env_spec["env_id"],
-        "reward_schema_id": SURVIVAL_TIME_REWARD_SCHEMA_ID,
+        "action_space_size": int(env_spec.get("action_space_size", 3)),
+        "reward_schema_id": env_spec["reward_schema_id"],
+        "reward_policy": env_spec["reward_policy"],
         "observation_schema_id": env_spec["observation_schema_id"],
         "debug_fidelity_only": env_spec["debug_fidelity_only"],
         "ego_action_straight_override_probability": float(
@@ -1956,6 +2526,9 @@ def _run_visual_survival_train(
         "runtime_env_impl_id": env_spec["runtime_env_impl_id"],
         "runtime_topology": env_spec["runtime_topology"],
         "two_seat_self_play": env_spec["two_seat_self_play"],
+        "current_policy_two_seat_action_collection": bool(
+            env_spec.get("current_policy_two_seat_action_collection", False)
+        ),
         "two_seat_self_play_status": env_spec["two_seat_self_play_status"],
         "fixed_opponent_is_two_seat_self_play": env_spec[
             "fixed_opponent_is_two_seat_self_play"
@@ -2005,6 +2578,12 @@ def _run_visual_survival_train(
         ),
         "background_eval_num_simulations": int(background_eval_num_simulations),
         "background_eval_batch_size": int(background_eval_batch_size),
+        "background_gif_enabled": bool(background_gif_enabled),
+        "background_gif_seed_offset": int(background_gif_seed_offset),
+        "background_gif_max_steps": int(background_gif_max_steps),
+        "background_gif_frame_stride": int(background_gif_frame_stride),
+        "background_gif_fps": float(background_gif_fps),
+        "background_gif_scale": int(background_gif_scale),
     }
     _write_run_manifest_once(run_id=run_id, config=command)
     _write_attempt_state(
@@ -2130,12 +2709,14 @@ def _run_visual_survival_train(
     stdout_text = ""
     stderr_text = ""
     profiler = _LightZeroPhaseProfiler(enabled=mode == "profile")
+    target_audit = _LightZeroTargetAudit(mode=mode, env_variant=command["env_variant"])
     if mode in {"train", "profile"} and not problems:
         os.chdir(RUNS_MOUNT)
         stdout_buffer = io.StringIO()
         stderr_buffer = io.StringIO()
         train_started = time.perf_counter()
         restore_profile = None
+        restore_target_audit = None
         restore_live_publisher = None
         restore_resume_state = None
         gpu_sampler = None
@@ -2158,6 +2739,10 @@ def _run_visual_survival_train(
                     if command["background_eval_launch_kind"] == BACKGROUND_EVAL_LAUNCH_HOOK
                     else None
                 ),
+            )
+            restore_target_audit = _install_lightzero_target_audit(
+                train_muzero=train_muzero,
+                audit=target_audit,
             )
             if mode == "profile":
                 restore_profile = _install_lightzero_phase_profile(
@@ -2217,6 +2802,13 @@ def _run_visual_survival_train(
                     restore_profile()
                 except Exception as exc:  # pragma: no cover - remote diagnosis only.
                     profiler.add_note(f"phase profile restore failed: {type(exc).__name__}: {exc}")
+            if restore_target_audit is not None:
+                try:
+                    restore_target_audit()
+                except Exception as exc:  # pragma: no cover - remote diagnosis only.
+                    target_audit.add_error(
+                        f"target audit restore failed: {type(exc).__name__}: {exc}"
+                    )
             if restore_live_publisher is not None:
                 try:
                     restore_live_publisher()
@@ -2262,6 +2854,7 @@ def _run_visual_survival_train(
 
     runtime_compute = _runtime_compute_summary(requested_compute=compute)
     phase_profile = profiler.summary()
+    target_audit_summary = target_audit.summary()
     summary = {
         "schema_id": "curvyzero_lightzero_curvytron_visual_survival_train_summary/v0",
         "task_id": TASK_ID,
@@ -2291,6 +2884,7 @@ def _run_visual_survival_train(
         "compile_config": compile_summary,
         "train_result": train_result,
         "phase_profile": phase_profile,
+        "target_audit": target_audit_summary,
         "lightzero_artifacts": artifact_summary,
         "checkpoint_mirror": checkpoint_mirror,
         "action_observability": action_summary,
@@ -2312,6 +2906,16 @@ def _run_visual_survival_train(
             "num_simulations": command["background_eval_num_simulations"],
             "batch_size": command["background_eval_batch_size"],
             "checkpoint_wait_timeout_sec": DEFAULT_BACKGROUND_CHECKPOINT_WAIT_TIMEOUT_SEC,
+            "selfplay_gif": {
+                "enabled": command["background_gif_enabled"],
+                "capture_env_variant": ENV_VARIANT_SOURCE_STATE_TURN_COMMIT,
+                "raw_frame_source": "source_state_raw_visual_tensor",
+                "seed_offset": command["background_gif_seed_offset"],
+                "max_steps": command["background_gif_max_steps"],
+                "frame_stride": command["background_gif_frame_stride"],
+                "fps": command["background_gif_fps"],
+                "scale": command["background_gif_scale"],
+            },
         },
         "env_variant": command["env_variant"],
         "single_product_runtime_path": command["single_product_runtime_path"],
@@ -2320,6 +2924,9 @@ def _run_visual_survival_train(
         "runtime_env_impl_id": command["runtime_env_impl_id"],
         "runtime_topology": command["runtime_topology"],
         "two_seat_self_play": command["two_seat_self_play"],
+        "current_policy_two_seat_action_collection": command[
+            "current_policy_two_seat_action_collection"
+        ],
         "two_seat_self_play_status": command["two_seat_self_play_status"],
         "fixed_opponent_is_two_seat_self_play": command[
             "fixed_opponent_is_two_seat_self_play"
@@ -2332,13 +2939,8 @@ def _run_visual_survival_train(
         "source_fidelity_claim": command["source_fidelity_claim"],
         "debug_fidelity_only": command["debug_fidelity_only"],
         "learning_proof": False,
-        "reward_policy": {
-            "reward_schema_id": SURVIVAL_TIME_REWARD_SCHEMA_ID,
-            "survival_only": True,
-            "terminal_outcome_bonus": 0.0,
-            "loser_penalty": 0.0,
-            "winner_bonus": 0.0,
-        },
+        "reward_schema_id": command["reward_schema_id"],
+        "reward_policy": command["reward_policy"],
         "elapsed_sec": round(time.perf_counter() - started, 6),
     }
 
@@ -2350,6 +2952,7 @@ def _run_visual_survival_train(
     stderr_path = attempt_train_root / "stderr_tail.txt"
     artifacts_path = attempt_train_root / "lightzero_artifacts_manifest.json"
     actions_path = attempt_train_root / "action_observability.json"
+    target_audit_path = attempt_train_root / "target_audit.json"
     runs.write_json(summary_path, summary)
     runs.write_json(
         config_path,
@@ -2362,6 +2965,7 @@ def _run_visual_survival_train(
     runs.write_json(command_path, command)
     runs.write_json(artifacts_path, artifact_summary)
     runs.write_json(actions_path, action_summary)
+    runs.write_json(target_audit_path, target_audit_summary)
     _write_text(stdout_path, "\n".join(_compact_log_tail(stdout_text)) + ("\n" if stdout_text else ""))
     _write_text(stderr_path, "\n".join(_compact_log_tail(stderr_text, limit=30)) + ("\n" if stderr_text else ""))
 
@@ -2403,11 +3007,13 @@ def _run_visual_survival_train(
         "checkpoint_mirror": checkpoint_mirror,
         "auto_resume": auto_resume,
         "phase_profile": phase_profile,
+        "target_audit": target_audit_summary,
         "artifact_refs": {
             "summary": runs.file_summary(summary_path, mount=RUNS_MOUNT),
             "config": runs.file_summary(config_path, mount=RUNS_MOUNT),
             "command": runs.file_summary(command_path, mount=RUNS_MOUNT),
             "actions": runs.file_summary(actions_path, mount=RUNS_MOUNT),
+            "target_audit": runs.file_summary(target_audit_path, mount=RUNS_MOUNT),
             "lightzero_artifacts": runs.file_summary(artifacts_path, mount=RUNS_MOUNT),
         },
     }
@@ -2528,6 +3134,12 @@ def _resolve_opponent_checkpoint_for_env(
     opponent_checkpoint_ref: str | None,
     opponent_checkpoint_report_ref: str | None,
 ) -> dict[str, Any] | None:
+    if opponent_policy_kind == OPPONENT_POLICY_KIND_NONE_CENTRALIZED_JOINT_ACTION:
+        if opponent_checkpoint_ref:
+            raise ValueError(
+                "opponent_checkpoint_ref is not valid for centralized joint-action control"
+            )
+        return None
     if opponent_policy_kind == OPPONENT_POLICY_KIND_FIXED_STRAIGHT:
         if opponent_checkpoint_ref:
             raise ValueError(
@@ -2570,6 +3182,9 @@ def _env_variant_spec(env_variant: str) -> dict[str, Any]:
             "env_type": LIGHTZERO_STACKED_DEBUG_VISUAL_SURVIVAL_ENV_TYPE,
             "env_id": LIGHTZERO_STACKED_DEBUG_VISUAL_SURVIVAL_ENV_ID,
             "import_names": list(LIGHTZERO_STACKED_DEBUG_VISUAL_SURVIVAL_IMPORT_NAMES),
+            "action_space_size": 3,
+            "reward_schema_id": SURVIVAL_TIME_REWARD_SCHEMA_ID,
+            "reward_policy": _survival_reward_policy(),
             "current_policy_self_play": CURRENT_POLICY_SELF_PLAY_CLAIM,
             "current_policy_self_play_blocker": CURRENT_POLICY_SELF_PLAY_BLOCKER,
             "current_policy_self_play_caveat": None,
@@ -2601,6 +3216,9 @@ def _env_variant_spec(env_variant: str) -> dict[str, Any]:
             "env_type": LIGHTZERO_STACKED_DEBUG_VISUAL_TURN_COMMIT_ENV_TYPE,
             "env_id": LIGHTZERO_STACKED_DEBUG_VISUAL_TURN_COMMIT_ENV_ID,
             "import_names": list(LIGHTZERO_STACKED_DEBUG_VISUAL_TURN_COMMIT_IMPORT_NAMES),
+            "action_space_size": 3,
+            "reward_schema_id": SURVIVAL_TIME_REWARD_SCHEMA_ID,
+            "reward_policy": _survival_reward_policy(),
             "current_policy_self_play": TURN_COMMIT_CURRENT_POLICY_SELF_PLAY_CLAIM,
             "current_policy_self_play_blocker": None,
             "current_policy_self_play_caveat": TURN_COMMIT_REWARD_CREDIT_CAVEAT,
@@ -2634,6 +3252,9 @@ def _env_variant_spec(env_variant: str) -> dict[str, Any]:
             "env_type": LIGHTZERO_SOURCE_STATE_VISUAL_TURN_COMMIT_ENV_TYPE,
             "env_id": LIGHTZERO_SOURCE_STATE_VISUAL_TURN_COMMIT_ENV_ID,
             "import_names": list(LIGHTZERO_SOURCE_STATE_VISUAL_TURN_COMMIT_IMPORT_NAMES),
+            "action_space_size": 3,
+            "reward_schema_id": SURVIVAL_TIME_REWARD_SCHEMA_ID,
+            "reward_policy": _survival_reward_policy(),
             "current_policy_self_play": TURN_COMMIT_CURRENT_POLICY_SELF_PLAY_CLAIM,
             "current_policy_self_play_blocker": None,
             "current_policy_self_play_caveat": TURN_COMMIT_REWARD_CREDIT_CAVEAT,
@@ -2654,8 +3275,47 @@ def _env_variant_spec(env_variant: str) -> dict[str, Any]:
             "runtime_topology": (
                 "stock_lightzero_scalar_turn_commit_over_simultaneous_source_state_env"
             ),
-            "two_seat_self_play": True,
-            "two_seat_self_play_status": "plumbing_smoke_reward_credit_untrusted",
+            "two_seat_self_play": False,
+            "current_policy_two_seat_action_collection": True,
+            "two_seat_self_play_status": TURN_COMMIT_TRAINING_STATUS,
+            "fixed_opponent_is_two_seat_self_play": False,
+            "browser_pixel_fidelity": SOURCE_STATE_GRAY64_BROWSER_PIXEL_FIDELITY,
+            "uses_ale": SOURCE_STATE_GRAY64_USES_ALE,
+            "visual_surface": SOURCE_STATE_GRAY64_SURFACE,
+            "visual_truth_level": SOURCE_STATE_GRAY64_TRUTH_LEVEL,
+            "visual_source_state_backed": SOURCE_STATE_GRAY64_SOURCE_STATE_BACKED,
+        }
+    if env_variant == ENV_VARIANT_SOURCE_STATE_JOINT_ACTION:
+        return {
+            "env_variant": ENV_VARIANT_SOURCE_STATE_JOINT_ACTION,
+            "env_type": LIGHTZERO_SOURCE_STATE_VISUAL_JOINT_ACTION_ENV_TYPE,
+            "env_id": LIGHTZERO_SOURCE_STATE_VISUAL_JOINT_ACTION_ENV_ID,
+            "import_names": list(LIGHTZERO_SOURCE_STATE_VISUAL_JOINT_ACTION_IMPORT_NAMES),
+            "action_space_size": SOURCE_STATE_JOINT_ACTION_COUNT,
+            "reward_schema_id": ALL_PLAYERS_ALIVE_DIAGNOSTIC_REWARD_SCHEMA_ID,
+            "reward_policy": _all_players_alive_diagnostic_reward_policy(),
+            "current_policy_self_play": False,
+            "current_policy_self_play_blocker": (
+                "centralized_joint_action_control_is_not_true_competitive_self_play"
+            ),
+            "current_policy_self_play_caveat": (
+                "Centralized joint-action control: one policy chooses both players' actions."
+            ),
+            "trusted_current_policy_self_play": False,
+            "simultaneous_game_theory_claim": False,
+            "opponent_training_relation": "centralized_policy_controls_both_players",
+            "turn_commit_adapter": False,
+            "observation_shape": list(STACKED_SOURCE_STATE_GRAY64_SHAPE),
+            "observation_schema_id": STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID,
+            "debug_fidelity_only": False,
+            "source_fidelity_claim": "source_state_backed_non_browser_pixel",
+            "single_product_runtime_path": True,
+            "legacy_debug_variant": False,
+            "underlying_env_class": "source_state_visual_joint_action_wrapper",
+            "runtime_env_impl_id": SOURCE_STATE_JOINT_ACTION_ADAPTER_IMPL_ID,
+            "runtime_topology": SOURCE_STATE_JOINT_ACTION_RUNTIME_TOPOLOGY,
+            "two_seat_self_play": False,
+            "two_seat_self_play_status": SOURCE_STATE_JOINT_ACTION_TRAINING_STATUS,
             "fixed_opponent_is_two_seat_self_play": False,
             "browser_pixel_fidelity": SOURCE_STATE_GRAY64_BROWSER_PIXEL_FIDELITY,
             "uses_ale": SOURCE_STATE_GRAY64_USES_ALE,
@@ -2669,6 +3329,20 @@ def _env_variant_spec(env_variant: str) -> dict[str, Any]:
             "env_type": LIGHTZERO_SOURCE_STATE_VISUAL_SURVIVAL_ENV_TYPE,
             "env_id": LIGHTZERO_SOURCE_STATE_VISUAL_SURVIVAL_ENV_ID,
             "import_names": list(LIGHTZERO_SOURCE_STATE_VISUAL_SURVIVAL_IMPORT_NAMES),
+            "action_space_size": 3,
+            "reward_schema_id": SURVIVAL_TIME_REWARD_SCHEMA_ID,
+            "reward_policy": {
+                "reward_schema_id": SURVIVAL_TIME_REWARD_SCHEMA_ID,
+                "survival_only": True,
+                "diagnostic_all_players_alive": False,
+                "centralized_joint_action_control": False,
+                "per_player_reward": False,
+                "zero_sum_reward": False,
+                "sparse_outcome_reward": False,
+                "terminal_outcome_bonus": 0.0,
+                "loser_penalty": 0.0,
+                "winner_bonus": 0.0,
+            },
             "current_policy_self_play": CURRENT_POLICY_SELF_PLAY_CLAIM,
             "current_policy_self_play_blocker": CURRENT_POLICY_SELF_PLAY_BLOCKER,
             "current_policy_self_play_caveat": None,
@@ -2695,6 +3369,36 @@ def _env_variant_spec(env_variant: str) -> dict[str, Any]:
             "visual_source_state_backed": SOURCE_STATE_GRAY64_SOURCE_STATE_BACKED,
         }
     raise ValueError(f"unknown env_variant: {env_variant!r}")
+
+
+def _survival_reward_policy() -> dict[str, Any]:
+    return {
+        "reward_schema_id": SURVIVAL_TIME_REWARD_SCHEMA_ID,
+        "survival_only": True,
+        "diagnostic_all_players_alive": False,
+        "centralized_joint_action_control": False,
+        "per_player_reward": False,
+        "zero_sum_reward": False,
+        "sparse_outcome_reward": False,
+        "terminal_outcome_bonus": 0.0,
+        "loser_penalty": 0.0,
+        "winner_bonus": 0.0,
+    }
+
+
+def _all_players_alive_diagnostic_reward_policy() -> dict[str, Any]:
+    return {
+        "reward_schema_id": ALL_PLAYERS_ALIVE_DIAGNOSTIC_REWARD_SCHEMA_ID,
+        "survival_only": False,
+        "diagnostic_all_players_alive": True,
+        "centralized_joint_action_control": True,
+        "per_player_reward": False,
+        "zero_sum_reward": False,
+        "sparse_outcome_reward": False,
+        "terminal_outcome_bonus": 0.0,
+        "loser_penalty": 0.0,
+        "winner_bonus": 0.0,
+    }
 
 
 def _build_visual_survival_configs(
@@ -2730,6 +3434,7 @@ def _build_visual_survival_configs(
     template_module = "zoo.atari.config.atari_muzero_config"
     module = importlib.import_module(template_module)
     env_spec = _env_variant_spec(env_variant)
+    action_space_size = int(env_spec.get("action_space_size", 3))
     main_config = copy.deepcopy(module.main_config)
     create_config = EasyDict(
         {
@@ -2764,7 +3469,11 @@ def _build_visual_survival_configs(
             ("policy", "model", "observation_shape"),
             list(env_spec["observation_shape"]),
         ),
-        _set_or_add_path(main_config, ("policy", "model", "action_space_size"), 3),
+        _set_or_add_path(
+            main_config,
+            ("policy", "model", "action_space_size"),
+            action_space_size,
+        ),
         _set_save_ckpt_after_iter(main_config, int(save_ckpt_after_iter)),
     ]
     env_cfg = EasyDict(
@@ -2774,6 +3483,7 @@ def _build_visual_survival_configs(
             "import_names": env_spec["import_names"],
             "env_id": env_spec["env_id"],
             "env_variant": env_variant,
+            "action_space_size": action_space_size,
             "collector_env_num": int(collector_env_num),
             "evaluator_env_num": int(evaluator_env_num),
             "n_evaluator_episode": int(n_evaluator_episode),
@@ -2790,7 +3500,8 @@ def _build_visual_survival_configs(
             "manually_discretization": False,
             "telemetry_path": str(telemetry_path),
             "telemetry_stride": int(env_telemetry_stride),
-            "reward_schema_id": SURVIVAL_TIME_REWARD_SCHEMA_ID,
+            "reward_schema_id": env_spec["reward_schema_id"],
+            "reward_policy": env_spec["reward_policy"],
             "observation_schema_id": env_spec["observation_schema_id"],
             "debug_fidelity_only": env_spec["debug_fidelity_only"],
             "source_fidelity_claim": env_spec["source_fidelity_claim"],
@@ -2800,6 +3511,9 @@ def _build_visual_survival_configs(
             "runtime_env_impl_id": env_spec["runtime_env_impl_id"],
             "runtime_topology": env_spec["runtime_topology"],
             "two_seat_self_play": env_spec["two_seat_self_play"],
+            "current_policy_two_seat_action_collection": bool(
+                env_spec.get("current_policy_two_seat_action_collection", False)
+            ),
             "two_seat_self_play_status": env_spec["two_seat_self_play_status"],
             "fixed_opponent_is_two_seat_self_play": env_spec[
                 "fixed_opponent_is_two_seat_self_play"
@@ -2905,6 +3619,7 @@ def _extract_surface(
         "telemetry_path": env.get("telemetry_path"),
         "telemetry_stride": env.get("telemetry_stride"),
         "reward_schema_id": env.get("reward_schema_id"),
+        "reward_policy": _to_plain(env.get("reward_policy")),
         "observation_schema_id": env.get("observation_schema_id"),
         "debug_fidelity_only": env.get("debug_fidelity_only"),
         "source_fidelity_claim": env.get("source_fidelity_claim"),
@@ -2914,6 +3629,9 @@ def _extract_surface(
         "runtime_env_impl_id": env.get("runtime_env_impl_id"),
         "runtime_topology": env.get("runtime_topology"),
         "two_seat_self_play": env.get("two_seat_self_play"),
+        "current_policy_two_seat_action_collection": env.get(
+            "current_policy_two_seat_action_collection"
+        ),
         "two_seat_self_play_status": env.get("two_seat_self_play_status"),
         "fixed_opponent_is_two_seat_self_play": env.get(
             "fixed_opponent_is_two_seat_self_play"
@@ -2964,7 +3682,7 @@ def _validate_visual_survival_surface(
         "model_type": "conv",
         "observation_shape": list(env_spec["observation_shape"]),
         "env_observation_shape": list(env_spec["observation_shape"]),
-        "action_space_size": 3,
+        "action_space_size": int(env_spec.get("action_space_size", 3)),
         "model_image_channel": 4,
         "model_frame_stack_num": 1,
         "model_self_supervised_learning_loss": True,
@@ -2981,7 +3699,8 @@ def _validate_visual_survival_surface(
         "decision_ms": command["decision_ms"],
         "dynamic_seed": True,
         "telemetry_stride": command["env_telemetry_stride"],
-        "reward_schema_id": SURVIVAL_TIME_REWARD_SCHEMA_ID,
+        "reward_schema_id": command["reward_schema_id"],
+        "reward_policy": command["reward_policy"],
         "observation_schema_id": command["observation_schema_id"],
         "debug_fidelity_only": command["debug_fidelity_only"],
         "source_fidelity_claim": command["source_fidelity_claim"],
@@ -2991,6 +3710,9 @@ def _validate_visual_survival_surface(
         "runtime_env_impl_id": command["runtime_env_impl_id"],
         "runtime_topology": command["runtime_topology"],
         "two_seat_self_play": command["two_seat_self_play"],
+        "current_policy_two_seat_action_collection": command[
+            "current_policy_two_seat_action_collection"
+        ],
         "two_seat_self_play_status": command["two_seat_self_play_status"],
         "fixed_opponent_is_two_seat_self_play": command[
             "fixed_opponent_is_two_seat_self_play"
@@ -3465,6 +4187,8 @@ def _lightzero_iteration_from_resume_state_name(name: str) -> int | None:
 
 
 def _opponent_training_relation(opponent_policy_kind: str) -> str:
+    if opponent_policy_kind == OPPONENT_POLICY_KIND_NONE_CENTRALIZED_JOINT_ACTION:
+        return "centralized_policy_controls_both_players"
     if opponent_policy_kind == OPPONENT_POLICY_KIND_FIXED_STRAIGHT:
         return OPPONENT_TRAINING_RELATION_FIXED_STRAIGHT
     if opponent_policy_kind == OPPONENT_POLICY_KIND_FROZEN_LIGHTZERO_CHECKPOINT:
@@ -3611,7 +4335,9 @@ def _publish_live_lightzero_checkpoints(
 
 def _background_eval_config_from_command(command: dict[str, Any]) -> dict[str, Any]:
     return {
-        "enabled": bool(command.get("background_eval_enabled", False)),
+        "enabled": bool(
+            command.get("background_eval_enabled", DEFAULT_BACKGROUND_EVAL_ENABLED)
+        ),
         "compute": str(command.get("background_eval_compute", DEFAULT_BACKGROUND_EVAL_COMPUTE)),
         "eval_id_prefix": str(
             command.get("background_eval_id_prefix", DEFAULT_BACKGROUND_EVAL_ID_PREFIX)
@@ -3648,6 +4374,32 @@ def _background_eval_config_from_command(command: dict[str, Any]) -> dict[str, A
         "opponent_checkpoint_ref": command.get("opponent_checkpoint_ref"),
         "opponent_snapshot_ref": command.get("opponent_snapshot_ref"),
         "opponent_checkpoint_state_key": command.get("opponent_checkpoint_state_key"),
+        "selfplay_gif": _background_gif_config_from_command(command),
+    }
+
+
+def _background_gif_config_from_command(command: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "enabled": bool(command.get("background_gif_enabled", DEFAULT_BACKGROUND_GIF_ENABLED)),
+        "seed": int(command.get("seed", DEFAULT_SEED))
+        + int(command.get("background_gif_seed_offset", DEFAULT_BACKGROUND_GIF_SEED_OFFSET)),
+        "max_steps": int(command.get("background_gif_max_steps", DEFAULT_BACKGROUND_GIF_MAX_STEPS)),
+        "frame_stride": int(
+            command.get("background_gif_frame_stride", DEFAULT_BACKGROUND_GIF_FRAME_STRIDE)
+        ),
+        "fps": float(command.get("background_gif_fps", DEFAULT_BACKGROUND_GIF_FPS)),
+        "scale": int(command.get("background_gif_scale", DEFAULT_BACKGROUND_GIF_SCALE)),
+        "source_max_steps": int(command.get("source_max_steps", DEFAULT_SOURCE_MAX_STEPS)),
+        "num_simulations": int(
+            command.get(
+                "background_eval_num_simulations",
+                DEFAULT_BACKGROUND_EVAL_NUM_SIMULATIONS,
+            )
+        ),
+        "batch_size": int(
+            command.get("background_eval_batch_size", DEFAULT_BACKGROUND_EVAL_BATCH_SIZE)
+        ),
+        "training_env_variant": str(command.get("env_variant", DEFAULT_ENV_VARIANT)),
     }
 
 
@@ -3670,10 +4422,11 @@ def _spawn_checkpoint_eval_triggers(
         source = Path(str(item.get("path", "")))
         if not source.name:
             continue
+        if not _live_eval_checkpoint_name(source.name):
+            continue
         checkpoint_ref = _checkpoint_source_ref(source)
         if checkpoint_ref in seen_checkpoint_refs:
             continue
-        seen_checkpoint_refs.add(checkpoint_ref)
         checkpoint = {
             "ref": checkpoint_ref,
             "canonical_ref": (
@@ -3690,6 +4443,8 @@ def _spawn_checkpoint_eval_triggers(
                 config=config,
             )
         )
+        if triggered[-1].get("scheduled"):
+            seen_checkpoint_refs.add(checkpoint_ref)
     return triggered
 
 
@@ -3775,7 +4530,7 @@ def _schedule_one_checkpoint_background_eval(
     checkpoint_index: int,
     config: dict[str, Any],
 ) -> dict[str, Any]:
-    request, _call = _spawn_one_checkpoint_background_eval(
+    request, _jobs = _spawn_one_checkpoint_background_eval(
         publish=publish,
         checkpoint=checkpoint,
         checkpoint_index=checkpoint_index,
@@ -3790,10 +4545,10 @@ def _spawn_one_checkpoint_background_eval(
     checkpoint: dict[str, Any],
     checkpoint_index: int,
     config: dict[str, Any],
-) -> tuple[dict[str, Any], Any | None]:
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     checkpoint_ref = str(checkpoint.get("ref") or "")
     if not checkpoint_ref:
-        return {"scheduled": False, "reason": "checkpoint_ref_missing"}, None
+        return {"scheduled": False, "reason": "checkpoint_ref_missing"}, []
 
     checkpoint_label = _checkpoint_label_from_ref(checkpoint_ref, index=checkpoint_index)
     eval_id = _safe_generated_id(
@@ -3814,6 +4569,7 @@ def _spawn_one_checkpoint_background_eval(
         "requested_at": runs.utc_timestamp(),
         "config": config,
     }
+    jobs: list[dict[str, Any]] = []
     try:
         call = lightzero_curvytron_visual_survival_checkpoint_eval_and_inspect.spawn(
             checkpoint_ref=checkpoint_ref,
@@ -3837,6 +4593,102 @@ def _spawn_one_checkpoint_background_eval(
             opponent_checkpoint_state_key=config.get("opponent_checkpoint_state_key"),
         )
         request["scheduled"] = True
+        request["eval_inspection_scheduled"] = True
+        request["status"] = "spawned"
+        request["spawned_at"] = runs.utc_timestamp()
+        request["function_call_id"] = getattr(call, "object_id", None) or getattr(call, "id", None)
+        jobs.append(
+            {
+                "kind": "eval_inspection",
+                "eval_id": eval_id,
+                "call": call,
+            }
+        )
+    except Exception as exc:  # pragma: no cover - remote scheduling resilience only.
+        request["scheduled"] = False
+        request["eval_inspection_scheduled"] = False
+        request["status"] = "spawn_failed"
+        request["spawn_error"] = _exception_result(exc)
+    gif_request, gif_call = _spawn_one_checkpoint_background_gif(
+        publish=publish,
+        checkpoint_ref=checkpoint_ref,
+        checkpoint_label=checkpoint_label,
+        eval_id=eval_id,
+        config=config,
+    )
+    request["selfplay_gif"] = gif_request
+    if gif_request.get("scheduled"):
+        jobs.append(
+            {
+                "kind": "selfplay_gif",
+                "eval_id": eval_id,
+                "call": gif_call,
+            }
+        )
+    if jobs:
+        request["scheduled"] = True
+        request["status"] = "spawned"
+    else:
+        request["scheduled"] = False
+        request["status"] = "spawn_failed"
+
+    return _to_plain(request), jobs
+
+
+def _spawn_one_checkpoint_background_gif(
+    *,
+    publish: dict[str, Any],
+    checkpoint_ref: str,
+    checkpoint_label: str,
+    eval_id: str,
+    config: dict[str, Any],
+) -> tuple[dict[str, Any], Any | None]:
+    gif_config = dict(config.get("selfplay_gif") or {})
+    if not gif_config.get("enabled", DEFAULT_BACKGROUND_GIF_ENABLED):
+        return {"scheduled": False, "reason": "background_gif_disabled"}, None
+    training_env_variant = str(gif_config.get("training_env_variant", DEFAULT_ENV_VARIANT))
+    if training_env_variant == ENV_VARIANT_SOURCE_STATE_JOINT_ACTION:
+        return {
+            "scheduled": False,
+            "reason": "background_gif_unsupported_for_source_state_joint_action",
+            "training_env_variant": training_env_variant,
+        }, None
+    request: dict[str, Any] = {
+        "schema_id": "curvyzero_lightzero_curvytron_selfplay_gif_spawn/v0",
+        "scheduled": False,
+        "status": "pending_spawn",
+        "task_id": TASK_ID,
+        "run_id": publish.get("run_id"),
+        "attempt_id": publish.get("attempt_id"),
+        "checkpoint_ref": checkpoint_ref,
+        "checkpoint_label": checkpoint_label,
+        "eval_id": eval_id,
+        "requested_at": runs.utc_timestamp(),
+        "config": gif_config,
+    }
+    try:
+        call = lightzero_curvytron_visual_survival_checkpoint_selfplay_gif.spawn(
+            checkpoint_ref=checkpoint_ref,
+            checkpoint_label=checkpoint_label,
+            eval_id=eval_id,
+            run_id=str(publish.get("run_id")),
+            attempt_id=str(publish.get("attempt_id")),
+            seed=int(gif_config.get("seed", DEFAULT_SEED + DEFAULT_BACKGROUND_GIF_SEED_OFFSET)),
+            max_steps=int(gif_config.get("max_steps", DEFAULT_BACKGROUND_GIF_MAX_STEPS)),
+            source_max_steps=int(gif_config.get("source_max_steps", DEFAULT_SOURCE_MAX_STEPS)),
+            num_simulations=int(
+                gif_config.get(
+                    "num_simulations",
+                    DEFAULT_BACKGROUND_EVAL_NUM_SIMULATIONS,
+                )
+            ),
+            batch_size=int(gif_config.get("batch_size", DEFAULT_BACKGROUND_EVAL_BATCH_SIZE)),
+            frame_stride=int(gif_config.get("frame_stride", DEFAULT_BACKGROUND_GIF_FRAME_STRIDE)),
+            fps=float(gif_config.get("fps", DEFAULT_BACKGROUND_GIF_FPS)),
+            scale=int(gif_config.get("scale", DEFAULT_BACKGROUND_GIF_SCALE)),
+            training_env_variant=training_env_variant,
+        )
+        request["scheduled"] = True
         request["status"] = "spawned"
         request["spawned_at"] = runs.utc_timestamp()
         request["function_call_id"] = getattr(call, "object_id", None) or getattr(call, "id", None)
@@ -3845,7 +4697,6 @@ def _spawn_one_checkpoint_background_eval(
         request["status"] = "spawn_failed"
         request["spawn_error"] = _exception_result(exc)
         call = None
-
     return _to_plain(request), call
 
 
@@ -3918,6 +4769,12 @@ def _checkpoint_eval_poller_command(
     background_eval_step_detail_limit: int | None,
     background_eval_num_simulations: int,
     background_eval_batch_size: int,
+    background_gif_enabled: bool,
+    background_gif_seed_offset: int,
+    background_gif_max_steps: int,
+    background_gif_frame_stride: int,
+    background_gif_fps: float,
+    background_gif_scale: int,
 ) -> dict[str, Any]:
     return {
         "seed": seed,
@@ -3936,6 +4793,12 @@ def _checkpoint_eval_poller_command(
         "background_eval_step_detail_limit": background_eval_step_detail_limit,
         "background_eval_num_simulations": background_eval_num_simulations,
         "background_eval_batch_size": background_eval_batch_size,
+        "background_gif_enabled": background_gif_enabled,
+        "background_gif_seed_offset": background_gif_seed_offset,
+        "background_gif_max_steps": background_gif_max_steps,
+        "background_gif_frame_stride": background_gif_frame_stride,
+        "background_gif_fps": background_gif_fps,
+        "background_gif_scale": background_gif_scale,
     }
 
 
@@ -3967,7 +4830,7 @@ def _run_checkpoint_eval_poller(
     seen_refs: set[str] = set()
     scheduled: list[dict[str, Any]] = []
     completed: list[dict[str, Any]] = []
-    outstanding: list[tuple[str, Any]] = []
+    outstanding: list[dict[str, Any]] = []
     train_done_at: float | None = None
     last_scan_count = 0
 
@@ -3989,7 +4852,19 @@ def _run_checkpoint_eval_poller(
             "seen_count": len(seen_refs),
             "scheduled_count": len(scheduled),
             "completed_count": len(completed),
-            "outstanding_count": len(outstanding),
+            "eval_completed_count": sum(
+                1 for item in completed if item.get("kind") == "eval_inspection"
+            ),
+            "outstanding_count": max(0, len(outstanding) - len(completed)),
+            "gif_scheduled_count": sum(
+                1
+                for item in scheduled
+                if isinstance(item.get("selfplay_gif"), dict)
+                and item["selfplay_gif"].get("scheduled")
+            ),
+            "gif_completed_count": sum(
+                1 for item in completed if item.get("kind") == "selfplay_gif"
+            ),
             "train_done": train_done_at is not None,
             "scheduled": scheduled[-20:],
             "completed": completed[-20:],
@@ -4051,7 +4926,7 @@ def _run_checkpoint_eval_poller(
                 "copied_now": True,
                 **fingerprint,
             }
-            request, call = _spawn_one_checkpoint_background_eval(
+            request, jobs = _spawn_one_checkpoint_background_eval(
                 publish={"run_id": run_id, "attempt_id": attempt_id},
                 checkpoint=checkpoint,
                 checkpoint_index=len(scheduled),
@@ -4060,7 +4935,14 @@ def _run_checkpoint_eval_poller(
             scheduled.append(request)
             if request.get("scheduled"):
                 seen_refs.add(checkpoint_ref)
-                outstanding.append((str(request.get("eval_id")), call))
+                for job in jobs:
+                    outstanding.append(
+                        {
+                            "kind": str(job.get("kind")),
+                            "eval_id": str(job.get("eval_id")),
+                            "call": job.get("call"),
+                        }
+                    )
             _write_checkpoint_eval_poller_status(
                 run_id=run_id,
                 attempt_id=attempt_id,
@@ -4075,20 +4957,29 @@ def _run_checkpoint_eval_poller(
 
         time.sleep(poll_interval_sec)
 
-    for eval_id, call in outstanding:
+    for job in outstanding:
+        call = job.get("call")
         if call is None:
             continue
         try:
             result = call.get()
             completed.append(
                 {
-                    "eval_id": eval_id,
+                    "kind": job.get("kind"),
+                    "eval_id": job.get("eval_id"),
                     "ok": bool(isinstance(result, dict) and result.get("ok")),
                     "result": _to_plain(result),
                 }
             )
         except Exception as exc:  # pragma: no cover - remote resilience only.
-            completed.append({"eval_id": eval_id, "ok": False, **_exception_result(exc)})
+            completed.append(
+                {
+                    "kind": job.get("kind"),
+                    "eval_id": job.get("eval_id"),
+                    "ok": False,
+                    **_exception_result(exc),
+                }
+            )
 
     final_status = status_payload("completed")
     final_status["ended_at"] = runs.utc_timestamp()
@@ -4128,6 +5019,9 @@ def _live_train_summary_for_inspector(command: dict[str, Any]) -> dict[str, Any]
         "runtime_env_impl_id": command.get("runtime_env_impl_id"),
         "runtime_topology": command.get("runtime_topology"),
         "two_seat_self_play": command.get("two_seat_self_play"),
+        "current_policy_two_seat_action_collection": command.get(
+            "current_policy_two_seat_action_collection"
+        ),
         "two_seat_self_play_status": command.get("two_seat_self_play_status"),
         "fixed_opponent_is_two_seat_self_play": command.get(
             "fixed_opponent_is_two_seat_self_play"
@@ -4390,6 +5284,316 @@ def _run_checkpoint_eval_and_inspect(
         "survival_aggregate_table": survival_aggregate_table,
         "survival_table": survival_table,
     }
+    print(json.dumps(_to_plain(summary), indent=2, sort_keys=True))
+    return _to_plain(summary)
+
+
+def _selfplay_artifact_root(
+    *,
+    run_id: str,
+    attempt_id: str,
+    eval_id: str,
+) -> Path:
+    return runs.volume_path(
+        RUNS_MOUNT,
+        runs.attempt_eval_ref(TASK_ID, run_id, attempt_id, eval_id) / "selfplay",
+    )
+
+
+def _copy_source_state_raw_frame(env: Any) -> Any:
+    import numpy as np
+
+    raw = None
+    if hasattr(env, "raw_observation"):
+        raw = env.raw_observation()
+    if raw is None and hasattr(env, "render"):
+        raw = env.render("source_state_raw_visual_tensor")
+    if raw is None:
+        raise RuntimeError("self-play env did not expose source_state_raw_visual_tensor")
+    frame = np.asarray(raw, dtype=np.uint8)
+    if frame.shape == (1, 64, 64):
+        return frame[0].copy()
+    if frame.shape == (64, 64):
+        return frame.copy()
+    raise ValueError(f"raw source-state frame shape {frame.shape!r}; expected (1, 64, 64)")
+
+
+def _save_raw_frames_gif(
+    *,
+    frames: Any,
+    gif_path: Path,
+    fps: float,
+    scale: int,
+) -> dict[str, Any]:
+    import numpy as np
+    from PIL import Image
+
+    raw_frames = np.asarray(frames, dtype=np.uint8)
+    if raw_frames.ndim != 3 or raw_frames.shape[1:] != (64, 64):
+        raise ValueError("raw GIF frames must have shape [N, 64, 64]")
+    if raw_frames.shape[0] < 1:
+        raise ValueError("raw GIF frames must include at least one frame")
+    if fps <= 0.0:
+        raise ValueError("background_gif_fps must be positive")
+    if scale < 1:
+        raise ValueError("background_gif_scale must be at least 1")
+    gif_path.parent.mkdir(parents=True, exist_ok=True)
+    duration_ms = max(20, int(round(1000.0 / fps)))
+    pil_frames = []
+    for frame in raw_frames:
+        image_frame = Image.fromarray(frame)
+        if scale != 1:
+            image_frame = image_frame.resize((64 * scale, 64 * scale), Image.Resampling.NEAREST)
+        pil_frames.append(image_frame)
+    pil_frames[0].save(
+        gif_path,
+        save_all=True,
+        append_images=pil_frames[1:],
+        duration=duration_ms,
+        loop=0,
+    )
+    return {
+        "path": str(gif_path),
+        "frame_count": int(raw_frames.shape[0]),
+        "fps": float(fps),
+        "duration_ms_per_frame": int(duration_ms),
+        "scale": int(scale),
+        "pixel_size": [64 * int(scale), 64 * int(scale)],
+    }
+
+
+def _write_selfplay_raw_frames_npz(
+    *,
+    frames: Any,
+    path: Path,
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    import numpy as np
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        path,
+        raw_frames=np.asarray(frames, dtype=np.uint8),
+        metadata=json.dumps(_to_plain(metadata), sort_keys=True).encode("utf-8"),
+    )
+    return runs.file_summary(path, mount=RUNS_MOUNT)
+
+
+def _run_checkpoint_selfplay_gif(
+    *,
+    checkpoint_ref: str,
+    checkpoint_label: str | None,
+    eval_id: str,
+    run_id: str,
+    attempt_id: str,
+    seed: int,
+    max_steps: int,
+    source_max_steps: int,
+    num_simulations: int,
+    batch_size: int,
+    frame_stride: int,
+    fps: float,
+    scale: int,
+    training_env_variant: str,
+) -> dict[str, Any]:
+    import numpy as np
+
+    if max_steps < 1:
+        raise ValueError("background_gif_max_steps must be at least 1")
+    if source_max_steps < 1:
+        raise ValueError("source_max_steps must be at least 1")
+    if num_simulations < 1:
+        raise ValueError("background eval num_simulations must be at least 1")
+    if batch_size < 1:
+        raise ValueError("background eval batch_size must be at least 1")
+    if frame_stride < 1:
+        raise ValueError("background_gif_frame_stride must be at least 1")
+
+    started_at = runs.utc_timestamp()
+    clean_eval_id = _safe_generated_id(eval_id, fallback="live_checkpoint")
+    clean_checkpoint_label = _safe_generated_id(
+        checkpoint_label or _checkpoint_label_from_ref(checkpoint_ref, index=0),
+        fallback="checkpoint",
+    )
+    artifact_root = _selfplay_artifact_root(
+        run_id=run_id,
+        attempt_id=attempt_id,
+        eval_id=clean_eval_id,
+    )
+    summary_path = artifact_root / "summary.json"
+    gif_path = artifact_root / "raw.gif"
+    frames_path = artifact_root / "raw_frames.npz"
+    telemetry_path = artifact_root / "turn_commit_env_steps.jsonl"
+
+    try:
+        if hasattr(runs_volume, "reload"):
+            try:
+                runs_volume.reload()
+            except Exception:
+                pass
+        from curvyzero.infra.modal import lightzero_curvytron_visual_survival_eval as eval_mod
+
+        checkpoint_path = _wait_for_visible_checkpoint(checkpoint_ref)
+        payload = eval_mod._torch_load(checkpoint_path)
+        found = eval_mod._find_state_dict(payload)
+        if found is None:
+            raise ValueError("checkpoint payload did not contain a LightZero state dict")
+        found_key, state_dict = found
+        policy, env, surface = eval_mod._make_policy_and_env(
+            state_dict=state_dict,
+            seed=int(seed),
+            use_cuda=False,
+            source_max_steps=max(int(source_max_steps), int(max_steps)),
+            num_simulations=int(num_simulations),
+            batch_size=int(batch_size),
+            telemetry_path=telemetry_path,
+            env_variant=ENV_VARIANT_SOURCE_STATE_TURN_COMMIT,
+            opponent_policy_kind=OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
+            opponent_checkpoint=None,
+            opponent_snapshot_ref=None,
+            opponent_checkpoint_state_key=None,
+        )
+
+        observation = env.reset(seed=int(seed))
+        frames: list[Any] = [_copy_source_state_raw_frame(env)]
+        scalar_actions: list[dict[str, Any]] = []
+        joint_actions: list[dict[str, Any]] = []
+        physical_steps = 0
+        scalar_steps = 0
+        done = False
+        last_info: dict[str, Any] = {}
+        failure: dict[str, Any] | None = None
+
+        while physical_steps < max_steps and not done:
+            try:
+                action_result = eval_mod._policy_eval_action(policy, observation)
+                timestep = env.step(int(action_result["action"]))
+                observation, reward, done, info = eval_mod._timestep_parts(timestep)
+            except Exception as exc:  # pragma: no cover - remote dependency diagnosis.
+                failure = {"scalar_step_index": scalar_steps, **_exception_result(exc)}
+                break
+
+            last_info = _to_plain(info) if isinstance(info, dict) else {"raw_info": _to_plain(info)}
+            scalar_actions.append(
+                {
+                    "scalar_step_index": int(scalar_steps),
+                    "action": int(action_result["action"]),
+                    "acting_player_id": last_info.get("acting_player_id"),
+                    "physical_env_advanced": bool(last_info.get("physical_env_advanced", False)),
+                    "reward": _to_plain(reward),
+                    "done": bool(done),
+                }
+            )
+            scalar_steps += 1
+            if bool(last_info.get("physical_env_advanced", False)):
+                physical_steps += 1
+                joint_actions.append(
+                    {
+                        "physical_step_index": int(physical_steps - 1),
+                        "joint_action": last_info.get("joint_action"),
+                        "terminal_reason": last_info.get("terminal_reason"),
+                        "done": bool(done),
+                    }
+                )
+                if physical_steps % frame_stride == 0 or done:
+                    frames.append(_copy_source_state_raw_frame(env))
+
+        raw_frames = np.stack(frames, axis=0).astype(np.uint8, copy=False)
+        artifact_metadata = {
+            "schema_id": "curvyzero_lightzero_curvytron_checkpoint_selfplay_raw_frames/v0",
+            "raw_frame_source": "env.raw_observation() / source_state_raw_visual_tensor",
+            "raw_frame_shape": [1, 64, 64],
+            "saved_frame_shape": [64, 64],
+            "frame_count": int(raw_frames.shape[0]),
+            "frame_stride_physical_steps": int(frame_stride),
+            "seed": int(seed),
+            "checkpoint_ref": checkpoint_ref,
+            "checkpoint_label": clean_checkpoint_label,
+        }
+        frames_artifact = _write_selfplay_raw_frames_npz(
+            frames=raw_frames,
+            path=frames_path,
+            metadata=artifact_metadata,
+        )
+        gif_artifact = _save_raw_frames_gif(
+            frames=raw_frames,
+            gif_path=gif_path,
+            fps=float(fps),
+            scale=int(scale),
+        )
+        summary = {
+            "ok": failure is None,
+            "schema_id": "curvyzero_lightzero_curvytron_checkpoint_selfplay_gif_summary/v0",
+            "started_at": started_at,
+            "ended_at": runs.utc_timestamp(),
+            "run_id": run_id,
+            "attempt_id": attempt_id,
+            "eval_id": clean_eval_id,
+            "checkpoint_ref": checkpoint_ref,
+            "checkpoint_label": clean_checkpoint_label,
+            "checkpoint_state_key": found_key,
+            "training_env_variant": training_env_variant,
+            "capture_env_variant": ENV_VARIANT_SOURCE_STATE_TURN_COMMIT,
+            "capture_env_reason": (
+                "one checkpoint controls player_0 and player_1 through the source-state "
+                "turn-commit adapter; only physical commits become GIF frames"
+            ),
+            "raw_frame_source": "source_state_raw_visual_tensor",
+            "raw_frame_is_browser_pixel": False,
+            "raw_frame_shape": [1, 64, 64],
+            "saved_frame_shape": [64, 64],
+            "gif_ref": runs.file_ref(gif_path, mount=RUNS_MOUNT),
+            "raw_frames_ref": runs.file_ref(frames_path, mount=RUNS_MOUNT),
+            "telemetry_ref": (
+                runs.file_ref(telemetry_path, mount=RUNS_MOUNT)
+                if telemetry_path.exists()
+                else None
+            ),
+            "frame_count": int(raw_frames.shape[0]),
+            "physical_steps": int(physical_steps),
+            "scalar_steps": int(scalar_steps),
+            "done": bool(done),
+            "terminal_reason": last_info.get("terminal_reason"),
+            "max_steps": int(max_steps),
+            "frame_stride": int(frame_stride),
+            "fps": float(fps),
+            "scale": int(scale),
+            "num_simulations": int(num_simulations),
+            "batch_size": int(batch_size),
+            "surface": _to_plain(surface),
+            "action_trace": {
+                "scalar_actions": scalar_actions[: 2 * int(max_steps)],
+                "joint_actions": joint_actions[: int(max_steps)],
+            },
+            "failure": failure,
+            "artifacts": {
+                "gif": {**runs.file_summary(gif_path, mount=RUNS_MOUNT), **gif_artifact},
+                "raw_frames": frames_artifact,
+            },
+        }
+    except Exception as exc:  # pragma: no cover - remote dependency diagnosis.
+        summary = {
+            "ok": False,
+            "schema_id": "curvyzero_lightzero_curvytron_checkpoint_selfplay_gif_summary/v0",
+            "started_at": started_at,
+            "ended_at": runs.utc_timestamp(),
+            "run_id": run_id,
+            "attempt_id": attempt_id,
+            "eval_id": clean_eval_id,
+            "checkpoint_ref": checkpoint_ref,
+            "checkpoint_label": clean_checkpoint_label,
+            "training_env_variant": training_env_variant,
+            "capture_env_variant": ENV_VARIANT_SOURCE_STATE_TURN_COMMIT,
+            "raw_frame_source": "source_state_raw_visual_tensor",
+            "error": _exception_result(exc),
+        }
+
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    summary["summary_ref"] = runs.file_ref(summary_path, mount=RUNS_MOUNT)
+    runs.write_json(summary_path, _to_plain(summary))
+    summary["summary"] = runs.file_summary(summary_path, mount=RUNS_MOUNT)
+    if hasattr(runs_volume, "commit"):
+        runs_volume.commit()
     print(json.dumps(_to_plain(summary), indent=2, sort_keys=True))
     return _to_plain(summary)
 
@@ -4757,6 +5961,41 @@ def lightzero_curvytron_visual_survival_checkpoint_eval_and_inspect(
     )
 
 
+@app.function(image=image, volumes={str(RUNS_MOUNT): runs_volume}, timeout=40 * 60, cpu=2.0)
+def lightzero_curvytron_visual_survival_checkpoint_selfplay_gif(
+    checkpoint_ref: str,
+    checkpoint_label: str | None = None,
+    eval_id: str = DEFAULT_BACKGROUND_EVAL_ID_PREFIX,
+    run_id: str = DEFAULT_RUN_ID,
+    attempt_id: str = DEFAULT_ATTEMPT_ID,
+    seed: int = DEFAULT_SEED + DEFAULT_BACKGROUND_GIF_SEED_OFFSET,
+    max_steps: int = DEFAULT_BACKGROUND_GIF_MAX_STEPS,
+    source_max_steps: int = DEFAULT_SOURCE_MAX_STEPS,
+    num_simulations: int = DEFAULT_BACKGROUND_EVAL_NUM_SIMULATIONS,
+    batch_size: int = DEFAULT_BACKGROUND_EVAL_BATCH_SIZE,
+    frame_stride: int = DEFAULT_BACKGROUND_GIF_FRAME_STRIDE,
+    fps: float = DEFAULT_BACKGROUND_GIF_FPS,
+    scale: int = DEFAULT_BACKGROUND_GIF_SCALE,
+    training_env_variant: str = DEFAULT_ENV_VARIANT,
+) -> dict[str, Any]:
+    return _run_checkpoint_selfplay_gif(
+        checkpoint_ref=checkpoint_ref,
+        checkpoint_label=checkpoint_label,
+        eval_id=eval_id,
+        run_id=run_id,
+        attempt_id=attempt_id,
+        seed=seed,
+        max_steps=max_steps,
+        source_max_steps=source_max_steps,
+        num_simulations=num_simulations,
+        batch_size=batch_size,
+        frame_stride=frame_stride,
+        fps=fps,
+        scale=scale,
+        training_env_variant=training_env_variant,
+    )
+
+
 @app.function(image=image, volumes={str(RUNS_MOUNT): runs_volume}, timeout=8 * 60 * 60, cpu=1.0)
 def lightzero_curvytron_visual_survival_checkpoint_eval_poller(
     run_id: str = DEFAULT_RUN_ID,
@@ -4777,6 +6016,12 @@ def lightzero_curvytron_visual_survival_checkpoint_eval_poller(
     background_eval_step_detail_limit: int | None = DEFAULT_BACKGROUND_EVAL_STEP_DETAIL_LIMIT,
     background_eval_num_simulations: int = DEFAULT_BACKGROUND_EVAL_NUM_SIMULATIONS,
     background_eval_batch_size: int = DEFAULT_BACKGROUND_EVAL_BATCH_SIZE,
+    background_gif_enabled: bool = DEFAULT_BACKGROUND_GIF_ENABLED,
+    background_gif_seed_offset: int = DEFAULT_BACKGROUND_GIF_SEED_OFFSET,
+    background_gif_max_steps: int = DEFAULT_BACKGROUND_GIF_MAX_STEPS,
+    background_gif_frame_stride: int = DEFAULT_BACKGROUND_GIF_FRAME_STRIDE,
+    background_gif_fps: float = DEFAULT_BACKGROUND_GIF_FPS,
+    background_gif_scale: int = DEFAULT_BACKGROUND_GIF_SCALE,
     poll_interval_sec: float = DEFAULT_BACKGROUND_EVAL_POLL_INTERVAL_SEC,
     stable_polls: int = DEFAULT_BACKGROUND_EVAL_POLL_STABLE_POLLS,
     max_runtime_sec: float = DEFAULT_BACKGROUND_EVAL_POLLER_MAX_RUNTIME_SEC,
@@ -4802,6 +6047,12 @@ def lightzero_curvytron_visual_survival_checkpoint_eval_poller(
         background_eval_step_detail_limit=background_eval_step_detail_limit,
         background_eval_num_simulations=background_eval_num_simulations,
         background_eval_batch_size=background_eval_batch_size,
+        background_gif_enabled=background_gif_enabled,
+        background_gif_seed_offset=background_gif_seed_offset,
+        background_gif_max_steps=background_gif_max_steps,
+        background_gif_frame_stride=background_gif_frame_stride,
+        background_gif_fps=background_gif_fps,
+        background_gif_scale=background_gif_scale,
     )
     return _run_checkpoint_eval_poller(
         run_id=run_id,
@@ -4856,6 +6107,12 @@ def lightzero_curvytron_visual_survival_cpu(
     background_eval_step_detail_limit: int | None = DEFAULT_BACKGROUND_EVAL_STEP_DETAIL_LIMIT,
     background_eval_num_simulations: int = DEFAULT_BACKGROUND_EVAL_NUM_SIMULATIONS,
     background_eval_batch_size: int = DEFAULT_BACKGROUND_EVAL_BATCH_SIZE,
+    background_gif_enabled: bool = DEFAULT_BACKGROUND_GIF_ENABLED,
+    background_gif_seed_offset: int = DEFAULT_BACKGROUND_GIF_SEED_OFFSET,
+    background_gif_max_steps: int = DEFAULT_BACKGROUND_GIF_MAX_STEPS,
+    background_gif_frame_stride: int = DEFAULT_BACKGROUND_GIF_FRAME_STRIDE,
+    background_gif_fps: float = DEFAULT_BACKGROUND_GIF_FPS,
+    background_gif_scale: int = DEFAULT_BACKGROUND_GIF_SCALE,
 ) -> dict[str, Any]:
     return _run_visual_survival_train(
         mode=mode,
@@ -4896,6 +6153,12 @@ def lightzero_curvytron_visual_survival_cpu(
         background_eval_step_detail_limit=background_eval_step_detail_limit,
         background_eval_num_simulations=background_eval_num_simulations,
         background_eval_batch_size=background_eval_batch_size,
+        background_gif_enabled=background_gif_enabled,
+        background_gif_seed_offset=background_gif_seed_offset,
+        background_gif_max_steps=background_gif_max_steps,
+        background_gif_frame_stride=background_gif_frame_stride,
+        background_gif_fps=background_gif_fps,
+        background_gif_scale=background_gif_scale,
     )
 
 
@@ -4947,6 +6210,12 @@ def lightzero_curvytron_visual_survival_gpu(
     background_eval_step_detail_limit: int | None = DEFAULT_BACKGROUND_EVAL_STEP_DETAIL_LIMIT,
     background_eval_num_simulations: int = DEFAULT_BACKGROUND_EVAL_NUM_SIMULATIONS,
     background_eval_batch_size: int = DEFAULT_BACKGROUND_EVAL_BATCH_SIZE,
+    background_gif_enabled: bool = DEFAULT_BACKGROUND_GIF_ENABLED,
+    background_gif_seed_offset: int = DEFAULT_BACKGROUND_GIF_SEED_OFFSET,
+    background_gif_max_steps: int = DEFAULT_BACKGROUND_GIF_MAX_STEPS,
+    background_gif_frame_stride: int = DEFAULT_BACKGROUND_GIF_FRAME_STRIDE,
+    background_gif_fps: float = DEFAULT_BACKGROUND_GIF_FPS,
+    background_gif_scale: int = DEFAULT_BACKGROUND_GIF_SCALE,
 ) -> dict[str, Any]:
     return _run_visual_survival_train(
         mode=mode,
@@ -4987,6 +6256,12 @@ def lightzero_curvytron_visual_survival_gpu(
         background_eval_step_detail_limit=background_eval_step_detail_limit,
         background_eval_num_simulations=background_eval_num_simulations,
         background_eval_batch_size=background_eval_batch_size,
+        background_gif_enabled=background_gif_enabled,
+        background_gif_seed_offset=background_gif_seed_offset,
+        background_gif_max_steps=background_gif_max_steps,
+        background_gif_frame_stride=background_gif_frame_stride,
+        background_gif_fps=background_gif_fps,
+        background_gif_scale=background_gif_scale,
     )
 
 
@@ -5068,6 +6343,12 @@ def main(
     background_eval_poll_stable_polls: int = DEFAULT_BACKGROUND_EVAL_POLL_STABLE_POLLS,
     background_eval_poller_max_runtime_sec: float = DEFAULT_BACKGROUND_EVAL_POLLER_MAX_RUNTIME_SEC,
     background_eval_poller_idle_after_done_sec: float = DEFAULT_BACKGROUND_EVAL_POLLER_IDLE_AFTER_DONE_SEC,
+    background_gif_enabled: bool = DEFAULT_BACKGROUND_GIF_ENABLED,
+    background_gif_seed_offset: int = DEFAULT_BACKGROUND_GIF_SEED_OFFSET,
+    background_gif_max_steps: int = DEFAULT_BACKGROUND_GIF_MAX_STEPS,
+    background_gif_frame_stride: int = DEFAULT_BACKGROUND_GIF_FRAME_STRIDE,
+    background_gif_fps: float = DEFAULT_BACKGROUND_GIF_FPS,
+    background_gif_scale: int = DEFAULT_BACKGROUND_GIF_SCALE,
 ) -> None:
     if mode == OPPONENT_SMOKE_MODE:
         result = lightzero_curvytron_visual_survival_opponent_smoke.remote(
@@ -5091,6 +6372,11 @@ def main(
         train_fn = lightzero_curvytron_visual_survival_gpu
     else:
         raise ValueError(f"unknown compute {compute!r}; expected one of {COMPUTE_CHOICES!r}")
+    opponent_policy_kind = _normalize_opponent_policy_kind_for_env(
+        env_variant=env_variant,
+        opponent_policy_kind=opponent_policy_kind,
+        opponent_checkpoint_ref=opponent_checkpoint_ref,
+    )
     kwargs = {
         "mode": mode,
         "seed": seed,
@@ -5129,6 +6415,12 @@ def main(
         "background_eval_step_detail_limit": background_eval_step_detail_limit,
         "background_eval_num_simulations": background_eval_num_simulations,
         "background_eval_batch_size": background_eval_batch_size,
+        "background_gif_enabled": background_gif_enabled,
+        "background_gif_seed_offset": background_gif_seed_offset,
+        "background_gif_max_steps": background_gif_max_steps,
+        "background_gif_frame_stride": background_gif_frame_stride,
+        "background_gif_fps": background_gif_fps,
+        "background_gif_scale": background_gif_scale,
     }
     exp_name_ref = (runs.attempt_train_ref(TASK_ID, run_id, attempt_id) / "lightzero_exp").as_posix()
     poller_call = None
@@ -5155,6 +6447,12 @@ def main(
             background_eval_step_detail_limit=background_eval_step_detail_limit,
             background_eval_num_simulations=background_eval_num_simulations,
             background_eval_batch_size=background_eval_batch_size,
+            background_gif_enabled=background_gif_enabled,
+            background_gif_seed_offset=background_gif_seed_offset,
+            background_gif_max_steps=background_gif_max_steps,
+            background_gif_frame_stride=background_gif_frame_stride,
+            background_gif_fps=background_gif_fps,
+            background_gif_scale=background_gif_scale,
             poll_interval_sec=background_eval_poll_interval_sec,
             stable_polls=background_eval_poll_stable_polls,
             max_runtime_sec=background_eval_poller_max_runtime_sec,
@@ -5181,6 +6479,7 @@ def main(
                         "enabled": background_eval_enabled,
                         "launch_kind": background_eval_launch_kind,
                         "poller_function_call_id": poller_call_id,
+                        "selfplay_gif_enabled": background_gif_enabled,
                         "status_ref": (
                             runs.attempt_train_ref(TASK_ID, run_id, attempt_id)
                             / "checkpoint_eval_poller.json"
@@ -5210,6 +6509,7 @@ def main(
                 "enabled": True,
                 "launch_kind": background_eval_launch_kind,
                 "poller_function_call_id": poller_call_id,
+                "selfplay_gif_enabled": background_gif_enabled,
                 "poller": poller_call.get(),
             },
         }

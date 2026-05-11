@@ -109,6 +109,48 @@ rewrite or framework migration. First use subprocess env manager and
 `32/32` or `64/64` collection, then consider actor/search fanout if the
 single-process loop remains underfed.
 
+2026-05-11 current-lane correction: reward-credit risk does not stop optimizer
+profiling. It only limits learning claims. I reran both relevant stock
+LightZero paths after the coach/environment churn:
+
+```text
+fixed-opponent no-death profile:
+  run_id=opt-fixed-current-reprofile-s20260511f
+  attempt_id=fixed-sub-c16-sim16-steps240-matched
+  env_variant=source_state_fixed_opponent
+  called_train_muzero=true
+  ok=true
+  env_steps_collected=3840
+  wall=25.21s
+  MCTS=10.87s
+  policy_forward_collect=13.93s
+  learner=1.75s
+  replay_sample=0.10s
+
+turn-commit no-death profile:
+  run_id=opt-turncommit-mainlane-reprofile-s20260511f
+  attempt_id=mainlane-profile-c16-sim16-steps128
+  env_variant=source_state_turn_commit
+  called_train_muzero=true
+  ok=true
+  env_steps_collected=4096 scalar LightZero steps
+  physical sampled rows=2176
+  pending sampled rows=102
+  wall=46.58s
+  MCTS=28.66s
+  learner=1.73s
+  replay_sample=0.14s
+```
+
+Plain CPU/GPU split: model inference and learner are on CUDA; MCTS uses
+LightZero's C++/CPU tree with CUDA neural-network calls; replay and env
+internals are CPU/NumPy; subprocess env workers hide detailed env timers. The
+small base-manager turn-commit profile measured env vector step at `0.63s`,
+runtime `0.40s`, and render `0.24s` versus `6.25s` MCTS and `5.45s` eval, so
+today's biggest immediate target is still search/collector batching, not a GPU
+env rewrite. Keep no-death mode as the default optimizer profile shape for long
+survival cost.
+
 ## 2026-05-10 Runtime Verdict
 
 See [runtime verdict](runtime_verdict_2026-05-10.md) for the compact source of

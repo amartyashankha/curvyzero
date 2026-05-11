@@ -102,6 +102,26 @@ SOURCE_STATE_FIXED_OPPONENT_RUNTIME_TOPOLOGY = (
 )
 SOURCE_STATE_FIXED_OPPONENT_TWO_SEAT_STATUS = "not_two_seat_self_play"
 SOURCE_STATE_FIXED_OPPONENT_UNDERLYING_ENV_CLASS = "VectorMultiplayerEnv"
+LIGHTZERO_SOURCE_STATE_VISUAL_JOINT_ACTION_ENV_TYPE = (
+    "curvyzero_source_state_visual_joint_action_lightzero"
+)
+LIGHTZERO_SOURCE_STATE_VISUAL_JOINT_ACTION_ENV_ID = (
+    "CurvyZeroSourceStateVisualJointActionLightZero-v0"
+)
+LIGHTZERO_SOURCE_STATE_VISUAL_JOINT_ACTION_IMPORT_NAMES = (
+    "curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env",
+)
+SOURCE_STATE_JOINT_ACTION_ADAPTER_IMPL_ID = (
+    "curvyzero_source_state_visual_joint_action_lightzero_adapter/v0"
+)
+SOURCE_STATE_JOINT_ACTION_ENV_VARIANT = "source_state_joint_action"
+SOURCE_STATE_JOINT_ACTION_RUNTIME_TOPOLOGY = (
+    "stock_lightzero_centralized_9_action_joint_control_one_source_tick"
+)
+SOURCE_STATE_JOINT_ACTION_TRAINING_STATUS = (
+    "centralized_joint_action_control_not_true_competitive_self_play"
+)
+JOINT_ACTION_COUNT = ACTION_COUNT * ACTION_COUNT
 STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID = (
     "curvyzero_source_state_gray64_stack4_player_perspective/v1"
 )
@@ -123,6 +143,34 @@ DEFAULT_POLICY_ACTION_REPEAT_MIN = 1
 POLICY_ACTION_REPEAT_SEED_OFFSET = 2027
 CONTROL_STOCHASTICITY_SCHEMA_ID = "curvyzero_policy_action_repeat_stochasticity/v0"
 STRAIGHT_ACTION_ID = 1
+ALL_PLAYERS_ALIVE_DIAGNOSTIC_REWARD_SCHEMA_ID = (
+    "curvyzero_all_players_alive_diagnostic/v0"
+)
+ALL_PLAYERS_ALIVE_DIAGNOSTIC_REWARD_SCHEMA = {
+    "schema_id": ALL_PLAYERS_ALIVE_DIAGNOSTIC_REWARD_SCHEMA_ID,
+    "dtype": "float32",
+    "episode_unit": "one_round",
+    "perspective": "centralized_joint_action_controller",
+    "alignment": "reward_t_plus_1_after_one_source_tick",
+    "reward_unit": "one_real_source_tick",
+    "post_transition_all_players_alive_reward": 1.0,
+    "post_transition_any_player_dead_reward": 0.0,
+    "terminal_outcome_bonus": 0.0,
+    "loser_penalty": 0.0,
+    "winner_bonus": 0.0,
+    "draw_bonus": 0.0,
+    "truncation_bonus": 0.0,
+    "episode_return": "sum of all-players-alive rewards for centralized control",
+    "non_claims": [
+        "not_per_player_reward",
+        "not_zero_sum_reward",
+        "not_true_competitive_self_play",
+        "not_sparse_outcome_reward",
+    ],
+}
+ALL_PLAYERS_ALIVE_DIAGNOSTIC_REWARD_SCHEMA_HASH = stable_contract_hash(
+    ALL_PLAYERS_ALIVE_DIAGNOSTIC_REWARD_SCHEMA
+)
 STACKED_SOURCE_STATE_GRAY64_SCHEMA_HASH = stable_contract_hash(
     {
         "schema_id": STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID,
@@ -770,7 +818,13 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             "step_index": int(info.get("step_index", self._step_index - 1)),
             "physical_step_index": info.get("physical_step_index"),
             "source_tick_index": info.get("source_tick_index"),
-            "scalar_action": info.get("requested_ego_action"),
+            "scalar_action": info.get("scalar_action", info.get("requested_ego_action")),
+            "joint_action_scalar": info.get("joint_action_scalar"),
+            "joint_action_decode_rule": info.get("joint_action_decode_rule"),
+            "centralized_joint_action_control": info.get(
+                "centralized_joint_action_control"
+            ),
+            "true_competitive_self_play": info.get("true_competitive_self_play"),
             "ego_action": info.get("executed_ego_action"),
             "acting_player_id": info.get("acting_player_id"),
             "controlled_player_id": info.get("controlled_player_id"),
@@ -938,6 +992,221 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroEnv(
         return local_timestep.to_base_env_timestep(BaseEnvTimestep)
 
 
+class CurvyZeroSourceStateVisualJointActionLightZeroLocalEnv(
+    CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv
+):
+    """Centralized 9-action wrapper: one scalar picks both player actions."""
+
+    config = {
+        **CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv.config,
+        "env_id": LIGHTZERO_SOURCE_STATE_VISUAL_JOINT_ACTION_ENV_ID,
+        "lightzero_env_type": LIGHTZERO_SOURCE_STATE_VISUAL_JOINT_ACTION_ENV_TYPE,
+        "lightzero_import_names": LIGHTZERO_SOURCE_STATE_VISUAL_JOINT_ACTION_IMPORT_NAMES,
+        "action_space_size": JOINT_ACTION_COUNT,
+        "env_variant": SOURCE_STATE_JOINT_ACTION_ENV_VARIANT,
+        "reward_schema_id": ALL_PLAYERS_ALIVE_DIAGNOSTIC_REWARD_SCHEMA_ID,
+        "reward_schema_hash": ALL_PLAYERS_ALIVE_DIAGNOSTIC_REWARD_SCHEMA_HASH,
+        "runtime_topology": SOURCE_STATE_JOINT_ACTION_RUNTIME_TOPOLOGY,
+        "two_seat_self_play": False,
+        "two_seat_self_play_status": SOURCE_STATE_JOINT_ACTION_TRAINING_STATUS,
+        "current_policy_self_play": False,
+        "current_policy_self_play_blocker": (
+            "centralized_joint_action_control_is_not_true_competitive_self_play"
+        ),
+        "trusted_current_policy_self_play": False,
+        "simultaneous_game_theory_claim": False,
+        "centralized_joint_action_control": True,
+    }
+
+    def __init__(self, cfg: Any | None = None):
+        effective_cfg = _with_default_env_id(
+            cfg,
+            LIGHTZERO_SOURCE_STATE_VISUAL_JOINT_ACTION_ENV_ID,
+        )
+        super().__init__(effective_cfg)
+        if self._override_probability != 0.0:
+            raise ValueError("source_state_joint_action requires no ego action override")
+        if (
+            self._policy_action_repeat_min != 1
+            or self._policy_action_repeat_max != 1
+            or self._policy_action_repeat_extra_probability != 0.0
+        ):
+            raise ValueError("source_state_joint_action requires exactly one source tick per step")
+        self._action_space = {"type": "Discrete", "n": JOINT_ACTION_COUNT}
+        self._reward_space = {
+            "type": "Box",
+            "shape": (),
+            "dtype": "float32",
+            "low": 0.0,
+            "high": 1.0,
+        }
+
+    @property
+    def legal_actions(self) -> np.ndarray:
+        return np.arange(JOINT_ACTION_COUNT, dtype=np.int64)
+
+    def step(self, action: Any) -> LocalDebugVisualLightZeroTimestep:
+        if not self._has_reset:
+            raise RuntimeError("reset must be called before step")
+        if self._needs_reset:
+            raise RuntimeError("reset must be called before stepping after done")
+        scalar_action = _validate_joint_action(action)
+        player0_action, player1_action = _decode_joint_action(scalar_action)
+        joint_action = np.array([[player0_action, player1_action]], dtype=np.int16)
+        batch = self._env.step(joint_action, timer_advance_ms=self._decision_ms)
+        self._last_batch = batch
+        self._physical_step_index += 1
+        reward = self._all_players_alive_reward()
+        done = bool(batch.done[0])
+        terminated = bool(batch.terminated[0])
+        truncated = bool(batch.truncated[0])
+        self._needs_reset = done
+        self._episode_return += reward
+        self._step_index += 1
+        next_obs = self._lightzero_observation(needs_reset=done)
+        info = self._step_info(
+            requested_action=player0_action,
+            executed_action=player0_action,
+            override_applied=False,
+            opponent_action=player1_action,
+            joint_action=joint_action[0],
+            action_repeat_requested=1,
+            action_repeat_executed=1,
+            reward=reward,
+            done=done,
+            terminated=terminated,
+            truncated=truncated,
+            next_obs=next_obs,
+            batch=batch,
+        )
+        info.update(
+            {
+                "scalar_action": int(scalar_action),
+                "joint_action_scalar": int(scalar_action),
+                "joint_action_decode_rule": "scalar // 3 -> player_0, scalar % 3 -> player_1",
+                "centralized_joint_action_control": True,
+                "true_competitive_self_play": False,
+                "current_policy_self_play_blocker": (
+                    "centralized_joint_action_control_is_not_true_competitive_self_play"
+                ),
+                "reward_perspective": "diagnostic_all_players_alive_after_one_source_tick",
+                "source_ticks_advanced": 1,
+                "pending_action_count": 0,
+                "pending_actions_private": False,
+            }
+        )
+        timestep = LocalDebugVisualLightZeroTimestep(next_obs, reward, done, info)
+        self._write_telemetry_row(timestep=timestep)
+        return timestep
+
+    def random_action(self) -> int:
+        rng = np.random.default_rng(self._seed + self._step_index)
+        return int(rng.integers(JOINT_ACTION_COUNT))
+
+    def _action_mask(self, *, active: bool) -> np.ndarray:
+        if not active:
+            return np.zeros(JOINT_ACTION_COUNT, dtype=np.int8)
+        source_mask = self._env._action_mask()[0, :2].astype(np.int8, copy=False)
+        joint_mask = np.zeros(JOINT_ACTION_COUNT, dtype=np.int8)
+        for scalar_action in range(JOINT_ACTION_COUNT):
+            player0_action, player1_action = _decode_joint_action(scalar_action)
+            joint_mask[scalar_action] = np.int8(
+                bool(source_mask[0, player0_action]) and bool(source_mask[1, player1_action])
+            )
+        return joint_mask
+
+    def _all_players_alive_reward(self) -> float:
+        alive = self._env.state["alive"][0, :2].astype(bool)
+        return 1.0 if bool(np.all(alive)) else 0.0
+
+    def _base_info(self) -> dict[str, Any]:
+        info = super()._base_info()
+        info.update(
+            {
+                "env_id": self.env_id,
+                "lightzero_env_type": LIGHTZERO_SOURCE_STATE_VISUAL_JOINT_ACTION_ENV_TYPE,
+                "env_variant": SOURCE_STATE_JOINT_ACTION_ENV_VARIANT,
+                "adapter_impl_id": SOURCE_STATE_JOINT_ACTION_ADAPTER_IMPL_ID,
+                "lightzero_adapter_kind": "source_state_visual_centralized_joint_action",
+                "runtime_topology": SOURCE_STATE_JOINT_ACTION_RUNTIME_TOPOLOGY,
+                "action_space_size": JOINT_ACTION_COUNT,
+                "joint_action_scalar_count": JOINT_ACTION_COUNT,
+                "joint_action_decode_rule": "scalar // 3 -> player_0, scalar % 3 -> player_1",
+                "reward_schema_id": ALL_PLAYERS_ALIVE_DIAGNOSTIC_REWARD_SCHEMA_ID,
+                "reward_schema_hash": ALL_PLAYERS_ALIVE_DIAGNOSTIC_REWARD_SCHEMA_HASH,
+                "reward_contract": "diagnostic_all_players_alive_after_one_source_tick",
+                "opponent_policy_id": "centralized_joint_action_controls_player_1",
+                "opponent_policy_kind": "none_centralized_joint_action",
+                "opponent_training_relation": "centralized_policy_controls_both_players",
+                "opponent_policy_version": None,
+                "current_policy_self_play": False,
+                "current_policy_self_play_blocker": (
+                    "centralized_joint_action_control_is_not_true_competitive_self_play"
+                ),
+                "trusted_current_policy_self_play": False,
+                "simultaneous_game_theory_claim": False,
+                "two_seat_self_play": False,
+                "two_seat_self_play_status": SOURCE_STATE_JOINT_ACTION_TRAINING_STATUS,
+                "fixed_opponent_is_two_seat_self_play": False,
+                "turn_commit_adapter": False,
+                "centralized_joint_action_control": True,
+                "true_competitive_self_play": False,
+                "policy_action_repeat_semantics": "exactly_one_source_tick_per_lightzero_step",
+            }
+        )
+        return info
+
+    def __repr__(self) -> str:
+        return (
+            "CurvyZeroSourceStateVisualJointActionLightZeroLocalEnv("
+            f"env_id={self.env_id!r}, action_space_size={JOINT_ACTION_COUNT})"
+        )
+
+
+@ENV_REGISTRY.register(LIGHTZERO_SOURCE_STATE_VISUAL_JOINT_ACTION_ENV_TYPE)
+class CurvyZeroSourceStateVisualJointActionLightZeroEnv(
+    CurvyZeroSourceStateVisualJointActionLightZeroLocalEnv,
+    BaseEnv,
+):
+    """Registered centralized joint-action LightZero env."""
+
+    config = dict(CurvyZeroSourceStateVisualJointActionLightZeroLocalEnv.config)
+
+    def __init__(self, cfg: Any | None = None):
+        super().__init__(cfg)
+        self.lightzero_env_type = LIGHTZERO_SOURCE_STATE_VISUAL_JOINT_ACTION_ENV_TYPE
+        if gym is not None:
+            self._action_space = gym.spaces.Discrete(JOINT_ACTION_COUNT)
+            self._observation_space = gym.spaces.Box(
+                low=0.0,
+                high=1.0,
+                shape=STACKED_SOURCE_STATE_GRAY64_SHAPE,
+                dtype=np.float32,
+            )
+            self._reward_space = gym.spaces.Box(
+                low=0.0,
+                high=1.0,
+                shape=(),
+                dtype=np.float32,
+            )
+
+    @property
+    def observation_space(self):
+        return self._observation_space
+
+    @property
+    def action_space(self):
+        return self._action_space
+
+    @property
+    def reward_space(self):
+        return self._reward_space
+
+    def step(self, action: Any) -> BaseEnvTimestep:
+        local_timestep = super().step(action)
+        return local_timestep.to_base_env_timestep(BaseEnvTimestep)
+
+
 def _normalize_player_perspective(
     frame: np.ndarray,
     *,
@@ -974,6 +1243,20 @@ def _validate_action(action: Any) -> int:
     return action_id
 
 
+def _validate_joint_action(action: Any) -> int:
+    try:
+        action_id = int(np.asarray(action).item())
+    except Exception as exc:
+        raise ValueError(f"joint action must be scalar integer-like, got {action!r}") from exc
+    if action_id < 0 or action_id >= JOINT_ACTION_COUNT:
+        raise ValueError(f"joint action must be in [0, {JOINT_ACTION_COUNT}), got {action_id}")
+    return action_id
+
+
+def _decode_joint_action(action_id: int) -> tuple[int, int]:
+    return int(action_id // ACTION_COUNT), int(action_id % ACTION_COUNT)
+
+
 def _copy_lightzero_observation(observation: dict[str, Any]) -> dict[str, Any]:
     copied: dict[str, Any] = {}
     for key, value in observation.items():
@@ -987,12 +1270,39 @@ def _cfg_get(cfg: Any, key: str, default: Any) -> Any:
     return getattr(cfg, key, default)
 
 
+def _with_default_env_id(cfg: Any | None, env_id: str) -> Any:
+    if cfg is None:
+        return {"env_id": env_id}
+    if isinstance(cfg, dict):
+        copied = dict(cfg)
+        copied.setdefault("env_id", env_id)
+        return copied
+    if getattr(cfg, "env_id", None) is None:
+        try:
+            setattr(cfg, "env_id", env_id)
+        except Exception:
+            pass
+    return cfg
+
+
 __all__ = [
+    "CurvyZeroSourceStateVisualJointActionLightZeroEnv",
+    "CurvyZeroSourceStateVisualJointActionLightZeroLocalEnv",
     "CurvyZeroSourceStateVisualSurvivalLightZeroEnv",
     "CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv",
+    "ALL_PLAYERS_ALIVE_DIAGNOSTIC_REWARD_SCHEMA_HASH",
+    "ALL_PLAYERS_ALIVE_DIAGNOSTIC_REWARD_SCHEMA_ID",
+    "JOINT_ACTION_COUNT",
+    "LIGHTZERO_SOURCE_STATE_VISUAL_JOINT_ACTION_ENV_ID",
+    "LIGHTZERO_SOURCE_STATE_VISUAL_JOINT_ACTION_ENV_TYPE",
+    "LIGHTZERO_SOURCE_STATE_VISUAL_JOINT_ACTION_IMPORT_NAMES",
     "LIGHTZERO_SOURCE_STATE_VISUAL_SURVIVAL_ENV_ID",
     "LIGHTZERO_SOURCE_STATE_VISUAL_SURVIVAL_ENV_TYPE",
     "LIGHTZERO_SOURCE_STATE_VISUAL_SURVIVAL_IMPORT_NAMES",
+    "SOURCE_STATE_JOINT_ACTION_ADAPTER_IMPL_ID",
+    "SOURCE_STATE_JOINT_ACTION_ENV_VARIANT",
+    "SOURCE_STATE_JOINT_ACTION_RUNTIME_TOPOLOGY",
+    "SOURCE_STATE_JOINT_ACTION_TRAINING_STATUS",
     "SOURCE_STATE_VISUAL_SURVIVAL_ADAPTER_IMPL_ID",
     "SOURCE_STATE_FIXED_OPPONENT_ENV_VARIANT",
     "SOURCE_STATE_FIXED_OPPONENT_RUNTIME_TOPOLOGY",

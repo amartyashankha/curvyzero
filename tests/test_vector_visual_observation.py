@@ -59,6 +59,10 @@ def _reference_draw_world_circle(
     radius = float(radius_value)
     if not np.isfinite(x) or not np.isfinite(y) or not np.isfinite(radius):
         return
+    if x + radius <= 0.0 or x - radius >= map_size:
+        return
+    if y + radius <= 0.0 or y - radius >= map_size:
+        return
     radius_px = int(max(0, np.ceil((radius / map_size) * 64.0)))
     px = int(np.clip(np.rint((x / map_size) * 63.0), 0, 63))
     py = int(np.clip(np.rint((y / map_size) * 63.0), 0, 63))
@@ -290,6 +294,21 @@ def test_source_snapshot_gray64_matches_equivalent_vector_state_with_bonus_body(
     )
 
     np.testing.assert_array_equal(source_frame, vector_frame)
+
+
+def test_source_state_gray64_skips_circles_fully_outside_source_arena():
+    state = _small_source_state()
+    state["body_active"][0, :] = False
+    state["body_active"][0, 0] = True
+    state["body_pos"][0, 0] = np.asarray([65.0, 32.0], dtype=np.float64)
+    state["body_radius"][0, 0] = 0.5
+    state["body_owner"][0, 0] = 0
+    state["body_write_cursor"][0] = 1
+    state["alive"][0, :] = False
+
+    frame = render_source_state_gray64(state)
+
+    assert int(np.count_nonzero(frame)) == 0
 
 
 def test_source_state_gray64_render_rejects_invalid_body_write_cursor():

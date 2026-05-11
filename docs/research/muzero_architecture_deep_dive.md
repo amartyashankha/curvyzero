@@ -59,12 +59,13 @@ discount             float32[B]
 
 Purpose: encode the current ego-perspective observation into a fixed hidden state for root search.
 
-CurvyZero v0 observation should be compact and simulator-native, not browser pixels:
+CurvyZero's active current training observation target is source-state gray64,
+not browser/canvas pixels:
 
-- Ego-centered local raster.
-- Channels for walls, own trail, opponent trail, own head, opponent head, and optionally recent trail age.
-- Scalars for heading/speed/action repeat if not already encoded.
-- History frames or previous actions if one frame is not Markov enough.
+- Raw source-state frame: `uint8[1,64,64]`.
+- Trainer input: stacked source-state gray64 tensor.
+- Browser/canvas pixels: optional later debug/human evidence.
+- Current fidelity blocker: source-state/event goldens, not pixel parity.
 
 ### Hidden State
 
@@ -435,10 +436,12 @@ Environment:
 - 1v1, one round per episode.
 - Actions: left, straight, right.
 - Fixed wrapper decision cadence or action repeat.
-- Deterministic collision/scoring/tie rules.
+- Deterministic source endpoint-circle/source collision, scoring, and tie rules.
 - No bonuses.
 - Solid-trail v0 or source-gap v0, but name the variant explicitly.
 - Terminal reward: win `+1`, loss `-1`, exact tie `0`.
+- Treat earlier occupancy-grid or swept-collision advice as historical
+  optimization guidance until it is proven against source-state/event goldens.
 
 Model:
 

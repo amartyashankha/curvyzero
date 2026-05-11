@@ -633,6 +633,10 @@ def _draw_world_circle(
     radius = float(radius_value)
     if not np.isfinite(x) or not np.isfinite(y) or not np.isfinite(radius):
         return
+    if x + radius <= 0.0 or x - radius >= map_size:
+        return
+    if y + radius <= 0.0 or y - radius >= map_size:
+        return
     radius_px = int(max(0, np.ceil((radius / map_size) * 64.0)))
     px = int(np.clip(np.rint((x / map_size) * 63.0), 0, 63))
     py = int(np.clip(np.rint((y / map_size) * 63.0), 0, 63))
@@ -670,6 +674,13 @@ def _draw_body_circles(
     y = positions[:, 1].astype(np.float64, copy=False)
     radius = radii.astype(np.float64, copy=False)
     finite = np.isfinite(x) & np.isfinite(y) & np.isfinite(radius)
+    intersects = (
+        (x + radius > 0.0)
+        & (x - radius < map_size)
+        & (y + radius > 0.0)
+        & (y - radius < map_size)
+    )
+    finite &= intersects
     if not bool(finite.any()):
         return
     x = x[finite]

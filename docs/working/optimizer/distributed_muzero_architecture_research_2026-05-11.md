@@ -17,6 +17,11 @@ The current native CurvyTron LightZero loop is useful as the first
 coach-facing trainer surface, but it is not structurally close to the training
 systems that made AlphaZero/MuZero fast.
 
+Important correction: the current stock `train_muzero` path is synchronous
+inside one trainer container. It collects, pushes to local replay, samples, and
+trains in one ordered loop. There is no distributed actor-policy staleness
+problem in that current loop.
+
 Those systems are actor/search/replay/learner systems. They generate searched
 self-play data at high throughput, keep neural inference batched, write complete
 trajectories into replay, and train from replay while actors continue working.
@@ -25,7 +30,7 @@ LightZero gives useful MuZero pieces: policy, model, learner, MCTS, C++ tree
 search support, vector env collection knobs, and Atari-style configs. The
 current CurvyTron source-state trainer uses those pieces through
 `train_muzero`. It does not give CurvyTron a ready-made production actor fleet
-with shared replay, checkpoint serving, staleness tracking, and true
+with shared replay, checkpoint serving, policy-version tracking, and true
 simultaneous current-policy `[B,P]` collection.
 
 ## Primary Evidence
@@ -76,7 +81,8 @@ simultaneous current-policy `[B,P]` collection.
 ## Correction To Optimizer Plan
 
 The first serious 10x target is not "make the current local loop 10x faster."
-The target is:
+The target is to move from one synchronous collector/learner loop toward a data
+factory:
 
 ```text
 many actors/search workers
@@ -85,6 +91,32 @@ many actors/search workers
   -> learner samples sequences and updates network
   -> checkpoint publisher
   -> actors refresh checkpoint on cadence
+```
+
+Do not read `policy_version` / policy lag as a reason not to parallelize. It is
+metadata that keeps a parallel system honest. Massive self-play is useful when
+the learner can turn searched trajectories into updates fast enough and the
+replay window remains representative. If actors outrun the learner by too much,
+the issue is usually sample efficiency and replay balance, not an immediate
+off-policy correctness failure.
+
+There are three separate regimes:
+
+```text
+1. Stock LightZero train_muzero:
+   one process/container, ordered collect -> replay -> sample -> learn.
+   No actor-fleet staleness. Parallelism comes from env_manager workers and
+   collector_env_num/n_episode.
+
+2. Coarse synchronous Modal fanout:
+   freeze checkpoint K, launch N collect-only actors, merge chunks, train to K+1.
+   No hidden policy lag within the batch. The risk is wasting time/data if N is
+   so large that the learner waits too long before improving the policy.
+
+3. Continuous actor/replay/learner:
+   actors collect while learner trains and publishes checkpoints.
+   This is the AlphaZero/MuZero-style production shape. Track policy version,
+   replay age, and checkpoint refresh cadence; do not treat them as blockers.
 ```
 
 The current native LightZero path should be treated as the baseline trainer and
@@ -102,6 +134,12 @@ handoff rather than endless single-process polish.
 - The current native trainer is fixed-opponent single-ego, not true
   current-policy self-play. It is useful because it stays close to the working
   LightZero/Pong pattern.
+- `source_state_turn_commit` is smoke/profile only. Target audit showed fake
+  pending rows and bad reward credit, so train mode is blocked.
+- Turing recommendation, candidate/control only until tested: a 9-action
+  centralized joint-action wrapper. One scalar action -> `(p0,p1)`, one real
+  CurvyTron tick, one reward, `to_play=-1`, `action_space_size=9`. Loud caveat:
+  centralized control, not true competitive self-play.
 - A future simultaneous self-play collector must label its semantics: staged
   frozen-opponent, independent seat search, turn-commit adapter, or deliberate
   joint-action search. Turn-commit also carries the pending-step reward-credit
@@ -118,7 +156,7 @@ Every profile should report:
 - GPU utilization and CPU utilization
 - replay rows or trajectory chunks/sec
 - learner updates/sec
-- actor policy version lag
+- actor policy version lag if using continuous actors
 - replay age distribution
 - checkpoint publish/read cost
 - time split between env/render/reset, search/tree bookkeeping, model
@@ -134,7 +172,9 @@ Every profile should report:
 3. Build a learner step that reads N chunks, samples sequences, calls
    LightZero-compatible learner code, and publishes the next checkpoint.
 4. Run N actor chunks in parallel on Modal. First target is coarse
-   synchronous generations, not fully async services.
+   synchronous generations, not fully async services. This directly tests
+   whether searched CurvyTron collection can scale beyond one `train_muzero`
+   process without changing MuZero semantics.
 5. Separately research whether MiniZero, EfficientZero, OpenSpiel C++ AlphaZero,
    or MCTX should become a stronger reference or replacement for the inner loop.
 
@@ -160,5 +200,8 @@ The optimizer correction is: current CurvyTron runs are useful smokes, but they
 are not yet architecturally comparable to fast AlphaZero/MuZero. The next speed
 lane should be a distributed searched self-play data factory: actor chunks,
 explicit policy versions, replay chunks, learner merge, checkpoint publish, and
-staleness metrics. Keep MuZero search on decisions; do not use policy-head-only
+freshness metrics. In the current synchronous `train_muzero` loop there is no
+actor-fleet staleness issue. In a future continuous actor/replay design,
+freshness is a metric to log and control, not a reason to avoid parallel
+self-play. Keep MuZero search on decisions; do not use policy-head-only
 collection as a training replacement.

@@ -29,6 +29,7 @@ from curvyzero.env.vector_visual_observation import (
 )
 from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_SCHEMA_HASH
 from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_SCHEMA_ID
+from curvyzero.env.trainer_contract import stable_contract_hash
 from curvyzero.training.curvytron_current_policy_selfplay_smoke import (
     ACTION_COUNT,
     NOOP_ACTION_ID,
@@ -65,6 +66,19 @@ TWO_SEAT_LIGHTZERO_TRAIN_SMOKE_SCHEMA_ID = (
 )
 TWO_SEAT_LIGHTZERO_REPLAY_ROW_SCHEMA_ID = (
     "curvyzero_two_seat_lightzero_replay_row/v0"
+)
+TWO_SEAT_TERMINAL_SHAPED_RETURN_SCHEMA_ID = (
+    "terminal_winner_keeps_survival_loser_zero/v0"
+)
+TWO_SEAT_TERMINAL_SHAPED_RETURN_SCHEMA_HASH = stable_contract_hash(
+    {
+        "schema_id": TWO_SEAT_TERMINAL_SHAPED_RETURN_SCHEMA_ID,
+        "base_step_reward": "alive_reward while alive after step else dead_reward",
+        "terminal_survivor_win_return": "accumulated shaped survival return",
+        "terminal_loser_return": 0.0,
+        "draw_or_truncation_return": "unmodified shaped survival return",
+        "scope": "per_player_two_seat_return_targets",
+    }
 )
 LEARN_BATCH_BLOCKER = (
     "If MuZeroPolicy.learn_mode.forward fails, inspect the exact installed "
@@ -1075,11 +1089,14 @@ def _result_payload(
                 "alive_reward": float(alive_reward),
                 "dead_reward": float(dead_reward),
             },
+            "return_schema_id": TWO_SEAT_TERMINAL_SHAPED_RETURN_SCHEMA_ID,
+            "return_schema_hash": TWO_SEAT_TERMINAL_SHAPED_RETURN_SCHEMA_HASH,
             "value_target": (
                 "discounted survival return grouped by "
                 "episode_id/env_row_id/player_id/decision_index when episode "
-                "metadata is present, with iteration/env_row_id/player_id as "
-                "the backward-compatible fallback"
+                "metadata is present, with terminal survivor-win returns "
+                "rewritten so the winner keeps its shaped survival return "
+                "and the loser receives 0"
             ),
             "sample": sample,
             "rows": [_strip_large_arrays(row) for row in replay_rows],
@@ -1391,6 +1408,7 @@ def _collect_current_policy_iteration(
         add_elapsed("replay_observation_noise_sec", started)
         alive_after = step_batch.info.get("alive")
         done_by_row = np.asarray(step_batch.done, dtype=bool)
+        winner_by_row = _winner_by_row(step_batch.info)
         for active_row in range(active_count):
             env_row = int(active_env_row_id[active_row])
             player = int(active_player_id[active_row])
@@ -1458,6 +1476,13 @@ def _collect_current_policy_iteration(
                         dead_reward=dead_reward,
                     ),
                     "done": bool(done_by_row[env_row]),
+                    "terminal_winner": _terminal_winner_for_row(
+                        winner_by_row,
+                        env_row=env_row,
+                        done=bool(done_by_row[env_row]),
+                    ),
+                    "return_schema_id": TWO_SEAT_TERMINAL_SHAPED_RETURN_SCHEMA_ID,
+                    "return_schema_hash": TWO_SEAT_TERMINAL_SHAPED_RETURN_SCHEMA_HASH,
                     "policy_api": search_record.get("api"),
                     "action_selection_mode": action_selection_mode,
                     "policy_object": "shared_live_lightzero_policy",
@@ -2302,6 +2327,14 @@ def _sample_replay_batch(
             [row["done"] for row in rows],
             dtype=np.bool_,
         ),
+        "return_context_terminal_winner_batch": np.asarray(
+            [row.get("terminal_winner", -1) for row in rows],
+            dtype=np.int64,
+        ),
+        "return_context_return_schema_id_batch": np.asarray(
+            [row.get("return_schema_id", "") for row in rows],
+            dtype=object,
+        ),
         "observation_batch": np.stack(
             [row["observation"] for row in selected_rows],
             axis=0,
@@ -2319,6 +2352,14 @@ def _sample_replay_batch(
             dtype=np.float32,
         ),
         "done_batch": np.asarray([row["done"] for row in selected_rows], dtype=np.bool_),
+        "terminal_winner_batch": np.asarray(
+            [row.get("terminal_winner", -1) for row in selected_rows],
+            dtype=np.int64,
+        ),
+        "return_schema_id_batch": np.asarray(
+            [row.get("return_schema_id", "") for row in selected_rows],
+            dtype=object,
+        ),
         "policy_batch": np.stack(
             [row["action_weights"] for row in selected_rows],
             axis=0,
@@ -2655,6 +2696,25 @@ def _survival_reward(
     if alive.ndim != 2:
         raise ValueError("step info alive must have shape [B,P] for survival reward")
     return float(alive_reward) if bool(alive[int(env_row), int(player_id)]) else float(dead_reward)
+
+
+def _winner_by_row(info: Mapping[str, Any]) -> np.ndarray | None:
+    winners = info.get("winner")
+    if winners is None:
+        return None
+    array = np.asarray(winners, dtype=np.int64)
+    return array if array.ndim == 1 else None
+
+
+def _terminal_winner_for_row(
+    winner_by_row: np.ndarray | None,
+    *,
+    env_row: int,
+    done: bool,
+) -> int:
+    if not done or winner_by_row is None or winner_by_row.shape[0] <= int(env_row):
+        return -1
+    return int(winner_by_row[int(env_row)])
 
 
 def _episode_id_for_row(info: Mapping[str, Any], env_row: int) -> int:

@@ -23,8 +23,37 @@ def _source_state_training_command():
     return command
 
 
-def test_source_state_variant_surface_identity_is_explicit():
+def test_default_env_variant_stays_fixed_opponent_while_turn_commit_is_profile_only():
     assert train_mod.DEFAULT_ENV_VARIANT == train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT
+
+    spec = train_mod._env_variant_spec(train_mod.ENV_VARIANT_SOURCE_STATE_TURN_COMMIT)
+
+    assert spec["env_type"] == train_mod.LIGHTZERO_SOURCE_STATE_VISUAL_TURN_COMMIT_ENV_TYPE
+    assert spec["env_id"] == train_mod.LIGHTZERO_SOURCE_STATE_VISUAL_TURN_COMMIT_ENV_ID
+    assert spec["observation_shape"] == list(train_mod.STACKED_SOURCE_STATE_GRAY64_SHAPE)
+    assert spec["observation_schema_id"] == train_mod.STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID
+    assert spec["debug_fidelity_only"] is False
+    assert spec["source_fidelity_claim"] == "source_state_backed_non_browser_pixel"
+    assert spec["single_product_runtime_path"] is True
+    assert spec["legacy_debug_variant"] is False
+    assert spec["turn_commit_adapter"] is True
+    assert spec["two_seat_self_play"] is False
+    assert spec["current_policy_two_seat_action_collection"] is True
+    assert spec["trusted_current_policy_self_play"] is False
+    assert spec["visual_source_state_backed"] is True
+
+
+def test_background_eval_inspection_and_gif_are_default_on_for_current_trainer():
+    config = train_mod._background_eval_config_from_command({})
+
+    assert train_mod.DEFAULT_BACKGROUND_EVAL_ENABLED is True
+    assert train_mod.DEFAULT_BACKGROUND_GIF_ENABLED is True
+    assert config["enabled"] is True
+    assert config["selfplay_gif"]["enabled"] is True
+    assert config["env_variant"] == train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT
+
+
+def test_source_state_fixed_opponent_surface_identity_is_explicit_control_lane():
 
     spec = train_mod._env_variant_spec(train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT)
 
@@ -180,7 +209,40 @@ def test_eval_rejects_unknown_env_variant_before_checkpoint_read():
         )
 
 
-def test_live_checkpoint_trigger_spawns_without_volume_commit(tmp_path, monkeypatch):
+def test_copy_source_state_raw_frame_prefers_raw_observation_and_returns_copy():
+    import numpy as np
+
+    raw = (np.arange(64 * 64) % 251).astype(np.uint8).reshape(1, 64, 64)
+
+    class Env:
+        raw_calls = 0
+        render_calls = 0
+
+        def raw_observation(self):
+            self.raw_calls += 1
+            return raw
+
+        def render(self, mode):
+            self.render_calls += 1
+            raise AssertionError(f"render should not be used for {mode}")
+
+    env = Env()
+
+    frame = train_mod._copy_source_state_raw_frame(env)
+
+    assert env.raw_calls == 1
+    assert env.render_calls == 0
+    assert frame.shape == (64, 64)
+    assert frame.dtype == np.uint8
+    assert np.array_equal(frame, raw.astype(np.uint8)[0])
+    assert not np.shares_memory(frame, raw)
+    frame[0, 0] = 123
+    assert raw[0, 0, 0] == 0
+
+
+def test_live_checkpoint_trigger_spawns_eval_and_selfplay_gif_without_volume_commit(
+    tmp_path, monkeypatch
+):
     class FakeVolume:
         def __init__(self) -> None:
             self.commit_count = 0
@@ -189,6 +251,22 @@ def test_live_checkpoint_trigger_spawns_without_volume_commit(tmp_path, monkeypa
             self.commit_count += 1
 
     class FakeFunction:
+        def __init__(self, object_id: str) -> None:
+            self.object_id = object_id
+            self.calls = []
+
+        def spawn(self, **kwargs):
+            self.calls.append(kwargs)
+            object_id = self.object_id
+
+            class Call:
+                pass
+
+            call = Call()
+            call.object_id = object_id
+            return call
+
+    class FakeGifFunction:
         def __init__(self) -> None:
             self.calls = []
 
@@ -196,18 +274,24 @@ def test_live_checkpoint_trigger_spawns_without_volume_commit(tmp_path, monkeypa
             self.calls.append(kwargs)
 
             class Call:
-                object_id = "fc-live-eval-test"
+                object_id = "fc-live-gif-test"
 
             return Call()
 
     fake_volume = FakeVolume()
-    fake_function = FakeFunction()
+    fake_eval_function = FakeFunction("fc-live-eval-test")
+    fake_gif_function = FakeGifFunction()
     monkeypatch.setattr(train_mod, "RUNS_MOUNT", tmp_path)
     monkeypatch.setattr(train_mod, "runs_volume", fake_volume)
     monkeypatch.setattr(
         train_mod,
         "lightzero_curvytron_visual_survival_checkpoint_eval_and_inspect",
-        fake_function,
+        fake_eval_function,
+    )
+    monkeypatch.setattr(
+        train_mod,
+        "lightzero_curvytron_visual_survival_checkpoint_selfplay_gif",
+        fake_gif_function,
     )
 
     attempt_train_root = tmp_path / "training" / train_mod.TASK_ID / "run-a" / "attempts" / "attempt-a" / "train"
@@ -244,6 +328,18 @@ def test_live_checkpoint_trigger_spawns_without_volume_commit(tmp_path, monkeypa
         "opponent_checkpoint_ref": None,
         "opponent_snapshot_ref": None,
         "opponent_checkpoint_state_key": None,
+        "selfplay_gif": {
+            "enabled": True,
+            "seed": 10_007,
+            "max_steps": 16,
+            "source_max_steps": 32,
+            "num_simulations": 4,
+            "batch_size": 8,
+            "frame_stride": 2,
+            "fps": 12.0,
+            "scale": 3,
+            "training_env_variant": train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT,
+        },
     }
 
     result = train_mod._schedule_live_checkpoint_background_eval(
@@ -253,16 +349,28 @@ def test_live_checkpoint_trigger_spawns_without_volume_commit(tmp_path, monkeypa
     )
 
     assert result["scheduled"] is True
-    assert len(fake_function.calls) == 1
-    call = fake_function.calls[0]
-    assert call["checkpoint_ref"].endswith("iteration_1.pth.tar")
-    assert call["env_variant"] == train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT
-    assert call["eval_seed_count"] == 2
+    assert len(fake_eval_function.calls) == 1
+    assert len(fake_gif_function.calls) == 1
+    eval_call = fake_eval_function.calls[0]
+    gif_call = fake_gif_function.calls[0]
+    assert eval_call["checkpoint_ref"].endswith("iteration_1.pth.tar")
+    assert gif_call["checkpoint_ref"].endswith("iteration_1.pth.tar")
+    assert eval_call["env_variant"] == train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT
+    assert eval_call["eval_seed_count"] == 2
+    assert gif_call["seed"] == 10_007
+    assert gif_call["max_steps"] == 16
+    assert gif_call["frame_stride"] == 2
+    assert gif_call["fps"] == 12.0
+    assert gif_call["scale"] == 3
+    assert gif_call["training_env_variant"] == train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT
     assert fake_volume.commit_count == 0
     assert not (attempt_train_root / "background_eval_requests").exists()
     request = result["requests"][0]
     assert request["status"] == "spawned"
     assert request["function_call_id"] == "fc-live-eval-test"
+    assert request["eval_inspection_scheduled"] is True
+    assert request["selfplay_gif"]["scheduled"] is True
+    assert request["selfplay_gif"]["function_call_id"] == "fc-live-gif-test"
     assert request["config"]["env_variant"] == train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT
 
 
@@ -319,6 +427,7 @@ def test_save_hook_trigger_uses_source_checkpoint_ref_not_future_mirror(tmp_path
         "opponent_checkpoint_ref": None,
         "opponent_snapshot_ref": None,
         "opponent_checkpoint_state_key": None,
+        "selfplay_gif": {"enabled": False},
     }
 
     result = train_mod._spawn_checkpoint_eval_triggers(
@@ -340,7 +449,115 @@ def test_save_hook_trigger_uses_source_checkpoint_ref_not_future_mirror(tmp_path
     )
 
 
-def test_checkpoint_eval_poller_spawns_eval_and_inspection_jobs(tmp_path, monkeypatch):
+def test_hook_trigger_retries_after_spawn_failure_and_skips_mutable_best_checkpoint(
+    tmp_path, monkeypatch
+):
+    class FlakyFunction:
+        def __init__(self) -> None:
+            self.calls = []
+            self.fail_next = True
+
+        def spawn(self, **kwargs):
+            self.calls.append(kwargs)
+            if self.fail_next:
+                self.fail_next = False
+                raise RuntimeError("transient modal spawn failure")
+
+            class Call:
+                object_id = "fc-retry-ok"
+
+            return Call()
+
+    fake_function = FlakyFunction()
+    monkeypatch.setattr(train_mod, "RUNS_MOUNT", tmp_path)
+    monkeypatch.setattr(
+        train_mod,
+        "lightzero_curvytron_visual_survival_checkpoint_eval_and_inspect",
+        fake_function,
+    )
+    monkeypatch.chdir(tmp_path)
+
+    exp_name = (
+        tmp_path
+        / "training"
+        / train_mod.TASK_ID
+        / "run-retry"
+        / "attempts"
+        / "attempt-retry"
+        / "train"
+        / "lightzero_exp"
+    )
+    ckpt_dir = exp_name / "ckpt"
+    ckpt_dir.mkdir(parents=True)
+    (ckpt_dir / "iteration_8.pth.tar").write_bytes(b"iteration checkpoint")
+    (ckpt_dir / "ckpt_best.pth.tar").write_bytes(b"mutable best checkpoint")
+
+    config = {
+        "enabled": True,
+        "compute": "cpu",
+        "eval_id_prefix": "live_checkpoint",
+        "seed": 7,
+        "eval_seed_count": 2,
+        "eval_seed_rng_seed": 11,
+        "max_eval_steps": 32,
+        "step_detail_limit": 2,
+        "source_max_steps": 32,
+        "num_simulations": 4,
+        "batch_size": 8,
+        "env_variant": train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT,
+        "opponent_policy_kind": train_mod.OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
+        "opponent_checkpoint_ref": None,
+        "opponent_snapshot_ref": None,
+        "opponent_checkpoint_state_key": None,
+        "selfplay_gif": {"enabled": False},
+    }
+    seen: set[str] = set()
+
+    failed = train_mod._spawn_checkpoint_eval_triggers(
+        run_id="run-retry",
+        attempt_id="attempt-retry",
+        exp_name=exp_name,
+        config=config,
+        seen_checkpoint_refs=seen,
+    )
+    retried = train_mod._spawn_checkpoint_eval_triggers(
+        run_id="run-retry",
+        attempt_id="attempt-retry",
+        exp_name=exp_name,
+        config=config,
+        seen_checkpoint_refs=seen,
+    )
+
+    assert len(fake_function.calls) == 2
+    assert all(call["checkpoint_ref"].endswith("iteration_8.pth.tar") for call in fake_function.calls)
+    assert not any("ckpt_best" in call["checkpoint_ref"] for call in fake_function.calls)
+    assert failed[0]["status"] == "spawn_failed"
+    assert retried[0]["status"] == "spawned"
+    assert len(seen) == 1
+
+
+def test_selfplay_gif_spawn_is_guarded_for_joint_action_checkpoints():
+    request, call = train_mod._spawn_one_checkpoint_background_gif(
+        publish={"run_id": "run", "attempt_id": "attempt"},
+        checkpoint_ref="training/lightzero-curvytron-visual-survival/run/checkpoints/lightzero/iteration_1.pth.tar",
+        checkpoint_label="iteration_1",
+        eval_id="live_checkpoint_iteration_1",
+        config={
+            "selfplay_gif": {
+                "enabled": True,
+                "training_env_variant": train_mod.ENV_VARIANT_SOURCE_STATE_JOINT_ACTION,
+            }
+        },
+    )
+
+    assert call is None
+    assert request["scheduled"] is False
+    assert request["reason"] == "background_gif_unsupported_for_source_state_joint_action"
+
+
+def test_checkpoint_eval_poller_completes_eval_inspection_and_selfplay_gif_jobs(
+    tmp_path, monkeypatch
+):
     class FakeVolume:
         def __init__(self) -> None:
             self.commit_count = 0
@@ -353,31 +570,52 @@ def test_checkpoint_eval_poller_spawns_eval_and_inspection_jobs(tmp_path, monkey
             self.reload_count += 1
 
     class FakeCall:
-        object_id = "fc-poller-eval"
+        def __init__(self, object_id: str, result: dict) -> None:
+            self.object_id = object_id
+            self.result = result
 
         def get(self):
-            return {
-                "ok": True,
-                "inspection_report_ref": "eval/live_checkpoint_iteration_1/inspection/report.json",
-                "inspection_report_markdown_ref": "eval/live_checkpoint_iteration_1/inspection/report.md",
-            }
+            return self.result
 
-    class FakeEvalInspectFunction:
-        def __init__(self) -> None:
+    class FakeFunction:
+        def __init__(self, object_id: str, result: dict) -> None:
+            self.object_id = object_id
+            self.result = result
             self.calls = []
 
         def spawn(self, **kwargs):
             self.calls.append(kwargs)
-            return FakeCall()
+            return FakeCall(self.object_id, self.result)
 
     fake_volume = FakeVolume()
-    fake_function = FakeEvalInspectFunction()
+    fake_eval_function = FakeFunction(
+        "fc-poller-eval",
+        {
+            "ok": True,
+            "inspection_report_ref": "eval/live_checkpoint_iteration_1/inspection/report.json",
+            "inspection_report_markdown_ref": "eval/live_checkpoint_iteration_1/inspection/report.md",
+        },
+    )
+    fake_gif_function = FakeFunction(
+        "fc-poller-gif",
+        {
+            "ok": True,
+            "gif_ref": "eval/live_checkpoint_iteration_1/selfplay/raw.gif",
+            "raw_frames_ref": "eval/live_checkpoint_iteration_1/selfplay/raw_frames.npz",
+            "frame_count": 5,
+        },
+    )
     monkeypatch.setattr(train_mod, "RUNS_MOUNT", tmp_path)
     monkeypatch.setattr(train_mod, "runs_volume", fake_volume)
     monkeypatch.setattr(
         train_mod,
         "lightzero_curvytron_visual_survival_checkpoint_eval_and_inspect",
-        fake_function,
+        fake_eval_function,
+    )
+    monkeypatch.setattr(
+        train_mod,
+        "lightzero_curvytron_visual_survival_checkpoint_selfplay_gif",
+        fake_gif_function,
     )
 
     exp_name_ref = (
@@ -415,6 +653,12 @@ def test_checkpoint_eval_poller_spawns_eval_and_inspection_jobs(tmp_path, monkey
         background_eval_step_detail_limit=2,
         background_eval_num_simulations=4,
         background_eval_batch_size=8,
+        background_gif_enabled=True,
+        background_gif_seed_offset=10_000,
+        background_gif_max_steps=24,
+        background_gif_frame_stride=2,
+        background_gif_fps=12.0,
+        background_gif_scale=3,
     )
 
     result = train_mod._run_checkpoint_eval_poller(
@@ -429,25 +673,44 @@ def test_checkpoint_eval_poller_spawns_eval_and_inspection_jobs(tmp_path, monkey
     )
 
     assert result["scheduled_count"] == 1
-    assert result["completed_count"] == 1
-    assert result["completed"][0]["result"]["inspection_report_ref"].endswith(
+    assert result["completed_count"] == 2
+    assert result["eval_completed_count"] == 1
+    assert result["gif_scheduled_count"] == 1
+    assert result["gif_completed_count"] == 1
+    completed_by_kind = {item["kind"]: item for item in result["completed"]}
+    assert completed_by_kind["eval_inspection"]["result"]["inspection_report_ref"].endswith(
         "inspection/report.json"
     )
-    assert len(fake_function.calls) == 1
-    call = fake_function.calls[0]
-    assert call["checkpoint_ref"].endswith(
+    assert completed_by_kind["selfplay_gif"]["result"]["frame_count"] == 5
+    assert len(fake_eval_function.calls) == 1
+    assert len(fake_gif_function.calls) == 1
+    eval_call = fake_eval_function.calls[0]
+    gif_call = fake_gif_function.calls[0]
+    assert eval_call["checkpoint_ref"].endswith(
         "training/lightzero-curvytron-visual-survival/run-c/attempts/attempt-c/train/lightzero_exp/ckpt/iteration_1.pth.tar"
     )
-    assert call["eval_id"] == "live_checkpoint_iteration_1"
+    assert gif_call["checkpoint_ref"] == eval_call["checkpoint_ref"]
+    assert eval_call["eval_id"] == "live_checkpoint_iteration_1"
+    assert gif_call["eval_id"] == "live_checkpoint_iteration_1"
+    assert gif_call["seed"] == 10_003
+    assert gif_call["max_steps"] == 24
+    assert gif_call["frame_stride"] == 2
+    assert gif_call["fps"] == 12.0
+    assert gif_call["scale"] == 3
     assert fake_volume.commit_count == 0
     status_path = train_mod._checkpoint_eval_poller_status_path(
         run_id="run-c",
         attempt_id="attempt-c",
     )
     assert status_path.exists()
+    status = json.loads(status_path.read_text(encoding="utf-8"))
+    assert status["gif_scheduled_count"] == 1
+    assert status["gif_completed_count"] == 1
 
 
-def test_local_launcher_starts_trainer_and_eval_inspection_poller(capsys, monkeypatch):
+def test_local_launcher_passes_gif_config_to_poller_and_prints_enabled(
+    capsys, monkeypatch
+):
     class FakeCall:
         def __init__(self, object_id: str) -> None:
             self.object_id = object_id
@@ -485,6 +748,12 @@ def test_local_launcher_starts_trainer_and_eval_inspection_poller(capsys, monkey
         background_eval_poll_interval_sec=0.01,
         background_eval_poller_max_runtime_sec=1.0,
         background_eval_poller_idle_after_done_sec=0.0,
+        background_gif_enabled=True,
+        background_gif_seed_offset=1_234,
+        background_gif_max_steps=48,
+        background_gif_frame_stride=3,
+        background_gif_fps=12.5,
+        background_gif_scale=2,
     )
 
     assert len(fake_train.calls) == 1
@@ -499,7 +768,14 @@ def test_local_launcher_starts_trainer_and_eval_inspection_poller(capsys, monkey
     assert fake_poller.calls[0]["opponent_policy_kind"] == train_mod.OPPONENT_POLICY_KIND_FIXED_STRAIGHT
     assert fake_poller.calls[0]["background_eval_seed_count"] == 1
     assert fake_poller.calls[0]["background_eval_max_steps"] == 32
+    assert fake_poller.calls[0]["background_gif_enabled"] is True
+    assert fake_poller.calls[0]["background_gif_seed_offset"] == 1_234
+    assert fake_poller.calls[0]["background_gif_max_steps"] == 48
+    assert fake_poller.calls[0]["background_gif_frame_stride"] == 3
+    assert fake_poller.calls[0]["background_gif_fps"] == 12.5
+    assert fake_poller.calls[0]["background_gif_scale"] == 2
     printed = capsys.readouterr().out
     assert '"function_call_id": "fc-train"' in printed
     assert '"poller_function_call_id": "fc-poller"' in printed
     assert '"launch_kind": "poller"' in printed
+    assert '"selfplay_gif_enabled": true' in printed

@@ -36,11 +36,12 @@ abandoned.
 
 ## First Visual Adapter Shape
 
-The current implemented visual surface is debug occupancy only. The eventual
-source-faithful path should expose one frame:
+The active current visual target is source-state gray64. The env should expose
+one raw source-state frame:
 
 ```text
-observation: float32 grayscale frame, shape (1, 64, 64), range [0, 1]
+raw observation: uint8 grayscale frame, shape (1, 64, 64), range [0, 255]
+trainer payload: normalized or stacked source-state gray64 tensor
 action_mask: fixed ego action mask
 to_play: -1
 ```
@@ -57,15 +58,17 @@ separate schema id and matching config.
 
 ## Renderer Status
 
-No source-faithful visual renderer exists yet.
+Browser/canvas pixel parity is not the active blocker. Browser/canvas pixels are
+optional later debug/human evidence; source-state/event goldens are the P0
+fidelity blocker.
 
-The current debug visual smoke uses a clearly labeled helper:
+Historical debug visual smoke used a clearly labeled helper:
 
 ```text
 curvyzero_debug_occupancy_gray64/v0
 ```
 
-That helper now has a tiny honest contract: it renders
+That helper has a tiny honest historical contract: it renders
 `CurvyTronSourceEnv` snapshot avatar coordinates plus
 `world_bodies_snapshot()` coordinates into a coarse occupancy frame. It proves
 deterministic source-state input, shape, dtype, value range, metadata, and local
@@ -75,10 +78,10 @@ compatibility. Its raw renderer frame is `uint8[1,64,64]`; any
 trainer/LightZero-facing payload should be labeled as normalized
 `float32[1,64,64]` in range `[0,1]`.
 
-Immediate optimizer consequence: do not spend more main-lane effort optimizing
-scalar/ray observation unless it answers a visual-adapter question. The next
-measurement belongs in Optimizer's visual smoke/profiler lane, not in a
-competing Environment adapter.
+Immediate optimizer consequence: use the source-state gray64 stack as the
+current training/profiling target. Keep scalar/ray observations and old debug
+occupancy pixels as diagnostics unless a specific adapter question reopens
+them.
 
 Boundary with Optimizer:
 [docs/working/environment/optimizer_visual_tensor_handoff_2026-05-10.md](environment/optimizer_visual_tensor_handoff_2026-05-10.md).
@@ -116,7 +119,7 @@ clarity gate from the environment audit punch list, not a pixel-fidelity gate.
 
 ## Adapter Boundaries
 
-Current implemented debug visual adapter:
+Historical debug visual adapter:
 
 - local smoke:
   `src/curvyzero/training/curvyzero_debug_visual_lightzero_smoke.py`;
@@ -135,7 +138,7 @@ no ALE identity. It
 does not train, does not prove learning, and does not promote the debug tensor
 to source-fidelity.
 
-The local stacked debug survival wrapper is separate and explicit:
+The local stacked debug survival wrapper is separate and historical:
 
 ```text
 observation: float32[4,64,64]
@@ -150,7 +153,7 @@ That wrapper proves only local stacked-frame shape and terminal
 `final_observation` plumbing. It does not prove LightZero env-manager frame
 stacking, source-pixel fidelity, search, replay, learner input, or training.
 
-For the first real visual wrapper:
+For the current source-state visual wrapper:
 
 - LightZero chooses one ego action.
 - The wrapper supplies opponent actions through a named opponent or snapshot
@@ -173,6 +176,6 @@ designed and checked.
 ## One-Line Summary
 
 Visual CurvyTron is primary: first expose one grayscale `(1,64,64)` frame, let
-LightZero stack to `(4,64,64)`, and use the current debug occupancy pixels only
-as non-fidelity smoke data. Keep `[B,P,106]` rays/scalars as sidecar
-diagnostics, not the main training target.
+LightZero or the wrapper stack it to the training tensor, and use source-state
+gray64 as the active target. Browser/canvas pixels are optional later
+debug/human evidence; old debug occupancy pixels are historical smoke data.

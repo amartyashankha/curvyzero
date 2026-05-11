@@ -577,11 +577,12 @@ gate for collect -> MCTS/search -> replay -> sample -> learner forward/loss.
 
    Report it as a trainer plumbing experiment only.
 
-5. For visual CurvyTron, coordinate with Optimizer. The current visual debug
-   surface is only `curvyzero_debug_occupancy_gray64/v0`, raw `uint8[1,64,64]`
-   normalized to `float32[1,64,64]`, with stack target `float32[4,64,64]`.
-   It is debug/profiling only. Either prove LightZero stacks this env, or use
-   the clearly labeled wrapper-stacked debug survival env:
+5. For visual CurvyTron, coordinate with Optimizer. The active current target
+   is source-state gray64 `uint8[1,64,64]` / stacked training tensor.
+   Browser/canvas pixels are optional later debug/human evidence, and the old
+   `curvyzero_debug_occupancy_gray64/v0` surface is historical debug/profiling
+   smoke only. Either prove LightZero stacks the current source-state env, or
+   use a clearly labeled wrapper-stacked env:
 
    ```text
    env.type: curvyzero_stacked_debug_visual_survival_lightzero

@@ -174,14 +174,14 @@ LightZero scalar/ray bridge:
   `tests/test_curvyzero_lightzero_env.py`, and
   `tests/test_curvyzero_lightzero_runtime_probe.py`.
 
-Visual smoke only:
+Historical visual smoke only:
 
 - `src/curvyzero/training/curvytron_visual_observation.py` contains
   `curvyzero_debug_occupancy_gray64/v0`: a debug occupancy renderer and
   four-frame stack helper.
 - It is `uint8`, marks body centers/avatar positions, and explicitly does not
   claim source visual fidelity.
-- Treat this as an Optimizer/profiler plumbing surface. Environment owns the
+- Treat this as historical Optimizer/profiler plumbing. Environment owns the
   debug-only label, schema caveat, and promotion gate.
 - Tests and timing: `tests/test_curvytron_visual_observation.py` and
   `scripts/benchmark_curvytron_visual_observation.py`.
@@ -400,12 +400,11 @@ Acceptance shape:
 
 Missing:
 
-- A named truth contract for source-faithful pixels versus debug occupancy.
-- A source-faithful renderer definition from fast CurvyTron state arrays.
-- A visual schema id for real learned input, separate from
-  `curvyzero_debug_occupancy_gray64/v0`.
-- `float32[1,64,64]` normalized grayscale frame contract.
-- LightZero stacked input contract: default `float32[4,64,64]`.
+- Browser/canvas pixel parity, which is optional later debug/human evidence.
+- Remaining source-state/event goldens for the fidelity blocker.
+- Any future visual schema ids must stay separate from historical
+  `curvyzero_debug_occupancy_gray64/v0` smoke.
+- LightZero stacked input contract for the active source-state gray64 target.
 - Frame provenance: renderer id/hash, state tick, elapsed ms, player count,
   ego id, crop/scale policy, color policy, and terminal-frame policy.
 - Final visual observation before reset.

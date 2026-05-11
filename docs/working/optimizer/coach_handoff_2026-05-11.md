@@ -58,12 +58,23 @@ is the repo path closest to the promising Pong-style LightZero runs.
   `profile-smoke-sim2-c2-steps64-20260511b`. It used stock `train_muzero`,
   GPU model/search, MCTS, replay sample, one learner step, copied
   `iteration_0`, and wrote env-step telemetry.
-- Boundary: `source_state_turn_commit` is a plumbing smoke/control path right
-  now, not a learning-quality self-play path. Reward credit remains untrusted
-  because player 0 has a pending/no-physics scalar step and player 1 has the
-  physical commit scalar step. Profile it as stock-LightZero plumbing; do not
-  optimize or scale it as a proven trainer until reward targets are audited or
-  fixed.
+- Boundary: `source_state_turn_commit` is a plumbing smoke/profile path right
+  now, not a learning-quality self-play path. Target audit showed fake pending
+  rows and bad reward credit: player 0 has a pending/no-physics scalar step and
+  player 1 has the physical commit scalar step. Profile it as stock-LightZero
+  plumbing; do not optimize or scale it as a trainer.
+- Coach target audit now confirmed that boundary:
+  `curvytron-source-state-turncommit-audit-smoke-s20260511c` /
+  `profile-audit-smoke-sim2-c2-steps64-20260511c` wrote `target_audit.json`.
+  GameSegments contained fake pending rows with alternating rewards like
+  `0,1,0,1`, and sampled value targets propagated commit rewards through
+  pending rows.
+  `mode=train` is now blocked for this variant.
+- Turing recommendation, candidate/control only until tested: profile
+  `source_state_joint_action`, a 9-action centralized joint-action wrapper. One
+  LightZero scalar action decodes to `(p0,p1)`, one real CurvyTron tick, one
+  reward, `to_play=-1`, and `action_space_size=9`. Loud caveat: centralized
+  control, not true competitive self-play.
 
 ## What The Profiles Say
 
@@ -150,6 +161,49 @@ For optimizer profiling, use `--mode profile`; that installs debug timing hooks
 and stops after a small number of learner calls. Do not treat profile-mode
 output as a learning run.
 
+## Short Coach Handoff - 2026-05-11 Late
+
+Use the stock LightZero CurvyTron path as the baseline trainer/profile surface:
+`env_variant=source_state_fixed_opponent`, subprocess env manager, source-state
+visual `[4,64,64]`, fixed/frozen opponent, `lzero.entry.train_muzero`.
+
+Current no-death profiles after the environment/coach churn are green. The
+fresh width sweep is:
+
+```text
+c16/sim16: 3840 steps, 25.21s wall, 152.35 steps/s
+c32/sim16: 7680 steps, 39.90s wall, 192.46 steps/s
+c64/sim16: 15360 steps, 67.51s wall, 227.53 steps/s
+```
+
+Plain optimizer read: widening still helps but has diminishing returns. The
+big buckets are search/model/collector; learner and replay are small. GPU is
+used for model calls, but MCTS tree orchestration, replay, and CurvyTron env
+work are CPU-side today.
+
+For current Coach runs, the conservative fast shape is:
+
+```text
+--env-manager-type subprocess
+--collector-env-num 32
+--n-episode 32
+--num-simulations 16 for fast profiles/control
+--num-simulations 50 for serious MuZero-style proof lanes
+--env-telemetry-stride 50 or higher unless dense action JSONL is needed
+```
+
+Do not read `source_state_turn_commit` as trainable. Optimizer did profile it
+through stock `train_muzero`, and it is useful speed/plumbing evidence, but the
+pending-step reward-credit issue still blocks learning claims.
+
+Next optimizer recommendation: after stock-loop runs, test synchronous coarse
+Modal fanout from a frozen checkpoint. Run N collect-only actor chunks in
+parallel, write searched trajectory chunks with `checkpoint_id` and schema
+metadata, then import/merge them into a learner step. This is not a full async
+service yet and does not create hidden policy staleness. It is the smallest
+honest test of whether searched CurvyTron self-play can scale beyond one
+`train_muzero` process without changing MuZero semantics.
+
 ## Validation Done By Optimizer
 
 Focused local checks passed:
@@ -226,10 +280,29 @@ uv run pytest \
 - Optimizer owns speed/setup/profile evidence and recommended runtime knobs.
 - This native path is fixed-opponent single-ego training today, not true
   current-policy self-play.
-- `source_state_turn_commit` is stock LightZero plumbing/control only for now.
+- `source_state_turn_commit` is stock LightZero plumbing smoke/profile only.
   Its pending/player0 scalar step gets reward `0`, while the commit/player1
   scalar step advances physics and gets survival reward; normal GameSegment
   value targets may mis-credit player0 states.
+- `source_state_joint_action` is centralized stock-LightZero control, not a
+  two-seat self-play fix. Its one scalar action controls both players and its
+  diagnostic reward is one shared control reward, so per-player winner/loser
+  reward shaping does not apply unless the wrapper grows a per-player target
+  surface.
+- Optimizer did profile turn-commit through stock `train_muzero` anyway because
+  reward-credit risk should not block speed measurement:
+  `opt-turncommit-mainlane-reprofile-s20260511f` /
+  `mainlane-profile-c16-sim16-steps128`, `ok=true`,
+  `called_train_muzero=true`, `4096` scalar LightZero steps, `46.58s` wall,
+  `28.66s` MCTS, `1.73s` learner, `0.14s` replay sample. Treat this as speed
+  evidence only.
+- Latest fixed-opponent no-death regression profile after environment churn:
+  `opt-fixed-current-reprofile-s20260511f` /
+  `fixed-sub-c16-sim16-steps240-matched`, `ok=true`,
+  `called_train_muzero=true`, `3840` collected steps, `25.21s` wall,
+  `10.87s` MCTS, `13.93s` policy forward collect, `1.75s` learner,
+  `0.10s` replay sample. Model device samples include `cuda:0`; env/replay are
+  still CPU/NumPy.
 - Do not change MuZero semantics to get speed. Lowering `num_simulations` is a
   profile/quality knob, not a silent optimization.
 - The current source-state path uses the natural source-default runtime surface.

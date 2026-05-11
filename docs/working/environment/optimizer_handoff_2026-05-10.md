@@ -38,7 +38,7 @@ bool[B,2,3] masks
 replay-v0 only when explicitly included
 ```
 
-Debug visual tensor surface:
+Historical debug visual tensor surface:
 
 ```text
 curvyzero_debug_occupancy_gray64/v0
@@ -47,11 +47,11 @@ optional stack helper -> uint8[4,64,64]
 truth level: debug/profiling only, not source visual fidelity
 ```
 
-Optimizer owns pushing this debug visual tensor into a usable smoke/profiler and
-LightZero adapter plumbing target. Use it only when the report calls it a debug
-visual tensor and says whether rendering, stacking, env step, reset, replay,
-policy, and search are included. Do not compare it as if it were a final
-source-faithful CurvyTron renderer.
+Optimizer should treat this debug visual tensor as historical smoke/profiler
+data. The active current target is source-state gray64 `uint8[1,64,64]` /
+stacked training tensor. Use browser/canvas pixels only as optional later
+debug/human evidence, and do not compare old debug occupancy as if it were a
+final source-faithful CurvyTron renderer.
 
 Current fast shared multiplayer path under hardening; currently metadata-only,
 not trainer-ready:
@@ -127,7 +127,8 @@ What is not done:
 - natural public multiplayer reset/warmup/autoreset parity;
 - broad match lifecycle through the public multiplayer env;
 - bonuses in the fast/vector runtime;
-- source-faithful visual renderer;
+- browser/canvas pixel parity;
+- source-state/event golden coverage for the remaining fidelity blocker;
 - installed-runtime CurvyTron LightZero config/import smoke and real CurvyTron
   LightZero training. A thin local registered wrapper exists, but it has not
   been proven inside the installed LightZero/DI-engine runtime.

@@ -89,11 +89,16 @@ Optimizer visual tensor handoff:
   `CurvyTronReferenceDefaults.arena_size_for_players(2)`. The 64x64 size is
   our learned raw observation raster from source state, not the original game
   arena size.
-- Latest 2P source-state visual check: `scripts/compare_2p_raw_visual_observation.py`
+- Latest 2P source-state visual check:
+  `scripts/compare_2p_raw_visual_observation.py --suite core2p --format plain`
   compares source-shaped state against `VectorMultiplayerEnv` gray64. On
-  2026-05-11 the long no-bonus wall fixture matched through terminal: 112
-  frames, exact `max_abs_diff=0`, `mismatch_pixels=0`, and original-JS reset
-  source-state check pass. This is still not browser/canvas pixel parity.
+  2026-05-11 it passes 26 core scenarios exactly: `max_abs_diff=0`,
+  `mismatch_pixels=0`. There are 26 total 2P step fixtures; `core2p` covers 25
+  of them plus the long wall rollout, including the four natural bonus
+  spawn/retry/cap fixtures. `source_print_manager_random_call_order_step` stays
+  outside gray64 because it proves RNG/event order, not a distinct rendered
+  state. This is the current training-observation gate; browser/canvas pixels
+  are optional debug evidence, not P0.
 - Gray64 v0 distinguishes 2P player trails and heads, but every active map
   bonus is value `208`. Keep that caveat visible until a typed bonus visual
   schema exists.
@@ -142,16 +147,27 @@ and final observations, public metadata, and later browser pixel parity.
 
 ## 2P Status
 
-Full 2P fidelity is not done. The public base core is much stronger after
-direct public body/trail/collision canaries, the long reset-to-terminal public
-check `test_2p_public_reset_to_terminal_matches_source_long_wall_fixture`,
-focused warmdown/match-end checks, and the 2P metadata replay bridge. This is
-not full gameplay, trainer replay, trainer observations, real two-seat training,
-bonus behavior, full replay/final observations, or visual/browser pixel parity.
-The source-state route proof is fixed-opponent plumbing only, not an
-environment-fidelity claim. Do not describe the game as 64x64: for 2P the
-source arena is 88 units, while 64x64 is only the learned raw observation
-raster size.
+Full 2P fidelity is not done. The current visual gate passes:
+`scripts/compare_2p_raw_visual_observation.py --suite core2p --format plain`
+matches 26/26 source-state gray64 scenarios exactly. The PrintManager RNG
+canary is intentionally not a gray64 case; it proves random/event ordering, not
+a distinct rendered state. Deeper evidence and gap detail live in
+[two_player_fidelity_gap_catalog_2026-05-11.md](two_player_fidelity_gap_catalog_2026-05-11.md)
+and
+[remaining_reconstruction_gap_catalog_2026-05-11.md](remaining_reconstruction_gap_catalog_2026-05-11.md).
+
+Next 2P environment-fidelity checklist:
+
+1. Decide and prove typed bonus visual/status sufficiency beyond gray64 v0.
+2. Add bonus stack/death stress across timers, PrintManager, and terminal frames.
+3. Add 2P survivor-movement warmdown source/public coverage.
+4. Promote final/replay bonus state beyond metadata-only audit rows.
+5. Add broader 2P trail/body canaries if they are still open after the current
+   collision-order and visual coverage audit.
+
+Do not describe the game as 64x64: for 2P the source arena is 88 units, while
+64x64 is only the learned raw observation raster size. The source-state route
+proof is fixed-opponent plumbing only, not an environment-fidelity claim.
 
 ## Current Direction
 

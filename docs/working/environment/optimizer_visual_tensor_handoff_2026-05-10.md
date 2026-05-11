@@ -202,13 +202,11 @@ the same thing.
 
 Optimizer: CurvyTron visual input is intended, but not through ALE. Environment
 Reconstruction owns whether visual tensors are source-faithful. Optimizer owns
-the visual smoke/profiler and LightZero adapter plumbing. Current available
-surface is only `curvyzero_debug_occupancy_gray64/v0`, a `uint8[1,64,64]` raw
-occupancy smoke frame from source-state coordinates, normalized to
-`float32[1,64,64]` for trainer payloads, with no browser/canvas pixel fidelity
-claim. The optional local stacked wrapper produces `float32[4,64,64]` by FIFO
-stacking normalized debug frames and labels itself wrapper-owned. Please push it
-toward a usable profiling target, but label it as `debug_visual_tensor` and
-report explicit booleans for render, stack, env step, policy/search, replay,
+profiling and LightZero adapter plumbing. The active current surface is
+source-state gray64 `uint8[1,64,64]` / stacked training tensor. Browser/canvas
+pixels are optional later debug/human evidence; source-state/event goldens are
+the fidelity blocker. The old `curvyzero_debug_occupancy_gray64/v0` surface is
+historical smoke only. When profiling any visual surface, report explicit
+booleans for render, stack, env step, policy/search, replay,
 and reset. If you change tensor semantics or want to promote it beyond debug,
 send the claim back to Environment for source-fidelity review.

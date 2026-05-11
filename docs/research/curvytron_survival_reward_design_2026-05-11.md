@@ -22,6 +22,164 @@ That is the wrong default for "survive longer than the opponent." Use a
 competitive outcome-dominant reward first. If sparse reward is too hard, test a
 small bounded survival auxiliary that cannot outrank winning.
 
+## Stale Claims To Reject
+
+- Do not call `source_state_turn_commit` trainable self-play. Its pending
+  scalar row has no physics advance and can receive value credit from the later
+  commit row.
+- Do not call `source_state_joint_action` true two-seat self-play. It is a
+  centralized controller over both players with one scalar reward.
+- Do not apply per-player winner/loser shaping to a one-scalar centralized
+  control wrapper unless the wrapper first grows a real per-player target
+  surface.
+- Do not promote checkpoints on shaped survival return alone; sparse outcome
+  and shaped survival must stay separate.
+
+## Current Repo Status
+
+The reward surface is split across paths:
+
+- `source_state_fixed_opponent`: the native LightZero source-state visual env
+  plays `player_0` against a fixed-straight `player_1`. It returns scalar
+  survival reward to the ego player after each physical source step, `1.0` if
+  alive and `0.0` if dead. Terminal source outcome metadata is present in
+  `source_terminal_reward_map`, but it is not the scalar training reward.
+- `source_state_turn_commit`: the native LightZero turn-commit env alternates
+  scalar player turns over a simultaneous source env. `player_0`'s pending
+  action receives reward `0.0` because the physical env has not advanced yet;
+  `player_1`'s commit advances the physical env and receives survival reward
+  for `player_1`. This is useful plumbing telemetry, not trusted simultaneous
+  reward credit.
+- `source_state_joint_action`: the stock-LightZero control candidate uses one
+  scalar action for the joint action `(player_0, player_1)`, advances one real
+  source tick, and returns one diagnostic scalar: `+1` if both players are alive
+  after that tick, else `0`. This is centralized control, not true competitive
+  self-play, and it is not a per-player or zero-sum reward. Do not apply
+  two-player terminal winner/loser return shaping here unless the wrapper grows
+  an honest per-player target surface.
+- Two-seat trainer smoke: the local two-seat replay rows carry per-player
+  survival reward from `alive_after`, controlled by `alive_reward` and
+  `dead_reward`. Its per-player target construction now uses the
+  `terminal_winner_keeps_survival_loser_zero/v0` return schema: survival can
+  accumulate during the episode, then a decisive terminal winner keeps its
+  accumulated shaped return and the loser target is zeroed. Draws/truncations
+  leave shaped survival returns unmodified. The shared learner adapter now
+  forces `gamma=1.0` for this schema, so the simple "50-step game gives winner
+  50, loser 0" example is literally true for this local target path. The loser
+  is zeroed across its whole episode trajectory after the decisive terminal
+  winner is known, not only at the terminal transition. Stock LightZero reward
+  streams and unlabeled schemas still use the configured policy discount, with
+  `0.997` as the default/fallback.
+- Public vector trainer observation path: the 1v1 no-bonus trainer reward is
+  already sparse zero-sum terminal payoff: survivor `+1/-1`, same-frame draw
+  `0/0`, and timeout/truncation `0/0`.
+
+So the clean reward exists in the lower trainer contract, but the current
+LightZero source-state path being re-centered on stock LightZero is still using
+survival scalar rewards. Keep that label loud.
+
+## Discounting Decision
+
+For the named `terminal_winner_keeps_survival_loser_zero/v0` shaped survival
+return, use `gamma=1.0` if the intended target is "number of survived decision
+steps, winner keeps that count, loser gets zero." That is the only setting under
+which the simple example is literally true:
+
+```text
+50-step decisive game, alive_reward=1
+gamma=1.000 -> winner target at episode start 50.000, loser 0
+gamma=0.997 -> winner target at episode start 46.495, loser 0
+gamma=0.990 -> winner target at episode start 39.499, loser 0
+```
+
+Using LightZero's configured `discount_factor` is acceptable only when it is an
+explicit part of the experiment contract. Do not silently inherit an Atari-style
+default such as `0.997` and still describe results as raw survived-step return.
+If the run is stock LightZero, the scalar reward stream and native target builder
+use the configured discount, so set `policy.discount_factor=1.0` for a finite
+episodic survival-count objective, or label the run as discounted survival.
+
+For long CurvyTron horizons, the hard part is reward scale, not discount theory.
+With `gamma=1`, the value target range is bounded by
+`alive_reward * max_decisions`; with `alive_reward=1` and thousands of decisions,
+that can exceed LightZero support assumptions. Prefer one of these before
+lowering gamma just to hide scale:
+
+- normalize `alive_reward`, e.g. `1 / max_decisions`, if the target should be in
+  `[0, 1]`;
+- keep sparse terminal outcome as the training reward and log survival as
+  telemetry;
+- widen/support-scale the value head deliberately and log clipping rates.
+
+A tuned `gamma < 1` is a real ablation, not the default. It caps effective
+horizon at about `1 / (1 - gamma)` and deliberately values near-term survival
+more than late survival. That may stabilize targets, but it changes the question
+from "how many steps did I survive?" to "how much discounted survival mass did I
+collect?" For example, `gamma=0.997` caps infinite all-alive return near `333.33`
+with `alive_reward=1`, no matter how long the episode lasts.
+
+Apply loser-zeroing at the trajectory return level after the decisive terminal
+winner is known. Equivalently, mask all loser rewards in that decisive episode
+before discounting. Do not merely zero the loser's terminal reward: that leaks
+early survival credit into losing-state value targets. Winner returns should be
+computed from the original survival reward sequence; draw and truncation returns
+should keep their documented unmodified shaped-return policy.
+
+## Unresolved Integration Questions
+
+- Which scalar should stock LightZero optimize first: sparse terminal outcome,
+  bounded alive auxiliary, or anti-stall cost? Do not mix them under the old
+  survival schema id.
+- How should turn-commit credit be represented when LightZero exposes only one
+  scalar per `env.step`? The current pending/commit asymmetry can teach seat and
+  order artifacts.
+- Should timeout be neutral, bad for both, or only an eval reject? Treat this as
+  a reward variant knob, not an implicit convention.
+- How do bonuses and source lifecycle scoring map into a 1v1 training payoff?
+  The first stock LightZero patch should probably keep no-bonus/outcome-only
+  semantics, then reintroduce source scoring explicitly.
+- Which metric is allowed to promote checkpoints? Recommendation: sparse
+  outcome only; shaped survival can diagnose and break ties inside an
+  equivalent sparse-outcome band.
+
+## Knobs To Expose
+
+Expose reward selection as explicit run metadata and config. Minimum useful
+knobs:
+
+- `reward_variant`: `sparse_zero_sum_outcome`,
+  `outcome_plus_bounded_alive_aux`, `sparse_outcome_plus_anti_stall`,
+  `survival_diagnostic`.
+- `alive_aux_epsilon`: total episode budget for bounded alive auxiliary; require
+  `0.0 <= epsilon <= 0.25` for the first runs.
+- `anti_stall_epsilon`: total episode budget for both-alive time cost; require
+  `0.0 <= epsilon <= 0.10` for the first runs.
+- `max_decisions` or derived `max_ticks / decision_ms`: used to normalize any
+  per-step auxiliary so reward scale does not grow with horizon.
+- `return_discount`: start at `1.0` for finite survival-count targets; require a
+  separate schema/variant label for `return_discount < 1.0`.
+- `timeout_reward`: start at `0.0`; log timeout separately and reject timeout
+  farming in eval.
+- `same_tick_draw_reward`: start at `0.0`.
+- `reward_schema_id` and `reward_schema_hash`: change whenever the scalar
+  reward stream changes.
+
+## Metrics That Must Stay Separate
+
+Every shaped run should log four separate families, not one blended return:
+
+- Scalar training reward: the exact value passed to LightZero.
+- Sparse outcome reward: win/loss/draw/timeout payoff under the clean
+  zero-sum contract, even when not used for training.
+- Survival diagnostics: decisions survived, physical time survived, win/loss
+  conditioned episode length, timeout rate, and p90/max episode length.
+- Terminal facts: winner ids, loser ids, same-tick deaths, terminal reason,
+  death cause/hit owner when available, and seat-swapped rates.
+
+For learner debugging, also log reward/value target min, max, mean, std, and
+support clipping rate separately for scalar training reward and sparse outcome
+return.
+
 ## Evidence
 
 AlphaZero trains value against game outcome: `-1` loss, `0` draw, `+1` win, not
@@ -40,7 +198,45 @@ bonus is not obviously `gamma * Phi(s') - Phi(s)`. Multi-agent extensions exist,
 but they still require a real potential-style construction. "Alive this step"
 does not get policy-invariance for free.
 
+## Skeptical Read On Survival Plus Outcome
+
+Let `T` be the decisive episode length and assume `alive_reward=1`.
+
+- Sparse terminal win/loss optimizes the right first question: did this seat win
+  the round? With `gamma=1`, a win is a win regardless of whether it took 40 or
+  400 decisions. With `gamma<1`, the objective changes: faster wins are worth
+  more and delayed losses are less bad. That can be a deliberate speed bias, but
+  it is not neutral.
+- Per-step survival only mostly optimizes "do not end the game." In a two-player
+  death game, both players collect almost the same positive reward for a long
+  shared survival period, so the competitive signal is weak and late losses can
+  look good in aggregate logs.
+- Winner-keeps-survival/loser-zero fixes the worst logging bug, because a
+  decisive loser no longer keeps a positive training return. It still says that
+  a long win is better than a short win. In symmetric self-play, both agents can
+  prefer states with larger expected `P(win) * T`, which can reward delaying
+  contact instead of improving win probability.
+- Winner survival plus `+T` and loser `-T` is not a principled fix. If the loser
+  also received `T` survival, `-T` just cancels the loser's survival while the
+  winner becomes `2T`. If the penalty is larger than survival, an inevitable
+  loser may prefer a shorter loss. Either way, the target scale is tied to
+  horizon and curriculum knobs.
+- A flat living bonus is not potential-based shaping unless a real potential is
+  written down and checked. Potential-based shaping is safe because the shaping
+  rewards telescope to a boundary term. A reward whose total is `T` does not
+  telescope away when episode length depends on the agents' actions.
+
 ## Reward Variants To Test
+
+Concrete verdict for the proposed variants:
+
+| Variant | Reward | Verdict |
+| --- | --- | --- |
+| A | Sparse zero-sum terminal only | Best default and promotion metric. Slowest exploration, cleanest objective. |
+| B | Bounded alive auxiliary plus sparse outcome | Acceptable early ablation if total auxiliary mass stays below the win/loss payoff. |
+| C | Winner keeps survival, loser zero | Useful smoke/debug target, but not the real game payoff and can still overvalue long games. |
+| D | `+T` winner / `-T` loser terminal shaping | Reject as a default: horizon-dependent scale, no policy-invariance guarantee, and easy support/value-scale trouble. |
+| E | Loser keeps partial survival | Reject for competitive training: it explicitly rewards losing later and can mask flat win rate. |
 
 ### 1. Sparse Zero-Sum Outcome
 
@@ -117,11 +313,21 @@ contact or suicide if too large, so keep it tiny and compare terminal causes.
 
 ## Recommendation
 
-Start with variant 1. If it is too sparse, run variant 2 as a labeled ablation
-with `epsilon <= 0.25`, but keep promotion on sparse outcome metrics. Keep
-variant 3 ready for timeout farming. Do not test the proposed unbounded
-`+1/step + T winner bonus` as a serious candidate unless the goal is explicitly
-to study the failure mode.
+Do the next stock-LightZero patch in this order:
+
+1. Add metadata-only reward accounting to the source-state LightZero runs:
+   current scalar reward, sparse outcome reward, reward variant id, epsilon
+   fields, timeout/draw convention, and terminal facts.
+2. Add a sparse-outcome reward variant without changing observation or
+   collection topology. Use it as the first real optimization objective.
+3. Add bounded alive auxiliary as a labeled ablation only if sparse learning is
+   flat after the plumbing and eval pipeline are trusted.
+4. Add anti-stall cost only if timeout farming appears in sparse or auxiliary
+   runs.
+
+Keep promotion on sparse outcome metrics throughout. Do not test the proposed
+unbounded `+1/step + T winner bonus` as a serious candidate unless the goal is
+explicitly to study the failure mode.
 
 ## Sources
 
@@ -138,5 +344,9 @@ to study the failure mode.
   https://pure.york.ac.uk/portal/en/publications/theoretical-considerations-of-potential-based-reward-shaping-for-/
 - ALE multi-agent Pong reward/timer docs:
   https://ale.farama.org/multi-agent-environments/pong/
+- Time limits in RL:
+  https://proceedings.mlr.press/v80/pardo18a.html
+- LightZero MuZero policy/source docs:
+  https://www.aidoczh.com/lightzero/_modules/lzero/policy/muzero.html
 - Reward misspecification example:
   https://openai.com/index/faulty-reward-functions/

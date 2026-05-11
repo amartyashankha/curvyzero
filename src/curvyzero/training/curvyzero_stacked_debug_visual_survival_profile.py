@@ -49,6 +49,9 @@ from curvyzero.training.curvyzero_survival_time_lightzero_smoke import (
 PROFILE_SCHEMA_ID = "curvyzero_stacked_debug_visual_survival_profile/v0"
 LIGHTZERO_VERSION = "0.2.0"
 DEFAULT_SURVIVAL_TARGET_DISCOUNT = 0.997
+TERMINAL_WINNER_KEEPS_SURVIVAL_LOSER_ZERO_SCHEMA_ID = (
+    "terminal_winner_keeps_survival_loser_zero/v0"
+)
 SURVIVAL_TARGET_METADATA_KEYS = (
     "iteration_batch",
     "env_row_id_batch",
@@ -658,7 +661,7 @@ def _target_value_batch(
             ),
         }
 
-    discount = _policy_discount(policy)
+    discount, discount_source = _target_return_discount(policy, sample)
     returns = _discounted_survival_returns_from_sample(sample, discount=discount)
     target_value = _survival_return_value_targets(
         sample,
@@ -670,12 +673,14 @@ def _target_value_batch(
     return target_value, {
         "source": "discounted_survival_return",
         "discount": float(discount),
+        "discount_source": discount_source,
         "semantics": (
             "target_reward is the immediate replay-row reward repeated across "
             "the configured unroll steps; target_value is remaining discounted "
             "survival return per episode_id/env_row_id/player_id/decision_index "
-            "trajectory when episode metadata is present, with the legacy "
-            "iteration/env_row_id/player_id trajectory as fallback."
+            "trajectory when episode metadata is present. If terminal winner "
+            "metadata is present, loser trajectory returns are zeroed while the "
+            "winner keeps its accumulated shaped survival return."
         ),
     }
 
@@ -694,9 +699,28 @@ def _policy_discount(policy: Any) -> float:
             discount = float(raw)
         except (TypeError, ValueError):
             continue
-        if np.isfinite(discount):
+        if np.isfinite(discount) and 0.0 <= discount <= 1.0:
             return discount
     return DEFAULT_SURVIVAL_TARGET_DISCOUNT
+
+
+def _target_return_discount(policy: Any, sample: Mapping[str, Any]) -> tuple[float, str]:
+    if _sample_uses_return_schema(
+        sample,
+        TERMINAL_WINNER_KEEPS_SURVIVAL_LOSER_ZERO_SCHEMA_ID,
+    ):
+        return 1.0, "return_schema_forces_raw_survival_count"
+    return _policy_discount(policy), "policy_config"
+
+
+def _sample_uses_return_schema(sample: Mapping[str, Any], schema_id: str) -> bool:
+    for key in ("return_schema_id_batch", "return_context_return_schema_id_batch"):
+        if key not in sample:
+            continue
+        values = np.asarray(sample[key], dtype=object)
+        if values.size and all(str(value) == schema_id for value in values.tolist()):
+            return True
+    return False
 
 
 @contextlib.contextmanager
@@ -798,6 +822,11 @@ def _return_context_lookup(
     decisions = np.asarray(sample["return_context_decision_index_batch"], dtype=np.int64)
     rewards = np.asarray(sample["return_context_reward_batch"], dtype=np.float32)
     dones = np.asarray(sample["return_context_done_batch"], dtype=bool)
+    terminal_winners = (
+        np.asarray(sample["return_context_terminal_winner_batch"], dtype=np.int64)
+        if "return_context_terminal_winner_batch" in sample
+        else None
+    )
     count = int(rewards.shape[0])
     episode_ids = (
         np.asarray(sample["return_context_episode_id_batch"], dtype=np.int64)
@@ -815,6 +844,8 @@ def _return_context_lookup(
         return None
     if episode_ids is not None and episode_ids.shape[0] != count:
         return None
+    if terminal_winners is not None and terminal_winners.shape[0] != count:
+        terminal_winners = None
     decorated = [
         (
             int(iterations[index]),
@@ -840,6 +871,16 @@ def _return_context_lookup(
         value = float(rewards[index]) + float(discount) * running.get(key, 0.0)
         returns[index] = np.float32(value)
         running[key] = value
+    if terminal_winners is not None:
+        _apply_terminal_winner_keeps_survival_loser_zero(
+            returns,
+            iterations=iterations,
+            env_rows=env_rows,
+            players=players,
+            episode_ids=episode_ids,
+            dones=dones,
+            terminal_winners=terminal_winners,
+        )
     return {
         (
             *_context_trajectory_key(
@@ -868,6 +909,56 @@ def _sample_chronological_order(sample: Mapping[str, Any]) -> list[int]:
         for index in range(count)
     ]
     return [item[-1] for item in sorted(decorated)]
+
+
+def _apply_terminal_winner_keeps_survival_loser_zero(
+    returns: np.ndarray,
+    *,
+    iterations: np.ndarray,
+    env_rows: np.ndarray,
+    players: np.ndarray,
+    episode_ids: np.ndarray | None,
+    dones: np.ndarray,
+    terminal_winners: np.ndarray,
+) -> None:
+    terminal_winner_by_row: dict[tuple[int, int], int] = {}
+    for index in range(int(returns.shape[0])):
+        winner = int(terminal_winners[index])
+        if bool(dones[index]) and winner >= 0:
+            terminal_winner_by_row[
+                _context_episode_row_key(
+                    iterations=iterations,
+                    env_rows=env_rows,
+                    episode_ids=episode_ids,
+                    index=index,
+                )
+            ] = winner
+    if not terminal_winner_by_row:
+        return
+    for index in range(int(returns.shape[0])):
+        winner = terminal_winner_by_row.get(
+            _context_episode_row_key(
+                iterations=iterations,
+                env_rows=env_rows,
+                episode_ids=episode_ids,
+                index=index,
+            )
+        )
+        if winner is not None and int(players[index]) != int(winner):
+            returns[index] = np.float32(0.0)
+
+
+def _context_episode_row_key(
+    *,
+    iterations: np.ndarray,
+    env_rows: np.ndarray,
+    episode_ids: np.ndarray | None,
+    index: int,
+) -> tuple[int, int]:
+    episode_or_iteration = (
+        int(episode_ids[index]) if episode_ids is not None else int(iterations[index])
+    )
+    return (episode_or_iteration, int(env_rows[index]))
 
 
 def _sample_return_lookup(

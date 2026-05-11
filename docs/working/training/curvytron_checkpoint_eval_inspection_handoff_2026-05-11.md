@@ -72,8 +72,10 @@ This proves the plumbing works. It does not prove learning.
 
 ## Operational Notes
 
-Use `--background-eval-enabled` to turn this on. The default launch kind is the
-separate poller.
+Background checkpoint eval, inspection, and self-play GIF generation are on by
+default for the current trainer. The default launch kind is the separate poller.
+Use `--no-background-eval-enabled` only when deliberately disabling this
+observability.
 
 If launching a background training run without `--wait-for-train`, use Modal
 detached mode so spawned background work survives:

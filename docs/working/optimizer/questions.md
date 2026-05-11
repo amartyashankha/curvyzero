@@ -49,14 +49,14 @@ Date: 2026-05-09
 
 ## Answered For Now
 
-- Is CurvyTron observation a screenshot? The primary target is visual, but the
-  current visual surface is only debug occupancy:
-  `curvyzero_debug_occupancy_gray64/v0` raw `uint8[1,64,64]` CHW, optionally
-  normalized to `float32[1,64,64]` CHW for LightZero-facing payloads. It is not
+- Is CurvyTron observation a screenshot? No. The active current target is
+  source-state gray64 `uint8[1,64,64]` / stacked training tensor. Browser/canvas
+  pixels are optional later debug/human evidence. The old
+  `curvyzero_debug_occupancy_gray64/v0` surface is historical smoke data, not
   source-faithful visual truth.
 - Is current CurvyTron optimizer work Atari/ALE? No. The primary visual hook is
-  non-ALE `debug_visual_tensor` smoke/profiling. Source-backed trainer rows
-  remain scalar-ray diagnostics: `CurvyTronSourceEnv` snapshots adapted into
+  non-ALE source-state gray64. Source-backed trainer rows remain scalar-ray
+  diagnostics: `CurvyTronSourceEnv` snapshots adapted into
   `float32[B,2,106]` ray/scalar observations plus `bool[B,2,3]` masks and
   replay-v0. ALE is only for official Atari Pong control.
 - Is there a fundamental blocker to full GPU env/obs/model/search? No known

@@ -66,8 +66,9 @@ Optimizer lane:
 ## What Is Not Real Yet
 
 - No full CurvyTron trainer loop.
-- No source-faithful visual tensor. Current visual tensor is
-  `curvyzero_debug_occupancy_gray64/v0`, a debug occupancy smoke surface.
+- No browser/canvas pixel parity. The active current visual tensor is
+  source-state gray64 `uint8[1,64,64]` / stacked training tensor. Old
+  `curvyzero_debug_occupancy_gray64/v0` rows are historical smoke surfaces.
 - No production actor loop with source-faithful trail/body observations, public
   autoreset, repeated replay/learner handoff, and real model/search timing.
 - No project-owned PPO runner.
@@ -133,11 +134,11 @@ inside a single-agent wrapper.
 The first speed job is not to make one function faster. It is to measure the
 whole actor loop and find the largest real bucket.
 
-Current primary CurvyTron visual profiling target is non-ALE
-`debug_visual_tensor` / `curvyzero_debug_occupancy_gray64/v0`: raw
-`uint8[1,64,64]` CHW occupancy smoke, optionally normalized to
-`float32[1,64,64]` CHW for LightZero-facing payloads. It is not source-faithful
-visual truth.
+Current primary CurvyTron visual profiling target is non-ALE source-state
+gray64 `uint8[1,64,64]` / stacked training tensor. Browser/canvas pixels are
+optional later debug/human evidence; source-state/event goldens are the
+fidelity blocker. The old `debug_visual_tensor` /
+`curvyzero_debug_occupancy_gray64/v0` surface is historical smoke data.
 
 Current local scalar-ray diagnostic bench is:
 
