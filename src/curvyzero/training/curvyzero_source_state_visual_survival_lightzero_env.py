@@ -23,27 +23,38 @@ from curvyzero.env.trainer_contract import (
 )
 from curvyzero.env.trainer_contract import stable_contract_hash
 from curvyzero.env.vector_visual_observation import (
-    SOURCE_STATE_GRAY64_BROWSER_PIXEL_FIDELITY,
+    SOURCE_STATE_CANVAS_GRAY64_BROWSER_PIXEL_FIDELITY,
 )
 from curvyzero.env.vector_visual_observation import (
-    SOURCE_STATE_GRAY64_NORMALIZED_DTYPE,
+    SOURCE_STATE_CANVAS_GRAY64_NORMALIZED_DTYPE,
 )
 from curvyzero.env.vector_visual_observation import (
-    SOURCE_STATE_GRAY64_NORMALIZED_VALUE_RANGE,
+    SOURCE_STATE_CANVAS_GRAY64_NORMALIZED_VALUE_RANGE,
 )
-from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_RENDERER_IMPL_ID
-from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_SCHEMA_HASH
-from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_SCHEMA_ID
-from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_SHAPE
 from curvyzero.env.vector_visual_observation import (
-    SOURCE_STATE_GRAY64_SOURCE_FIDELITY_LEVEL,
+    SOURCE_STATE_CANVAS_GRAY64_RENDERER_IMPL_ID,
 )
-from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_SOURCE_STATE_BACKED
-from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_SURFACE
-from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_TRUTH_LEVEL
-from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_USES_ALE
-from curvyzero.env.vector_visual_observation import SourceStateGray64Renderer
-from curvyzero.env.vector_visual_observation import normalize_source_state_gray64
+from curvyzero.env.vector_visual_observation import SOURCE_STATE_CANVAS_GRAY64_SCHEMA_HASH
+from curvyzero.env.vector_visual_observation import SOURCE_STATE_CANVAS_GRAY64_SCHEMA_ID
+from curvyzero.env.vector_visual_observation import SOURCE_STATE_CANVAS_GRAY64_SHAPE
+from curvyzero.env.vector_visual_observation import (
+    SOURCE_STATE_CANVAS_GRAY64_SOURCE_FIDELITY_LEVEL,
+)
+from curvyzero.env.vector_visual_observation import (
+    SOURCE_STATE_CANVAS_GRAY64_SOURCE_STATE_BACKED,
+)
+from curvyzero.env.vector_visual_observation import SOURCE_STATE_CANVAS_GRAY64_SURFACE
+from curvyzero.env.vector_visual_observation import SOURCE_STATE_CANVAS_GRAY64_TRUTH_LEVEL
+from curvyzero.env.vector_visual_observation import SOURCE_STATE_CANVAS_GRAY64_USES_ALE
+from curvyzero.env.vector_visual_observation import (
+    SOURCE_STATE_RGB_CANVAS_LIKE_RENDERER_IMPL_ID,
+)
+from curvyzero.env.vector_visual_observation import SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID
+from curvyzero.env.vector_visual_observation import (
+    SOURCE_STATE_RGB_CANVAS_LIKE_TRUTH_LEVEL,
+)
+from curvyzero.env.vector_visual_observation import rgb_canvas_like_to_gray64
+from curvyzero.env.vector_visual_observation import render_source_state_rgb_canvas_like
 from curvyzero.training.curvyzero_debug_visual_lightzero_smoke import (
     LocalDebugVisualLightZeroTimestep,
 )
@@ -123,9 +134,31 @@ SOURCE_STATE_JOINT_ACTION_TRAINING_STATUS = (
 )
 JOINT_ACTION_COUNT = ACTION_COUNT * ACTION_COUNT
 STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID = (
-    "curvyzero_source_state_gray64_stack4_player_perspective/v1"
+    "curvyzero_source_state_rgb_canvas_like_gray64_stack4/v0"
 )
 STACKED_SOURCE_STATE_GRAY64_SHAPE = (4, 64, 64)
+SOURCE_STATE_CANVAS_LIKE_RAW64_SHAPE = (64, 64, 3)
+SOURCE_STATE_CANVAS_LIKE_RAW64_DTYPE = "uint8"
+SOURCE_STATE_CANVAS_LIKE_RAW64_VALUE_RANGE = (0, 255)
+SOURCE_STATE_CANVAS_LIKE_RAW64_SCHEMA_HASH = stable_contract_hash(
+    {
+        "schema_id": SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID,
+        "renderer_impl_id": SOURCE_STATE_RGB_CANVAS_LIKE_RENDERER_IMPL_ID,
+        "shape": list(SOURCE_STATE_CANVAS_LIKE_RAW64_SHAPE),
+        "dtype": SOURCE_STATE_CANVAS_LIKE_RAW64_DTYPE,
+        "range": list(SOURCE_STATE_CANVAS_LIKE_RAW64_VALUE_RANGE),
+        "frame_size": 64,
+        "source": "render_source_state_rgb_canvas_like(frame_size=64)",
+        "truth_level": SOURCE_STATE_RGB_CANVAS_LIKE_TRUTH_LEVEL,
+        "browser_pixel_fidelity": False,
+    }
+)
+SOURCE_STATE_CANVAS_LIKE_GRAY64_SCHEMA_ID = SOURCE_STATE_CANVAS_GRAY64_SCHEMA_ID
+SOURCE_STATE_CANVAS_LIKE_GRAY64_RENDERER_IMPL_ID = (
+    SOURCE_STATE_CANVAS_GRAY64_RENDERER_IMPL_ID
+)
+SOURCE_STATE_CANVAS_LIKE_GRAY64_SURFACE = SOURCE_STATE_CANVAS_GRAY64_SURFACE
+SOURCE_STATE_CANVAS_LIKE_GRAY64_SCHEMA_HASH = SOURCE_STATE_CANVAS_GRAY64_SCHEMA_HASH
 PLAYER_PERSPECTIVE_SCHEMA_ID = "curvyzero_player_perspective_source_state_gray64/v0"
 SELF_BODY_VALUE = 96
 OTHER_BODY_VALUE = 128
@@ -209,15 +242,19 @@ ALL_PLAYERS_ALIVE_DIAGNOSTIC_REWARD_SCHEMA_HASH = stable_contract_hash(
 STACKED_SOURCE_STATE_GRAY64_SCHEMA_HASH = stable_contract_hash(
     {
         "schema_id": STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID,
-        "single_frame_schema_id": SOURCE_STATE_GRAY64_SCHEMA_ID,
-        "single_frame_schema_hash": SOURCE_STATE_GRAY64_SCHEMA_HASH,
-        "player_perspective_schema_id": PLAYER_PERSPECTIVE_SCHEMA_ID,
+        "single_frame_schema_id": SOURCE_STATE_CANVAS_LIKE_GRAY64_SCHEMA_ID,
+        "single_frame_schema_hash": SOURCE_STATE_CANVAS_LIKE_GRAY64_SCHEMA_HASH,
+        "raw_observation_schema_id": SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID,
+        "raw_observation_schema_hash": SOURCE_STATE_CANVAS_LIKE_RAW64_SCHEMA_HASH,
         "shape": list(STACKED_SOURCE_STATE_GRAY64_SHAPE),
-        "dtype": SOURCE_STATE_GRAY64_NORMALIZED_DTYPE,
-        "range": list(SOURCE_STATE_GRAY64_NORMALIZED_VALUE_RANGE),
+        "dtype": SOURCE_STATE_CANVAS_GRAY64_NORMALIZED_DTYPE,
+        "range": list(SOURCE_STATE_CANVAS_GRAY64_NORMALIZED_VALUE_RANGE),
         "frame_stack_owner": "curvyzero_source_state_survival_wrapper",
         "frame_stack_proof": "wrapper_owned_fifo_stack; not LightZero env-manager stacking",
-        "controlled_player_semantics": "player_0 is SELF; player_1 is OTHER",
+        "source_path": (
+            "source-state canvas-like RGB64 raw frame -> luminance gray64 -> "
+            "normalized FIFO stack"
+        ),
     }
 )
 
@@ -353,11 +390,9 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
                 f"{allowed_reward_variants!r}; got {self._reward_variant!r}"
             )
         self._env = self._new_env(self._seed)
-        self._renderer = SourceStateGray64Renderer(validate_state=False)
-        self._raw_frame = np.zeros(SOURCE_STATE_GRAY64_SHAPE, dtype=np.uint8)
-        self._perspective_frame = np.zeros(SOURCE_STATE_GRAY64_SHAPE, dtype=np.uint8)
-        self._normalized_frame = np.zeros(SOURCE_STATE_GRAY64_SHAPE, dtype=np.float32)
-        self._perspective_lut = _player_perspective_lut(self.ego_player_index)
+        self._raw_frame = np.zeros(SOURCE_STATE_CANVAS_LIKE_RAW64_SHAPE, dtype=np.uint8)
+        self._gray64_frame = np.zeros(SOURCE_STATE_CANVAS_GRAY64_SHAPE, dtype=np.uint8)
+        self._normalized_frame = np.zeros(SOURCE_STATE_CANVAS_GRAY64_SHAPE, dtype=np.float32)
         self._stack = np.zeros(STACKED_SOURCE_STATE_GRAY64_SHAPE, dtype=np.float32)
         self._has_reset = False
         self._needs_reset = False
@@ -527,17 +562,21 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             return self._stack.copy()
         if mode == "source_state_raw_visual_tensor":
             return self.raw_observation()
+        if mode == "source_state_rgb_canvas_like":
+            return self.raw_observation()
+        if mode == "source_state_grayscale64_visual_tensor":
+            return self._gray64_frame.copy()
         if mode == "source_state_player_perspective_raw_visual_tensor":
             return self.raw_observation(player_perspective=True)
         return None
 
     def raw_observation(self, *, player_perspective: bool = False) -> np.ndarray | None:
-        """Return the latest raw uint8 visual frame before normalization/stacking."""
+        """Return the latest raw RGB canvas-like frame before grayscale stacking."""
 
         if not self._has_reset:
             return None
-        frame = self._perspective_frame if player_perspective else self._raw_frame
-        return frame.copy()
+        _ = player_perspective
+        return self._raw_frame.copy()
 
     def __repr__(self) -> str:
         return (
@@ -569,19 +608,24 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         }
 
     def _update_stack(self) -> np.ndarray:
-        raw = self._renderer.render(self._env.state, row=0, out=self._raw_frame)
-        perspective = _normalize_player_perspective(
-            raw,
-            controlled_player=self.ego_player_index,
-            out=self._perspective_frame,
-            lut=self._perspective_lut,
+        render_source_state_rgb_canvas_like(
+            self._env.state,
+            row=0,
+            out=self._raw_frame,
+            frame_size=64,
         )
-        normalized = normalize_source_state_gray64(
-            perspective,
+        gray64 = rgb_canvas_like_to_gray64(
+            self._raw_frame,
+            out=self._gray64_frame,
+        )
+        np.multiply(
+            gray64,
+            np.float32(1.0 / 255.0),
             out=self._normalized_frame,
+            casting="unsafe",
         )
         self._stack[:-1] = self._stack[1:]
-        self._stack[-1] = normalized[0]
+        self._stack[-1] = self._normalized_frame[0]
         return self._stack
 
     def _action_mask(self, *, active: bool) -> np.ndarray:
@@ -842,37 +886,45 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             "player_ids": ("player_0", "player_1"),
             "observation_schema_id": STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID,
             "observation_schema_hash": STACKED_SOURCE_STATE_GRAY64_SCHEMA_HASH,
-            "single_frame_schema_id": SOURCE_STATE_GRAY64_SCHEMA_ID,
-            "single_frame_schema_hash": SOURCE_STATE_GRAY64_SCHEMA_HASH,
-            "raw_observation_schema_id": SOURCE_STATE_GRAY64_SCHEMA_ID,
-            "raw_observation_schema_hash": SOURCE_STATE_GRAY64_SCHEMA_HASH,
+            "single_frame_schema_id": SOURCE_STATE_CANVAS_LIKE_GRAY64_SCHEMA_ID,
+            "single_frame_schema_hash": SOURCE_STATE_CANVAS_LIKE_GRAY64_SCHEMA_HASH,
+            "raw_observation_schema_id": SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID,
+            "raw_observation_schema_hash": SOURCE_STATE_CANVAS_LIKE_RAW64_SCHEMA_HASH,
             "raw_observation_available": True,
             "raw_observation_accessors": [
                 "raw_observation()",
                 "render('source_state_raw_visual_tensor')",
+                "render('source_state_rgb_canvas_like')",
             ],
             "raw_observation_dtype": "uint8",
-            "player_perspective_schema_id": PLAYER_PERSPECTIVE_SCHEMA_ID,
-            "renderer_impl_id": SOURCE_STATE_GRAY64_RENDERER_IMPL_ID,
-            "truth_level": SOURCE_STATE_GRAY64_TRUTH_LEVEL,
-            "source_fidelity_level": SOURCE_STATE_GRAY64_SOURCE_FIDELITY_LEVEL,
+            "raw_observation_color_space": "RGB",
+            "raw_observation_source": "render_source_state_rgb_canvas_like(frame_size=64)",
+            "player_perspective_schema_id": None,
+            "renderer_impl_id": SOURCE_STATE_CANVAS_LIKE_GRAY64_RENDERER_IMPL_ID,
+            "raw_renderer_impl_id": SOURCE_STATE_RGB_CANVAS_LIKE_RENDERER_IMPL_ID,
+            "truth_level": SOURCE_STATE_CANVAS_GRAY64_TRUTH_LEVEL,
+            "source_fidelity_level": SOURCE_STATE_CANVAS_GRAY64_SOURCE_FIDELITY_LEVEL,
             "source_fidelity_claim": "source_state_backed_non_browser_pixel",
-            "visual_surface": SOURCE_STATE_GRAY64_SURFACE,
-            "visual_truth_level": SOURCE_STATE_GRAY64_TRUTH_LEVEL,
-            "visual_source_state_backed": SOURCE_STATE_GRAY64_SOURCE_STATE_BACKED,
+            "visual_surface": SOURCE_STATE_CANVAS_LIKE_GRAY64_SURFACE,
+            "visual_truth_level": SOURCE_STATE_CANVAS_GRAY64_TRUTH_LEVEL,
+            "visual_source_state_backed": SOURCE_STATE_CANVAS_GRAY64_SOURCE_STATE_BACKED,
             "debug_fidelity_only": False,
-            "browser_pixel_fidelity": SOURCE_STATE_GRAY64_BROWSER_PIXEL_FIDELITY,
-            "uses_ale": SOURCE_STATE_GRAY64_USES_ALE,
+            "browser_pixel_fidelity": SOURCE_STATE_CANVAS_GRAY64_BROWSER_PIXEL_FIDELITY,
+            "uses_ale": SOURCE_STATE_CANVAS_GRAY64_USES_ALE,
             "ale_usage": "none",
             "shape": list(STACKED_SOURCE_STATE_GRAY64_SHAPE),
-            "dtype": SOURCE_STATE_GRAY64_NORMALIZED_DTYPE,
-            "range": list(SOURCE_STATE_GRAY64_NORMALIZED_VALUE_RANGE),
-            "value_range": list(SOURCE_STATE_GRAY64_NORMALIZED_VALUE_RANGE),
-            "raw_frame_shape": list(SOURCE_STATE_GRAY64_SHAPE),
+            "dtype": SOURCE_STATE_CANVAS_GRAY64_NORMALIZED_DTYPE,
+            "range": list(SOURCE_STATE_CANVAS_GRAY64_NORMALIZED_VALUE_RANGE),
+            "value_range": list(SOURCE_STATE_CANVAS_GRAY64_NORMALIZED_VALUE_RANGE),
+            "raw_frame_shape": list(SOURCE_STATE_CANVAS_LIKE_RAW64_SHAPE),
+            "grayscale_frame_shape": list(SOURCE_STATE_CANVAS_GRAY64_SHAPE),
             "lightzero_payload_shape": list(STACKED_SOURCE_STATE_GRAY64_SHAPE),
             "model_observation_shape": list(STACKED_SOURCE_STATE_GRAY64_SHAPE),
             "frame_stack_owner": "curvyzero_source_state_survival_wrapper",
-            "frame_stack_proof": "wrapper_owned_fifo_stack; not LightZero env-manager stacking",
+            "frame_stack_proof": (
+                "wrapper_owned_canvas_like_rgb64_to_gray64_fifo_stack; "
+                "not LightZero env-manager stacking"
+            ),
             "reward_schema_id": self._reward_schema_id(),
             "reward_schema_hash": self._reward_schema_hash(),
             "scalar_training_reward_variant": self._reward_variant,
@@ -1511,6 +1563,11 @@ __all__ = [
     "SOURCE_STATE_FIXED_OPPONENT_RUNTIME_TOPOLOGY",
     "SOURCE_STATE_FIXED_OPPONENT_TWO_SEAT_STATUS",
     "SOURCE_STATE_FIXED_OPPONENT_UNDERLYING_ENV_CLASS",
+    "SOURCE_STATE_CANVAS_LIKE_GRAY64_SCHEMA_HASH",
+    "SOURCE_STATE_CANVAS_LIKE_GRAY64_SCHEMA_ID",
+    "SOURCE_STATE_CANVAS_LIKE_GRAY64_SURFACE",
+    "SOURCE_STATE_CANVAS_LIKE_RAW64_SCHEMA_HASH",
+    "SOURCE_STATE_CANVAS_LIKE_RAW64_SHAPE",
     "STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID",
     "STACKED_SOURCE_STATE_GRAY64_SHAPE",
 ]

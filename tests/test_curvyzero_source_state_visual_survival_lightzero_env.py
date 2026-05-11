@@ -10,16 +10,23 @@ from curvyzero.env.vector_multiplayer_env import NATURAL_BONUS_EFFECT_TYPE_NAMES
 from curvyzero.env.vector_multiplayer_env import NATURAL_BONUS_ENV_IMPL_ID
 from curvyzero.env.vector_multiplayer_env import PUBLIC_NATURAL_BONUS_ENV_CONTRACT_ID
 from curvyzero.env.vector_multiplayer_env import VectorMultiplayerEnv
-from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_RENDERER_IMPL_ID
-from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_SCHEMA_HASH
-from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_SCHEMA_ID
-from curvyzero.env.vector_visual_observation import SourceStateGray64Renderer
+from curvyzero.env.vector_visual_observation import (
+    SOURCE_STATE_RGB_CANVAS_LIKE_RENDERER_IMPL_ID,
+)
+from curvyzero.env.vector_visual_observation import SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID
+from curvyzero.env.vector_visual_observation import rgb_canvas_like_to_gray64
+from curvyzero.env.vector_visual_observation import render_source_state_rgb_canvas_like
 from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
     CurvyZeroSourceStateVisualSurvivalLightZeroEnv,
     CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv,
     LIGHTZERO_SOURCE_STATE_VISUAL_SURVIVAL_ENV_ID,
     LIGHTZERO_SOURCE_STATE_VISUAL_SURVIVAL_ENV_TYPE,
     LIGHTZERO_SOURCE_STATE_VISUAL_SURVIVAL_IMPORT_NAMES,
+    SOURCE_STATE_CANVAS_LIKE_GRAY64_SCHEMA_HASH,
+    SOURCE_STATE_CANVAS_LIKE_GRAY64_SCHEMA_ID,
+    SOURCE_STATE_CANVAS_LIKE_GRAY64_SURFACE,
+    SOURCE_STATE_CANVAS_LIKE_RAW64_SCHEMA_HASH,
+    SOURCE_STATE_CANVAS_LIKE_RAW64_SHAPE,
     SOURCE_STATE_FIXED_OPPONENT_ENV_VARIANT,
     SOURCE_STATE_FIXED_OPPONENT_RUNTIME_TOPOLOGY,
     SOURCE_STATE_FIXED_OPPONENT_TWO_SEAT_STATUS,
@@ -55,12 +62,24 @@ def test_source_state_visual_survival_reset_shape_and_metadata():
     assert env.last_reset_info["observation_schema_id"] == STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID
     assert env.last_reset_info["observation_schema_hash"] == STACKED_SOURCE_STATE_GRAY64_SCHEMA_HASH
     assert env.last_reset_info["schema_hash"] == STACKED_SOURCE_STATE_GRAY64_SCHEMA_HASH
+    assert env.last_reset_info["single_frame_schema_id"] == SOURCE_STATE_CANVAS_LIKE_GRAY64_SCHEMA_ID
+    assert (
+        env.last_reset_info["single_frame_schema_hash"]
+        == SOURCE_STATE_CANVAS_LIKE_GRAY64_SCHEMA_HASH
+    )
+    assert env.last_reset_info["raw_observation_schema_id"] == SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID
+    assert env.last_reset_info["raw_observation_schema_hash"] == SOURCE_STATE_CANVAS_LIKE_RAW64_SCHEMA_HASH
     assert env.last_reset_info["raw_observation_available"] is True
     assert env.last_reset_info["raw_observation_dtype"] == "uint8"
+    assert env.last_reset_info["raw_observation_color_space"] == "RGB"
+    assert env.last_reset_info["raw_frame_shape"] == list(SOURCE_STATE_CANVAS_LIKE_RAW64_SHAPE)
     assert env.last_reset_info["debug_fidelity_only"] is False
     assert env.last_reset_info["source_fidelity_claim"] == "source_state_backed_non_browser_pixel"
-    assert env.last_reset_info["visual_surface"] == "source_state_visual_tensor"
-    assert env.last_reset_info["visual_truth_level"] == "source_state_backed_non_browser_pixel"
+    assert env.last_reset_info["visual_surface"] == SOURCE_STATE_CANVAS_LIKE_GRAY64_SURFACE
+    assert (
+        env.last_reset_info["visual_truth_level"]
+        == "source_state_backed_browser_like_non_pixel_parity"
+    )
     assert env.last_reset_info["visual_source_state_backed"] is True
     assert env.last_reset_info["browser_pixel_fidelity"] is False
     assert env.last_reset_info["env_variant"] == SOURCE_STATE_FIXED_OPPONENT_ENV_VARIANT
@@ -131,16 +150,23 @@ def test_source_state_visual_survival_reset_shape_and_metadata():
     assert raw is not None
     assert raw_from_render is not None
     assert perspective_raw is not None
-    assert raw.shape == (1, 64, 64)
+    assert raw.shape == SOURCE_STATE_CANVAS_LIKE_RAW64_SHAPE
     assert raw.dtype == np.uint8
     np.testing.assert_array_equal(raw, raw_from_render)
+    np.testing.assert_array_equal(raw, env.render("source_state_rgb_canvas_like"))
     np.testing.assert_array_equal(
         env.render("source_state_player_perspective_raw_visual_tensor"),
         perspective_raw,
     )
+    np.testing.assert_array_equal(raw, perspective_raw)
+    gray64 = rgb_canvas_like_to_gray64(raw)
+    np.testing.assert_array_equal(
+        env.render("source_state_grayscale64_visual_tensor"),
+        gray64,
+    )
     np.testing.assert_allclose(
         observation["observation"][-1],
-        perspective_raw[0].astype(np.float32) / np.float32(255.0),
+        gray64[0].astype(np.float32) / np.float32(255.0),
         rtol=0.0,
         atol=1e-7,
     )
@@ -203,31 +229,37 @@ def test_source_state_visual_survival_step_and_terminal_telemetry(tmp_path):
     assert terminal_raw is not None
     assert terminal_raw_from_render is not None
     assert terminal_player_perspective_raw is not None
-    assert terminal_raw.shape == (1, 64, 64)
+    assert terminal_raw.shape == SOURCE_STATE_CANVAS_LIKE_RAW64_SHAPE
     assert terminal_raw.dtype == np.uint8
     np.testing.assert_array_equal(terminal_raw, terminal_raw_from_render)
     np.testing.assert_array_equal(
         terminal_raw,
-        SourceStateGray64Renderer(validate_state=False).render(env._env.state, row=0),
+        render_source_state_rgb_canvas_like(env._env.state, row=0, frame_size=64),
     )
+    terminal_gray64 = rgb_canvas_like_to_gray64(terminal_player_perspective_raw)
     np.testing.assert_allclose(
         timestep.info["final_observation"]["observation"][-1],
-        terminal_player_perspective_raw[0].astype(np.float32) / np.float32(255.0),
+        terminal_gray64[0].astype(np.float32) / np.float32(255.0),
         rtol=0.0,
         atol=1e-7,
     )
 
-    assert timestep.info["single_frame_schema_id"] == SOURCE_STATE_GRAY64_SCHEMA_ID
-    assert timestep.info["single_frame_schema_hash"] == SOURCE_STATE_GRAY64_SCHEMA_HASH
-    assert timestep.info["raw_observation_schema_id"] == SOURCE_STATE_GRAY64_SCHEMA_ID
-    assert timestep.info["raw_observation_schema_hash"] == SOURCE_STATE_GRAY64_SCHEMA_HASH
+    assert timestep.info["single_frame_schema_id"] == SOURCE_STATE_CANVAS_LIKE_GRAY64_SCHEMA_ID
+    assert (
+        timestep.info["single_frame_schema_hash"]
+        == SOURCE_STATE_CANVAS_LIKE_GRAY64_SCHEMA_HASH
+    )
+    assert timestep.info["raw_observation_schema_id"] == SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID
+    assert timestep.info["raw_observation_schema_hash"] == SOURCE_STATE_CANVAS_LIKE_RAW64_SCHEMA_HASH
     assert timestep.info["raw_observation_available"] is True
     assert timestep.info["raw_observation_accessors"] == [
         "raw_observation()",
         "render('source_state_raw_visual_tensor')",
+        "render('source_state_rgb_canvas_like')",
     ]
     assert timestep.info["raw_observation_dtype"] == "uint8"
-    assert timestep.info["renderer_impl_id"] == SOURCE_STATE_GRAY64_RENDERER_IMPL_ID
+    assert timestep.info["raw_observation_color_space"] == "RGB"
+    assert timestep.info["raw_renderer_impl_id"] == SOURCE_STATE_RGB_CANVAS_LIKE_RENDERER_IMPL_ID
     assert timestep.info["browser_pixel_fidelity"] is False
     assert timestep.info["uses_ale"] is False
     assert timestep.info["ale_usage"] == "none"
@@ -273,8 +305,8 @@ def test_source_state_visual_survival_step_and_terminal_telemetry(tmp_path):
     assert len(rows) == 1
     assert rows[0]["schema_id"] == "curvyzero_source_state_visual_survival_env_step/v0"
     assert rows[0]["source_fidelity_claim"] == "source_state_backed_non_browser_pixel"
-    assert rows[0]["visual_surface"] == "source_state_visual_tensor"
-    assert rows[0]["visual_truth_level"] == "source_state_backed_non_browser_pixel"
+    assert rows[0]["visual_surface"] == SOURCE_STATE_CANVAS_LIKE_GRAY64_SURFACE
+    assert rows[0]["visual_truth_level"] == "source_state_backed_browser_like_non_pixel_parity"
     assert rows[0]["visual_source_state_backed"] is True
     assert rows[0]["uses_ale"] is False
     assert rows[0]["env_variant"] == SOURCE_STATE_FIXED_OPPONENT_ENV_VARIANT

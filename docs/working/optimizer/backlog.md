@@ -23,10 +23,10 @@ Date: 2026-05-09
   c16/c32/c64 = `79.7`, `146.3`, `225.7` steps/s. Use `base` for detailed env
   timers only; use `subprocess` for Coach-facing training speed.
 - Current simple speed knobs for native CurvyTron runs: `collector_env_num` and
-  `n_episode` together (`32/32` as the conservative fast default after the
-  fresh width sweep; `64/64` for throughput stress), sparse checkpointing, and
-  `--env-telemetry-stride 50` or larger when dense per-step action JSONL is not
-  needed. Do not treat sampled telemetry histograms as full action counts.
+  `n_episode` together (`128/128` for throughput, `64/64` as fallback), sparse
+  checkpointing, sparse stock LightZero eval, and `--env-telemetry-stride 10000`
+  or similarly sparse when dense per-step action JSONL is not needed. Do not
+  treat sampled telemetry histograms as full action counts.
 - Keep evaluator costs separated in reports. Stock LightZero in-loop eval is
   controlled by `--lightzero-eval-freq` and can be skipped in optimizer profile
   mode with `--skip-lightzero-eval-in-profile`; checkpoint eval/inspection/GIF
@@ -40,6 +40,17 @@ Date: 2026-05-09
   c32/sim50 at `88` steps/s. Next serious branch is searched actor-chunk fanout
   from a frozen checkpoint; do not expect another easy single-process 10x from
   the current knobs.
+- Contract-fix profiles now prove clean stock collection through replay buffer
+  sample and learner calls. Corrected `gpu-l4-t4-cpu40` no-death dense numbers:
+  c32/sim16 `201.60` steps/s, c64/sim16 `302.46`, c128/sim16 `398.72`,
+  c256/sim16 `404.91`, c32/sim50 `106.30`, c64/sim50 `168.88`, c128/sim50
+  `224.65`; CPU64 c32/sim16 is only `102.49`. H100+CPU40 c128/sim16 is
+  `540.99`; H100+CPU40 c128/sim50 is `241.46`. Larger self-play batches
+  improve searched throughput up to c128, but c256/sim16 is basically plateaued.
+  c128 is the single-container sweet spot so far, and c128/sim50 is the best
+  tested L4/T4 serious-search throughput. H100 is useful for sim16 fast sweeps
+  or when queue/capacity is favorable, but L4/T4+CPU40 is fine for serious
+  sim50 by default.
 - Keep the compact [runtime verdict](runtime_verdict_2026-05-10.md) current
   when source profile numbers, CPU/GPU boundary evidence, or full-GPU rewrite
   stance changes.
@@ -92,12 +103,14 @@ Date: 2026-05-09
 - Current post-reorientation order for CurvyTron optimizer work:
   1. Keep the native source-state `train_muzero` path as the active trainer and
      profile surface.
-  2. Use subprocess env manager and wider collector batches first: `32/32`,
-     then `64/64` sweeps.
-  3. Add a profile-only scripted-survivor stress mode only if true
+  2. Use subprocess env manager and collector batches `128/128` for throughput,
+     with `64/64` as the fallback if capacity or stability requires it.
+  3. Use `num_simulations=50` for serious MuZero-style proof lanes and `16` for
+     fast control/profile sweeps.
+  4. Add a profile-only scripted-survivor stress mode only if true
      long-survival timing is needed.
-  4. Promote visual-fidelity claims only through Environment-owned evidence.
-  5. Scout actor/search fanout only with explicit throughput, queue/transfer
+  5. Promote visual-fidelity claims only through Environment-owned evidence.
+  6. Scout actor/search fanout only with explicit throughput, queue/transfer
      cost, replay age, and checkpoint-freshness metadata.
 - `curvytron_vector_trainer_sample` exists in `mctx_synthetic_benchmark.py`
   and ran once on Modal. Keep it as the small bridge between native

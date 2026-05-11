@@ -86,12 +86,12 @@ frozen-checkpoint collection jobs, merge their searched trajectory chunks, then
 train the next checkpoint.
 
 ```text
-many actors/search workers
-  -> searched trajectory chunks with policy_version metadata
-  -> replay/shuffle/storage
-  -> learner samples sequences and updates network
-  -> checkpoint publisher
-  -> actors refresh checkpoint on cadence
+checkpoint K
+  -> N collect-only actors/search workers use checkpoint K
+  -> searched trajectory chunks with checkpoint id, schema, seed, and search settings
+  -> merge/import chunks
+  -> learner samples sequences and updates to K+1
+  -> checkpoint publisher writes K+1
 ```
 
 In the coarse fanout experiment, all actors use the same frozen checkpoint, so
@@ -200,13 +200,14 @@ Every profile should report:
 
 1. Keep the current CurvyTron native LightZero loop as the baseline trainer and
    profile surface.
-2. Build a collect-only actor chunk function that loads a frozen checkpoint,
-   collects complete two-seat visual trajectories, and writes compact replay
-   chunks with explicit `policy_version`.
+2. Build a collect-only actor chunk function that loads one frozen checkpoint,
+   collects searched source-state visual chunks on the current fixed-opponent
+   path, and writes compact chunks with checkpoint id, schema, seed, and search
+   settings.
 3. Build a learner step that reads N chunks, samples sequences, calls
    LightZero-compatible learner code, and publishes the next checkpoint.
 4. Run N actor chunks in parallel on Modal. First target is coarse
-   synchronous generations, not fully async services. This directly tests
+   synchronous generations, not an async service. This directly tests
    whether searched CurvyTron collection can scale beyond one `train_muzero`
    process without changing MuZero semantics.
 5. Separately research whether MiniZero, EfficientZero, OpenSpiel C++ AlphaZero,

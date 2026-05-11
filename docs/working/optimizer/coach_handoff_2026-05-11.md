@@ -16,14 +16,15 @@ trainer:
 ```text
 env_variant=source_state_fixed_opponent
 non-ALE [4,64,64] source-state visual stack
-fixed-straight or frozen-checkpoint opponent
+fixed/frozen opponent
 lzero.entry.train_muzero
 LightZero collector / MCTS / replay / learner / checkpoint path
 ```
 
 This is the path the optimizer has been profiling. It is the right starting
 point for Coach. It may still have bugs and it is not a learning proof, but it
-is the repo path closest to the promising Pong-style LightZero runs.
+is the repo path closest to the promising Pong-style LightZero runs. It is not
+true current-policy two-seat self-play.
 
 ## What Changed
 
@@ -127,30 +128,30 @@ env methods run in worker processes.
 
 ## Suggested Coach Command Shape
 
-For a small real training run now that the Environment bonus-catch blocker is
-resolved:
+For the next stock-loop fixed-opponent CurvyTron run:
 
 ```bash
 uv run --extra modal modal run \
   -m curvyzero.infra.modal.lightzero_curvyzero_stacked_debug_visual_survival_train \
   --mode train \
-  --compute gpu-l4-t4 \
+  --compute gpu-l4-t4-cpu40 \
   --env-variant source_state_fixed_opponent \
   --opponent-policy-kind fixed_straight \
   --env-manager-type subprocess \
-  --collector-env-num 16 \
-  --n-episode 16 \
+  --collector-env-num 128 \
+  --n-episode 128 \
   --evaluator-env-num 1 \
   --n-evaluator-episode 1 \
-  --num-simulations 16 \
-  --batch-size 32 \
-  --env-telemetry-stride 50 \
+  --num-simulations 50 \
+  --batch-size 128 \
+  --lightzero-eval-freq 1000 \
+  --env-telemetry-stride 10000 \
   --save-ckpt-after-iter 1000
 ```
 
-For serious Pong-comparable MuZero search pressure, use `--num-simulations 50`
-and expect search to dominate more. For throughput sweeps, test
-`collector-env-num/n-episode` at `32/32` and `64/64`.
+Use `--num-simulations 16` for fast controls/profiles. Use `64/64` if c128 is
+inconvenient. `batch_size=128` matched the c128 throughput profiles, but
+learner batch size is a training-quality knob, not MCTS root batching.
 
 Do not launch a long Coach run assuming the current natural source-default
 surface is a browser-pixel fidelity claim. It is source-state backed, non-ALE,
@@ -185,8 +186,8 @@ For current Coach runs, the conservative fast shape is:
 
 ```text
 --env-manager-type subprocess
---collector-env-num 32
---n-episode 32
+--collector-env-num 64 or 128
+--n-episode same as collector-env-num
 --num-simulations 16 for fast profiles/control
 --num-simulations 50 for serious MuZero-style proof lanes
 --env-telemetry-stride 50 or higher unless dense action JSONL is needed
@@ -194,11 +195,45 @@ For current Coach runs, the conservative fast shape is:
 --lightzero-eval-freq 1000 or similarly sparse unless stock in-loop eval is needed
 ```
 
+Corrected no-death stock-loop profiles now show that larger self-play batches
+are useful: c32/sim16 `201.60` steps/s, c64/sim16 `302.46`, c128/sim16
+`398.72`, c256/sim16 `404.91`; c32/sim50 `106.30`, c64/sim50 `168.88`,
+c128/sim50 `224.65`. The run takes longer, but c128 processes many more
+searched self-play steps and is the single-container sweet spot so far. c256
+sim16 is basically plateaued. CPU64 c32/sim16 is only `102.49` steps/s, so use
+the cheap GPU+CPU40 path by default. H100+CPU40 gives c128/sim16 `540.99`
+steps/s and c128/sim50 `241.46` steps/s; use it when convenient or for fast
+sim16 sweeps, but do not require it for serious sim50 runs.
+
+Current concrete Coach shape:
+
+```text
+--compute gpu-l4-t4-cpu40
+--env-manager-type subprocess
+--collector-env-num 128
+--n-episode 128
+--num-simulations 50
+--batch-size 128
+--lightzero-eval-freq 1000
+--env-telemetry-stride 10000
+--save-ckpt-after-iter 1000
+```
+
+Fallbacks: use `64/64` if c128 is inconvenient; use `--num-simulations 16` for
+fast controls/profiles. Treat `batch_size` as a training-quality knob. The
+c128 profiles used batch size `128`, but learner batch size is not MCTS root
+batching.
+
 Important eval split: stock LightZero eval is an in-loop evaluator inside
 `train_muzero`, not the checkpoint-triggered eval/inspection/GIF path. The
 checkpoint path is spawned from checkpoint artifacts and can be kept sparse by
 saving checkpoints sparsely. Optimizer profiles now skip stock in-loop eval by
 default so Amdahl reads focus on collect/search/replay/learner.
+
+Profile caveat: the quoted profiles are `mode=profile`, no-death only to force
+long trajectories, stock in-loop eval skipped, background eval/GIF off, sparse
+telemetry, and `dense_survival_plus_outcome` for speed stress. Do not claim
+learning quality from them.
 
 Do not read `source_state_turn_commit` as trainable. Optimizer did profile it
 through stock `train_muzero`, and it is useful speed/plumbing evidence, but the
@@ -206,10 +241,10 @@ pending-step reward-credit issue still blocks learning claims.
 
 Next optimizer recommendation: after stock-loop runs, test synchronous coarse
 Modal fanout from a frozen checkpoint. Run N collect-only actor chunks in
-parallel, write searched trajectory chunks with `checkpoint_id` and schema
-metadata, then import/merge them into a learner step. This is not a full async
-service; every collection chunk in the batch uses one frozen checkpoint, then
-the learner runs after merge. It is the smallest honest test of whether
+parallel, write searched trajectory chunks with `checkpoint_id`, schema, seed,
+and search-setting metadata, then import/merge them into a learner step. This
+is not an async service; every collection chunk in the batch uses one frozen
+checkpoint, then the learner runs after merge. It is the smallest honest test of whether
 searched CurvyTron self-play can scale beyond one `train_muzero` process
 without changing MuZero semantics.
 
@@ -337,10 +372,12 @@ uv run pytest \
 
 ## Open Optimizer Next Steps
 
-- Compare the active `64/64` no-death profile against the `16/16` and `32/32`
-  runs.
-- If `64/64` subprocess still underfeeds GPU in serious sim50 runs, design
-  actor/search fanout instead of more single-process polish.
+- Use the completed c128/c256 and sim50 profiles as the single-container
+  baseline. Do not spend the next pass on more width-only stock-loop polish
+  unless a finer profile points at a concrete hot path.
+- Design the coarse synchronous collect-only fanout sweep from one frozen
+  checkpoint: `N={1,2,4,8}` actor chunks, searched chunks with checkpoint/schema/
+  seed/search metadata, merge/import, then learner update.
 - Keep LightZero as the near-term base. MiniZero/OpenSpiel/EfficientZero are
   architecture references; MCTX is a possible future batched search primitive,
   not an immediate full trainer replacement.

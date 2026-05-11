@@ -11,6 +11,9 @@ from curvyzero.env.vector_visual_observation import (
     SOURCE_STATE_BONUS64_STACK4_PLAYER_PERSPECTIVE_SCHEMA_ID,
     SOURCE_STATE_BONUS64_STACK4_PLAYER_PERSPECTIVE_SHAPE,
     SOURCE_STATE_BONUS64_STACK4_SELF_STATUS_CHANNELS,
+    SOURCE_STATE_CANVAS_GRAY64_RENDERER_IMPL_ID,
+    SOURCE_STATE_CANVAS_GRAY64_SCHEMA_ID,
+    SOURCE_STATE_CANVAS_GRAY64_SHAPE,
     SOURCE_STATE_GRAY64_BROWSER_PIXEL_FIDELITY,
     SOURCE_STATE_GRAY64_BONUS_VALUE,
     SOURCE_STATE_GRAY64_COMPARISON_TARGET,
@@ -26,10 +29,15 @@ from curvyzero.env.vector_visual_observation import (
     VectorVisualObservationError,
     normalize_source_state_gray64,
     render_source_state_bonus64_stack4_player_perspective_v1,
+    render_source_state_canvas_gray64,
     render_source_state_rgb_canvas_like,
+    render_source_snapshot_canvas_gray64,
     render_source_snapshot_gray64,
+    render_source_snapshot_rgb_canvas_like,
     render_source_state_gray64,
+    rgb_canvas_like_to_gray64,
     source_state_bonus64_stack4_player_perspective_v1_schema,
+    source_state_canvas_gray64_schema,
     source_state_gray64_metadata,
     source_state_gray64_schema,
 )
@@ -294,6 +302,23 @@ def test_source_state_rgb_canvas_like_renders_full_size_color_players_and_bonus(
     assert bool(np.any(np.all(flat == bonus_rgb, axis=1)))
 
 
+def test_source_state_canvas_gray64_is_luminance_of_browser_like_rgb64():
+    state = _small_source_state()
+    state["avatar_color"] = np.asarray([[1, 0]], dtype=np.int16)
+    rgb = render_source_state_rgb_canvas_like(state, frame_size=64)
+    frame = render_source_state_canvas_gray64(state)
+    schema = source_state_canvas_gray64_schema()
+
+    assert frame.shape == SOURCE_STATE_CANVAS_GRAY64_SHAPE
+    assert frame.dtype == np.uint8
+    assert schema["schema_id"] == SOURCE_STATE_CANVAS_GRAY64_SCHEMA_ID
+    assert schema["renderer_impl_id"] == SOURCE_STATE_CANVAS_GRAY64_RENDERER_IMPL_ID
+    np.testing.assert_array_equal(frame, rgb_canvas_like_to_gray64(rgb))
+    px = int(np.rint((10.0 / 64.0) * 63.0))
+    py = int(np.rint((10.0 / 64.0) * 63.0))
+    assert int(frame[0, py, px]) == int(round(255.0 * 0.587))
+
+
 def test_source_snapshot_gray64_matches_equivalent_vector_state_with_bonus_body():
     state = _small_source_state()
     state["body_active"][0, 2] = False
@@ -333,6 +358,72 @@ def test_source_snapshot_gray64_matches_equivalent_vector_state_with_bonus_body(
     )
 
     np.testing.assert_array_equal(source_frame, vector_frame)
+
+
+def test_source_snapshot_canvas_gray64_matches_equivalent_vector_state_with_colors():
+    state = _small_source_state()
+    state["avatar_color"] = np.asarray([[0, 1]], dtype=np.int16)
+    state["body_active"][0, 2] = False
+    state["body_write_cursor"][0] = 2
+    state.update(
+        {
+            "bonus_active": np.asarray([[True]], dtype=bool),
+            "bonus_pos": np.asarray([[[24.0, 24.0]]], dtype=np.float64),
+            "bonus_radius": np.asarray([[1.0]], dtype=np.float64),
+        }
+    )
+    snapshot = {
+        "game": {"size": 64},
+        "avatars": [
+            {
+                "id": 1,
+                "x": 10.0,
+                "y": 10.0,
+                "alive": True,
+                "present": True,
+                "color": "#ff0000",
+            },
+            {
+                "id": 2,
+                "x": 42.0,
+                "y": 18.0,
+                "alive": True,
+                "present": True,
+                "color": "#00ff00",
+            },
+        ],
+    }
+    world_bodies = (
+        {"x": 8.0, "y": 10.0, "radius": 1.0, "avatarId": 1},
+        {"x": 40.0, "y": 18.0, "radius": 1.0, "avatarId": 2},
+    )
+    bonus_bodies = (
+        {"id": 1, "type": "BonusSelfSmall", "x": 24.0, "y": 24.0, "radius": 1.0},
+    )
+    avatar_body_metadata = (
+        {"id": 1, "radius": 1.0},
+        {"id": 2, "radius": 1.0},
+    )
+
+    np.testing.assert_array_equal(
+        render_source_snapshot_rgb_canvas_like(
+            snapshot,
+            world_bodies=world_bodies,
+            bonus_bodies=bonus_bodies,
+            avatar_body_metadata=avatar_body_metadata,
+            frame_size=64,
+        ),
+        render_source_state_rgb_canvas_like(state, frame_size=64),
+    )
+    np.testing.assert_array_equal(
+        render_source_snapshot_canvas_gray64(
+            snapshot,
+            world_bodies=world_bodies,
+            bonus_bodies=bonus_bodies,
+            avatar_body_metadata=avatar_body_metadata,
+        ),
+        render_source_state_canvas_gray64(state),
+    )
 
 
 def test_source_state_gray64_skips_circles_fully_outside_source_arena():

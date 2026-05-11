@@ -406,23 +406,41 @@ stock_lightzero_eval=skipped_for_profile
 background_eval=false
 background_gif=false
 telemetry_stride=10000
+profile_only_no_death=true
 ```
 
 ```text
 compute          c   sims  steps   wall    steps/s  MCTS    policy collect  learner  replay
 gpu-l4-t4-cpu40  32  16    7680    38.09s  201.60   16.75s  22.23s          1.99s    0.17s
 gpu-l4-t4-cpu40  64  16    15360   50.78s  302.46   18.98s  27.33s          2.56s    0.29s
+gpu-l4-t4-cpu40  128 16    30720   77.05s  398.72   23.85s  37.87s          1.99s    0.29s
+gpu-l4-t4-cpu40  256 16    61440   151.74s 404.91   33.32s  60.99s          1.72s    0.32s
 gpu-l4-t4-cpu40  32  50    7680    72.25s  106.30   48.76s  54.27s          1.93s    0.17s
+gpu-l4-t4-cpu40  64  50    15360   90.95s  168.88   58.26s  66.99s          1.86s    0.27s
+gpu-l4-t4-cpu40  128 50    30720   136.75s 224.65   70.69s  85.30s          1.74s    0.31s
 cpu64            32  16    7680    74.93s  102.49   32.71s  57.81s          2.30s    0.79s
+h100-cpu40       128 16    30720   56.78s  540.99   17.24s  25.89s          1.62s    0.19s
+h100-cpu40       128 50    30720   127.22s 241.46   63.39s  77.43s          1.91s    0.24s
 ```
 
 Plain read: the corrected stock path now reaches collection, replay, sample,
 and learner cleanly. The cheap GPU is worth using: c32/sim16 is about `2x`
 faster on `gpu-l4-t4-cpu40` than on `cpu64`. Widening from c32 to c64 improves
-throughput by about `1.5x`, mostly by feeding bigger MCTS/model batches. Raising
-search from sim16 to sim50 drops c32 throughput about `47%`; MCTS/search becomes
-the clear dominant bucket. Learner and replay are still too small to be the next
-optimization target.
+throughput by about `1.5x`; widening from c64 to c128 improves another `1.3x`.
+Widening to c256 at sim16 is basically a plateau versus c128. The wall-clock
+run gets longer, but c128 processes a much larger self-play batch, so searched
+self-play steps/sec improves up to the current single-container sweet spot.
+Raising search from sim16 to sim50 drops c32 throughput about `47%`; c128/sim50
+is the best tested serious-search L4/T4 throughput so far. H100 helps c128/sim16
+by about `1.36x` versus L4/T4, but only about `1.07x` at c128/sim50. Serious
+sim50 is host/search-orchestration dominated enough that H100 should be
+convenient, not mandatory. Learner and replay buffer sampling are still too
+small to be the next optimization target.
+
+Keep the profile labels honest: these runs use `mode=profile`, no-death only to
+force long trajectories, stock in-loop eval skipped, background eval/GIF off,
+sparse telemetry, and `dense_survival_plus_outcome` for speed stress. They are
+not learning-quality evidence.
 
 Tooling note: `scripts/summarize_curvytron_lightzero_profiles.py` now fetches
 and summarizes Modal profile summaries, including inferred MCTS root-batch
@@ -589,7 +607,8 @@ For this profile shape:
    env timers but gives the fastest wall-clock; base-manager profiles show this
    bucket scales almost linearly with decisions.
 3. Underbatched search/model inference. Wider collectors help immediately.
-4. Evaluator time, because profiles still include initial eval work.
+4. Evaluator time when stock in-loop eval is enabled. Current profile shape
+   skips it so collect/search/replay/learner are easier to read.
 5. Learner train for small `5`-update profiles.
 6. Replay sample is small here.
 
@@ -673,16 +692,25 @@ Near term:
 - Do not narrow source-default bonus types from the optimizer lane. If future
   no-death profiles hit another natural-bonus semantics issue, hand it back to
   Environment with a minimal repro.
-- Use `--env-telemetry-stride 20` or larger for throughput profiles and long
-  coach runs unless dense per-step action telemetry is needed.
+- Use `--env-telemetry-stride 10000` or similarly sparse for throughput profiles
+  and long coach runs unless dense per-step action telemetry is needed.
+- Keep background eval/GIF off in speed profiles, and keep stock LightZero
+  in-loop eval sparse or skipped for profile mode.
 - Keep `save_ckpt_after_iter` sparse for profiling and long runs.
-- For Coach-facing native CurvyTron runs, start with
-  `collector_env_num=32`, `n_episode=32` as the conservative fast default; use
-  `64/64` for throughput sweeps if memory/latency stays stable.
-- Keep `evaluator_env_num=1` for training-throughput profiles. Eval throughput
-  is a separate question.
-- Use `num_simulations=16` for fast optimizer profiles and `50` for serious
-  MuZero/Pong-style proof lanes when Coach wants comparability.
+- For Coach-facing native CurvyTron runs, use the subprocess manager,
+  `collector_env_num=128`, `n_episode=128` for throughput, and `64/64` as the
+  fallback if capacity or stability says so.
+- Use `num_simulations=50` for serious MuZero-style proof lanes and `16` for
+  fast optimizer controls/profiles.
+- Treat `batch_size` as a training-quality knob. The c128 throughput profiles
+  used learner batch size `128`, but learner batch size is not MCTS root
+  batching.
+- Next scale experiment should be coarse synchronous collect-only fanout from a
+  frozen checkpoint: `N={1,2,4,8}` actors, searched chunks with
+  checkpoint/schema/seed/search settings, merge/import, then learner update.
+  This is not an async service.
+- Use H100 when it is available or queue-friendly, especially for sim16 fast
+  sweeps. For serious sim50, L4/T4+CPU40 is fine by default.
 - Add deeper tree/transfer split only if the next bottleneck remains unclear.
 
 Bigger picture:
@@ -702,13 +730,18 @@ For current native source-state CurvyTron profiles:
 uv run --extra modal modal run \
   -m curvyzero.infra.modal.lightzero_curvyzero_stacked_debug_visual_survival_train \
   --mode profile \
-  --compute gpu-l4-t4 \
+  --compute gpu-l4-t4-cpu40 \
   --env-variant source_state_fixed_opponent \
   --opponent-policy-kind fixed_straight \
   --env-manager-type subprocess \
+  --collector-env-num 128 \
+  --n-episode 128 \
+  --num-simulations 50 \
+  --batch-size 128 \
   --ego-action-straight-override-probability 0 \
   --control-noise-profile-id none \
-  --env-telemetry-stride 20 \
+  --skip-lightzero-eval-in-profile \
+  --env-telemetry-stride 10000 \
   --save-ckpt-after-iter 1000
 ```
 

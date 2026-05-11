@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from html import escape
 from pathlib import Path, PurePosixPath
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from curvyzero.infra.modal import run_management as run_mgmt
 
@@ -212,6 +212,49 @@ def _run_has_picker_flag(run_path: Path) -> bool:
     return _safe_is_file(run_path / RUN_PICKER_FLAG_FILENAME)
 
 
+def _run_picker_flag_path(mount: Path, run_id: str) -> Path:
+    clean_run_id = run_mgmt.clean_id(run_id, label="run_id")
+    return _path_for_ref(mount, run_mgmt.gif_browser_run_marker_ref(TASK_ID, clean_run_id))
+
+
+def _hide_run_from_picker_on_mount(
+    *,
+    mount: Path,
+    run_id: str,
+    volume: Any = None,
+) -> dict[str, Any]:
+    clean_run_id = run_mgmt.clean_id(run_id, label="run_id")
+    marker_path = _run_picker_flag_path(mount, clean_run_id)
+    existed = _safe_is_file(marker_path)
+    hidden = False
+    if existed:
+        try:
+            marker_path.unlink()
+            hidden = True
+        except FileNotFoundError:
+            existed = False
+    if volume is not None and hasattr(volume, "commit"):
+        volume.commit()
+    return {
+        "ok": True,
+        "run_id": clean_run_id,
+        "marker_ref": run_mgmt.gif_browser_run_marker_ref(
+            TASK_ID,
+            clean_run_id,
+        ).as_posix(),
+        "marker_existed": existed,
+        "hidden": hidden,
+    }
+
+
+def _safe_next_url(value: str) -> str:
+    if not value or not value.startswith("/") or value.startswith("//"):
+        return "/"
+    if "\x00" in value or "\\" in value:
+        return "/"
+    return value
+
+
 def _list_runs(mount: Path) -> list[dict[str, Any]]:
     base_path = _path_for_ref(mount, BASE_REF)
     if not _safe_is_dir(base_path):
@@ -380,6 +423,49 @@ def _link(path: str, ref: str, **params: Any) -> str:
     return f"{path}?{'&'.join(query)}"
 
 
+def _next_url_without_selected_run(
+    *,
+    run_filter: str,
+    attempt_filter: str,
+    eval_filter: str,
+    ok_filter: str,
+    limit: int,
+) -> str:
+    params: dict[str, Any] = {"limit": int(limit)}
+    if run_filter:
+        params["run"] = run_filter
+    if attempt_filter:
+        params["attempt"] = attempt_filter
+    if eval_filter:
+        params["eval"] = eval_filter
+    if ok_filter and ok_filter.lower() != "all":
+        params["ok"] = ok_filter
+    return f"/?{urlencode(params)}"
+
+
+def _filter_url(
+    *,
+    run_id: str,
+    run_filter: str,
+    attempt_filter: str,
+    eval_filter: str,
+    ok_filter: str,
+    limit: int,
+) -> str:
+    params: dict[str, Any] = {"limit": int(limit)}
+    if run_id:
+        params["run_id"] = run_id
+    if run_filter:
+        params["run"] = run_filter
+    if attempt_filter:
+        params["attempt"] = attempt_filter
+    if eval_filter:
+        params["eval"] = eval_filter
+    if ok_filter and ok_filter.lower() != "all":
+        params["ok"] = ok_filter
+    return f"/?{urlencode(params)}"
+
+
 def _render_filters(
     *,
     runs: list[dict[str, Any]],
@@ -390,29 +476,87 @@ def _render_filters(
     ok_filter: str,
     limit: int,
 ) -> str:
-    run_options = ['<option value="">All runs</option>']
-    for run in runs:
-        run_id = str(run["run_id"])
-        selected = " selected" if run_id == selected_run_id else ""
-        label = f"{run_id} ({run['updated_at']})"
-        run_options.append(
-            f'<option value="{_html_attr(run_id)}"{selected}>{_html_attr(label)}</option>'
-        )
     status_options = []
     for value, label in (("all", "All"), ("ok", "OK"), ("failed", "Failed")):
         selected = " selected" if ok_filter.lower() == value else ""
         status_options.append(f'<option value="{value}"{selected}>{label}</option>')
+
+    all_runs_url = _filter_url(
+        run_id="",
+        run_filter=run_filter,
+        attempt_filter=attempt_filter,
+        eval_filter=eval_filter,
+        ok_filter=ok_filter,
+        limit=limit,
+    )
+    run_menu_rows = [
+        f'<a class="run-menu-link" href="{_html_attr(all_runs_url)}">All runs</a>'
+    ]
+    selected_label = "All runs"
+    hidden_selected_run = ""
+    if selected_run_id:
+        selected_label = selected_run_id
+        hidden_selected_run = (
+            f'<input type="hidden" name="run_id" form="filters-form" '
+            f'value="{_html_attr(selected_run_id)}">'
+        )
+    for run in runs:
+        run_id = str(run["run_id"])
+        run_label = f"{run_id} ({run['updated_at']})"
+        select_url = _filter_url(
+            run_id=run_id,
+            run_filter=run_filter,
+            attempt_filter=attempt_filter,
+            eval_filter=eval_filter,
+            ok_filter=ok_filter,
+            limit=limit,
+        )
+        next_run_id = "" if run_id == selected_run_id else selected_run_id
+        next_url = _filter_url(
+            run_id=next_run_id,
+            run_filter=run_filter,
+            attempt_filter=attempt_filter,
+            eval_filter=eval_filter,
+            ok_filter=ok_filter,
+            limit=limit,
+        )
+        delete_action = (
+            f"/api/runs/{quote(run_id, safe='')}/hide?"
+            f"next={quote(next_url, safe='')}"
+        )
+        selected_class = " selected" if run_id == selected_run_id else ""
+        run_menu_rows.append(
+            f"""
+            <div class="run-menu-row{selected_class}">
+                <a class="run-menu-link" href="{_html_attr(select_url)}">{_html_attr(run_label)}</a>
+                <form method="post" action="{_html_attr(delete_action)}" class="hide-run-form">
+                    <button type="submit" class="danger" data-delete-run-id="{_html_attr(run_id)}">
+                        <span class="spinner" aria-hidden="true"></span>
+                        <span class="button-label">Delete</span>
+                    </button>
+                </form>
+            </div>
+            """
+        )
     return f"""
-        <form method="get" class="filters">
-            <label>Run <select name="run_id" onchange="this.form.submit()">{''.join(run_options)}</select></label>
-            <label>Run text <input name="run" value="{_html_attr(run_filter)}"></label>
-            <label>Attempt <input name="attempt" value="{_html_attr(attempt_filter)}"></label>
-            <label>Eval <input name="eval" value="{_html_attr(eval_filter)}"></label>
-            <label>Status <select name="ok">{''.join(status_options)}</select></label>
+        <form id="filters-form" method="get"></form>
+        <div class="filters">
+            {hidden_selected_run}
+            <div class="run-control">
+                <span class="field-label">Run</span>
+                <details class="run-picker">
+                    <summary>{_html_attr(selected_label)}</summary>
+                    <div class="run-menu">{''.join(run_menu_rows)}</div>
+                </details>
+            </div>
+            <label>Run text <input name="run" form="filters-form" value="{_html_attr(run_filter)}"></label>
+            <label>Attempt <input name="attempt" form="filters-form" value="{_html_attr(attempt_filter)}"></label>
+            <label>Eval <input name="eval" form="filters-form" value="{_html_attr(eval_filter)}"></label>
+            <label>Status <select name="ok" form="filters-form">{''.join(status_options)}</select></label>
             <label>Limit <input name="limit" type="number" min="1" max="{MAX_LIMIT}"
-                value="{_html_attr(limit)}"></label>
-            <button type="submit">Apply</button>
-        </form>
+                form="filters-form" value="{_html_attr(limit)}"></label>
+            <button type="submit" form="filters-form">Apply</button>
+        </div>
     """
 
 
@@ -536,6 +680,75 @@ def _render_page(
             border-top: 1px solid #dadce0;
         }}
         label {{ display: grid; gap: 4px; color: #5f6368; font-size: 12px; }}
+        .run-control {{
+            display: grid;
+            gap: 4px;
+            color: #5f6368;
+            font-size: 12px;
+            min-width: 320px;
+        }}
+        .field-label {{ display: block; }}
+        .run-picker {{ position: relative; color: #202124; }}
+        .run-picker summary {{
+            display: flex;
+            align-items: center;
+            min-height: 30px;
+            border: 1px solid #dadce0;
+            border-radius: 4px;
+            padding: 0 8px;
+            cursor: pointer;
+            user-select: none;
+        }}
+        .run-picker[open] summary {{ border-color: #1a73e8; }}
+        .run-menu {{
+            position: absolute;
+            z-index: 20;
+            top: calc(100% + 4px);
+            left: 0;
+            width: min(720px, 90vw);
+            max-height: 420px;
+            overflow: auto;
+            border: 1px solid #dadce0;
+            border-radius: 4px;
+            background: #ffffff;
+            box-shadow: 0 8px 24px rgba(60, 64, 67, 0.18);
+        }}
+        .run-menu-row {{
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            align-items: center;
+            gap: 8px;
+            border-top: 1px solid #e8eaed;
+        }}
+        .run-menu-row.selected {{ background: #f1f5ff; }}
+        .run-menu-link {{
+            display: block;
+            margin: 0;
+            padding: 8px;
+            overflow: hidden;
+            color: #202124;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }}
+        .hide-run-form {{ margin: 0; }}
+        .hide-run-form button {{ margin-right: 6px; }}
+        .hide-run-form.is-deleting button {{
+            opacity: 0.78;
+            cursor: wait;
+        }}
+        .spinner {{
+            display: none;
+            width: 12px;
+            height: 12px;
+            margin-right: 6px;
+            border: 2px solid rgba(255, 255, 255, 0.45);
+            border-top-color: #ffffff;
+            border-radius: 50%;
+            vertical-align: -2px;
+            animation: spin 0.8s linear infinite;
+        }}
+        .hide-run-form.is-deleting .spinner {{ display: inline-block; }}
+        @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
         input, select, button {{
             height: 32px;
             border: 1px solid #dadce0;
@@ -544,6 +757,7 @@ def _render_page(
             font: inherit;
         }}
         button {{ background: #1a73e8; border-color: #1a73e8; color: white; }}
+        button.danger {{ background: #b3261e; border-color: #b3261e; }}
         table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
         th, td {{ padding: 8px; border-top: 1px solid #e8eaed; vertical-align: top; }}
         th {{ text-align: left; color: #5f6368; font-weight: 600; }}
@@ -576,14 +790,59 @@ def _render_page(
     {filters}
     {reload_warning}
     {_render_rows(rows)}
+    <script>
+        for (const form of document.querySelectorAll(".hide-run-form")) {{
+            form.addEventListener("submit", async (event) => {{
+                event.preventDefault();
+                if (form.classList.contains("is-deleting")) return;
+                form.classList.add("is-deleting");
+                const button = form.querySelector("button");
+                const label = form.querySelector(".button-label");
+                if (button) button.disabled = true;
+                if (label) label.textContent = "Deleting";
+                try {{
+                    const response = await fetch(form.action, {{
+                        method: "POST",
+                        headers: {{
+                            "Accept": "application/json",
+                            "X-Requested-With": "fetch"
+                        }}
+                    }});
+                    if (!response.ok) throw new Error(`delete failed: ${{response.status}}`);
+                    const payload = await response.json();
+                    if (!payload.ok) throw new Error("delete failed");
+                    const runId = payload.run_id || button?.dataset.deleteRunId || "";
+                    const row = form.closest(".run-menu-row");
+                    const picker = form.closest(".run-picker");
+                    const selectedInput = document.querySelector(
+                        'input[name="run_id"][form="filters-form"]'
+                    );
+                    const deletedSelectedRun = selectedInput && selectedInput.value === runId;
+                    if (row) row.remove();
+                    if (deletedSelectedRun) {{
+                        selectedInput.remove();
+                        const summary = picker?.querySelector("summary");
+                        if (summary) summary.textContent = "All runs";
+                        const url = new URL(window.location.href);
+                        url.searchParams.delete("run_id");
+                        window.history.replaceState(null, "", url.pathname + url.search + url.hash);
+                    }}
+                }} catch (error) {{
+                    form.classList.remove("is-deleting");
+                    if (button) button.disabled = false;
+                    if (label) label.textContent = "Retry";
+                }}
+            }});
+        }}
+    </script>
 </body>
 </html>
 """
 
 
 def _build_fastapi_app(volume: Any) -> Any:
-    from fastapi import FastAPI, Query
-    from fastapi.responses import HTMLResponse, JSONResponse, Response
+    from fastapi import FastAPI, Header, Query
+    from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
     web_app = FastAPI(title="CurvyTron Self-Play GIF Browser")
 
@@ -651,6 +910,40 @@ def _build_fastapi_app(volume: Any) -> Any:
         )
         return JSONResponse({"rows": rows, "runs": runs, "reload_error": reload_error})
 
+    @web_app.post("/api/runs/{run_id}/hide")
+    def hide_run(
+        run_id: str,
+        next: str = "/",
+        x_requested_with: str = Header(default=""),
+    ) -> Response:
+        next_url = _safe_next_url(next)
+        try:
+            clean_run_id = run_mgmt.clean_id(run_id, label="run_id")
+        except ValueError as exc:
+            return Response(str(exc), status_code=400)
+
+        if (
+            modal is not None
+            and runs_volume is not None
+            and volume is runs_volume
+            and "curvytron_gif_browser_hide_run" in globals()
+        ):
+            delete_result = curvytron_gif_browser_hide_run.remote(run_id=clean_run_id)
+            if volume is not None and hasattr(volume, "reload"):
+                try:
+                    volume.reload()
+                except Exception:
+                    pass
+        else:
+            delete_result = _hide_run_from_picker_on_mount(
+                mount=RUNS_MOUNT,
+                run_id=clean_run_id,
+                volume=volume,
+            )
+        if x_requested_with == "fetch":
+            return JSONResponse({**delete_result, "next": next_url})
+        return RedirectResponse(next_url, status_code=303)
+
     @web_app.get("/gif")
     def gif(ref: str) -> Response:
         try:
@@ -687,6 +980,30 @@ def _build_fastapi_app(volume: Any) -> Any:
 
 
 if modal is not None:
+
+    @app.function(
+        image=image,
+        volumes={RUNS_MOUNT.as_posix(): runs_volume},
+        timeout=60,
+        cpu=0.25,
+        memory=256,
+    )
+    def curvytron_gif_browser_hide_run(run_id: str) -> dict[str, Any]:
+        reload_error = None
+        if hasattr(runs_volume, "reload"):
+            try:
+                runs_volume.reload()
+            except Exception as exc:  # pragma: no cover - remote Volume resilience.
+                reload_error = f"{type(exc).__name__}: {exc}"
+        result = _hide_run_from_picker_on_mount(
+            mount=RUNS_MOUNT,
+            run_id=run_id,
+            volume=runs_volume,
+        )
+        result["reload_error"] = reload_error
+        print(json.dumps(result, sort_keys=True))
+        return result
+
 
     @app.function(
         image=image,

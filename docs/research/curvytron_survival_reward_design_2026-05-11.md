@@ -214,6 +214,25 @@ load plumbing, not the progress metric.
 Likewise, any checkpoint-side reward variant or target profile is load-shape
 metadata, not an eval-score contract.
 
+Eval cadence rule: do not run CurvyZero checkpoint survival eval on every
+checkpoint by default. Keep background checkpoint eval disabled for long
+training runs, then score a small selected checkpoint set with the standalone
+eval harness after the run or at sparse milestones. LightZero's stock evaluator
+is a separate in-training signal controlled by `lightzero_eval_freq`.
+
+Current run evidence, 2026-05-11:
+
+- Modal smokes passed for both `sparse_outcome` and
+  `dense_survival_plus_outcome` under
+  `curvytron-reward-variant-smoke-20260511`.
+- Omitting `--reward-variant` now resolves to `sparse_outcome`, verified by
+  `curvytron-reward-default-smoke-20260511`.
+- A launch canary after the stop-cap fix wrote volume artifacts under
+  `curvytron-reward-stopcap-smoke-wait2-20260511`.
+- The active comparison pair is
+  `curvytron-reward-compare-sparse-sim16-waitlong-20260511` and
+  `curvytron-reward-compare-dense-sim16-waitlong-20260511`.
+
 ## Evidence
 
 AlphaZero trains value against game outcome: `-1` loss, `0` draw, `+1` win, not

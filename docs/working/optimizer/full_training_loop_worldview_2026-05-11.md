@@ -12,9 +12,12 @@ Related replication-control backlog:
 ## One-Line Goal
 
 Current baseline: stock LightZero `train_muzero` on
-`source_state_fixed_opponent`. Future goal: if the stock loop is too slow, test
-coarse synchronous fanout of searched trajectory collection before designing
-any continuous actor/replay service.
+`source_state_fixed_opponent`, source-state `[4,64,64]`, fixed/frozen opponent,
+and the repo trainer
+`src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py`.
+This is not true current-policy two-seat self-play. Future goal: if the stock
+loop is too slow, test coarse synchronous fanout of searched trajectory
+collection before designing any continuous actor/replay service.
 
 Plain English: we need actors to play games, search to choose good actions,
 replay to store those games, a learner to update the model, checkpoints to move
@@ -27,7 +30,7 @@ shape if coarse fanout proves useful.
 
 ```text
 checkpoint N
-  -> actors collect searched visual trajectories
+  -> actors collect searched visual chunks from one frozen checkpoint
   -> replay stores physical-tick trajectory chunks
   -> learner samples unrolls and updates model
   -> checkpoint publisher writes checkpoint N+1
@@ -75,6 +78,13 @@ Owns turning env states into searched decisions and replay records:
 Current likely v1: custom CurvyTron actor around LightZero
 `MuZeroPolicy.collect_mode.forward`, one row per live seat, then native-compatible
 per-seat trajectory records.
+
+Near-term scale v1 is simpler than a continuous actor service: freeze checkpoint
+`K`, launch `N={1,2,4,8}` collect-only actors, have each write searched chunks
+with checkpoint id/schema/seed/search settings, merge/import chunks, then run
+the learner to publish `K+1`. All actors in that batch use the same checkpoint.
+The caveats are wasted old/correlated data and merge/learner bottlenecks, not
+hidden off-policy drift inside the synchronous batch.
 
 ### Search / Inference
 

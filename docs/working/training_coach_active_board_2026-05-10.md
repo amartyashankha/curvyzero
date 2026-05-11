@@ -19,9 +19,11 @@ Promotion needs heldout eval and telemetry that separate trainer reward, sparse
 outcome, survival length, timeout/truncation, action behavior, and terminal
 causes.
 
-Implementation guardrail: keep the current CurvyTron LightZero lane on stock
-`train_muzero`. The intended changes are env/reward hooks and labeled eval
-telemetry, not a custom trainer.
+Implementation guardrail: the main CurvyTron learning gate is actual
+current-policy self-play. Fixed-opponent, turn-commit, and centralized
+joint-action stock LightZero runs are controls/profile paths unless they also
+prove honest two-player current-policy self-play. The active full self-play
+lane is the two-seat adapter path.
 
 Eval guardrail: survival progress is measured from episode length. Eval may
 need `model_reward_variant` only to reconstruct a checkpoint's LightZero
@@ -29,7 +31,7 @@ support/model shape; that is not the eval score.
 
 ## Current State
 
-Updated 2026-05-11 22:36 EDT.
+Updated 2026-05-11 19:12 EDT.
 
 - Pong replication has passed the basic learning-signal gate. Stock-like visual
   LightZero Pong learned to survive longer across several same-run checkpoint
@@ -106,6 +108,44 @@ Updated 2026-05-11 22:36 EDT.
 - Default reward dry smoke passed under
   `curvytron-reward-default-smoke-20260511` / `auto-default-sparse-dry`.
   Omitting `--reward-variant` now resolves to `sparse_outcome`, not dense.
+- Stop-cap fix: `stop_after_learner_train_calls=0` now means "no learner-call
+  cap." The old default `1` silently made "long" runs end after one learner
+  train call unless every launch overrode it correctly.
+- Tiny wait-mode canary passed after the stop-cap fix:
+  `curvytron-reward-stopcap-smoke-wait2-20260511` /
+  `default-nocap-maxenv64-wait2`. It called stock `train_muzero`, wrote
+  `summary.json`, `status_heartbeat.json`, `env_steps.jsonl`, and action
+  observability. It was only a launch/artifact canary, not a learning run.
+- Eval-cadence fix: `lightzero_eval_freq=0` now means "skip stock LightZero
+  eval during the training run" by setting the internal eval interval beyond
+  `max_train_iter`. Background checkpoint survival eval and background GIFs
+  default off for long runs.
+- Eval harness fix: standalone CurvyTron survival eval now passes the new
+  `lightzero_eval_freq` argument into the shared config builder. The earlier
+  `steps=0` eval rows in the `waitlong` runs were setup failures, not survival
+  measurements.
+- Stopped the older eval-heavy fixed-opponent comparison apps:
+  `curvytron-reward-compare-sparse-sim16-waitlong-20260511` and
+  `curvytron-reward-compare-dense-sim16-waitlong-20260511`.
+- Stopped the corrected fixed-opponent `cleanlong` pair after deciding that
+  fixed-opponent controls are not the main gate. They are useful controls, but
+  they do not test two-player current-policy self-play.
+- Active CurvyTron training lane is now the two-seat current-policy self-play
+  path. This is not stock `train_muzero`; it is the small custom adapter where
+  one live LightZero MuZero policy chooses both players' actions before the env
+  advances, and learner updates mutate that same policy for later collection.
+  Treat it as the full current-policy self-play lane for now, with the caveat
+  that it is custom code.
+- Live14 self-play runs launched with frequent progress writes and no automatic
+  eval: `clean`, `explore`, `repeat`, and `strong`. Latest checks show all four
+  moving, no problems, model weights changing, all three actions used by both
+  players, and mean completed episode length still around `10-11` steps. This
+  is a moving baseline, not yet a learning claim.
+- Modal app list at 2026-05-11 19:13 EDT shows the active CurvyZero detached
+  training apps are two-seat self-play trainer jobs: the older `s6301`-`s6304`
+  batch plus the `live14` clean/explore/repeat/strong batch. The fixed-opponent
+  `curvyzero-lightzero-curvytron-visual-survival-train` apps from this cleanup
+  pass are stopped.
 
 ## Pong Facts
 
@@ -214,10 +254,44 @@ Current launched two-seat run refs:
 
 | run | attempt | function call | variant |
 | --- | --- | --- | --- |
-| `curvytron-two-seat-selfplay-clean-detached-s6301-20260511` | `clean-detached-s6301` | `fc-01KRCAT6FCJ1CMC1G1WW3973SW` | no repeat, no visual noise |
-| `curvytron-two-seat-selfplay-repeat-mild-detached-s6302-20260511` | `repeat-mild-detached-s6302` | `fc-01KRCAT6F1A4F0Q2Q1BEWY18XR` | repeat max `3`, extra probability ramps to `0.10` over `1000` iterations |
-| `curvytron-two-seat-selfplay-repeat-strong-detached-s6303-20260511` | `repeat-strong-detached-s6303` | `fc-01KRCAT6E0JD54V57ZNHXFFZ3R` | repeat max `4`, extra probability ramps to `0.25` over `2000` iterations |
-| `curvytron-two-seat-selfplay-obsnoise002-detached-s6304-20260511` | `obsnoise002-detached-s6304` | `fc-01KRCAT6EAPMT6AAKGTYXBQR89` | observation noise std `0.02`, no repeat |
+| `curvytron-two-seat-selfplay-live14-clean-observable-20260511` | `live14-clean-progress1` | `fc-01KRCM72SVS61ZM51WEKYSN3G0` | clean self-play, temp `1.0`, epsilon `0.25` |
+| `curvytron-two-seat-selfplay-live14-explore-observable-20260511` | `live14-explore-progress1` | `fc-01KRCM72TBPF684GRWVBXM5BG5` | higher exploration, temp `2.0`, epsilon `0.50` |
+| `curvytron-two-seat-selfplay-live14-repeat-observable-20260511` | `live14-repeat-progress1` | `fc-01KRCM72SP02E32QNTQK033B4A` | repeat max `3`, extra probability ramps to `0.10` over `1000` iterations |
+| `curvytron-two-seat-selfplay-live14-strong-sim8-20260511` | `live14-strong-sim8-progress1` | `fc-01KRCMQDT933KQXQ7RB1XCFFVZ` | stronger search/update run, temp `1.5`, epsilon `0.25`, sims `8`, updates `8` |
+
+Live14 shared knobs for `clean`/`explore`/`repeat`: GPU L4/T4,
+`batch_size=16`, `collect_steps_per_iteration=64`,
+`updates_per_iteration=4`, `num_simulations=4`, accumulated replay,
+`learner_sample_size=128`, `max_ticks=16384`, checkpoint every `500`
+iterations, progress every iteration, initial checkpoint saved.
+
+Live14 `strong` uses the same main shape but raises search/update pressure:
+`num_simulations=8`, `updates_per_iteration=8`, and
+`learner_sample_size=256`.
+
+Live14 early progress, 2026-05-11 23:06 UTC:
+
+| run | iteration | total steps | mean completed episode steps | max completed episode steps | action read |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `live14-clean` | `45` | `2880` | `10.73` | `26` | balanced, no collapse |
+| `live14-explore` | `49` | `3136` | `10.87` | `28` | balanced, no collapse |
+| `live14-repeat` | `49` | `3136` | `10.74` | `32` | balanced, no collapse |
+
+Live14 later progress, 2026-05-11 23:11 UTC:
+
+| run | iteration | total steps | mean completed episode steps | max completed episode steps | action read |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `live14-clean` | `63` | `4032` | `10.45` | `33` | balanced, no collapse |
+| `live14-explore` | `78` | `4992` | `10.75` | `25` | balanced, no collapse |
+| `live14-repeat` | `79` | `5056` | `10.53` | `31` | balanced, no collapse |
+| `live14-strong` | `16` | `1024` | `10.97` | `27` | balanced, no collapse |
+
+At this speed, checkpoint `iteration_500` is expected roughly around the
+75-90 minute mark after launch. Until then, progress rows are the main signal.
+
+The older `live13` launch used `progress_every_iterations=50`, which made it
+hard to tell quickly whether the first iterations were moving. Those apps were
+stopped and superseded by `live14`.
 
 The earlier non-detached `s6201`-`s6204` launch attempt printed refs but did
 not show active containers or progress directories. Treat those refs as
@@ -279,12 +353,28 @@ Validation:
   not let dense/helper reward stand in for true outcome.
 - Treat eval/progress survival as episode length. Checkpoint reward variant or
   target profile only tells loaders how to rebuild checkpoint shape.
+- Keep LightZero's stock evaluator separate from the CurvyZero checkpoint
+  survival harness. `lightzero_eval_freq` controls the in-training stock
+  evaluator; `background_eval_*` and the standalone eval module control
+  checkpoint survival eval.
 - Compare each run to its own `iteration_0`.
 - Do not call early flat Pong reads failures before enough horizon.
 - Do not mix Pong and CurvyTron claims.
 - Do not report a training claim without checkpoint refs, eval settings,
   action histogram or collapse check, and a plain non-claim.
 - Treat seeds as reproducibility tools, not a thing to overfit.
+
+## Eval Cadence
+
+- Current default for long CurvyTron training runs: stock LightZero eval off
+  unless explicitly requested, background checkpoint survival eval off, and no
+  background selfplay GIFs.
+- For overnight runs, prefer checkpointing every `500` to `1000` iterations and
+  run the standalone checkpoint survival eval only on selected checkpoints such
+  as `iteration_0`, sparse milestones, and the latest/best checkpoint.
+- Avoid `background_eval_enabled=true` while the checkpoint eval harness is
+  changing. It schedules survival eval per visible checkpoint through the hook
+  or poller path and can waste time when checkpoint cadence is high.
 
 ## Current Gates
 

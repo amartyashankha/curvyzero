@@ -62,6 +62,36 @@ SOURCE_STATE_RGB_CANVAS_LIKE_PLAYER_RGB = (
     (0, 80, 255),
     (255, 240, 0),
 )
+SOURCE_STATE_CANVAS_GRAY64_SCHEMA_ID = "curvyzero_source_state_canvas_gray64/v0"
+SOURCE_STATE_CANVAS_GRAY64_RENDERER_IMPL_ID = (
+    "curvyzero_source_state_rgb_canvas_like_to_gray64_numpy/v0"
+)
+SOURCE_STATE_CANVAS_GRAY64_SOURCE_CLAIM_ID = (
+    "curvyzero_vector_runtime_source_state_canvas_gray64/v0"
+)
+SOURCE_STATE_CANVAS_GRAY64_SHAPE = SOURCE_STATE_GRAY64_SHAPE
+SOURCE_STATE_CANVAS_GRAY64_DTYPE = SOURCE_STATE_GRAY64_DTYPE
+SOURCE_STATE_CANVAS_GRAY64_VALUE_RANGE = SOURCE_STATE_GRAY64_VALUE_RANGE
+SOURCE_STATE_CANVAS_GRAY64_NORMALIZED_DTYPE = SOURCE_STATE_GRAY64_NORMALIZED_DTYPE
+SOURCE_STATE_CANVAS_GRAY64_NORMALIZED_VALUE_RANGE = (
+    SOURCE_STATE_GRAY64_NORMALIZED_VALUE_RANGE
+)
+SOURCE_STATE_CANVAS_GRAY64_SURFACE = "source_state_canvas_gray64_tensor"
+SOURCE_STATE_CANVAS_GRAY64_TRUTH_LEVEL = SOURCE_STATE_RGB_CANVAS_LIKE_TRUTH_LEVEL
+SOURCE_STATE_CANVAS_GRAY64_SOURCE_FIDELITY_LEVEL = (
+    "source_vector_state_canvas_like_rgb_luma_raster"
+)
+SOURCE_STATE_CANVAS_GRAY64_PERSPECTIVE = "global_browser_like_source_state"
+SOURCE_STATE_CANVAS_GRAY64_COMPARISON_TARGET = "curvyzero_source_state_rgb_canvas_like/v0"
+SOURCE_STATE_CANVAS_GRAY64_BROWSER_PIXEL_FIDELITY = False
+SOURCE_STATE_CANVAS_GRAY64_BROWSER_PIXEL_FIDELITY_CLAIM = (
+    "browser_like_source_state_renderer_not_dom_canvas"
+)
+SOURCE_STATE_CANVAS_GRAY64_PIXEL_FIDELITY_BLOCKER = (
+    "source-state canvas-like renderer is not yet compared against real browser canvas pixels"
+)
+SOURCE_STATE_CANVAS_GRAY64_SOURCE_STATE_BACKED = True
+SOURCE_STATE_CANVAS_GRAY64_USES_ALE = False
 SOURCE_STATE_GRAY64_STATE_FIELDS = (
     "state.tick",
     "state.elapsed_ms",
@@ -326,6 +356,182 @@ def render_source_state_rgb_canvas_like(
     return frame
 
 
+def render_source_state_canvas_gray64(
+    state: Mapping[str, np.ndarray],
+    *,
+    row: int = 0,
+    out: np.ndarray | None = None,
+    rgb_out: np.ndarray | None = None,
+    player_rgb: Sequence[Sequence[int]] | None = None,
+    background_rgb: Sequence[int] = SOURCE_STATE_RGB_CANVAS_LIKE_BACKGROUND_RGB,
+) -> np.ndarray:
+    """Render browser-like source-state RGB, then convert it to gray64.
+
+    This is the clean model-facing visual path: one source-state, browser-like
+    RGB image at 64x64, converted with fixed luminance weights. It is still not
+    a DOM/browser canvas pixel-parity claim.
+    """
+
+    rgb = render_source_state_rgb_canvas_like(
+        state,
+        row=row,
+        out=rgb_out,
+        frame_size=SOURCE_STATE_CANVAS_GRAY64_SHAPE[1],
+        player_rgb=player_rgb,
+        background_rgb=background_rgb,
+    )
+    return rgb_canvas_like_to_gray64(rgb, out=out)
+
+
+def render_source_snapshot_rgb_canvas_like(
+    snapshot: Mapping[str, Any],
+    *,
+    world_bodies: Sequence[Mapping[str, Any]] | None = None,
+    bonus_bodies: Sequence[Mapping[str, Any]] | None = None,
+    avatar_body_metadata: Sequence[Mapping[str, Any]] | None = None,
+    out: np.ndarray | None = None,
+    frame_size: int = SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
+    player_rgb: Sequence[Sequence[int]] | None = None,
+    background_rgb: Sequence[int] = SOURCE_STATE_RGB_CANVAS_LIKE_BACKGROUND_RGB,
+    default_avatar_radius: float = SOURCE_STATE_GRAY64_DEFAULT_AVATAR_RADIUS,
+) -> np.ndarray:
+    """Render a source-env snapshot into the browser-like RGB frame."""
+
+    size = _rgb_frame_size(frame_size)
+    frame = (
+        np.empty((size, size, 3), dtype=np.uint8)
+        if out is None
+        else _validated_rgb_frame(out, frame_size=size)
+    )
+    frame[:, :] = _rgb_triplet(background_rgb)
+    map_size = _source_snapshot_map_size(snapshot)
+    avatars = _source_snapshot_avatars(snapshot)
+    colors = _source_avatar_rgb_values(avatars, player_rgb=player_rgb)
+    player_index_by_avatar_id = {
+        int(avatar["id"]): index
+        for index, avatar in enumerate(avatars)
+        if _source_has_int(avatar.get("id"))
+    }
+    avatar_radius_by_id = _source_avatar_radius_by_id(avatar_body_metadata)
+
+    body_records = _source_mapping_sequence(world_bodies, name="world_bodies")
+    if body_records:
+        body_positions = np.asarray(
+            [[float(body["x"]), float(body["y"])] for body in body_records],
+            dtype=np.float64,
+        )
+        body_radii = np.asarray(
+            [float(body.get("radius", default_avatar_radius)) for body in body_records],
+            dtype=np.float64,
+        )
+        body_owners = np.asarray(
+            [
+                _source_body_owner_index(body.get("avatarId"), player_index_by_avatar_id)
+                for body in body_records
+            ],
+            dtype=np.int16,
+        )
+        _draw_body_circles_rgb(
+            frame,
+            body_positions,
+            body_radii,
+            body_owners,
+            map_size,
+            colors=colors,
+        )
+
+    bonus_records = _source_mapping_sequence(bonus_bodies, name="bonus_bodies")
+    if bonus_records:
+        bonus_positions = np.asarray(
+            [[float(bonus["x"]), float(bonus["y"])] for bonus in bonus_records],
+            dtype=np.float64,
+        )
+        bonus_radii = np.asarray(
+            [float(bonus.get("radius", 0.0)) for bonus in bonus_records],
+            dtype=np.float64,
+        )
+        _draw_bonus_circles_rgb(frame, bonus_positions, bonus_radii, map_size)
+
+    for player, avatar in enumerate(avatars):
+        if not bool(avatar.get("present", True)):
+            continue
+        if not bool(avatar.get("alive", True)):
+            continue
+        avatar_id = avatar.get("id")
+        radius = (
+            float(avatar["radius"])
+            if "radius" in avatar
+            else avatar_radius_by_id.get(int(avatar_id), float(default_avatar_radius))
+            if _source_has_int(avatar_id)
+            else float(default_avatar_radius)
+        )
+        _draw_world_circle_rgb(
+            frame,
+            avatar["x"],
+            avatar["y"],
+            radius,
+            map_size,
+            color=colors[player],
+        )
+    return frame
+
+
+def render_source_snapshot_canvas_gray64(
+    snapshot: Mapping[str, Any],
+    *,
+    world_bodies: Sequence[Mapping[str, Any]] | None = None,
+    bonus_bodies: Sequence[Mapping[str, Any]] | None = None,
+    avatar_body_metadata: Sequence[Mapping[str, Any]] | None = None,
+    out: np.ndarray | None = None,
+    rgb_out: np.ndarray | None = None,
+    player_rgb: Sequence[Sequence[int]] | None = None,
+    background_rgb: Sequence[int] = SOURCE_STATE_RGB_CANVAS_LIKE_BACKGROUND_RGB,
+    default_avatar_radius: float = SOURCE_STATE_GRAY64_DEFAULT_AVATAR_RADIUS,
+) -> np.ndarray:
+    rgb = render_source_snapshot_rgb_canvas_like(
+        snapshot,
+        world_bodies=world_bodies,
+        bonus_bodies=bonus_bodies,
+        avatar_body_metadata=avatar_body_metadata,
+        out=rgb_out,
+        frame_size=SOURCE_STATE_CANVAS_GRAY64_SHAPE[1],
+        player_rgb=player_rgb,
+        background_rgb=background_rgb,
+        default_avatar_radius=default_avatar_radius,
+    )
+    return rgb_canvas_like_to_gray64(rgb, out=out)
+
+
+def rgb_canvas_like_to_gray64(
+    rgb: np.ndarray,
+    *,
+    out: np.ndarray | None = None,
+) -> np.ndarray:
+    """Convert an RGB canvas-like frame to CHW uint8 gray64."""
+
+    rgb_array = np.asarray(rgb)
+    if rgb_array.shape != (64, 64, 3):
+        raise VectorVisualObservationError(
+            f"rgb must have shape (64, 64, 3), got {rgb_array.shape}"
+        )
+    if rgb_array.dtype != np.uint8:
+        raise VectorVisualObservationError(f"rgb dtype must be uint8, got {rgb_array.dtype}")
+    frame = (
+        np.empty(SOURCE_STATE_CANVAS_GRAY64_SHAPE, dtype=np.uint8)
+        if out is None
+        else _validated_frame(out, name="out")
+    )
+    gray = (
+        rgb_array[:, :, 0].astype(np.float32) * np.float32(0.299)
+        + rgb_array[:, :, 1].astype(np.float32) * np.float32(0.587)
+        + rgb_array[:, :, 2].astype(np.float32) * np.float32(0.114)
+    )
+    np.rint(gray, out=gray)
+    np.clip(gray, 0.0, 255.0, out=gray)
+    frame[0] = gray.astype(np.uint8)
+    return frame
+
+
 def render_source_snapshot_gray64(
     snapshot: Mapping[str, Any],
     *,
@@ -448,6 +654,47 @@ def normalize_source_state_gray64(
             raise VectorVisualObservationError(f"out dtype must be float32, got {normalized.dtype}")
     np.multiply(frame_array, np.float32(1.0 / 255.0), out=normalized, casting="unsafe")
     return normalized
+
+
+def source_state_canvas_gray64_schema() -> dict[str, Any]:
+    return {
+        "schema_id": SOURCE_STATE_CANVAS_GRAY64_SCHEMA_ID,
+        "observation_schema_id": SOURCE_STATE_CANVAS_GRAY64_SCHEMA_ID,
+        "source_claim_id": SOURCE_STATE_CANVAS_GRAY64_SOURCE_CLAIM_ID,
+        "surface": SOURCE_STATE_CANVAS_GRAY64_SURFACE,
+        "truth_level": SOURCE_STATE_CANVAS_GRAY64_TRUTH_LEVEL,
+        "source_fidelity_level": SOURCE_STATE_CANVAS_GRAY64_SOURCE_FIDELITY_LEVEL,
+        "source_state_backed": SOURCE_STATE_CANVAS_GRAY64_SOURCE_STATE_BACKED,
+        "shape": list(SOURCE_STATE_CANVAS_GRAY64_SHAPE),
+        "dtype": SOURCE_STATE_CANVAS_GRAY64_DTYPE,
+        "range": list(SOURCE_STATE_CANVAS_GRAY64_VALUE_RANGE),
+        "normalized_dtype": SOURCE_STATE_CANVAS_GRAY64_NORMALIZED_DTYPE,
+        "normalized_range": list(SOURCE_STATE_CANVAS_GRAY64_NORMALIZED_VALUE_RANGE),
+        "channel_order": "CHW",
+        "pixel_semantics": (
+            "luminance of source-state browser-like RGB frame rendered at 64x64"
+        ),
+        "rgb_source_schema_id": SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID,
+        "rgb_renderer_impl_id": SOURCE_STATE_RGB_CANVAS_LIKE_RENDERER_IMPL_ID,
+        "renderer_impl_id": SOURCE_STATE_CANVAS_GRAY64_RENDERER_IMPL_ID,
+        "state_fields": list(SOURCE_STATE_GRAY64_STATE_FIELDS),
+        "optional_state_fields": [
+            *SOURCE_STATE_GRAY64_OPTIONAL_STATE_FIELDS,
+            "state.avatar_color",
+        ],
+        "perspective": SOURCE_STATE_CANVAS_GRAY64_PERSPECTIVE,
+        "comparison_target": SOURCE_STATE_CANVAS_GRAY64_COMPARISON_TARGET,
+        "browser_pixel_fidelity": SOURCE_STATE_CANVAS_GRAY64_BROWSER_PIXEL_FIDELITY,
+        "browser_pixel_fidelity_claim": SOURCE_STATE_CANVAS_GRAY64_BROWSER_PIXEL_FIDELITY_CLAIM,
+        "browser_pixel_fidelity_blocker": SOURCE_STATE_CANVAS_GRAY64_PIXEL_FIDELITY_BLOCKER,
+        "uses_ale": SOURCE_STATE_CANVAS_GRAY64_USES_ALE,
+        "grayscale_conversion": "round(0.299*r + 0.587*g + 0.114*b)",
+    }
+
+
+SOURCE_STATE_CANVAS_GRAY64_SCHEMA_HASH = stable_contract_hash(
+    source_state_canvas_gray64_schema()
+)
 
 
 def render_source_state_bonus64_stack4_player_perspective_v1(
@@ -676,6 +923,8 @@ def _trusted_arrays(state: Mapping[str, np.ndarray]) -> dict[str, np.ndarray]:
     for name in _SOURCE_STATE_OPTIONAL_ARRAY_KEYS:
         if name in state:
             arrays[name] = np.asarray(state[name])
+    if "avatar_color" in state:
+        arrays["avatar_color"] = np.asarray(state["avatar_color"])
     return arrays
 
 
@@ -978,6 +1227,42 @@ def _player_rgb_values(
     for player, color_index in enumerate(color_indices):
         colors[player] = _rgb_triplet(raw_colors[int(color_index) % len(raw_colors)])
     return colors
+
+
+def _source_avatar_rgb_values(
+    avatars: Sequence[Mapping[str, Any]],
+    *,
+    player_rgb: Sequence[Sequence[int]] | None,
+) -> np.ndarray:
+    raw_colors = (
+        SOURCE_STATE_RGB_CANVAS_LIKE_PLAYER_RGB
+        if player_rgb is None
+        else tuple(tuple(color) for color in player_rgb)
+    )
+    colors = np.zeros((len(avatars), 3), dtype=np.uint8)
+    for player, avatar in enumerate(avatars):
+        color = str(avatar.get("color", ""))
+        if color:
+            colors[player] = _hex_color_to_rgb(color, fallback=raw_colors[player % len(raw_colors)])
+        else:
+            colors[player] = _rgb_triplet(raw_colors[player % len(raw_colors)])
+    return colors
+
+
+def _hex_color_to_rgb(value: str, *, fallback: Sequence[int]) -> np.ndarray:
+    text = value.strip()
+    if text.startswith("#"):
+        text = text[1:]
+    if len(text) == 3:
+        text = "".join(char * 2 for char in text)
+    if len(text) != 6:
+        return _rgb_triplet(fallback)
+    try:
+        return _rgb_triplet(
+            (int(text[0:2], 16), int(text[2:4], 16), int(text[4:6], 16))
+        )
+    except ValueError:
+        return _rgb_triplet(fallback)
 
 
 def _fill_player_status_planes(
@@ -1437,6 +1722,25 @@ def _source_body_owner_index(
 
 
 __all__ = [
+    "SOURCE_STATE_CANVAS_GRAY64_BROWSER_PIXEL_FIDELITY",
+    "SOURCE_STATE_CANVAS_GRAY64_BROWSER_PIXEL_FIDELITY_CLAIM",
+    "SOURCE_STATE_CANVAS_GRAY64_COMPARISON_TARGET",
+    "SOURCE_STATE_CANVAS_GRAY64_DTYPE",
+    "SOURCE_STATE_CANVAS_GRAY64_NORMALIZED_DTYPE",
+    "SOURCE_STATE_CANVAS_GRAY64_NORMALIZED_VALUE_RANGE",
+    "SOURCE_STATE_CANVAS_GRAY64_PERSPECTIVE",
+    "SOURCE_STATE_CANVAS_GRAY64_PIXEL_FIDELITY_BLOCKER",
+    "SOURCE_STATE_CANVAS_GRAY64_RENDERER_IMPL_ID",
+    "SOURCE_STATE_CANVAS_GRAY64_SCHEMA_HASH",
+    "SOURCE_STATE_CANVAS_GRAY64_SCHEMA_ID",
+    "SOURCE_STATE_CANVAS_GRAY64_SHAPE",
+    "SOURCE_STATE_CANVAS_GRAY64_SOURCE_CLAIM_ID",
+    "SOURCE_STATE_CANVAS_GRAY64_SOURCE_FIDELITY_LEVEL",
+    "SOURCE_STATE_CANVAS_GRAY64_SOURCE_STATE_BACKED",
+    "SOURCE_STATE_CANVAS_GRAY64_SURFACE",
+    "SOURCE_STATE_CANVAS_GRAY64_TRUTH_LEVEL",
+    "SOURCE_STATE_CANVAS_GRAY64_USES_ALE",
+    "SOURCE_STATE_CANVAS_GRAY64_VALUE_RANGE",
     "SOURCE_STATE_BONUS64_STACK4_BONUS_MASK_CHANNEL",
     "SOURCE_STATE_BONUS64_STACK4_BONUS_TYPE_CHANNEL",
     "SOURCE_STATE_BONUS64_STACK4_GAME_BORDERLESS_CHANNEL",
@@ -1479,11 +1783,16 @@ __all__ = [
     "SourceStateGray64Renderer",
     "VectorVisualObservationError",
     "normalize_source_state_gray64",
+    "render_source_state_canvas_gray64",
     "render_source_state_bonus64_stack4_player_perspective_v1",
     "render_source_state_rgb_canvas_like",
+    "render_source_snapshot_canvas_gray64",
     "render_source_snapshot_gray64",
+    "render_source_snapshot_rgb_canvas_like",
     "render_source_state_gray64",
+    "rgb_canvas_like_to_gray64",
     "source_state_bonus64_stack4_player_perspective_v1_schema",
+    "source_state_canvas_gray64_schema",
     "source_state_gray64_metadata",
     "source_state_gray64_schema",
 ]

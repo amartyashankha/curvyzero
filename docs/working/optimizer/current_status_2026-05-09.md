@@ -15,7 +15,7 @@ architecture, not CurvyTron readiness.
 Fresh 2026-05-11 read: active profile and coach-facing CurvyTron trainer target
 is now the source-state visual native LightZero path, not the old debug visual
 surface: `env_variant=source_state_fixed_opponent`, non-ALE `[4,64,64]`,
-`train_muzero`, fixed-straight opponent. The latest evidence is in
+`train_muzero`, fixed/frozen opponent. The latest evidence is in
 [CurvyTron native LightZero profile](curvytron_native_lightzero_profile_2026-05-11.md).
 Renderer/stack/obs packing was a real long-trail bottleneck and has been
 reduced sharply. GPU runs are genuinely CUDA-backed (`cuda:0` model samples),
@@ -79,7 +79,7 @@ path for CurvyTron unless a newer decision replaces it. Native single-ego runs
 go through
 `src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py`
 with `env_variant=source_state_fixed_opponent`, source-state `[4,64,64]`
-visual observations, fixed-straight or frozen-checkpoint opponent support, and
+visual observations, fixed/frozen opponent support, and
 stock LightZero `train_muzero`. The `--mode profile` / `phase_profile` hook is
 available there, but normal `--mode train` runs do not install profiler stop
 hooks. Separate two-seat custom-loop runs use
@@ -106,8 +106,8 @@ relative to GPU capacity. The profiler wraps
 LightZero `MuZeroMCTSCtree` / `MuZeroMCTSPtree`, so the search bucket is
 LightZero-native, not a repo-owned MCTS loop. Do not jump straight to a GPU env
 rewrite or framework migration. First use subprocess env manager and
-`32/32` or `64/64` collection, then consider actor/search fanout if the
-single-process loop remains underfed.
+`128/128` collection with `64/64` as fallback, then consider actor/search
+fanout if the single-process loop remains underfed.
 
 2026-05-11 current-lane correction: reward-credit risk does not stop optimizer
 profiling. It only limits learning claims. I reran both relevant stock
@@ -165,6 +165,38 @@ small. The dominant buckets are search/model/collector. The next serious
 scale experiment should be searched actor chunks from a frozen checkpoint,
 merged into a learner step, not more single-process micro-polish unless a finer
 profile points at one exact hot path.
+
+2026-05-11 contract-fix scale update: source-state env now emits the
+LightZero-required terminal `eval_episode_return` key, so stock collector runs
+reach replay buffer push/sample and learner calls cleanly with stock in-loop eval
+skipped for profile. Corrected no-death dense profiles on `gpu-l4-t4-cpu40`:
+
+```text
+L4/T4+CPU40 c32/sim16:   7680 steps, 38.09s wall, 201.60 steps/s
+L4/T4+CPU40 c64/sim16:  15360 steps, 50.78s wall, 302.46 steps/s
+L4/T4+CPU40 c128/sim16: 30720 steps, 77.05s wall, 398.72 steps/s
+L4/T4+CPU40 c256/sim16: 61440 steps, 151.74s wall, 404.91 steps/s
+L4/T4+CPU40 c32/sim50:   7680 steps, 72.25s wall, 106.30 steps/s
+L4/T4+CPU40 c64/sim50:  15360 steps, 90.95s wall, 168.88 steps/s
+L4/T4+CPU40 c128/sim50: 30720 steps, 136.75s wall, 224.65 steps/s
+CPU64 c32/sim16:         7680 steps, 74.93s wall, 102.49 steps/s
+H100+CPU40 c128/sim16:  30720 steps, 56.78s wall, 540.99 steps/s
+H100+CPU40 c128/sim50:  30720 steps, 127.22s wall, 241.46 steps/s
+```
+
+Plain read: the user's batch intuition is correct for this stock loop. Larger
+self-play batches take longer in total but improve searched self-play
+throughput by feeding larger batches into LightZero MCTS/model calls. c128 is
+the single-container sweet spot so far; c256/sim16 is basically plateaued
+against c128/sim16. c128/sim50 is the best tested L4/T4 serious-search
+throughput. Cheap GPU beats CPU64. H100 helps c128/sim16 by about `1.36x`, but
+only about `1.07x` at c128/sim50, so serious sim50 is host/search-orchestration
+dominated enough that H100 should not be required by default. Use H100 when it
+is convenient or for sim16 fast sweeps; L4/T4+CPU40 is fine for serious sim50
+unless capacity says otherwise. Search/model/collector remain the Amdahl
+target; replay buffer sampling and learner updates are small in these profiles.
+These are `mode=profile`, no-death, sparse-telemetry, eval-skipped speed
+profiles, not learning-quality evidence.
 
 2026-05-11 eval-cadence correction: `evaluator_eval_sec` in the phase profile
 is stock LightZero's in-loop evaluator, not the checkpoint-triggered
@@ -299,12 +331,11 @@ truth.
   likely first-use/sync overhead. This synthetic boundary does not measure CPU
   ray generation or source fidelity.
 - Reprioritized next optimizer actions: keep the native source-state
-  `train_muzero` path as the active trainer/profile surface; use wider
-  collector batches (`16/16`, then `32/32` sweeps); add a profile-only
-  scripted-survivor stress mode only if true long-survival timing is needed;
-  then evaluate actor/search fanout if single-process LightZero still underfeeds
-  GPU. Keep scalar-ray policy/search and ray work as diagnostics, not the main
-  path.
+  `train_muzero` path as the active trainer/profile surface; use the completed
+  c128/c256 and sim50 profiles as the single-container baseline; then evaluate
+  coarse synchronous actor/search fanout if single-process LightZero remains
+  the limit. Keep scalar-ray policy/search and ray work as diagnostics, not the
+  main path.
 
 ## Current Read
 

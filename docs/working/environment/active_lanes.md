@@ -94,21 +94,35 @@ Optimizer visual tensor handoff:
   arena size.
 - Latest 2P source-state visual check:
   `scripts/compare_2p_raw_visual_observation.py --suite core2p --format plain`
-  compares source-shaped state against `VectorMultiplayerEnv` gray64. On
-  2026-05-11 it passes 31 core scenarios exactly: `max_abs_diff=0`,
+  compares source-shaped state against `VectorMultiplayerEnv` through the
+  product path: source-state browser-like RGB64 -> grayscale 64x64. On
+  2026-05-11 it passes 34 core scenarios exactly: `max_abs_diff=0`,
   `mismatch_pixels=0`. There are 26 total 2P step fixtures; `core2p` covers 25
   of them plus the long wall rollout, including the four natural bonus
-  spawn/retry/cap fixtures, five programmatic source-snapshot visual stress
+  spawn/retry/cap fixtures, eight programmatic source-snapshot visual stress
   cases, and mismatch canaries that prove the harness fails when a visible body
   or visible map bonus is missing. The new visual stress cases include
-  printing trail emission and explicit 2P survivor warmdown-frame
+  printing trail emission, opponent/own body collision edges, PrintManager
+  trail-gap boundary emission, and explicit 2P survivor warmdown-frame
   movement/death. `source_print_manager_random_call_order_step` stays outside
   gray64 because it proves RNG/event order, not a distinct rendered state. This
-  is the current training-observation gate; browser/canvas pixels are optional
-  debug evidence, not P0.
+  is the current source-state visual image gate: browser-like/source-state
+  canvas-like pixels reduced to grayscale `64x64`. Browser/canvas pixels are
+  optional debug evidence, not P0.
+- The fuller one-line visual command is now
+  `scripts/compare_2p_raw_visual_observation.py --suite full2p --format plain`.
+  Latest result:
+  `PASS full_2p_source_state_visual_gate canvas_gray64=34/34 typed_bonus=12/12 canaries=2/2 mismatch_pixels=0 max_abs_diff=0.0 expected_canary_mismatch_pixels=81`.
+  This means the current 2P canvas-gray64 visual gate and separate diagnostic bonus64
+  gate pass. It still does not prove browser pixels, trainer wrapper/replay
+  propagation, or full training readiness.
 - Gray64 v0 distinguishes 2P player trails and heads, but every active map
-  bonus is value `208`. Keep that caveat visible until a typed bonus visual
-  schema exists.
+  bonus is value `208`. The separate bonus64 v1 typed/status gate now checks
+  active map bonus mask/type planes for all 12 source-default bonus types and
+  post-catch self/other/game status planes. It still does not encode
+  `BonusAllColor` post-catch color rotation or a typed post-catch
+  `BonusGameClear` status plane. Treat bonus64/rich tensors as proof and
+  diagnostics only, not as the trainer default.
 - Cleanup patches landed: stale lifecycle metadata overlay plumbing was removed
   from `vector_multiplayer_env.py`, and the dead legacy scalar replay builder
   was removed from `multiplayer_replay_v0.py`.
@@ -156,7 +170,7 @@ and final observations, public metadata, and later browser pixel parity.
 
 Full 2P fidelity is not done. The current visual gate passes:
 `scripts/compare_2p_raw_visual_observation.py --suite core2p --format plain`
-matches 31/31 source-state gray64 scenarios exactly. The PrintManager RNG
+matches 34/34 source-state gray64 scenarios exactly. The PrintManager RNG
 canary is intentionally not a gray64 case; it proves random/event ordering, not
 a distinct rendered state. Deeper evidence and gap detail live in
 [two_player_fidelity_gap_catalog_2026-05-11.md](two_player_fidelity_gap_catalog_2026-05-11.md)
@@ -165,11 +179,13 @@ and
 
 Next 2P environment-fidelity checklist:
 
-1. Decide and prove typed bonus visual/status sufficiency beyond gray64 v0.
-2. Add bonus stack/death stress across timers, PrintManager, and terminal frames.
-3. Promote final/replay bonus state beyond metadata-only audit rows.
-4. Add broader 2P trail/body canaries if they are still open after the current
-   collision-order and visual coverage audit.
+1. Add JS/original fixture parity for the bonus stack/death stress cases that
+   are currently source-env programmatic probes.
+2. Promote final/replay bonus state beyond metadata-only audit rows.
+3. Keep the trainer observation on the clean visual image path; keep
+   bonus64/rich tensors as diagnostic proof for hidden bonus facts.
+4. Keep row-local RNG/replay history and fully blocked generated bonus-position
+   policy explicit.
 
 Closed on 2026-05-11: focused 2P survivor movement during warmdown now has
 source/original proof and public `VectorMultiplayerEnv.advance_warmdown_frame`

@@ -38,13 +38,13 @@ import threading
 import time
 import traceback
 from collections import Counter
+from functools import lru_cache
 from importlib import metadata
 from pathlib import Path
 from typing import Any
 
 import modal
 
-from curvyzero.env.vector_multiplayer_env import NATURAL_BONUS_ENV_IMPL_ID
 from curvyzero.env.trainer_contract import (
     REWARD_SCHEMA_ID as SPARSE_ROUND_OUTCOME_REWARD_SCHEMA_ID,
 )
@@ -109,6 +109,9 @@ from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env imp
     ALL_PLAYERS_ALIVE_DIAGNOSTIC_REWARD_SCHEMA_ID,
 )
 from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
+    CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv,
+)
+from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
     DENSE_SURVIVAL_PLUS_OUTCOME_REWARD_SCHEMA_ID,
 )
 from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
@@ -127,15 +130,6 @@ from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env imp
     LIGHTZERO_SOURCE_STATE_VISUAL_JOINT_ACTION_IMPORT_NAMES,
 )
 from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
-    LIGHTZERO_SOURCE_STATE_VISUAL_SURVIVAL_ENV_ID,
-)
-from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
-    LIGHTZERO_SOURCE_STATE_VISUAL_SURVIVAL_ENV_TYPE,
-)
-from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
-    LIGHTZERO_SOURCE_STATE_VISUAL_SURVIVAL_IMPORT_NAMES,
-)
-from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
     REWARD_VARIANT_ALL_PLAYERS_ALIVE_DIAGNOSTIC,
 )
 from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
@@ -146,15 +140,6 @@ from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env imp
 )
 from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
     SOURCE_STATE_FIXED_OPPONENT_REWARD_VARIANTS,
-)
-from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
-    SOURCE_STATE_FIXED_OPPONENT_RUNTIME_TOPOLOGY,
-)
-from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
-    SOURCE_STATE_FIXED_OPPONENT_TWO_SEAT_STATUS,
-)
-from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
-    SOURCE_STATE_FIXED_OPPONENT_UNDERLYING_ENV_CLASS,
 )
 from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
     SOURCE_STATE_JOINT_ACTION_ADAPTER_IMPL_ID,
@@ -213,11 +198,11 @@ DEFAULT_N_EVALUATOR_EPISODE = 1
 DEFAULT_N_EPISODE = 1
 DEFAULT_NUM_SIMULATIONS = 8
 DEFAULT_BATCH_SIZE = 16
-DEFAULT_LIGHTZERO_EVAL_FREQ = 1000
+DEFAULT_LIGHTZERO_EVAL_FREQ = 0
 DEFAULT_SKIP_LIGHTZERO_EVAL_IN_PROFILE = True
-# Keep native CurvyTron runs easy to evaluate while they are still unstable.
-# Long launches may override this upward, but the default must always produce
-# a usable survival curve across checkpoints.
+DEFAULT_LIGHTZERO_MULTI_GPU = False
+# Keep checkpointing explicit for long CurvyTron runs. The default is smoke-friendly;
+# overnight launches should override this upward and run checkpoint evals manually.
 DEFAULT_SAVE_CKPT_AFTER_ITER = 1
 DEFAULT_STOP_AFTER_LEARNER_TRAIN_CALLS = 0
 DEFAULT_DECISION_MS = SOURCE_STATE_DEFAULT_DECISION_MS
@@ -259,7 +244,7 @@ OPPONENT_POLICY_KIND_CHOICES = (
     OPPONENT_POLICY_KIND_FROZEN_LIGHTZERO_CHECKPOINT,
     OPPONENT_POLICY_KIND_NONE_CENTRALIZED_JOINT_ACTION,
 )
-DEFAULT_BACKGROUND_EVAL_ENABLED = True
+DEFAULT_BACKGROUND_EVAL_ENABLED = False
 DEFAULT_BACKGROUND_EVAL_COMPUTE = "cpu"
 DEFAULT_BACKGROUND_EVAL_ID_PREFIX = "live_checkpoint"
 DEFAULT_BACKGROUND_EVAL_SEED_COUNT = 4
@@ -268,7 +253,7 @@ DEFAULT_BACKGROUND_EVAL_MAX_STEPS = 256
 DEFAULT_BACKGROUND_EVAL_STEP_DETAIL_LIMIT = 4
 DEFAULT_BACKGROUND_EVAL_NUM_SIMULATIONS = DEFAULT_NUM_SIMULATIONS
 DEFAULT_BACKGROUND_EVAL_BATCH_SIZE = 64
-DEFAULT_BACKGROUND_GIF_ENABLED = True
+DEFAULT_BACKGROUND_GIF_ENABLED = False
 DEFAULT_BACKGROUND_GIF_SEED_OFFSET = 10_000
 DEFAULT_BACKGROUND_GIF_MAX_STEPS = 256
 DEFAULT_BACKGROUND_GIF_FRAME_STRIDE = 1
@@ -422,15 +407,21 @@ def _lightzero_target_config_for_reward(
 
 
 CHEAP_GPU_RESOURCE = ["L4", "T4"]
+H100_GPU_RESOURCE = "H100"
+H100X2_GPU_RESOURCE = "H100:2"
 COMPUTE_CPU = "cpu"
 COMPUTE_CPU64 = "cpu64"
 COMPUTE_GPU_L4_T4 = "gpu-l4-t4"
 COMPUTE_GPU_L4_T4_CPU40 = "gpu-l4-t4-cpu40"
+COMPUTE_GPU_H100_CPU40 = "gpu-h100-cpu40"
+COMPUTE_GPU_H100X2_CPU40 = "gpu-h100x2-cpu40"
 COMPUTE_CHOICES = (
     COMPUTE_CPU,
     COMPUTE_CPU64,
     COMPUTE_GPU_L4_T4,
     COMPUTE_GPU_L4_T4_CPU40,
+    COMPUTE_GPU_H100_CPU40,
+    COMPUTE_GPU_H100X2_CPU40,
 )
 BACKGROUND_EVAL_COMPUTE_CHOICES = ("cpu",)
 MODE_CHOICES = ("dry", "train", "profile")
@@ -2535,6 +2526,7 @@ def _run_visual_survival_train(
     disable_death_for_profile: bool,
     env_telemetry_stride: int,
     env_manager_type: str,
+    lightzero_multi_gpu: bool,
     opponent_policy_kind: str,
     opponent_checkpoint_ref: str | None,
     opponent_snapshot_ref: str | None,
@@ -2716,6 +2708,7 @@ def _run_visual_survival_train(
         "batch_size": int(batch_size),
         "lightzero_eval_freq": int(lightzero_eval_freq),
         "skip_lightzero_eval_in_profile": bool(skip_lightzero_eval_in_profile),
+        "lightzero_multi_gpu": bool(lightzero_multi_gpu),
         "save_ckpt_after_iter": int(save_ckpt_after_iter),
         "stop_after_learner_train_calls": int(stop_after_learner_train_calls),
         "env_variant": env_variant,
@@ -2853,6 +2846,7 @@ def _run_visual_survival_train(
         num_simulations=num_simulations,
         batch_size=batch_size,
         lightzero_eval_freq=lightzero_eval_freq,
+        lightzero_multi_gpu=lightzero_multi_gpu,
         max_train_iter=max_train_iter,
         save_ckpt_after_iter=save_ckpt_after_iter,
         env_variant=env_variant,
@@ -3404,6 +3398,52 @@ def _resolve_opponent_checkpoint_for_env(
     }
 
 
+@lru_cache(maxsize=1)
+def _source_state_fixed_opponent_wrapper_env_spec_fields() -> dict[str, Any]:
+    """Mirror the fixed-opponent wrapper's visual contract in Modal metadata."""
+
+    env = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
+        {"source_max_steps": 1, "max_ticks": 1}
+    )
+    try:
+        info = env._base_info()
+    finally:
+        env.close()
+    config = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv.config
+
+    def int_list(value: Any) -> list[int]:
+        return [int(item) for item in value]
+
+    return {
+        "env_type": str(info["lightzero_env_type"]),
+        "env_id": str(info["env_id"]),
+        "import_names": list(config["lightzero_import_names"]),
+        "action_space_size": int(config["action_space_size"]),
+        "observation_shape": int_list(info["model_observation_shape"]),
+        "observation_schema_id": str(info["observation_schema_id"]),
+        "single_frame_schema_id": str(info["single_frame_schema_id"]),
+        "raw_observation_schema_id": str(info["raw_observation_schema_id"]),
+        "raw_frame_shape": int_list(info["raw_frame_shape"]),
+        "grayscale_frame_shape": int_list(info["grayscale_frame_shape"]),
+        "frame_stack_proof": str(info["frame_stack_proof"]),
+        "debug_fidelity_only": bool(info["debug_fidelity_only"]),
+        "source_fidelity_claim": str(info["source_fidelity_claim"]),
+        "underlying_env_class": str(info["underlying_env_class"]),
+        "runtime_env_impl_id": str(info["runtime_env_impl_id"]),
+        "runtime_topology": str(info["runtime_topology"]),
+        "two_seat_self_play": bool(info["two_seat_self_play"]),
+        "two_seat_self_play_status": str(info["two_seat_self_play_status"]),
+        "fixed_opponent_is_two_seat_self_play": bool(
+            info["fixed_opponent_is_two_seat_self_play"]
+        ),
+        "browser_pixel_fidelity": bool(info["browser_pixel_fidelity"]),
+        "uses_ale": bool(info["uses_ale"]),
+        "visual_surface": str(info["visual_surface"]),
+        "visual_truth_level": str(info["visual_truth_level"]),
+        "visual_source_state_backed": bool(info["visual_source_state_backed"]),
+    }
+
+
 def _env_variant_spec(env_variant: str) -> dict[str, Any]:
     if env_variant == ENV_VARIANT_FIXED_OPPONENT:
         return {
@@ -3553,12 +3593,10 @@ def _env_variant_spec(env_variant: str) -> dict[str, Any]:
             "visual_source_state_backed": SOURCE_STATE_GRAY64_SOURCE_STATE_BACKED,
         }
     if env_variant == ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT:
+        wrapper_spec = _source_state_fixed_opponent_wrapper_env_spec_fields()
         return {
             "env_variant": ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT,
-            "env_type": LIGHTZERO_SOURCE_STATE_VISUAL_SURVIVAL_ENV_TYPE,
-            "env_id": LIGHTZERO_SOURCE_STATE_VISUAL_SURVIVAL_ENV_ID,
-            "import_names": list(LIGHTZERO_SOURCE_STATE_VISUAL_SURVIVAL_IMPORT_NAMES),
-            "action_space_size": 3,
+            **wrapper_spec,
             "reward_schema_id": SPARSE_ROUND_OUTCOME_REWARD_SCHEMA_ID,
             "reward_policy": {
                 "reward_variant": REWARD_VARIANT_SPARSE_OUTCOME,
@@ -3585,23 +3623,8 @@ def _env_variant_spec(env_variant: str) -> dict[str, Any]:
             "simultaneous_game_theory_claim": False,
             "opponent_training_relation": OPPONENT_TRAINING_RELATION_FIXED_STRAIGHT,
             "turn_commit_adapter": False,
-            "observation_shape": list(STACKED_SOURCE_STATE_GRAY64_SHAPE),
-            "observation_schema_id": STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID,
-            "debug_fidelity_only": False,
-            "source_fidelity_claim": "source_state_backed_non_browser_pixel",
             "single_product_runtime_path": True,
             "legacy_debug_variant": False,
-            "underlying_env_class": SOURCE_STATE_FIXED_OPPONENT_UNDERLYING_ENV_CLASS,
-            "runtime_env_impl_id": NATURAL_BONUS_ENV_IMPL_ID,
-            "runtime_topology": SOURCE_STATE_FIXED_OPPONENT_RUNTIME_TOPOLOGY,
-            "two_seat_self_play": False,
-            "two_seat_self_play_status": SOURCE_STATE_FIXED_OPPONENT_TWO_SEAT_STATUS,
-            "fixed_opponent_is_two_seat_self_play": False,
-            "browser_pixel_fidelity": SOURCE_STATE_GRAY64_BROWSER_PIXEL_FIDELITY,
-            "uses_ale": SOURCE_STATE_GRAY64_USES_ALE,
-            "visual_surface": SOURCE_STATE_GRAY64_SURFACE,
-            "visual_truth_level": SOURCE_STATE_GRAY64_TRUTH_LEVEL,
-            "visual_source_state_backed": SOURCE_STATE_GRAY64_SOURCE_STATE_BACKED,
         }
     raise ValueError(f"unknown env_variant: {env_variant!r}")
 
@@ -3652,6 +3675,7 @@ def _build_visual_survival_configs(
     num_simulations: int,
     batch_size: int,
     lightzero_eval_freq: int,
+    lightzero_multi_gpu: bool,
     max_train_iter: int,
     save_ckpt_after_iter: int,
     env_variant: str,
@@ -3699,6 +3723,7 @@ def _build_visual_survival_configs(
     patches = [
         _set_or_add_path(main_config, ("exp_name",), str(exp_name)),
         _set_or_add_path(main_config, ("policy", "cuda"), bool(cuda)),
+        _set_or_add_path(main_config, ("policy", "multi_gpu"), bool(lightzero_multi_gpu)),
         _set_or_add_path(main_config, ("policy", "env_type"), "not_board_games"),
         _set_or_add_path(main_config, ("policy", "collector_env_num"), int(collector_env_num)),
         _set_or_add_path(main_config, ("policy", "evaluator_env_num"), int(evaluator_env_num)),
@@ -3710,7 +3735,7 @@ def _build_visual_survival_configs(
             ("policy", "eval_freq"),
             int(lightzero_eval_freq)
             if int(lightzero_eval_freq) > 0
-            else max(1, int(max_train_iter // 4) or 1),
+            else int(max_train_iter) + 1,
         ),
         _set_or_add_path(main_config, ("policy", "model", "model_type"), "conv"),
         _set_or_add_path(main_config, ("policy", "model", "image_channel"), 4),
@@ -4033,28 +4058,31 @@ def _validate_visual_survival_surface(
 
 
 def _source_state_fixed_opponent_readiness_expected() -> dict[str, Any]:
+    spec = _env_variant_spec(ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT)
     return {
         "env_variant": ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT,
-        "single_product_runtime_path": True,
-        "legacy_debug_variant": False,
-        "debug_fidelity_only": False,
-        "source_fidelity_claim": "source_state_backed_non_browser_pixel",
-        "underlying_env_class": SOURCE_STATE_FIXED_OPPONENT_UNDERLYING_ENV_CLASS,
-        "runtime_env_impl_id": NATURAL_BONUS_ENV_IMPL_ID,
-        "runtime_topology": SOURCE_STATE_FIXED_OPPONENT_RUNTIME_TOPOLOGY,
+        "single_product_runtime_path": spec["single_product_runtime_path"],
+        "legacy_debug_variant": spec["legacy_debug_variant"],
+        "debug_fidelity_only": spec["debug_fidelity_only"],
+        "source_fidelity_claim": spec["source_fidelity_claim"],
+        "underlying_env_class": spec["underlying_env_class"],
+        "runtime_env_impl_id": spec["runtime_env_impl_id"],
+        "runtime_topology": spec["runtime_topology"],
         "opponent_policy_kind": OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
-        "opponent_training_relation": OPPONENT_TRAINING_RELATION_FIXED_STRAIGHT,
-        "current_policy_self_play": False,
-        "trusted_current_policy_self_play": False,
-        "simultaneous_game_theory_claim": False,
-        "two_seat_self_play": False,
-        "two_seat_self_play_status": SOURCE_STATE_FIXED_OPPONENT_TWO_SEAT_STATUS,
-        "fixed_opponent_is_two_seat_self_play": False,
-        "browser_pixel_fidelity": False,
-        "uses_ale": False,
-        "visual_surface": SOURCE_STATE_GRAY64_SURFACE,
-        "visual_truth_level": SOURCE_STATE_GRAY64_TRUTH_LEVEL,
-        "visual_source_state_backed": True,
+        "opponent_training_relation": spec["opponent_training_relation"],
+        "current_policy_self_play": spec["current_policy_self_play"],
+        "trusted_current_policy_self_play": spec["trusted_current_policy_self_play"],
+        "simultaneous_game_theory_claim": spec["simultaneous_game_theory_claim"],
+        "two_seat_self_play": spec["two_seat_self_play"],
+        "two_seat_self_play_status": spec["two_seat_self_play_status"],
+        "fixed_opponent_is_two_seat_self_play": spec[
+            "fixed_opponent_is_two_seat_self_play"
+        ],
+        "browser_pixel_fidelity": spec["browser_pixel_fidelity"],
+        "uses_ale": spec["uses_ale"],
+        "visual_surface": spec["visual_surface"],
+        "visual_truth_level": spec["visual_truth_level"],
+        "visual_source_state_backed": spec["visual_source_state_backed"],
     }
 
 
@@ -6565,6 +6593,7 @@ def lightzero_curvytron_visual_survival_cpu(
     batch_size: int = DEFAULT_BATCH_SIZE,
     lightzero_eval_freq: int = DEFAULT_LIGHTZERO_EVAL_FREQ,
     skip_lightzero_eval_in_profile: bool = DEFAULT_SKIP_LIGHTZERO_EVAL_IN_PROFILE,
+    lightzero_multi_gpu: bool = DEFAULT_LIGHTZERO_MULTI_GPU,
     save_ckpt_after_iter: int = DEFAULT_SAVE_CKPT_AFTER_ITER,
     stop_after_learner_train_calls: int = DEFAULT_STOP_AFTER_LEARNER_TRAIN_CALLS,
     env_variant: str = DEFAULT_ENV_VARIANT,
@@ -6617,6 +6646,7 @@ def lightzero_curvytron_visual_survival_cpu(
         batch_size=batch_size,
         lightzero_eval_freq=lightzero_eval_freq,
         skip_lightzero_eval_in_profile=skip_lightzero_eval_in_profile,
+        lightzero_multi_gpu=lightzero_multi_gpu,
         save_ckpt_after_iter=save_ckpt_after_iter,
         stop_after_learner_train_calls=stop_after_learner_train_calls,
         env_variant=env_variant,
@@ -6691,6 +6721,7 @@ def lightzero_curvytron_visual_survival_gpu(
     batch_size: int = DEFAULT_BATCH_SIZE,
     lightzero_eval_freq: int = DEFAULT_LIGHTZERO_EVAL_FREQ,
     skip_lightzero_eval_in_profile: bool = DEFAULT_SKIP_LIGHTZERO_EVAL_IN_PROFILE,
+    lightzero_multi_gpu: bool = DEFAULT_LIGHTZERO_MULTI_GPU,
     save_ckpt_after_iter: int = DEFAULT_SAVE_CKPT_AFTER_ITER,
     stop_after_learner_train_calls: int = DEFAULT_STOP_AFTER_LEARNER_TRAIN_CALLS,
     env_variant: str = DEFAULT_ENV_VARIANT,
@@ -6743,6 +6774,7 @@ def lightzero_curvytron_visual_survival_gpu(
         batch_size=batch_size,
         lightzero_eval_freq=lightzero_eval_freq,
         skip_lightzero_eval_in_profile=skip_lightzero_eval_in_profile,
+        lightzero_multi_gpu=lightzero_multi_gpu,
         save_ckpt_after_iter=save_ckpt_after_iter,
         stop_after_learner_train_calls=stop_after_learner_train_calls,
         env_variant=env_variant,
@@ -6791,6 +6823,38 @@ def lightzero_curvytron_visual_survival_gpu_cpu40(**kwargs: Any) -> dict[str, An
     kwargs.setdefault("lightzero_eval_freq", DEFAULT_LIGHTZERO_EVAL_FREQ)
     kwargs.setdefault("skip_lightzero_eval_in_profile", DEFAULT_SKIP_LIGHTZERO_EVAL_IN_PROFILE)
     return _run_visual_survival_train(compute=COMPUTE_GPU_L4_T4_CPU40, **kwargs)
+
+
+@app.function(
+    image=image,
+    volumes={str(RUNS_MOUNT): runs_volume},
+    timeout=8 * 60 * 60,
+    cpu=40.0,
+    memory=65536,
+    gpu=H100_GPU_RESOURCE,
+)
+def lightzero_curvytron_visual_survival_h100_cpu40(**kwargs: Any) -> dict[str, Any]:
+    kwargs.setdefault("background_gif_frame_size", DEFAULT_BACKGROUND_GIF_FRAME_SIZE)
+    kwargs.setdefault("reward_variant", DEFAULT_REWARD_VARIANT)
+    kwargs.setdefault("lightzero_eval_freq", DEFAULT_LIGHTZERO_EVAL_FREQ)
+    kwargs.setdefault("skip_lightzero_eval_in_profile", DEFAULT_SKIP_LIGHTZERO_EVAL_IN_PROFILE)
+    return _run_visual_survival_train(compute=COMPUTE_GPU_H100_CPU40, **kwargs)
+
+
+@app.function(
+    image=image,
+    volumes={str(RUNS_MOUNT): runs_volume},
+    timeout=8 * 60 * 60,
+    cpu=40.0,
+    memory=65536,
+    gpu=H100X2_GPU_RESOURCE,
+)
+def lightzero_curvytron_visual_survival_h100x2_cpu40(**kwargs: Any) -> dict[str, Any]:
+    kwargs.setdefault("background_gif_frame_size", DEFAULT_BACKGROUND_GIF_FRAME_SIZE)
+    kwargs.setdefault("reward_variant", DEFAULT_REWARD_VARIANT)
+    kwargs.setdefault("lightzero_eval_freq", DEFAULT_LIGHTZERO_EVAL_FREQ)
+    kwargs.setdefault("skip_lightzero_eval_in_profile", DEFAULT_SKIP_LIGHTZERO_EVAL_IN_PROFILE)
+    return _run_visual_survival_train(compute=COMPUTE_GPU_H100X2_CPU40, **kwargs)
 
 
 @app.function(image=image, volumes={str(RUNS_MOUNT): runs_volume}, timeout=20 * 60, cpu=2.0)
@@ -6877,6 +6941,7 @@ def _compact_train_result_for_output(result: Any) -> Any:
             "batch_size": command.get("batch_size"),
             "lightzero_eval_freq": command.get("lightzero_eval_freq"),
             "skip_lightzero_eval_in_profile": command.get("skip_lightzero_eval_in_profile"),
+            "lightzero_multi_gpu": command.get("lightzero_multi_gpu"),
             "source_max_steps": command.get("source_max_steps"),
             "disable_death_for_profile": command.get("disable_death_for_profile"),
             "env_telemetry_stride": command.get("env_telemetry_stride"),
@@ -6951,6 +7016,7 @@ def main(
     batch_size: int = DEFAULT_BATCH_SIZE,
     lightzero_eval_freq: int = DEFAULT_LIGHTZERO_EVAL_FREQ,
     skip_lightzero_eval_in_profile: bool = DEFAULT_SKIP_LIGHTZERO_EVAL_IN_PROFILE,
+    lightzero_multi_gpu: bool = DEFAULT_LIGHTZERO_MULTI_GPU,
     save_ckpt_after_iter: int = DEFAULT_SAVE_CKPT_AFTER_ITER,
     stop_after_learner_train_calls: int = DEFAULT_STOP_AFTER_LEARNER_TRAIN_CALLS,
     env_variant: str = DEFAULT_ENV_VARIANT,
@@ -7021,6 +7087,10 @@ def main(
         train_fn = lightzero_curvytron_visual_survival_gpu
     elif compute == COMPUTE_GPU_L4_T4_CPU40:
         train_fn = lightzero_curvytron_visual_survival_gpu_cpu40
+    elif compute == COMPUTE_GPU_H100_CPU40:
+        train_fn = lightzero_curvytron_visual_survival_h100_cpu40
+    elif compute == COMPUTE_GPU_H100X2_CPU40:
+        train_fn = lightzero_curvytron_visual_survival_h100x2_cpu40
     else:
         raise ValueError(f"unknown compute {compute!r}; expected one of {COMPUTE_CHOICES!r}")
     opponent_policy_kind = _normalize_opponent_policy_kind_for_env(
@@ -7045,6 +7115,7 @@ def main(
         "batch_size": batch_size,
         "lightzero_eval_freq": lightzero_eval_freq,
         "skip_lightzero_eval_in_profile": skip_lightzero_eval_in_profile,
+        "lightzero_multi_gpu": lightzero_multi_gpu,
         "save_ckpt_after_iter": save_ckpt_after_iter,
         "stop_after_learner_train_calls": stop_after_learner_train_calls,
         "env_variant": env_variant,

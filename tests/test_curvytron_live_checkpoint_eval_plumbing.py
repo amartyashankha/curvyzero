@@ -24,6 +24,16 @@ def _source_state_training_command():
     return command
 
 
+def _source_state_fixed_opponent_wrapper_info():
+    env = train_mod.CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
+        {"source_max_steps": 1, "max_ticks": 1}
+    )
+    try:
+        return env._base_info()
+    finally:
+        env.close()
+
+
 def test_default_env_variant_stays_fixed_opponent_while_turn_commit_is_profile_only():
     assert train_mod.DEFAULT_ENV_VARIANT == train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT
 
@@ -44,14 +54,18 @@ def test_default_env_variant_stays_fixed_opponent_while_turn_commit_is_profile_o
     assert spec["visual_source_state_backed"] is True
 
 
-def test_background_eval_inspection_and_gif_are_default_on_for_current_trainer():
-    config = train_mod._background_eval_config_from_command({})
+def test_background_eval_inspection_and_gif_can_be_explicitly_enabled():
+    config = train_mod._background_eval_config_from_command(
+        {"background_eval_enabled": True, "background_gif_enabled": True}
+    )
     custom_config = train_mod._background_eval_config_from_command(
-        {"background_gif_frame_size": 512}
+        {
+            "background_eval_enabled": True,
+            "background_gif_enabled": True,
+            "background_gif_frame_size": 512,
+        }
     )
 
-    assert train_mod.DEFAULT_BACKGROUND_EVAL_ENABLED is True
-    assert train_mod.DEFAULT_BACKGROUND_GIF_ENABLED is True
     assert config["enabled"] is True
     assert config["selfplay_gif"]["enabled"] is True
     assert config["env_variant"] == train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT
@@ -83,26 +97,38 @@ def test_gif_browser_run_marker_is_written_under_run_root(tmp_path, monkeypatch)
 def test_source_state_fixed_opponent_surface_identity_is_explicit_control_lane():
 
     spec = train_mod._env_variant_spec(train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT)
+    wrapper_info = _source_state_fixed_opponent_wrapper_info()
 
-    assert spec["env_type"] == train_mod.LIGHTZERO_SOURCE_STATE_VISUAL_SURVIVAL_ENV_TYPE
-    assert spec["env_id"] == train_mod.LIGHTZERO_SOURCE_STATE_VISUAL_SURVIVAL_ENV_ID
+    assert spec["env_type"] == wrapper_info["lightzero_env_type"]
+    assert spec["env_id"] == wrapper_info["env_id"]
+    assert spec["observation_shape"] == wrapper_info["model_observation_shape"]
     assert spec["observation_shape"] == list(train_mod.STACKED_SOURCE_STATE_GRAY64_SHAPE)
-    assert spec["observation_schema_id"] == train_mod.STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID
-    assert spec["debug_fidelity_only"] is False
-    assert spec["source_fidelity_claim"] == "source_state_backed_non_browser_pixel"
+    assert spec["observation_schema_id"] == wrapper_info["observation_schema_id"]
+    assert spec["single_frame_schema_id"] == wrapper_info["single_frame_schema_id"]
+    assert spec["raw_observation_schema_id"] == wrapper_info["raw_observation_schema_id"]
+    assert spec["raw_observation_schema_id"] == train_mod.SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID
+    assert spec["raw_frame_shape"] == [64, 64, 3]
+    assert spec["grayscale_frame_shape"] == [1, 64, 64]
+    assert "bonus64" not in spec["observation_schema_id"]
+    assert "bonus64" not in spec["frame_stack_proof"]
+    assert "rgb64_to_gray64" in spec["frame_stack_proof"]
+    assert spec["debug_fidelity_only"] == wrapper_info["debug_fidelity_only"]
+    assert spec["source_fidelity_claim"] == wrapper_info["source_fidelity_claim"]
     assert spec["single_product_runtime_path"] is True
     assert spec["legacy_debug_variant"] is False
-    assert spec["underlying_env_class"] == "VectorMultiplayerEnv"
-    assert spec["runtime_env_impl_id"] == train_mod.NATURAL_BONUS_ENV_IMPL_ID
-    assert spec["runtime_topology"] == train_mod.SOURCE_STATE_FIXED_OPPONENT_RUNTIME_TOPOLOGY
-    assert spec["two_seat_self_play"] is False
-    assert spec["two_seat_self_play_status"] == train_mod.SOURCE_STATE_FIXED_OPPONENT_TWO_SEAT_STATUS
-    assert spec["fixed_opponent_is_two_seat_self_play"] is False
-    assert spec["browser_pixel_fidelity"] is False
-    assert spec["uses_ale"] is False
-    assert spec["visual_surface"] == "source_state_visual_tensor"
-    assert spec["visual_truth_level"] == "source_state_backed_non_browser_pixel"
-    assert spec["visual_source_state_backed"] is True
+    assert spec["underlying_env_class"] == wrapper_info["underlying_env_class"]
+    assert spec["runtime_env_impl_id"] == wrapper_info["runtime_env_impl_id"]
+    assert spec["runtime_topology"] == wrapper_info["runtime_topology"]
+    assert spec["two_seat_self_play"] == wrapper_info["two_seat_self_play"]
+    assert spec["two_seat_self_play_status"] == wrapper_info["two_seat_self_play_status"]
+    assert spec["fixed_opponent_is_two_seat_self_play"] == (
+        wrapper_info["fixed_opponent_is_two_seat_self_play"]
+    )
+    assert spec["browser_pixel_fidelity"] == wrapper_info["browser_pixel_fidelity"]
+    assert spec["uses_ale"] == wrapper_info["uses_ale"]
+    assert spec["visual_surface"] == wrapper_info["visual_surface"]
+    assert spec["visual_truth_level"] == wrapper_info["visual_truth_level"]
+    assert spec["visual_source_state_backed"] == wrapper_info["visual_source_state_backed"]
     assert spec["opponent_training_relation"] == train_mod.OPPONENT_TRAINING_RELATION_FIXED_STRAIGHT
     assert spec["current_policy_self_play"] is False
     assert spec["trusted_current_policy_self_play"] is False

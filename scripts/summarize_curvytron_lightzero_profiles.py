@@ -136,11 +136,16 @@ def summarize_summary(path: Path) -> dict[str, Any]:
     telemetry_pct = (telemetry_sec / wall * 100.0) if telemetry_sec is not None and wall else None
     mcts_sec = _float(timers.get("mcts_search_sec"))
     mcts_sim_budget = _int(counts.get("mcts_search_simulation_budget_sum"))
+    root_sum = _int(counts.get("mcts_search_root_sum"))
+    search_calls = _int(counts.get("mcts_search_calls"))
+    sims_per_root = _int(command.get("num_simulations"))
+    root_sim_budget = root_sum * sims_per_root if root_sum is not None and sims_per_root else None
+    root_sims_per_sec = (
+        root_sim_budget / mcts_sec if root_sim_budget is not None and mcts_sec else None
+    )
     mcts_sims_per_sec = (
         mcts_sim_budget / mcts_sec if mcts_sim_budget is not None and mcts_sec else None
     )
-    root_sum = _int(counts.get("mcts_search_root_sum"))
-    search_calls = _int(counts.get("mcts_search_calls"))
     root_batch_mean = derived.get("mcts_search_root_batch_mean")
     if root_batch_mean is None and root_sum is not None and search_calls:
         root_batch_mean = root_sum / search_calls
@@ -159,12 +164,14 @@ def summarize_summary(path: Path) -> dict[str, Any]:
         "episodes": command.get("n_episode"),
         "sims": command.get("num_simulations"),
         "batch": command.get("batch_size"),
+        "lightzero_multi_gpu": command.get("lightzero_multi_gpu"),
         "source_max_steps": command.get("source_max_steps"),
         "telemetry_stride": command.get("env_telemetry_stride"),
         "steps": steps,
         "wall_sec": wall,
         "steps_per_sec": steps_per_sec,
         "mcts_sims_per_sec": mcts_sims_per_sec,
+        "root_sims_per_sec": root_sims_per_sec,
         "collector_sec": _float(timers.get("collector_collect_sec")),
         "mcts_sec": mcts_sec,
         "policy_collect_sec": _float(timers.get("policy_forward_collect_sec")),
@@ -186,6 +193,7 @@ def summarize_summary(path: Path) -> dict[str, Any]:
         "gpu_max_pct": gpu.get("max_gpu_util_percent"),
         "gpu_mem_mib": gpu.get("max_memory_used_mib"),
         "cuda_available": runtime.get("torch_cuda_available"),
+        "cuda_device_count": runtime.get("torch_cuda_device_count"),
         "problem": _short_problem(summary),
     }
 
@@ -197,12 +205,15 @@ TABLE_COLUMNS = [
     ("collectors", "c"),
     ("episodes", "ep"),
     ("sims", "sim"),
+    ("source_max_steps", "src"),
+    ("lightzero_multi_gpu", "lz_mgpu"),
+    ("cuda_device_count", "cuda_n"),
     ("steps", "steps"),
     ("wall_sec", "wall"),
     ("steps_per_sec", "steps/s"),
     ("collector_sec", "collect"),
     ("mcts_sec", "mcts"),
-    ("mcts_sims_per_sec", "sims/s"),
+    ("root_sims_per_sec", "root_sims/s"),
     ("policy_collect_sec", "p_collect"),
     ("learner_sec", "learner"),
     ("replay_sec", "replay"),

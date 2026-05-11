@@ -96,6 +96,16 @@ def _write_picker_flag(tmp_path, *, run_id: str, mtime: int = 1) -> None:
     os.utime(flag_path, (mtime, mtime))
 
 
+def _picker_flag_path(tmp_path, *, run_id: str):
+    return (
+        tmp_path
+        / "training"
+        / browser.TASK_ID
+        / run_id
+        / browser.RUN_PICKER_FLAG_FILENAME
+    )
+
+
 def test_validate_volume_ref_accepts_only_task_relative_gifs_and_json() -> None:
     gif_ref = (
         f"training/{browser.TASK_ID}/run-a/attempts/attempt-a/eval/eval-a/"
@@ -550,10 +560,30 @@ def test_fastapi_index_and_api_accept_run_id_picker_selection(
     api_response = client.get("/api/summaries", params={"run_id": "run-old"})
 
     assert page_response.status_code == 200
-    assert '<select name="run_id" onchange="this.form.submit()">' in page_response.text
-    assert '<option value="run-old" selected>' in page_response.text
-    assert page_response.text.index('value="run-new"') < page_response.text.index(
-        'value="run-old"'
+    assert '<form id="filters-form" method="get"></form>' in page_response.text
+    assert '<input type="hidden" name="run_id" form="filters-form" value="run-old">' in (
+        page_response.text
+    )
+    assert '<details class="run-picker">' in page_response.text
+    assert "<summary>run-old</summary>" in page_response.text
+    assert "confirm(" not in page_response.text
+    assert "Deleting" in page_response.text
+    assert "X-Requested-With" in page_response.text
+    assert "row.remove()" in page_response.text
+    assert "window.history.replaceState" in page_response.text
+    assert "window.location.reload" not in page_response.text
+    assert "window.location.assign" not in page_response.text
+    assert 'class="hide-run-form"' in page_response.text
+    assert 'class="spinner" aria-hidden="true"' in page_response.text
+    assert page_response.text.index('<details class="run-picker">') < page_response.text.index(
+        'class="hide-run-form"'
+    )
+    assert page_response.text.index('class="hide-run-form"') < page_response.text.index(
+        "Run text"
+    )
+    assert "/api/runs/run-old/hide" in page_response.text
+    assert page_response.text.index("run-new (") < page_response.text.index(
+        "run-old ("
     )
     assert api_response.status_code == 200
     assert [row["run_id"] for row in api_response.json()["rows"]] == ["run-old"]
@@ -561,6 +591,79 @@ def test_fastapi_index_and_api_accept_run_id_picker_selection(
         "run-new",
         "run-old",
     ]
+
+
+def test_fastapi_hide_run_removes_only_picker_flag(tmp_path, monkeypatch) -> None:
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(browser, "RUNS_MOUNT", tmp_path)
+    _write_picker_flag(tmp_path, run_id="run-old")
+    _write_summary(
+        tmp_path,
+        run_id="run-old",
+        attempt_id="attempt-a",
+        eval_id="eval-a",
+        ok=True,
+        frame_count=5,
+        mtime=100,
+    )
+    summary_path = _selfplay_dir(
+        tmp_path,
+        run_id="run-old",
+        attempt_id="attempt-a",
+        eval_id="eval-a",
+    ) / "summary.json"
+    app = browser._build_fastapi_app(None)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/runs/run-old/hide",
+        params={"next": "/?limit=10"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/?limit=10"
+    assert not _picker_flag_path(tmp_path, run_id="run-old").exists()
+    assert summary_path.exists()
+    assert browser._list_runs(tmp_path) == []
+
+
+def test_fastapi_hide_run_fetch_waits_and_returns_next_url(tmp_path, monkeypatch) -> None:
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(browser, "RUNS_MOUNT", tmp_path)
+    _write_picker_flag(tmp_path, run_id="run-old")
+    _write_summary(
+        tmp_path,
+        run_id="run-old",
+        attempt_id="attempt-a",
+        eval_id="eval-a",
+        ok=True,
+        frame_count=5,
+        mtime=100,
+    )
+    app = browser._build_fastapi_app(None)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/runs/run-old/hide",
+        params={"next": "/?limit=10"},
+        headers={"X-Requested-With": "fetch"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["run_id"] == "run-old"
+    assert payload["next"] == "/?limit=10"
+    assert payload["marker_existed"] is True
+    assert payload["hidden"] is True
+    assert not _picker_flag_path(tmp_path, run_id="run-old").exists()
 
 
 def test_fastapi_routes_keep_serving_when_volume_reload_fails(tmp_path, monkeypatch) -> None:

@@ -13,6 +13,7 @@ _MODULE = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_MODULE)
 run_comparison = _MODULE.run_comparison
 run_suite_comparison = _MODULE.run_suite_comparison
+run_full_2p_visual_gate = _MODULE.run_full_2p_visual_gate
 run_programmatic_stress_comparison = _MODULE.run_programmatic_stress_comparison
 run_typed_bonus_visual_status_gate = _MODULE.run_typed_bonus_visual_status_gate
 run_visual_mismatch_canary = _MODULE.run_visual_mismatch_canary
@@ -47,11 +48,25 @@ def test_compare_2p_raw_visual_observation_matches_original_js_reset_when_availa
 def test_compare_2p_raw_visual_observation_core_suite_matches():
     report = run_suite_comparison()
 
-    assert report["suite_id"] == "core_2p_source_state_gray64"
+    assert report["suite_id"] == "core_2p_source_state_canvas_gray64"
     assert report["scenario_count"] == 34
     assert report["match"] is True
     assert report["max_abs_diff"] == 0
     assert report["mismatch_pixels"] == 0
+
+
+def test_compare_2p_raw_visual_observation_full_visual_gate_matches():
+    report = run_full_2p_visual_gate()
+
+    assert report["gate_id"] == "full_2p_source_state_visual_gate"
+    assert report["match"] is True
+    assert report["gray64"]["scenario_count"] == 34
+    assert report["typed_bonus"]["case_count"] == 12
+    assert report["visual_canaries_passed"] == len(VISUAL_MISMATCH_CANARY_IDS)
+    assert report["mismatch_pixels"] == 0
+    assert report["max_abs_diff"] == 0.0
+    assert report["expected_canary_mismatch_pixels"] > 0
+    assert report["not_a_training_ready_claim"] is True
 
 
 def test_compare_2p_raw_visual_observation_programmatic_stress_scenarios_match():

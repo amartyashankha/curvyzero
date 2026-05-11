@@ -60,18 +60,18 @@ from curvyzero.env.vector_visual_observation import (  # noqa: E402
     SOURCE_STATE_BONUS64_STACK4_SELF_STATUS_CHANNELS,
 )
 from curvyzero.env.vector_visual_observation import (  # noqa: E402
-    SOURCE_STATE_GRAY64_BROWSER_PIXEL_FIDELITY,
+    SOURCE_STATE_CANVAS_GRAY64_BROWSER_PIXEL_FIDELITY as SOURCE_STATE_GRAY64_BROWSER_PIXEL_FIDELITY,
 )
 from curvyzero.env.vector_visual_observation import (  # noqa: E402
-    SOURCE_STATE_GRAY64_RENDERER_IMPL_ID,
+    SOURCE_STATE_CANVAS_GRAY64_RENDERER_IMPL_ID as SOURCE_STATE_GRAY64_RENDERER_IMPL_ID,
 )
-from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_SCHEMA_ID  # noqa: E402
-from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_SHAPE  # noqa: E402
+from curvyzero.env.vector_visual_observation import SOURCE_STATE_CANVAS_GRAY64_SCHEMA_ID as SOURCE_STATE_GRAY64_SCHEMA_ID  # noqa: E402
+from curvyzero.env.vector_visual_observation import SOURCE_STATE_CANVAS_GRAY64_SHAPE as SOURCE_STATE_GRAY64_SHAPE  # noqa: E402
 from curvyzero.env.vector_visual_observation import (  # noqa: E402
     render_source_state_bonus64_stack4_player_perspective_v1,
 )
-from curvyzero.env.vector_visual_observation import render_source_snapshot_gray64  # noqa: E402
-from curvyzero.env.vector_visual_observation import render_source_state_gray64  # noqa: E402
+from curvyzero.env.vector_visual_observation import render_source_snapshot_canvas_gray64 as render_source_snapshot_gray64  # noqa: E402
+from curvyzero.env.vector_visual_observation import render_source_state_canvas_gray64 as render_source_state_gray64  # noqa: E402
 
 
 DEFAULT_SCENARIO = (
@@ -177,6 +177,7 @@ VISUAL_MISMATCH_CANARY_IDS = (
     "missing_visible_map_bonus",
 )
 TYPED_BONUS_VISUAL_STATUS_GATE_ID = "source_default_bonus64_type_status_planes_2p"
+FULL_2P_VISUAL_GATE_ID = "full_2p_source_state_visual_gate"
 TYPED_BONUS_VISUAL_STATUS_GATE_TYPES = tuple(
     vector_runtime.BONUS_TYPE_NAME_BY_CODE[int(code)]
     for code in vector_runtime.SOURCE_DEFAULT_BONUS_TYPE_CODES
@@ -400,7 +401,7 @@ def run_suite_comparison(
     failed = [report for report in reports if not report["match"]]
     return {
         "schema_id": f"{SCHEMA_ID}_suite",
-        "suite_id": "core_2p_source_state_gray64",
+        "suite_id": "core_2p_source_state_canvas_gray64",
         "scenario_count": len(reports),
         "passed": len(reports) - len(failed),
         "failed": len(failed),
@@ -563,6 +564,62 @@ def run_typed_bonus_visual_status_gate() -> dict[str, Any]:
         ),
         "mismatch_pixels": sum(int(report["mismatch_pixels"]) for report in reports),
         "reports": reports,
+    }
+
+
+def run_full_2p_visual_gate(*, max_steps: int | None = None) -> dict[str, Any]:
+    """Run the full current 2P model-facing visual gate.
+
+    This combines the exact gray64 source-state comparison, the typed
+    bonus/status companion gate, and the expected-failure visual canaries. It is
+    intentionally still not a browser-canvas or full trainer/replay claim.
+    """
+
+    gray64 = run_suite_comparison(max_steps=max_steps)
+    typed_bonus = run_typed_bonus_visual_status_gate()
+    canaries = [run_visual_mismatch_canary(canary_id) for canary_id in VISUAL_MISMATCH_CANARY_IDS]
+    canary_passes = [
+        (not report["match"])
+        and int(report["max_abs_diff"]) > 0
+        and int(report["mismatch_pixels"]) > 0
+        for report in canaries
+    ]
+    failed_gates: list[str] = []
+    if not gray64["match"]:
+        failed_gates.append("gray64_source_state")
+    if not typed_bonus["match"]:
+        failed_gates.append("bonus64_typed_status")
+    if not all(canary_passes):
+        failed_gates.append("visual_expected_failure_canaries")
+
+    return {
+        "schema_id": f"{SCHEMA_ID}_full_visual_gate",
+        "gate_id": FULL_2P_VISUAL_GATE_ID,
+        "comparison_kind": "full_2p_model_facing_visual_gate",
+        "scope": "2P source-state model-facing visual observation; not browser canvas; not trainer/replay propagation",
+        "not_a_training_ready_claim": True,
+        "remaining_training_work": [
+            "use one product path: source-state browser-like RGB64 raw frame -> grayscale64 -> stack",
+            "keep bonus64 v1 as a diagnostic/proof tensor, not a training observation path",
+            "prove the canvas-gray64 observation survives wrapper, replay, and final-observation paths",
+            "add source/original fixtures for programmatic bonus stack/death stress probes",
+        ],
+        "match": not failed_gates,
+        "failed_gates": failed_gates,
+        "gray64": gray64,
+        "typed_bonus": typed_bonus,
+        "visual_canaries": canaries,
+        "visual_canary_count": len(canaries),
+        "visual_canaries_passed": sum(1 for passed in canary_passes if passed),
+        "mismatch_pixels": int(gray64["mismatch_pixels"])
+        + int(typed_bonus["mismatch_pixels"]),
+        "max_abs_diff": max(
+            float(gray64["max_abs_diff"]),
+            float(typed_bonus["max_abs_diff"]),
+        ),
+        "expected_canary_mismatch_pixels": sum(
+            int(report["mismatch_pixels"]) for report in canaries
+        ),
     }
 
 
@@ -2511,7 +2568,7 @@ def _write_pgm(path: Path, frame: np.ndarray) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scenario", type=Path, default=DEFAULT_SCENARIO)
-    parser.add_argument("--suite", choices=("core2p",), default=None)
+    parser.add_argument("--suite", choices=("core2p", "full2p"), default=None)
     parser.add_argument("--max-steps", type=int, default=None)
     parser.add_argument("--out-dir", type=Path, default=None)
     parser.add_argument(
@@ -2525,6 +2582,24 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    if args.suite == "full2p":
+        report = run_full_2p_visual_gate(max_steps=args.max_steps)
+        if args.format == "json":
+            print(json.dumps(report, indent=2, sort_keys=True))
+            return
+        status = "PASS" if report["match"] else "FAIL"
+        gray64 = report["gray64"]
+        typed = report["typed_bonus"]
+        print(
+            f"{status} {report['gate_id']} "
+            f"canvas_gray64={gray64['passed']}/{gray64['scenario_count']} "
+            f"typed_bonus={typed['passed']}/{typed['case_count']} "
+            f"canaries={report['visual_canaries_passed']}/{report['visual_canary_count']} "
+            f"mismatch_pixels={report['mismatch_pixels']} "
+            f"max_abs_diff={report['max_abs_diff']} "
+            f"expected_canary_mismatch_pixels={report['expected_canary_mismatch_pixels']}"
+        )
+        return
     if args.suite == "core2p":
         report = run_suite_comparison(max_steps=args.max_steps)
         if args.format == "json":
