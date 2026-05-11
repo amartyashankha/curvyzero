@@ -13,7 +13,13 @@ _MODULE = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_MODULE)
 run_comparison = _MODULE.run_comparison
 run_suite_comparison = _MODULE.run_suite_comparison
+run_programmatic_stress_comparison = _MODULE.run_programmatic_stress_comparison
+run_typed_bonus_visual_status_gate = _MODULE.run_typed_bonus_visual_status_gate
+run_visual_mismatch_canary = _MODULE.run_visual_mismatch_canary
 NATURAL_BONUS_2P_FIXTURE_IDS = _MODULE.NATURAL_BONUS_2P_FIXTURE_IDS
+PROGRAMMATIC_2P_STRESS_SCENARIO_IDS = _MODULE.PROGRAMMATIC_2P_STRESS_SCENARIO_IDS
+TYPED_BONUS_VISUAL_STATUS_GATE_TYPES = _MODULE.TYPED_BONUS_VISUAL_STATUS_GATE_TYPES
+VISUAL_MISMATCH_CANARY_IDS = _MODULE.VISUAL_MISMATCH_CANARY_IDS
 
 
 def test_compare_2p_raw_visual_observation_matches_short_rollout():
@@ -42,10 +48,70 @@ def test_compare_2p_raw_visual_observation_core_suite_matches():
     report = run_suite_comparison()
 
     assert report["suite_id"] == "core_2p_source_state_gray64"
-    assert report["scenario_count"] == 26
+    assert report["scenario_count"] == 34
     assert report["match"] is True
     assert report["max_abs_diff"] == 0
     assert report["mismatch_pixels"] == 0
+
+
+def test_compare_2p_raw_visual_observation_programmatic_stress_scenarios_match():
+    expected_terminal = {
+        "source_printing_trail_point_visual_stress": False,
+        "source_body_opponent_tangent_then_overlap_visual_stress": True,
+        "source_body_own_latency_delta3_then_delta4_visual_stress": True,
+        "source_print_manager_trail_gap_boundary_visual_stress": False,
+        "source_lifecycle_survivor_score_2p_warmdown_visual_stress": False,
+        "source_bonus_self_master_body_block_then_wall_death_visual_stress": True,
+        "source_bonus_game_borderless_expiry_then_wall_death_visual_stress": True,
+        "source_bonus_game_clear_clears_future_collision_body_visual_stress": False,
+    }
+
+    for scenario_id in PROGRAMMATIC_2P_STRESS_SCENARIO_IDS:
+        report = run_programmatic_stress_comparison(scenario_id)
+
+        assert report["comparison_kind"] == "programmatic_source_snapshot_stress"
+        assert report["match"] is True
+        assert report["max_abs_diff"] == 0
+        assert report["mismatch_pixels"] == 0
+        assert report["terminal_seen"] is expected_terminal[scenario_id]
+        assert report["expected_terminal"] is expected_terminal[scenario_id]
+        assert report["visual_limits"]
+
+
+def test_compare_2p_raw_visual_observation_mismatch_canaries_fail_when_visible_fact_missing():
+    for canary_id in VISUAL_MISMATCH_CANARY_IDS:
+        report = run_visual_mismatch_canary(canary_id)
+
+        assert report["comparison_kind"] == "intentional_visual_mismatch_canary"
+        assert report["match"] is False
+        assert report["max_abs_diff"] > 0
+        assert report["mismatch_pixels"] > 0
+        assert report["first_mismatch"] is not None
+        assert report["expected_match"] is False
+        assert report["expected_hole"]
+
+
+def test_compare_2p_raw_visual_observation_typed_bonus_gate_matches_source_defaults():
+    report = run_typed_bonus_visual_status_gate()
+
+    assert report["comparison_kind"] == "typed_bonus_visual_status_gate"
+    assert report["source_bonus_types"] == list(TYPED_BONUS_VISUAL_STATUS_GATE_TYPES)
+    assert report["case_count"] == 12
+    assert report["match"] is True
+    assert report["max_abs_diff"] == 0.0
+    assert report["mismatch_pixels"] == 0
+    assert "active map bonus type code" in report["source_backed_status_scope"]
+    assert report["missing_source_backed_proof"]
+    for case in report["reports"]:
+        assert case["comparison_kind"] == "typed_bonus_visual_status_case"
+        assert case["match"] is True
+        assert case["source_mask_at_center"] == 1.0
+        assert case["vector_mask_at_center"] == 1.0
+        assert case["source_type_at_center"] == case["expected_type_at_center"]
+        assert case["vector_type_at_center"] == case["expected_type_at_center"]
+        assert case["map_type_mismatch_pixels"] == 0
+        assert case["status_mismatch_pixels"] == 0
+        assert case["frames_compared"] == 2
 
 
 def test_compare_2p_raw_visual_observation_natural_bonus_fixtures_match():

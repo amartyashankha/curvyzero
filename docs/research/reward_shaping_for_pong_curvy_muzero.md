@@ -1,6 +1,7 @@
 # Reward Shaping For Pong, Curvy, And MuZero
 
-Status: Recommendation for dummy Pong v0, still current after deeper pass
+Status: Recommendation for dummy Pong v0; CurvyTron note updated after reward
+variant clarification
 Date: 2026-05-09
 
 ## Short Answer
@@ -14,18 +15,19 @@ env.step reward:
    0  otherwise
 ```
 
-Do not add positive per-step survival reward inside `env.step()`. For MuZero or
-LightZero MuZero, do not train the reward head on survival/loss-delay either.
-Use survival as telemetry, checkpoint-selection tie-breaker, and curriculum
-control signal. If a non-MuZero toy baseline temporarily trains on a shaped
-episode target, label it as objective-changing and do not use it for promotion.
+Do not silently add positive per-step survival reward inside `env.step()`. For
+MuZero or LightZero MuZero, any survival helper in the reward head is a separate
+trainer reward variant, not just logging. Use survival length as telemetry,
+checkpoint-selection tie-breaker, and curriculum control signal. If a run
+trains on a shaped episode target or dense helper, label it as
+objective-changing and do not use survival length alone for promotion.
 
 Simple decision:
 
 | Use | Survival time? | Rule |
 | --- | --- | --- |
 | Environment reward | No | Keep game payoff sparse and true. |
-| MuZero reward target | No | Reward head predicts the env reward stream. |
+| MuZero reward target | Variant only | Reward head predicts the chosen trainer reward stream. |
 | MuZero value target | Usually no | Use true return; shaped value is a labeled ablation only. |
 | Eval telemetry | Yes | Report survival, truncation, loss delay, and variance. |
 | Checkpoint tie-breaker | Yes, bounded | Only after true win/score is tied, with anti-stall rejects. |
@@ -134,11 +136,13 @@ For the next dummy Pong runs:
 
 ## Carry Forward To CurvyTron
 
-CurvyTron should inherit the same split:
+CurvyTron should inherit the same hierarchy:
 
-- Environment reward: terminal competitive payoff, such as win/loss/tie or
-  centered rank payoff for more than two players.
-- Training target: true reward/return for MuZero-family runs.
+- Survival length: always eval/telemetry, never the trainer reward by itself.
+- Trainer reward: first runs should compare two labeled variants,
+  `sparse_outcome` and `dense_survival_plus_outcome`.
+- Sparse outcome: terminal competitive payoff, such as win/loss/tie or centered
+  rank payoff for more than two players.
 - Telemetry: survival ticks, crash cause, distance-to-death probes, pressure
   events, timeout rate, and rank/placement.
 - Tie-breaker: survival only among candidates with statistically similar true
@@ -146,11 +150,11 @@ CurvyTron should inherit the same split:
 - Curriculum: use survival and crash causes to pick easier starts, weaker
   opponents, shorter horizons, or targeted reset states.
 
-Do not silently reward "not dying" in the CurvyTron env. That can teach
-wall-hugging, passive circling, refusal to pressure opponents, or timeout
-farming. If later shaping is necessary, write a one-page potential-based
-sketch first: define `Phi`, `gamma`, terminal values, and why the optimal policy
-is unchanged. Otherwise label the run as a different objective.
+Do not silently reward "not dying" in the CurvyTron env. The
+`dense_survival_plus_outcome` variant may include a dense survival helper for
+longer horizons, but it must have its own reward schema id and scorecard. Do
+not claim `sparse_outcome` or `dense_survival_plus_outcome` is settled before
+the first CurvyTron comparison.
 
 ## Open Checks
 

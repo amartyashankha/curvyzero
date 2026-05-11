@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+import math
 import time
 from typing import Any, TypedDict
 
@@ -3143,6 +3144,12 @@ def _apply_bonus_avatar_effect_without_stack(
             base_speed + _bonus_velocity_delta(changed_type),
             base_speed / 2.0,
         )
+        _apply_speed_adjusted_angular_velocity(
+            state,
+            row=row,
+            player=player,
+            row_count=row_count,
+        )
     if _bonus_has_inverse_effect(changed_type) and "inverse" in state:
         inverse = _bool_array_shape(
             state,
@@ -3285,6 +3292,13 @@ def _resolve_bonus_speed_from_stack(
 
     next_speed = max(base_speed + total_delta, base_speed / 2.0)
     speed[row, player] = next_speed
+    _resolve_bonus_angular_velocity_from_stack(
+        state,
+        stack_arrays,
+        row=row,
+        player=player,
+        row_count=row_count,
+    )
     return next_speed
 
 
@@ -3345,7 +3359,7 @@ def _resolve_bonus_angular_velocity_from_stack(
             "angular_velocity_per_ms must be a numeric array with shape [B,P]"
         )
 
-    next_angular_velocity = _bonus_base_angular_velocity_per_ms(
+    next_angular_velocity = _bonus_speed_adjusted_base_angular_velocity_per_ms(
         state,
         row=row,
         player=player,
@@ -3559,6 +3573,67 @@ def _bonus_base_angular_velocity_per_ms(
         shape=shape,
     )
     return float(base_angular_velocity[row, player])
+
+
+def _source_speed_adjusted_angular_velocity_per_ms(
+    *,
+    speed: float,
+    base_speed: float,
+    base_angular_velocity_per_ms: float,
+) -> float:
+    if base_speed <= 0.0 or speed <= 0.0:
+        return base_angular_velocity_per_ms
+    ratio = speed / base_speed
+    return (
+        ratio * base_angular_velocity_per_ms
+        + math.log(1.0 / ratio) / 1000.0
+    )
+
+
+def _bonus_speed_adjusted_base_angular_velocity_per_ms(
+    state: Mapping[str, np.ndarray],
+    *,
+    row: int,
+    player: int,
+    shape: tuple[int, int],
+) -> float:
+    base_angular_velocity = _bonus_base_angular_velocity_per_ms(
+        state,
+        row=row,
+        player=player,
+        shape=shape,
+    )
+    if "speed" not in state:
+        return base_angular_velocity
+    speed = _numeric_array_shape(state, "speed", shape=shape)
+    base_speed = _bonus_base_speed(state, row=row, player=player, shape=shape)
+    return _source_speed_adjusted_angular_velocity_per_ms(
+        speed=float(speed[row, player]),
+        base_speed=base_speed,
+        base_angular_velocity_per_ms=base_angular_velocity,
+    )
+
+
+def _apply_speed_adjusted_angular_velocity(
+    state: Mapping[str, np.ndarray],
+    *,
+    row: int,
+    player: int,
+    row_count: int,
+) -> None:
+    if "angular_velocity_per_ms" not in state:
+        return
+    angular_velocity = _numeric_array_shape(
+        state,
+        "angular_velocity_per_ms",
+        shape=(row_count, state["angular_velocity_per_ms"].shape[1]),
+    )
+    angular_velocity[row, player] = _bonus_speed_adjusted_base_angular_velocity_per_ms(
+        state,
+        row=row,
+        player=player,
+        shape=angular_velocity.shape,
+    )
 
 
 def _bonus_base_invincible(

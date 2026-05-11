@@ -127,11 +127,12 @@ SOURCE_LIFECYCLE_MESSAGE = (
 )
 SOURCE_LIFECYCLE_FIDELITY_SCOPE = (
     "source lifecycle event/random/snapshot facts for pinned 2P/3P/4P fixtures, "
-    "including one focused 3P all-dead warmdown/next-round fixture, one focused "
-    "3P survivor warmdown/next-round fixture, one focused 3P survivor-scoring "
-    "round-end fixture, one focused 3P warmdown removeAvatar/next-round "
-    "fixture, one focused 3P dead-then-removeAvatar round-end/next-round "
-    "fixture, focused 3P/4P present/absent round-new, "
+    "including one focused 2P survivor warmdown/next-round fixture, one focused "
+    "3P all-dead warmdown/next-round fixture, one focused 3P survivor "
+    "warmdown/next-round fixture, one focused 3P survivor-scoring round-end "
+    "fixture, one focused 3P warmdown removeAvatar/next-round fixture, one "
+    "focused 3P dead-then-removeAvatar round-end/next-round fixture, focused "
+    "3P/4P present/absent round-new, "
     "survivor-scoring round-end, tie-at-max-score continuation, and "
     "next-round fixtures, one focused 4P "
     "all-present all-dead warmdown/next-round fixture, one focused 4P "
@@ -188,6 +189,7 @@ SOURCE_LIFECYCLE_SCENARIO_IDS = frozenset(
     {
         "source_lifecycle_spawn_rng_warmup_print_start_2p",
         "source_lifecycle_spawn_rng_2p_next_round",
+        "source_lifecycle_survivor_score_2p_next_round",
         "source_lifecycle_spawn_heading_rejection_retry_2p",
         "source_lifecycle_spawn_rng_order_3p",
         "source_lifecycle_spawn_rng_warmup_print_start_3p",
@@ -670,6 +672,7 @@ def run_source_lifecycle_scenario(
             "source-lifecycle runner supports "
             "source_lifecycle_spawn_rng_warmup_print_start_2p, "
             "source_lifecycle_spawn_rng_2p_next_round, and "
+            "source_lifecycle_survivor_score_2p_next_round, "
             "source_lifecycle_spawn_heading_rejection_retry_2p, plus "
             "source_lifecycle_spawn_rng_order_3p, "
             "source_lifecycle_spawn_rng_warmup_print_start_3p, "

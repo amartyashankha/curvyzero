@@ -1,7 +1,8 @@
 """Modal eval harness for CurvyTron debug-visual survival LightZero checkpoints.
 
 This scores one or more mirrored LightZero checkpoints by running the
-registered stacked debug visual survival env. Reward is survival time only.
+registered stacked visual CurvyTron env. Survival length is reported from
+episode length, separate from the trainer reward variant.
 
 Example:
 
@@ -46,6 +47,7 @@ from curvyzero.infra.modal.lightzero_curvyzero_stacked_debug_visual_survival_tra
     DEFAULT_N_EVALUATOR_EPISODE,
     DEFAULT_NUM_SIMULATIONS,
     DEFAULT_OPPONENT_POLICY_KIND,
+    DEFAULT_REWARD_VARIANT,
     DEFAULT_RUN_ID as TRAIN_DEFAULT_RUN_ID,
     DEFAULT_SAVE_CKPT_AFTER_ITER,
     DEFAULT_SOURCE_MAX_STEPS,
@@ -55,6 +57,8 @@ from curvyzero.infra.modal.lightzero_curvyzero_stacked_debug_visual_survival_tra
     TASK_ID,
     VOLUME_NAME,
     _build_visual_survival_configs,
+    _normalize_opponent_policy_kind_for_env,
+    _normalize_reward_variant_for_env,
     _resolve_opponent_checkpoint_for_env,
     _to_plain,
     image,
@@ -582,6 +586,9 @@ def _make_policy_and_env(
     batch_size: int,
     telemetry_path: Path,
     env_variant: str,
+    reward_variant: str,
+    model_env_variant: str | None = None,
+    model_reward_variant: str | None = None,
     opponent_policy_kind: str,
     opponent_checkpoint: dict[str, Any] | None,
     opponent_snapshot_ref: str | None,
@@ -608,6 +615,7 @@ def _make_policy_and_env(
         max_train_iter=DEFAULT_MAX_TRAIN_ITER,
         save_ckpt_after_iter=DEFAULT_SAVE_CKPT_AFTER_ITER,
         env_variant=env_variant,
+        reward_variant=reward_variant,
         ego_action_straight_override_probability=0.0,
         control_noise_profile_id="none",
         disable_death_for_profile=False,
@@ -618,6 +626,30 @@ def _make_policy_and_env(
         opponent_snapshot_ref=opponent_snapshot_ref,
         opponent_checkpoint_state_key=opponent_checkpoint_state_key,
     )
+    model_env_variant = model_env_variant or env_variant
+    # Only used to rebuild the checkpoint model shape; survival scoring stays steps-based.
+    model_reward_variant = model_reward_variant or reward_variant
+    if model_env_variant != env_variant or model_reward_variant != reward_variant:
+        from curvyzero.infra.modal.lightzero_curvyzero_stacked_debug_visual_survival_train import (
+            _lightzero_target_config_for_reward,
+            _target_config_patches,
+        )
+
+        model_target_config = _lightzero_target_config_for_reward(
+            env_variant=model_env_variant,
+            reward_variant=model_reward_variant,
+            source_max_steps=source_max_steps,
+        )
+        for patch in _target_config_patches(
+            patched["main_config"],
+            model_target_config,
+        ):
+            patched["surface"].setdefault("model_target_config_patches", []).append(
+                patch
+            )
+        patched["surface"]["model_env_variant"] = model_env_variant
+        patched["surface"]["model_reward_variant"] = model_reward_variant
+        patched["surface"]["model_lightzero_target_config"] = model_target_config
     cfg = compile_config(
         copy.deepcopy(patched["main_config"]),
         seed=seed,
@@ -742,7 +774,7 @@ def _run_survival_episode(
     if terminal_reason in (None, "", "none"):
         terminal_reason = "cap" if len(actions) >= max_eval_steps and not done else "unknown"
     death = _first_death_from_info(last_info)
-    steps_survived = int(round(total_reward))
+    steps_survived = len(actions)
     elapsed_sec = time.perf_counter() - started
     return {
         "ok": failure is None and bool(actions),
@@ -783,6 +815,8 @@ def _eval_checkpoint(
     batch_size: int,
     telemetry_path: Path,
     env_variant: str,
+    eval_reward_variant: str,
+    model_reward_variant: str | None,
     opponent_policy_kind: str,
     opponent_checkpoint: dict[str, Any] | None,
     opponent_snapshot_ref: str | None,
@@ -802,6 +836,8 @@ def _eval_checkpoint(
         batch_size=batch_size,
         telemetry_path=telemetry_path,
         env_variant=env_variant,
+        reward_variant=eval_reward_variant,
+        model_reward_variant=model_reward_variant,
         opponent_policy_kind=opponent_policy_kind,
         opponent_checkpoint=opponent_checkpoint,
         opponent_snapshot_ref=opponent_snapshot_ref,
@@ -846,7 +882,7 @@ def _row_from_result(job: dict[str, Any], result: dict[str, Any]) -> dict[str, A
         "decision_ms": episode.get("decision_ms"),
         "ok": bool(result.get("ok")),
         "strict_load": status.get("strict_policy_model_load_ok"),
-        "total_reward": episode.get("total_reward"),
+        "training_reward": episode.get("total_reward"),
         "action_histogram": episode.get("action_histogram"),
         "elapsed_seconds": result.get("remote_elapsed_sec"),
         "artifact_ref": artifact.get("ref"),
@@ -922,7 +958,7 @@ def _survival_aggregate_table(table: list[dict[str, Any]]) -> list[dict[str, Any
         ]
         scores = [
             value
-            for value in (_number(row.get("total_reward")) for row in rows)
+            for value in (_number(row.get("training_reward")) for row in rows)
             if value is not None
         ]
         ok_count = sum(1 for row in rows if row.get("ok"))
@@ -952,7 +988,7 @@ def _survival_aggregate_table(table: list[dict[str, Any]]) -> list[dict[str, Any
                 "ok_count": ok_count,
                 "capped_count": capped_count,
                 "failure_count": len(rows) - ok_count,
-                "mean_score": _mean(scores),
+                "mean_training_reward": _mean(scores),
                 "mean_elapsed_sec": _mean(elapsed),
             }
         )
@@ -999,6 +1035,8 @@ def _run_eval(
     emit_result_json: bool,
     quiet_framework_logs: bool,
     env_variant: str,
+    reward_variant: str = DEFAULT_REWARD_VARIANT,
+    model_reward_variant: str | None = None,
     opponent_policy_kind: str,
     opponent_checkpoint_ref: str | None,
     opponent_snapshot_ref: str | None,
@@ -1010,6 +1048,22 @@ def _run_eval(
         raise ValueError(
             f"unknown env_variant {env_variant!r}; expected one of {ENV_VARIANT_CHOICES!r}"
         )
+    opponent_policy_kind = _normalize_opponent_policy_kind_for_env(
+        env_variant=env_variant,
+        opponent_policy_kind=opponent_policy_kind,
+        opponent_checkpoint_ref=opponent_checkpoint_ref,
+    )
+    eval_reward_variant = _normalize_reward_variant_for_env(
+        env_variant=env_variant,
+        reward_variant=reward_variant,
+    )
+    if model_reward_variant is not None:
+        # Only used to reconstruct checkpoint model/support shape, not to score eval.
+        model_reward_variant = _normalize_reward_variant_for_env(
+            env_variant=env_variant,
+            reward_variant=model_reward_variant,
+        )
+    effective_model_reward_variant = model_reward_variant or eval_reward_variant
     if opponent_policy_kind not in OPPONENT_POLICY_KIND_CHOICES:
         raise ValueError(
             f"unknown opponent_policy_kind {opponent_policy_kind!r}; "
@@ -1046,7 +1100,16 @@ def _run_eval(
         "source_max_steps": source_max_steps,
         "num_simulations": num_simulations,
         "batch_size": batch_size,
+        "eval_primary_metric": "steps_survived",
         "env_variant": env_variant,
+        "eval_reward_variant": eval_reward_variant,
+        "env_reward_variant": eval_reward_variant,
+        "reward_variant": eval_reward_variant,
+        "reward_variant_role": "backward_compatible_alias_for_eval_reward_variant",
+        "model_reward_variant": model_reward_variant,
+        "effective_model_reward_variant": effective_model_reward_variant,
+        "model_reward_variant_role": "checkpoint_model_reconstruction_only_not_scoring",
+        "training_reward_telemetry_field": "episode.total_reward",
         "modal_task_id": os.environ.get("MODAL_TASK_ID"),
         "opponent_policy_kind": opponent_policy_kind,
         "opponent_checkpoint_ref": opponent_checkpoint_ref,
@@ -1066,6 +1129,8 @@ def _run_eval(
                 batch_size=batch_size,
                 telemetry_path=telemetry_path,
                 env_variant=env_variant,
+                eval_reward_variant=eval_reward_variant,
+                model_reward_variant=model_reward_variant,
                 opponent_policy_kind=opponent_policy_kind,
                 opponent_checkpoint=opponent_checkpoint,
                 opponent_snapshot_ref=opponent_snapshot_ref,
@@ -1138,6 +1203,8 @@ def curvytron_visual_survival_eval_cpu(
     emit_result_json: bool = True,
     quiet_framework_logs: bool = DEFAULT_QUIET_FRAMEWORK_LOGS,
     env_variant: str = DEFAULT_ENV_VARIANT,
+    reward_variant: str = DEFAULT_REWARD_VARIANT,
+    model_reward_variant: str | None = None,
     opponent_policy_kind: str = DEFAULT_OPPONENT_POLICY_KIND,
     opponent_checkpoint_ref: str | None = None,
     opponent_snapshot_ref: str | None = None,
@@ -1158,6 +1225,8 @@ def curvytron_visual_survival_eval_cpu(
         emit_result_json=emit_result_json,
         quiet_framework_logs=quiet_framework_logs,
         env_variant=env_variant,
+        reward_variant=reward_variant,
+        model_reward_variant=model_reward_variant,
         opponent_policy_kind=opponent_policy_kind,
         opponent_checkpoint_ref=opponent_checkpoint_ref,
         opponent_snapshot_ref=opponent_snapshot_ref,
@@ -1187,6 +1256,8 @@ def curvytron_visual_survival_eval_gpu(
     emit_result_json: bool = True,
     quiet_framework_logs: bool = DEFAULT_QUIET_FRAMEWORK_LOGS,
     env_variant: str = DEFAULT_ENV_VARIANT,
+    reward_variant: str = DEFAULT_REWARD_VARIANT,
+    model_reward_variant: str | None = None,
     opponent_policy_kind: str = DEFAULT_OPPONENT_POLICY_KIND,
     opponent_checkpoint_ref: str | None = None,
     opponent_snapshot_ref: str | None = None,
@@ -1207,6 +1278,8 @@ def curvytron_visual_survival_eval_gpu(
         emit_result_json=emit_result_json,
         quiet_framework_logs=quiet_framework_logs,
         env_variant=env_variant,
+        reward_variant=reward_variant,
+        model_reward_variant=model_reward_variant,
         opponent_policy_kind=opponent_policy_kind,
         opponent_checkpoint_ref=opponent_checkpoint_ref,
         opponent_snapshot_ref=opponent_snapshot_ref,
@@ -1236,6 +1309,8 @@ def curvytron_visual_survival_eval_gpu_cpu40(
     emit_result_json: bool = True,
     quiet_framework_logs: bool = DEFAULT_QUIET_FRAMEWORK_LOGS,
     env_variant: str = DEFAULT_ENV_VARIANT,
+    reward_variant: str = DEFAULT_REWARD_VARIANT,
+    model_reward_variant: str | None = None,
     opponent_policy_kind: str = DEFAULT_OPPONENT_POLICY_KIND,
     opponent_checkpoint_ref: str | None = None,
     opponent_snapshot_ref: str | None = None,
@@ -1256,6 +1331,8 @@ def curvytron_visual_survival_eval_gpu_cpu40(
         emit_result_json=emit_result_json,
         quiet_framework_logs=quiet_framework_logs,
         env_variant=env_variant,
+        reward_variant=reward_variant,
+        model_reward_variant=model_reward_variant,
         opponent_policy_kind=opponent_policy_kind,
         opponent_checkpoint_ref=opponent_checkpoint_ref,
         opponent_snapshot_ref=opponent_snapshot_ref,
@@ -1302,6 +1379,8 @@ def main(
     slim_manifest: bool = True,
     quiet_framework_logs: bool = DEFAULT_QUIET_FRAMEWORK_LOGS,
     env_variant: str = DEFAULT_ENV_VARIANT,
+    reward_variant: str = DEFAULT_REWARD_VARIANT,
+    model_reward_variant: str | None = None,
     opponent_policy_kind: str = DEFAULT_OPPONENT_POLICY_KIND,
     opponent_checkpoint_ref: str | None = None,
     opponent_snapshot_ref: str | None = None,
@@ -1315,6 +1394,18 @@ def main(
         eval_fn = curvytron_visual_survival_eval_gpu_cpu40
     else:
         raise ValueError(f"unknown compute {compute!r}; expected one of {COMPUTE_CHOICES!r}")
+    eval_reward_variant = _normalize_reward_variant_for_env(
+        env_variant=env_variant,
+        reward_variant=reward_variant,
+    )
+    resolved_model_reward_variant = (
+        _normalize_reward_variant_for_env(
+            env_variant=env_variant,
+            reward_variant=model_reward_variant,
+        )
+        if model_reward_variant is not None
+        else eval_reward_variant
+    )
 
     selected_refs = _selected_checkpoint_refs(
         run_id=run_id,
@@ -1377,6 +1468,8 @@ def main(
         "emit_result_json": not summary_only,
         "quiet_framework_logs": quiet_framework_logs,
         "env_variant": env_variant,
+        "reward_variant": eval_reward_variant,
+        "model_reward_variant": resolved_model_reward_variant,
         "opponent_policy_kind": opponent_policy_kind,
         "opponent_checkpoint_ref": opponent_checkpoint_ref,
         "opponent_snapshot_ref": opponent_snapshot_ref,
@@ -1431,7 +1524,15 @@ def main(
             "eval_seeds": eval_seed_values,
             "eval_seed_count": effective_eval_seed_count,
             "eval_seed_sampler_seed": eval_seed_sampler_seed,
+            "eval_primary_metric": "steps_survived",
             "env_variant": env_variant,
+            "eval_reward_variant": eval_reward_variant,
+            "env_reward_variant": eval_reward_variant,
+            "reward_variant": eval_reward_variant,
+            "reward_variant_role": "backward_compatible_alias_for_eval_reward_variant",
+            "model_reward_variant": resolved_model_reward_variant,
+            "effective_model_reward_variant": resolved_model_reward_variant,
+            "model_reward_variant_role": "checkpoint_model_reconstruction_only_not_scoring",
             "opponent_policy_kind": opponent_policy_kind,
             "opponent_checkpoint_ref": opponent_checkpoint_ref,
             "opponent_snapshot_ref": opponent_snapshot_ref,
@@ -1449,7 +1550,16 @@ def main(
             "batch_size": batch_size,
             "default_eval_batch_size": DEFAULT_EVAL_BATCH_SIZE,
             "slim_manifest": slim_manifest,
+            "eval_primary_metric": "steps_survived",
             "env_variant": env_variant,
+            "eval_reward_variant": eval_reward_variant,
+            "env_reward_variant": eval_reward_variant,
+            "reward_variant": eval_reward_variant,
+            "reward_variant_role": "backward_compatible_alias_for_eval_reward_variant",
+            "model_reward_variant": resolved_model_reward_variant,
+            "effective_model_reward_variant": resolved_model_reward_variant,
+            "model_reward_variant_role": "checkpoint_model_reconstruction_only_not_scoring",
+            "training_reward_telemetry_field": "episode.total_reward",
             "LightZero": LIGHTZERO_VERSION,
             "remote_root": str(REMOTE_ROOT),
             "volume_name": VOLUME_NAME,
@@ -1472,7 +1582,7 @@ def main(
             "decision_ms",
             "ok",
             "strict_load",
-            "total_reward",
+            "training_reward",
             "action_histogram",
             "elapsed_seconds",
             "artifact_ref",
@@ -1522,7 +1632,7 @@ def main(
                 "ok_count",
                 "capped_count",
                 "failure_count",
-                "mean_score",
+                "mean_training_reward",
                 "mean_elapsed_sec",
             ],
         ))

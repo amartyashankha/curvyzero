@@ -28,6 +28,14 @@ class BaseLearner:
         return None
 
 
+class Evaluator:
+    def __init__(self) -> None:
+        self._default_n_episode = 3
+
+    def eval(self):
+        return True, {"eval_episode_return": [1.0, 1.0, 1.0]}
+
+
 def fake_train_muzero() -> None:
     return None
 
@@ -121,3 +129,24 @@ def test_curvytron_phase_profiler_records_mcts_model_device_and_batch():
         sample.endswith(":cuda:0")
         for sample in profiler.samples["model_parameter_device"]
     )
+
+
+def test_curvytron_phase_profiler_skip_evaluator_keeps_lightzero_return_shape():
+    profiler = _CurvyTronLightZeroPhaseProfiler(enabled=True)
+    restore = _install_curvytron_lightzero_phase_profile(
+        train_muzero=fake_train_muzero,
+        profiler=profiler,
+        stop_after_learner_train_calls=10,
+        skip_evaluator_eval=True,
+    )
+
+    try:
+        stop, info = Evaluator().eval()
+    finally:
+        restore()
+
+    assert stop is False
+    assert info["skipped"] is True
+    assert info["eval_episode_return"] == [0.0, 0.0, 0.0]
+    assert info["eval_episode_return_mean"] == 0.0
+    assert profiler.counts["evaluator_eval_skipped_calls"] == 1

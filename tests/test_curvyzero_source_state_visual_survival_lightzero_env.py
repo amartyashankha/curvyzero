@@ -182,7 +182,7 @@ def test_source_state_visual_survival_step_and_terminal_telemetry(tmp_path):
     assert timestep.info["opponent_policy_kind"] == "fixed_straight"
     assert timestep.info["opponent_training_relation"] == "learner_vs_fixed_straight"
     assert timestep.info["physical_env_advanced"] is True
-    assert timestep.info["reward_perspective"] == "ego_player_survival_after_step"
+    assert timestep.info["reward_perspective"] == "ego_player_sparse_round_outcome"
     assert "terminal_reason" in timestep.info
     assert "death_count" in timestep.info
     assert "death_player" in timestep.info
@@ -195,6 +195,7 @@ def test_source_state_visual_survival_step_and_terminal_telemetry(tmp_path):
         timestep.obs["observation"],
     )
     assert timestep.info["eval_episode_return"] == timestep.reward
+    assert timestep.info["episode_training_return"] == timestep.reward
 
     terminal_raw = env.raw_observation()
     terminal_raw_from_render = env.render("source_state_raw_visual_tensor")
@@ -296,6 +297,7 @@ def test_source_state_visual_survival_step_and_terminal_telemetry(tmp_path):
     assert "death_cause" in rows[0]
     assert "death_cause_name" in rows[0]
     assert "death_hit_owner" in rows[0]
+    assert rows[0]["eval_episode_return"] == timestep.reward
 
 
 def test_source_state_fixed_opponent_config_names_non_self_play_runtime_contract():

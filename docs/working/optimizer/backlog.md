@@ -23,16 +23,23 @@ Date: 2026-05-09
   c16/c32/c64 = `79.7`, `146.3`, `225.7` steps/s. Use `base` for detailed env
   timers only; use `subprocess` for Coach-facing training speed.
 - Current simple speed knobs for native CurvyTron runs: `collector_env_num` and
-  `n_episode` together (`16/16` as conservative default, `32/32` for
-  throughput sweeps), sparse checkpointing, and `--env-telemetry-stride 20` or
-  larger when dense per-step action JSONL is not needed. Do not treat sampled
-  telemetry histograms as full action counts.
-- Current next bottleneck branch: long-survival search plus env stepping. Wider
-  collectors improve search batching (`16/16` to `32/32` raised collected
-  throughput from about `79.7` to `146.3` steps/s with subprocess), but search
-  plus env work still dominates. Next serious branch is sim50 `32/32` or
-  `64/64` subprocess, then actor/search fanout if the single-process loop still
-  underfeeds GPU.
+  `n_episode` together (`32/32` as the conservative fast default after the
+  fresh width sweep; `64/64` for throughput stress), sparse checkpointing, and
+  `--env-telemetry-stride 50` or larger when dense per-step action JSONL is not
+  needed. Do not treat sampled telemetry histograms as full action counts.
+- Keep evaluator costs separated in reports. Stock LightZero in-loop eval is
+  controlled by `--lightzero-eval-freq` and can be skipped in optimizer profile
+  mode with `--skip-lightzero-eval-in-profile`; checkpoint eval/inspection/GIF
+  is the separate spawned Modal path tied to checkpoint artifacts. Do not mix
+  the two in Amdahl reads.
+- Current next bottleneck branch: long-survival search plus collection. Fresh
+  post-churn subprocess width sweep at sim16/source_max_steps=240 measured
+  `152.35`, `192.46`, and `227.53` steps/s for `16/16`, `32/32`, and `64/64`.
+  Wider collection still helps, but with diminishing returns. Fresh sim-budget
+  contrast shows c64/sim4 at `344` steps/s, c64/sim16 at `221` steps/s, and
+  c32/sim50 at `88` steps/s. Next serious branch is searched actor-chunk fanout
+  from a frozen checkpoint; do not expect another easy single-process 10x from
+  the current knobs.
 - Keep the compact [runtime verdict](runtime_verdict_2026-05-10.md) current
   when source profile numbers, CPU/GPU boundary evidence, or full-GPU rewrite
   stance changes.
@@ -77,11 +84,11 @@ Date: 2026-05-09
 - Current measured source-backed baseline should use
   `source_setup_mode=controlled_trail` when timing body/ray geometry. Default
   source setup can produce zero body circles and overstate ray-path throughput.
-- Next full-loop measurement comes after the completed bounded debug visual
-  smoke, non-ALE adapter smoke, and first eval-mode search profile:
-  LightZero collector/GameBuffer/learn-mode timing with env step, render,
-  stack/normalize, policy/search, replay, reset, learner, checkpoint, and policy
-  staleness visible.
+- Next full-loop measurement is the native source-state visual LightZero
+  `train_muzero` path. Report env step, render, stack/normalize, policy/search,
+  replay, reset, learner, checkpoint, and checkpoint/policy-version metadata
+  when using actor chunks. The current stock loop is synchronous; actor-fleet
+  freshness only applies to future split collection.
 - Current post-reorientation order for CurvyTron optimizer work:
   1. Keep the native source-state `train_muzero` path as the active trainer and
      profile surface.
@@ -90,8 +97,8 @@ Date: 2026-05-09
   3. Add a profile-only scripted-survivor stress mode only if true
      long-survival timing is needed.
   4. Promote visual-fidelity claims only through Environment-owned evidence.
-  5. Scout actor/search fanout only with explicit throughput, latency, replay,
-     and policy-staleness measurements.
+  5. Scout actor/search fanout only with explicit throughput, queue/transfer
+     cost, replay age, and checkpoint-freshness metadata.
 - `curvytron_vector_trainer_sample` exists in `mctx_synthetic_benchmark.py`
   and ran once on Modal. Keep it as the small bridge between native
   observation/ray timing and Modal GPU search timing; next use it for batch
@@ -114,10 +121,11 @@ Date: 2026-05-09
   replay push/remove, replay sample/target construction, learner update,
   checkpoint save if included, artifact scan/Volume commit, envstep/sec,
   train_iter/sec, update count, checkpoint bytes, and GPU sampled utilization.
-- Keep the one-Modal-function stance until the profile shows a concrete reason
-  to split actor, learner, inference/search, replay, or eval. Candidate future
-  splits need explicit latency, queue/Volume transfer cost, policy staleness,
-  and failure-mode measurements.
+- Keep the one-Modal-function stance for Coach-facing stock-loop runs until a
+  profile shows a concrete reason to split actor, learner, inference/search,
+  replay, or eval. Candidate future splits need explicit latency,
+  queue/Volume transfer cost, checkpoint-freshness metadata, and failure-mode
+  measurements.
 - After the first LightZero phase profile, choose the next optimization branch
   by evidence:
   - if checkpoint/eval/artifact work is material, fix cadence/layout and keep
@@ -125,8 +133,8 @@ Date: 2026-05-09
   - if collect/search dominates and GPU is underused, investigate in-container
     central inference/search with micro-batching before any Modal-level split;
   - if learner dominates while collection waits, investigate same-container
-    actor/learner overlap with an in-memory bounded queue and explicit policy
-    staleness;
+    actor/learner overlap with an in-memory bounded queue and explicit
+    checkpoint-version metadata;
   - if replay sample/target construction is large, split target construction
     from learner timing and consider background/reanalyse work only if it uses
     otherwise idle compute;
@@ -161,8 +169,8 @@ Date: 2026-05-09
   and [profile next steps](profile_next_steps_2026-05-09.md) current as new
   profile reports land.
 - Keep optimizer-owned report output lean: canonical timers, latency summaries,
-  denominator counts, integrity checks, policy staleness, artifacts, and plain
-  caveats.
+  denominator counts, integrity checks, checkpoint/version metadata for actor
+  chunks, artifacts, and plain caveats.
 - Sketch the first project-owned PPO/CleanRL-style CurvyTron runner contract:
   PettingZoo Parallel-shaped env boundary, rollout buffer fields, scorecard
   outputs, and profiling buckets.

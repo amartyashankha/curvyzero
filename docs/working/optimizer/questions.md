@@ -16,8 +16,8 @@ Date: 2026-05-09
   counts, or does it need a compiled CPU kernel / broad phase?
 - What minimum calibrated model/search timing should replace the NumPy stand-in:
   LightZero MCTS, project-owned Mctx, or a fixed proxy from measured runs?
-- What batch sizes keep GPU/search useful without hurting p95/p99 action
-  latency or policy freshness?
+- What batch sizes keep GPU/search useful without hurting p50/p95/p99 action
+  latency or, in future actor systems, checkpoint freshness?
 - Does the toy process-shard speedup transfer to source-backed CurvyTron with
   `[B,2,106]` observation packing, real policy/search, and replay/learner
   handoff, or does observation/raycast/IPC erase the gain?
@@ -27,8 +27,8 @@ Date: 2026-05-09
   path?
 - What exact replay write path should be timed first: local `.npz`, Modal
   Volume, object storage, or learner-adjacent queue?
-- What policy-staleness budget is acceptable for the first async or actor-pool
-  experiment?
+- For a future actor-pool experiment, what checkpoint refresh cadence and
+  replay-age distribution are acceptable?
 - What evidence should promote or demote the repo-native PPO/IPPO measurement
   hypothesis versus LightZero, Mctx, TorchRL, or Sample Factory?
 - In the LightZero Pong control lane, what share of wall time is collector/env,
@@ -38,7 +38,8 @@ Date: 2026-05-09
   the job mostly waiting on CPU env/search/replay/checkpoint work?
 - Should any LightZero or CurvyTron training piece leave the single Modal
   container? Only answer after measuring the single-container loop and the
-  added latency/staleness of any proposed split.
+  added transfer cost, queue latency, and checkpoint-freshness metadata of any
+  proposed split.
 - What does the direct one-collect/sample/train LightZero harness show, and is
   a hook-stopped stock run still needed only to quantify startup/evaluator tax?
 - After the strict native ray cleanup, does real Mctx/LightZero/model-search

@@ -151,6 +151,36 @@ today's biggest immediate target is still search/collector batching, not a GPU
 env rewrite. Keep no-death mode as the default optimizer profile shape for long
 survival cost.
 
+Fresh subprocess width sweep on the same current fixed-opponent path:
+
+```text
+collectors  steps   wall    steps/s  root batch  MCTS    policy collect  learner  replay
+16          3840    25.21s  152.35   16.0        10.87s  13.93s          1.75s    0.10s
+32          7680    39.90s  192.46   16.5        19.92s  14.20s          1.78s    0.09s
+64          15360   67.51s  227.53   32.5        31.63s  25.82s          1.95s    0.16s
+```
+
+Plain read: widening still helps, but not linearly. Learner and replay stay
+small. The dominant buckets are search/model/collector. The next serious
+scale experiment should be searched actor chunks from a frozen checkpoint,
+merged into a learner step, not more single-process micro-polish unless a finer
+profile points at one exact hot path.
+
+2026-05-11 eval-cadence correction: `evaluator_eval_sec` in the phase profile
+is stock LightZero's in-loop evaluator, not the checkpoint-triggered
+eval/inspection/GIF path we added. Background checkpoint eval/GIF is controlled
+by `background_eval_enabled`, `background_gif_enabled`, and checkpoint saves.
+Stock LightZero eval is controlled by `policy.eval_freq` and also has an
+initial eval call. The trainer now exposes `--lightzero-eval-freq` and profile
+mode can skip stock LightZero eval with `--skip-lightzero-eval-in-profile`
+while leaving checkpoint eval/GIF as a separate sparse Coach artifact path.
+
+Distributed-loop correction: current stock `train_muzero` is synchronous, so
+there is no actor-fleet policy-staleness issue inside that loop. If we later
+build coarse Modal actor fanout or continuous actors, every chunk should carry
+checkpoint/policy-version metadata. That metadata is a freshness metric and an
+audit guard, not a reason to avoid parallel self-play.
+
 ## 2026-05-10 Runtime Verdict
 
 See [runtime verdict](runtime_verdict_2026-05-10.md) for the compact source of

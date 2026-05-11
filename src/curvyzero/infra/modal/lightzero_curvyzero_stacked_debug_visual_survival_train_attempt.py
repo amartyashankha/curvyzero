@@ -46,6 +46,7 @@ from curvyzero.infra.modal.lightzero_curvyzero_stacked_debug_visual_survival_tra
     DEFAULT_BACKGROUND_EVAL_STEP_DETAIL_LIMIT,
     DEFAULT_BACKGROUND_GIF_ENABLED,
     DEFAULT_BACKGROUND_GIF_FPS,
+    DEFAULT_BACKGROUND_GIF_FRAME_SIZE,
     DEFAULT_BACKGROUND_GIF_FRAME_STRIDE,
     DEFAULT_BACKGROUND_GIF_MAX_STEPS,
     DEFAULT_BACKGROUND_GIF_SCALE,
@@ -73,6 +74,7 @@ from curvyzero.infra.modal.lightzero_curvyzero_stacked_debug_visual_survival_tra
     DEFAULT_SOURCE_MAX_STEPS,
     DEFAULT_STOP_AFTER_LEARNER_TRAIN_CALLS,
     DEFAULT_OPPONENT_POLICY_KIND,
+    DEFAULT_REWARD_VARIANT,
     RUNS_MOUNT,
     TASK_ID,
     _run_visual_survival_train,
@@ -104,6 +106,7 @@ def lightzero_curvytron_visual_survival_train_attempt_cpu(
     save_ckpt_after_iter: int = DEFAULT_SAVE_CKPT_AFTER_ITER,
     stop_after_learner_train_calls: int = DEFAULT_STOP_AFTER_LEARNER_TRAIN_CALLS,
     env_variant: str = DEFAULT_ENV_VARIANT,
+    reward_variant: str = DEFAULT_REWARD_VARIANT,
     ego_action_straight_override_probability: float = (
         DEFAULT_EGO_ACTION_STRAIGHT_OVERRIDE_PROBABILITY
     ),
@@ -127,6 +130,7 @@ def lightzero_curvytron_visual_survival_train_attempt_cpu(
     background_gif_frame_stride: int = DEFAULT_BACKGROUND_GIF_FRAME_STRIDE,
     background_gif_fps: float = DEFAULT_BACKGROUND_GIF_FPS,
     background_gif_scale: int = DEFAULT_BACKGROUND_GIF_SCALE,
+    background_gif_frame_size: int = DEFAULT_BACKGROUND_GIF_FRAME_SIZE,
 ) -> dict[str, Any]:
     return _run_visual_survival_train(
         mode=mode,
@@ -147,6 +151,7 @@ def lightzero_curvytron_visual_survival_train_attempt_cpu(
         save_ckpt_after_iter=save_ckpt_after_iter,
         stop_after_learner_train_calls=stop_after_learner_train_calls,
         env_variant=env_variant,
+        reward_variant=reward_variant,
         ego_action_straight_override_probability=ego_action_straight_override_probability,
         control_noise_profile_id=control_noise_profile_id,
         disable_death_for_profile=disable_death_for_profile,
@@ -173,6 +178,7 @@ def lightzero_curvytron_visual_survival_train_attempt_cpu(
         background_gif_frame_stride=background_gif_frame_stride,
         background_gif_fps=background_gif_fps,
         background_gif_scale=background_gif_scale,
+        background_gif_frame_size=background_gif_frame_size,
     )
 
 
@@ -202,6 +208,7 @@ def lightzero_curvytron_visual_survival_train_attempt_gpu(
     save_ckpt_after_iter: int = DEFAULT_SAVE_CKPT_AFTER_ITER,
     stop_after_learner_train_calls: int = DEFAULT_STOP_AFTER_LEARNER_TRAIN_CALLS,
     env_variant: str = DEFAULT_ENV_VARIANT,
+    reward_variant: str = DEFAULT_REWARD_VARIANT,
     ego_action_straight_override_probability: float = (
         DEFAULT_EGO_ACTION_STRAIGHT_OVERRIDE_PROBABILITY
     ),
@@ -225,6 +232,7 @@ def lightzero_curvytron_visual_survival_train_attempt_gpu(
     background_gif_frame_stride: int = DEFAULT_BACKGROUND_GIF_FRAME_STRIDE,
     background_gif_fps: float = DEFAULT_BACKGROUND_GIF_FPS,
     background_gif_scale: int = DEFAULT_BACKGROUND_GIF_SCALE,
+    background_gif_frame_size: int = DEFAULT_BACKGROUND_GIF_FRAME_SIZE,
 ) -> dict[str, Any]:
     return _run_visual_survival_train(
         mode=mode,
@@ -245,6 +253,7 @@ def lightzero_curvytron_visual_survival_train_attempt_gpu(
         save_ckpt_after_iter=save_ckpt_after_iter,
         stop_after_learner_train_calls=stop_after_learner_train_calls,
         env_variant=env_variant,
+        reward_variant=reward_variant,
         ego_action_straight_override_probability=ego_action_straight_override_probability,
         control_noise_profile_id=control_noise_profile_id,
         disable_death_for_profile=disable_death_for_profile,
@@ -271,6 +280,7 @@ def lightzero_curvytron_visual_survival_train_attempt_gpu(
         background_gif_frame_stride=background_gif_frame_stride,
         background_gif_fps=background_gif_fps,
         background_gif_scale=background_gif_scale,
+        background_gif_frame_size=background_gif_frame_size,
     )
 
 
@@ -294,6 +304,7 @@ def main(
     save_ckpt_after_iter: int = DEFAULT_SAVE_CKPT_AFTER_ITER,
     stop_after_learner_train_calls: int = DEFAULT_STOP_AFTER_LEARNER_TRAIN_CALLS,
     env_variant: str = DEFAULT_ENV_VARIANT,
+    reward_variant: str = DEFAULT_REWARD_VARIANT,
     ego_action_straight_override_probability: float = (
         DEFAULT_EGO_ACTION_STRAIGHT_OVERRIDE_PROBABILITY
     ),
@@ -317,6 +328,7 @@ def main(
     background_gif_frame_stride: int = DEFAULT_BACKGROUND_GIF_FRAME_STRIDE,
     background_gif_fps: float = DEFAULT_BACKGROUND_GIF_FPS,
     background_gif_scale: int = DEFAULT_BACKGROUND_GIF_SCALE,
+    background_gif_frame_size: int = DEFAULT_BACKGROUND_GIF_FRAME_SIZE,
     wait_for_train: bool = False,
 ) -> None:
     if compute == "cpu":
@@ -344,6 +356,7 @@ def main(
         "save_ckpt_after_iter": save_ckpt_after_iter,
         "stop_after_learner_train_calls": stop_after_learner_train_calls,
         "env_variant": env_variant,
+        "reward_variant": reward_variant,
         "ego_action_straight_override_probability": ego_action_straight_override_probability,
         "control_noise_profile_id": control_noise_profile_id,
         "disable_death_for_profile": disable_death_for_profile,
@@ -365,6 +378,7 @@ def main(
         "background_gif_frame_stride": background_gif_frame_stride,
         "background_gif_fps": background_gif_fps,
         "background_gif_scale": background_gif_scale,
+        "background_gif_frame_size": background_gif_frame_size,
     }
     if mode == "train" and not wait_for_train:
         call = train_fn.spawn(**kwargs)

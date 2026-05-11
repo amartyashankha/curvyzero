@@ -19,6 +19,12 @@ _NEXT_ROUND_SCENARIO = (
     / "environment"
     / "source_lifecycle_spawn_rng_2p_next_round.json"
 )
+_SURVIVOR_NEXT_2P_SCENARIO = (
+    _REPO_ROOT
+    / "scenarios"
+    / "environment"
+    / "source_lifecycle_survivor_score_2p_next_round.json"
+)
 _MATCH_END_SCENARIO = (
     _REPO_ROOT
     / "scenarios"
@@ -280,6 +286,92 @@ def test_lifecycle_oracle_pins_source_next_round_stop_spawn_rng_and_final_snapsh
     ] == [
         (1, True, True),
         (2, True, True),
+    ]
+
+
+def test_lifecycle_oracle_pins_source_2p_survivor_warmdown_next_round():
+    payload = _run_oracle(_SURVIVOR_NEXT_2P_SCENARIO)
+
+    assert payload["playerCount"] == 2
+
+    events = payload["events"]
+    event_names = [event["event"] for event in events]
+    assert event_names.count("round:end") == 1
+    round_end_index = event_names.index("round:end")
+    assert events[round_end_index]["atMs"] == 3000
+    assert events[round_end_index]["data"] == {"winner": 1}
+
+    assert [
+        event["event"] for event in events[round_end_index + 1 : round_end_index + 6]
+    ] == [
+        "point",
+        "property",
+        "random",
+        "die",
+        "score:round",
+    ]
+    assert [
+        event["atMs"] for event in events[round_end_index + 1 : round_end_index + 6]
+    ] == [
+        4150,
+        4150,
+        4150,
+        4150,
+        4150,
+    ]
+    assert events[round_end_index + 4]["data"] == {
+        "avatar": 1,
+        "killer": None,
+        "old": None,
+    }
+    assert events[round_end_index + 5]["data"] == {
+        "avatar": 1,
+        "score": 1,
+        "roundScore": 1,
+    }
+
+    game_stop_index = event_names.index("game:stop")
+    assert events[game_stop_index]["atMs"] == 8000
+    assert events[game_stop_index + 1]["event"] == "round:new"
+    assert events[game_stop_index + 1]["atMs"] == 8000
+
+    assert [
+        (call["index"], call["label"]["site"], call["label"]["avatar"], round(call["atMs"]))
+        for call in payload["randomCalls"]
+        if 9 <= call["index"] <= 15
+    ] == [
+        (9, "print_manager.stop_distance", 1, 4150),
+        (10, "spawn.position_x", 2, 8000),
+        (11, "spawn.position_y", 2, 8000),
+        (12, "spawn.angle_attempt_0", 2, 8000),
+        (13, "spawn.position_x", 1, 8000),
+        (14, "spawn.position_y", 1, 8000),
+        (15, "spawn.angle_attempt_0", 1, 8000),
+    ]
+
+    after_update = payload["snapshots"][-2]
+    assert after_update["label"] == "after_action_4_update"
+    assert after_update["game"]["inRound"] is False
+    assert after_update["game"]["deaths"] == [2]
+    assert [
+        (avatar["id"], avatar["x"], avatar["alive"], avatar["printing"], avatar["score"])
+        for avatar in after_update["avatars"]
+    ] == [
+        (1, 18.991, True, True, 1),
+        (2, 88.6, False, False, 0),
+    ]
+
+    final_snapshot = payload["snapshots"][-1]
+    assert final_snapshot["label"] == "after_action_5_advance_timers"
+    assert final_snapshot["game"]["inRound"] is True
+    assert final_snapshot["game"]["worldActive"] is False
+    assert final_snapshot["game"]["deaths"] == []
+    assert [
+        (avatar["id"], avatar["x"], avatar["y"], avatar["angle"], avatar["alive"], avatar["score"])
+        for avatar in final_snapshot["avatars"]
+    ] == [
+        (1, 51.8, 44, 4.712389, True, 1),
+        (2, 36.2, 44, 1.570796, True, 0),
     ]
 
 

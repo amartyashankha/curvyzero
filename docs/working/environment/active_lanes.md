@@ -45,6 +45,9 @@ Optimizer visual tensor handoff:
   bonus validation reported `33 passed`.
   Ruff and the environment doc guard also passed. Keep this as a freshness
   note, not a status scoreboard.
+- Latest 2P bonus fidelity fix: slow/fast speed bonuses now also change turn
+  rate with the source formula, and expiry restores it. This was a real gap
+  caught by the current coverage audit.
 - The largest gaps are full bonus breadth, timer/random ordering for public
   bonus scheduling, broader 3P/4P lifecycle/public parity, full public replay
   and final state, old toy-path quarantine, and final cleanup. Bonus replay is
@@ -92,13 +95,17 @@ Optimizer visual tensor handoff:
 - Latest 2P source-state visual check:
   `scripts/compare_2p_raw_visual_observation.py --suite core2p --format plain`
   compares source-shaped state against `VectorMultiplayerEnv` gray64. On
-  2026-05-11 it passes 26 core scenarios exactly: `max_abs_diff=0`,
+  2026-05-11 it passes 31 core scenarios exactly: `max_abs_diff=0`,
   `mismatch_pixels=0`. There are 26 total 2P step fixtures; `core2p` covers 25
   of them plus the long wall rollout, including the four natural bonus
-  spawn/retry/cap fixtures. `source_print_manager_random_call_order_step` stays
-  outside gray64 because it proves RNG/event order, not a distinct rendered
-  state. This is the current training-observation gate; browser/canvas pixels
-  are optional debug evidence, not P0.
+  spawn/retry/cap fixtures, five programmatic source-snapshot visual stress
+  cases, and mismatch canaries that prove the harness fails when a visible body
+  or visible map bonus is missing. The new visual stress cases include
+  printing trail emission and explicit 2P survivor warmdown-frame
+  movement/death. `source_print_manager_random_call_order_step` stays outside
+  gray64 because it proves RNG/event order, not a distinct rendered state. This
+  is the current training-observation gate; browser/canvas pixels are optional
+  debug evidence, not P0.
 - Gray64 v0 distinguishes 2P player trails and heads, but every active map
   bonus is value `208`. Keep that caveat visible until a typed bonus visual
   schema exists.
@@ -149,7 +156,7 @@ and final observations, public metadata, and later browser pixel parity.
 
 Full 2P fidelity is not done. The current visual gate passes:
 `scripts/compare_2p_raw_visual_observation.py --suite core2p --format plain`
-matches 26/26 source-state gray64 scenarios exactly. The PrintManager RNG
+matches 31/31 source-state gray64 scenarios exactly. The PrintManager RNG
 canary is intentionally not a gray64 case; it proves random/event ordering, not
 a distinct rendered state. Deeper evidence and gap detail live in
 [two_player_fidelity_gap_catalog_2026-05-11.md](two_player_fidelity_gap_catalog_2026-05-11.md)
@@ -160,10 +167,14 @@ Next 2P environment-fidelity checklist:
 
 1. Decide and prove typed bonus visual/status sufficiency beyond gray64 v0.
 2. Add bonus stack/death stress across timers, PrintManager, and terminal frames.
-3. Add 2P survivor-movement warmdown source/public coverage.
-4. Promote final/replay bonus state beyond metadata-only audit rows.
-5. Add broader 2P trail/body canaries if they are still open after the current
+3. Promote final/replay bonus state beyond metadata-only audit rows.
+4. Add broader 2P trail/body canaries if they are still open after the current
    collision-order and visual coverage audit.
+
+Closed on 2026-05-11: focused 2P survivor movement during warmdown now has
+source/original proof and public `VectorMultiplayerEnv.advance_warmdown_frame`
+coverage. It proves no second `round:end`, no rescore, death order preservation,
+and correct next-round RNG cursor for the continuing-round case.
 
 Do not describe the game as 64x64: for 2P the source arena is 88 units, while
 64x64 is only the learned raw observation raster size. The source-state route

@@ -1,4 +1,5 @@
 import json
+import math
 from pathlib import Path
 import sys
 
@@ -16,6 +17,14 @@ SCENARIO_DIR = Path(__file__).resolve().parents[1] / "scenarios" / "environment"
 
 import compare_vector_arrays_to_fidelity as vector_compare  # noqa: E402
 import seed_vector_state_from_fixtures as seed_bridge  # noqa: E402
+
+
+def _expected_source_angular_velocity_for_speed(speed: float) -> float:
+    ratio = float(speed) / vector_runtime.SOURCE_AVATAR_SPEED
+    return (
+        ratio * vector_runtime.SOURCE_AVATAR_ANGULAR_VELOCITY_PER_MS
+        + math.log(1.0 / ratio) / 1000.0
+    )
 
 
 def _load_lifecycle_scenario(name: str) -> dict[str, object]:
@@ -556,6 +565,84 @@ def _step_runtime_fixture(
             state,
             _prepared_step_batch(prepared_step),
         ),
+    )
+
+
+def _slice_runtime_state_to_player_count(
+    state: dict[str, np.ndarray],
+    *,
+    player_count: int,
+) -> None:
+    player_axis_1_arrays = (
+        "heading",
+        "alive",
+        "death_tick",
+        "score",
+        "round_score",
+        "printing",
+        "radius",
+        "speed",
+        "angular_velocity_per_ms",
+        "trail_latency",
+        "body_count",
+        "live_body_num",
+        "visible_trail_count",
+        "has_visible_trail_last",
+        "has_draw_cursor",
+        "print_manager_active",
+        "print_manager_distance",
+        "present",
+        "inverse",
+        "invincible",
+        "radius_power",
+        "avatar_color",
+        "base_avatar_color",
+        "base_radius",
+        "base_speed",
+        "base_angular_velocity_per_ms",
+        "base_inverse",
+        "base_invincible",
+    )
+    player_axis_2_arrays = (
+        "pos",
+        "prev_pos",
+        "visible_trail_last_pos",
+        "draw_cursor_pos",
+        "print_manager_last_pos",
+    )
+    for name in player_axis_1_arrays:
+        if name in state:
+            state[name] = state[name][:, :player_count].copy()
+    for name in player_axis_2_arrays:
+        if name in state:
+            state[name] = state[name][:, :player_count, :].copy()
+
+    state["death_count"] = np.zeros(1, dtype=np.int32)
+    state["death_player"] = np.full((1, player_count), -1, dtype=np.int16)
+    state["death_cause"] = np.full(
+        (1, player_count),
+        vector_runtime.DEATH_CAUSE_NONE,
+        dtype=np.int16,
+    )
+    state["death_hit_owner"] = np.full((1, player_count), -1, dtype=np.int16)
+
+
+def _step_runtime_fixture_with_player_count(
+    fixture: dict[str, object],
+    state: dict[str, np.ndarray],
+    *,
+    step_index: int,
+    player_count: int,
+) -> dict[str, int]:
+    prepared_step = vector_compare.prepare_fixture_array_step(
+        fixture,
+        step_index=step_index,
+    )
+    prepared_batch = _prepared_step_batch(prepared_step)
+    prepared_batch["player_count"] = player_count
+    prepared_batch["source_moves"] = prepared_batch["source_moves"][:, :player_count]
+    return vector_runtime.step_many(
+        vector_runtime.VectorStepInput.from_mapping(state, prepared_batch),
     )
 
 
@@ -2223,6 +2310,239 @@ def test_bonus_spawn_due_rows_skips_type_position_at_source_cap():
     assert int(state["event_count"][0]) == 0
 
 
+@pytest.mark.parametrize(
+    (
+        "scenario_name",
+        "expected_alive",
+        "expected_death_count",
+        "expected_death_cause",
+        "expected_death_hit_owner",
+        "expected_world_body_count",
+    ),
+    [
+        (
+            "source_body_opponent_tangent_safe_step.json",
+            [True, True],
+            0,
+            vector_runtime.DEATH_CAUSE_NONE,
+            -1,
+            1,
+        ),
+        (
+            "source_body_opponent_overlap_kills_step.json",
+            [False, True],
+            1,
+            vector_runtime.DEATH_CAUSE_OPPONENT_TRAIL,
+            1,
+            2,
+        ),
+        (
+            "source_body_own_delta3_safe_step.json",
+            [True, True],
+            0,
+            vector_runtime.DEATH_CAUSE_NONE,
+            -1,
+            1,
+        ),
+        (
+            "source_body_own_delta4_kills_step.json",
+            [False, True],
+            1,
+            vector_runtime.DEATH_CAUSE_OWN_TRAIL,
+            0,
+            2,
+        ),
+    ],
+    ids=[
+        "opponent-tangent-safe-2p",
+        "opponent-overlap-kills-2p",
+        "own-delta3-safe-2p",
+        "own-delta4-kills-2p",
+    ],
+)
+def test_step_many_2p_body_canary_fixture_slice_matches_expected_deaths(
+    scenario_name: str,
+    expected_alive: list[bool],
+    expected_death_count: int,
+    expected_death_cause: int,
+    expected_death_hit_owner: int,
+    expected_world_body_count: int,
+):
+    fixture, state = _runtime_fixture_state(
+        f"scenarios/environment/{scenario_name}",
+        body_capacity=8,
+    )
+    _slice_runtime_state_to_player_count(state, player_count=2)
+
+    counters = _step_runtime_fixture_with_player_count(
+        fixture,
+        state,
+        step_index=0,
+        player_count=2,
+    )
+
+    np.testing.assert_array_equal(state["alive"], np.asarray([expected_alive]))
+    np.testing.assert_array_equal(
+        state["death_count"],
+        np.asarray([expected_death_count], dtype=np.int32),
+    )
+    expected_death_player = [0, -1] if expected_death_count else [-1, -1]
+    expected_death_causes = [
+        expected_death_cause if expected_death_count else vector_runtime.DEATH_CAUSE_NONE,
+        vector_runtime.DEATH_CAUSE_NONE,
+    ]
+    expected_hit_owners = [expected_death_hit_owner, -1]
+    np.testing.assert_array_equal(
+        state["death_player"],
+        np.asarray([expected_death_player], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        state["death_cause"],
+        np.asarray([expected_death_causes], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        state["death_hit_owner"],
+        np.asarray([expected_hit_owners], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        state["world_body_count"],
+        np.asarray([expected_world_body_count], dtype=np.int32),
+    )
+    assert counters["body_hits"] == expected_death_count
+    assert counters["terminal_score_rows"] == expected_death_count
+    np.testing.assert_array_equal(
+        state["done"],
+        np.asarray([bool(expected_death_count)], dtype=bool),
+    )
+    np.testing.assert_array_equal(
+        state["winner"],
+        np.asarray([1 if expected_death_count else -1], dtype=np.int16),
+    )
+    if expected_death_count:
+        np.testing.assert_array_equal(state["score"], np.asarray([[0, 1]]))
+        np.testing.assert_array_equal(
+            state["terminal_reason"],
+            np.asarray([vector_runtime.TERMINAL_REASON_SURVIVOR_WIN], dtype=np.int16),
+        )
+
+
+@pytest.mark.parametrize(
+    (
+        "scenario_name",
+        "expected_alive",
+        "expected_death_count",
+        "expected_world_body_count",
+        "expected_printing",
+    ),
+    [
+        (
+            "source_trail_gap_hole_space_safe_step.json",
+            [True, True],
+            0,
+            1,
+            [False, False],
+        ),
+        (
+            "source_trail_gap_stored_body_still_kills_step.json",
+            [False, True],
+            1,
+            2,
+            [False, False],
+        ),
+        (
+            "source_trail_gap_print_to_hole_boundary_kills_step.json",
+            [False, True],
+            1,
+            2,
+            [False, False],
+        ),
+        (
+            "source_trail_gap_hole_to_print_boundary_kills_step.json",
+            [False, True],
+            1,
+            2,
+            [False, True],
+        ),
+    ],
+    ids=[
+        "hole-space-safe-2p",
+        "stored-body-still-kills-2p",
+        "print-to-hole-boundary-kills-2p",
+        "hole-to-print-boundary-kills-2p",
+    ],
+)
+def test_step_many_2p_trail_gap_fixture_slice_matches_expected_deaths(
+    scenario_name: str,
+    expected_alive: list[bool],
+    expected_death_count: int,
+    expected_world_body_count: int,
+    expected_printing: list[bool],
+):
+    fixture, state = _runtime_fixture_state(
+        f"scenarios/environment/{scenario_name}",
+        body_capacity=8,
+    )
+    _slice_runtime_state_to_player_count(state, player_count=2)
+
+    counters = _step_runtime_fixture_with_player_count(
+        fixture,
+        state,
+        step_index=0,
+        player_count=2,
+    )
+
+    np.testing.assert_array_equal(state["alive"], np.asarray([expected_alive]))
+    np.testing.assert_array_equal(
+        state["printing"],
+        np.asarray([expected_printing], dtype=bool),
+    )
+    np.testing.assert_array_equal(
+        state["death_count"],
+        np.asarray([expected_death_count], dtype=np.int32),
+    )
+    expected_death_player = [0, -1] if expected_death_count else [-1, -1]
+    expected_death_causes = [
+        (
+            vector_runtime.DEATH_CAUSE_OPPONENT_TRAIL
+            if expected_death_count
+            else vector_runtime.DEATH_CAUSE_NONE
+        ),
+        vector_runtime.DEATH_CAUSE_NONE,
+    ]
+    np.testing.assert_array_equal(
+        state["death_player"],
+        np.asarray([expected_death_player], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        state["death_cause"],
+        np.asarray([expected_death_causes], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        state["death_hit_owner"],
+        np.asarray([[1, -1] if expected_death_count else [-1, -1]], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        state["world_body_count"],
+        np.asarray([expected_world_body_count], dtype=np.int32),
+    )
+    assert counters["body_hits"] == expected_death_count
+    assert counters["terminal_score_rows"] == expected_death_count
+    np.testing.assert_array_equal(
+        state["done"],
+        np.asarray([bool(expected_death_count)], dtype=bool),
+    )
+    np.testing.assert_array_equal(
+        state["winner"],
+        np.asarray([1 if expected_death_count else -1], dtype=np.int16),
+    )
+    if expected_death_count:
+        np.testing.assert_array_equal(state["score"], np.asarray([[0, 1]]))
+        np.testing.assert_array_equal(
+            state["terminal_reason"],
+            np.asarray([vector_runtime.TERMINAL_REASON_SURVIVOR_WIN], dtype=np.int16),
+        )
+
+
 def test_step_many_bonus_fixture_without_optional_arrays_runs_like_no_bonus():
     fixture, state = _runtime_fixture_state(
         "scenarios/environment/source_bonus_self_small_catch_step.json",
@@ -2426,6 +2746,12 @@ def test_step_many_catches_forced_bonus_self_slow_and_expiry_restores_speed():
     assert catch_counters["bonus_self_slow_catches"] == 1
     assert catch_counters["bonus_stack_appends"] == 1
     np.testing.assert_allclose(state["speed"], np.asarray([[8.0, 16.0]]))
+    assert state["angular_velocity_per_ms"][0, 0] == pytest.approx(
+        _expected_source_angular_velocity_for_speed(8.0)
+    )
+    assert state["angular_velocity_per_ms"][0, 1] == pytest.approx(
+        vector_runtime.SOURCE_AVATAR_ANGULAR_VELOCITY_PER_MS
+    )
     np.testing.assert_allclose(state["radius"], np.asarray([[0.6, 0.6]]))
     np.testing.assert_array_equal(state["bonus_stack_count"], np.asarray([[1, 0]]))
     assert int(state["bonus_stack_type"][0, 0, 0]) == vector_runtime.BONUS_TYPE_SELF_SLOW
@@ -2442,6 +2768,10 @@ def test_step_many_catches_forced_bonus_self_slow_and_expiry_restores_speed():
 
     assert expiry_counters["bonus_self_slow_expiries"] == 1
     np.testing.assert_allclose(state["speed"], np.asarray([[16.0, 16.0]]))
+    np.testing.assert_allclose(
+        state["angular_velocity_per_ms"],
+        np.full((1, 2), vector_runtime.SOURCE_AVATAR_ANGULAR_VELOCITY_PER_MS),
+    )
     np.testing.assert_array_equal(state["bonus_stack_count"], np.asarray([[0, 0]]))
     assert int(state["bonus_stack_type"][0, 0, 0]) == vector_runtime.BONUS_TYPE_NONE
 
@@ -2509,6 +2839,12 @@ def test_step_many_catches_forced_velocity_bonus_and_expiry_restores_speed(
     assert catch_counters["bonus_stack_appends"] == 1
     assert state["speed"][0, target_player] == pytest.approx(expected_speed)
     assert state["speed"][0, 1 - target_player] == pytest.approx(16.0)
+    assert state["angular_velocity_per_ms"][0, target_player] == pytest.approx(
+        _expected_source_angular_velocity_for_speed(expected_speed)
+    )
+    assert state["angular_velocity_per_ms"][0, 1 - target_player] == pytest.approx(
+        vector_runtime.SOURCE_AVATAR_ANGULAR_VELOCITY_PER_MS
+    )
     np.testing.assert_array_equal(
         state["bonus_stack_count"],
         np.asarray([[int(target_player == 0), int(target_player == 1)]]),
@@ -2523,6 +2859,10 @@ def test_step_many_catches_forced_velocity_bonus_and_expiry_restores_speed(
 
     assert expiry_counters[expiry_counter] == 1
     np.testing.assert_allclose(state["speed"], np.asarray([[16.0, 16.0]]))
+    np.testing.assert_allclose(
+        state["angular_velocity_per_ms"],
+        np.full((1, 2), vector_runtime.SOURCE_AVATAR_ANGULAR_VELOCITY_PER_MS),
+    )
     np.testing.assert_array_equal(state["bonus_stack_count"], np.asarray([[0, 0]]))
     assert int(state["bonus_stack_type"][0, target_player, 0]) == (
         vector_runtime.BONUS_TYPE_NONE

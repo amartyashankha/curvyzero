@@ -44,7 +44,8 @@ def _write_summary(
         f"training/{browser.TASK_ID}/{run_id}/attempts/{attempt_id}/eval/"
         f"{eval_id}/selfplay/raw.gif"
     )
-    (selfplay_dir / "raw.gif").write_bytes(b"GIF89a")
+    gif_path = selfplay_dir / "raw.gif"
+    gif_path.write_bytes(b"GIF89a")
     summary_path = selfplay_dir / "summary.json"
     summary_path.write_text(
         json.dumps(
@@ -63,7 +64,36 @@ def _write_summary(
         ),
         encoding="utf-8",
     )
+    os.utime(gif_path, (mtime, mtime))
     os.utime(summary_path, (mtime, mtime))
+
+
+def _write_checkpoint(tmp_path, *, run_id: str, name: str, mtime: int) -> None:
+    checkpoint_path = (
+        tmp_path
+        / "training"
+        / browser.TASK_ID
+        / run_id
+        / "checkpoints"
+        / "lightzero"
+        / name
+    )
+    checkpoint_path.parent.mkdir(parents=True)
+    checkpoint_path.write_bytes(b"checkpoint")
+    os.utime(checkpoint_path, (mtime, mtime))
+
+
+def _write_picker_flag(tmp_path, *, run_id: str, mtime: int = 1) -> None:
+    flag_path = (
+        tmp_path
+        / "training"
+        / browser.TASK_ID
+        / run_id
+        / browser.RUN_PICKER_FLAG_FILENAME
+    )
+    flag_path.parent.mkdir(parents=True, exist_ok=True)
+    flag_path.write_text("show\n", encoding="utf-8")
+    os.utime(flag_path, (mtime, mtime))
 
 
 def test_validate_volume_ref_accepts_only_task_relative_gifs_and_json() -> None:
@@ -126,6 +156,8 @@ def test_strict_selfplay_refs_reject_other_task_files(ref, validator) -> None:
 
 
 def test_list_selfplay_summaries_filters_and_sorts_recent(tmp_path) -> None:
+    _write_picker_flag(tmp_path, run_id="run-old")
+    _write_picker_flag(tmp_path, run_id="run-new")
     _write_summary(
         tmp_path,
         run_id="run-old",
@@ -166,7 +198,192 @@ def test_list_selfplay_summaries_filters_and_sorts_recent(tmp_path) -> None:
     assert failed_rows[0]["run_id"] == "run-new"
 
 
+def test_list_runs_sorts_by_recent_gif_summary_and_checkpoint_artifacts(tmp_path) -> None:
+    _write_picker_flag(tmp_path, run_id="run-summary-newer")
+    _write_picker_flag(tmp_path, run_id="run-checkpoint-newest")
+    _write_summary(
+        tmp_path,
+        run_id="run-summary-newer",
+        attempt_id="attempt-a",
+        eval_id="eval-a",
+        ok=True,
+        frame_count=5,
+        mtime=200,
+    )
+    _write_summary(
+        tmp_path,
+        run_id="run-checkpoint-newest",
+        attempt_id="attempt-b",
+        eval_id="eval-b",
+        ok=True,
+        frame_count=5,
+        mtime=100,
+    )
+    _write_checkpoint(
+        tmp_path,
+        run_id="run-checkpoint-newest",
+        name="iteration_000003.pt",
+        mtime=300,
+    )
+
+    runs = browser._list_runs(tmp_path)
+
+    assert [run["run_id"] for run in runs] == [
+        "run-checkpoint-newest",
+        "run-summary-newer",
+    ]
+    assert runs[0]["artifact_count"] == 3
+    assert runs[0]["updated_at"] == "1970-01-01T00:05:00Z"
+
+
+def test_default_browser_lists_only_runs_with_picker_flag(tmp_path) -> None:
+    _write_picker_flag(tmp_path, run_id="run-marked")
+    _write_summary(
+        tmp_path,
+        run_id="run-marked",
+        attempt_id="attempt-a",
+        eval_id="eval-a",
+        ok=True,
+        frame_count=5,
+        mtime=200,
+    )
+    _write_summary(
+        tmp_path,
+        run_id="run-unmarked",
+        attempt_id="attempt-b",
+        eval_id="eval-b",
+        ok=True,
+        frame_count=7,
+        mtime=300,
+    )
+
+    runs = browser._list_runs(tmp_path)
+    default_rows = browser._list_selfplay_summaries(tmp_path, limit=10)
+    exact_unmarked_rows = browser._list_selfplay_summaries(
+        tmp_path,
+        run_id="run-unmarked",
+        limit=10,
+    )
+
+    assert [run["run_id"] for run in runs] == ["run-marked"]
+    assert [row["run_id"] for row in default_rows] == ["run-marked"]
+    assert [row["run_id"] for row in exact_unmarked_rows] == ["run-unmarked"]
+
+
+def test_list_runs_uses_known_paths_without_recursive_rglob(tmp_path, monkeypatch) -> None:
+    _write_picker_flag(tmp_path, run_id="run-known-old")
+    _write_picker_flag(tmp_path, run_id="run-known-new")
+    _write_summary(
+        tmp_path,
+        run_id="run-known-old",
+        attempt_id="attempt-a",
+        eval_id="eval-a",
+        ok=True,
+        frame_count=5,
+        mtime=100,
+    )
+    _write_summary(
+        tmp_path,
+        run_id="run-known-new",
+        attempt_id="attempt-b",
+        eval_id="eval-b",
+        ok=True,
+        frame_count=7,
+        mtime=200,
+    )
+    ignored_deep_gif = (
+        tmp_path
+        / "training"
+        / browser.TASK_ID
+        / "run-known-old"
+        / "deep"
+        / "nested"
+        / "raw.gif"
+    )
+    ignored_deep_gif.parent.mkdir(parents=True)
+    ignored_deep_gif.write_bytes(b"GIF89a")
+    os.utime(ignored_deep_gif, (999, 999))
+
+    def fail_rglob(self, pattern):  # noqa: ANN001
+        raise AssertionError(f"unexpected recursive scan: {self!s}.rglob({pattern!r})")
+
+    monkeypatch.setattr(type(tmp_path), "rglob", fail_rglob)
+
+    runs = browser._list_runs(tmp_path)
+
+    assert [run["run_id"] for run in runs[:2]] == ["run-known-new", "run-known-old"]
+
+
+def test_list_runs_skips_artifacts_that_disappear_during_volume_scan(
+    tmp_path, monkeypatch
+) -> None:
+    _write_picker_flag(tmp_path, run_id="run-racy")
+    _write_summary(
+        tmp_path,
+        run_id="run-racy",
+        attempt_id="attempt-a",
+        eval_id="eval-a",
+        ok=True,
+        frame_count=5,
+        mtime=100,
+    )
+    raw_gif_suffix = ("selfplay", "raw.gif")
+    real_safe_stat = browser._safe_stat
+
+    def racy_safe_stat(path):  # noqa: ANN001
+        if path.parts[-2:] == raw_gif_suffix:
+            return None
+        return real_safe_stat(path)
+
+    monkeypatch.setattr(browser, "_safe_stat", racy_safe_stat)
+
+    runs = browser._list_runs(tmp_path)
+
+    assert runs[0]["run_id"] == "run-racy"
+    assert runs[0]["artifact_count"] == 1
+
+
+def test_summary_row_treats_disappearing_gif_as_missing(tmp_path, monkeypatch) -> None:
+    _write_summary(
+        tmp_path,
+        run_id="run-racy",
+        attempt_id="attempt-a",
+        eval_id="eval-a",
+        ok=True,
+        frame_count=5,
+        mtime=100,
+    )
+    summary_path = (
+        tmp_path
+        / "training"
+        / browser.TASK_ID
+        / "run-racy"
+        / "attempts"
+        / "attempt-a"
+        / "eval"
+        / "eval-a"
+        / "selfplay"
+        / "summary.json"
+    )
+    raw_gif_suffix = ("selfplay", "raw.gif")
+    real_safe_stat = browser._safe_stat
+
+    def racy_safe_stat(path):  # noqa: ANN001
+        if path.parts[-2:] == raw_gif_suffix:
+            return None
+        return real_safe_stat(path)
+
+    monkeypatch.setattr(browser, "_safe_stat", racy_safe_stat)
+
+    row = browser._summary_row(tmp_path, summary_path)
+
+    assert row is not None
+    assert row["gif_exists"] is False
+    assert row["gif_bytes"] is None
+
+
 def test_list_selfplay_summaries_falls_back_to_sibling_gif_ref(tmp_path) -> None:
+    _write_picker_flag(tmp_path, run_id="run-a")
     selfplay_dir = _selfplay_dir(
         tmp_path,
         run_id="run-a",
@@ -228,6 +445,7 @@ def test_summary_row_ignores_cross_artifact_gif_ref(tmp_path) -> None:
 
 
 def test_render_rows_includes_terminal_reason_and_versioned_gif_url(tmp_path) -> None:
+    _write_picker_flag(tmp_path, run_id="run-a")
     _write_summary(
         tmp_path,
         run_id="run-a",
@@ -260,6 +478,7 @@ def test_fastapi_routes_serve_only_selfplay_artifacts(tmp_path, monkeypatch) -> 
 
     volume = FakeVolume()
     monkeypatch.setattr(browser, "RUNS_MOUNT", tmp_path)
+    _write_picker_flag(tmp_path, run_id="run-a")
     _write_summary(
         tmp_path,
         run_id="run-a",
@@ -296,6 +515,54 @@ def test_fastapi_routes_serve_only_selfplay_artifacts(tmp_path, monkeypatch) -> 
     assert volume.reload_count >= 3
 
 
+def test_fastapi_index_and_api_accept_run_id_picker_selection(
+    tmp_path, monkeypatch
+) -> None:
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(browser, "RUNS_MOUNT", tmp_path)
+    _write_picker_flag(tmp_path, run_id="run-old")
+    _write_picker_flag(tmp_path, run_id="run-new")
+    _write_summary(
+        tmp_path,
+        run_id="run-old",
+        attempt_id="attempt-a",
+        eval_id="eval-a",
+        ok=True,
+        frame_count=5,
+        mtime=100,
+    )
+    _write_summary(
+        tmp_path,
+        run_id="run-new",
+        attempt_id="attempt-b",
+        eval_id="eval-b",
+        ok=True,
+        frame_count=7,
+        mtime=200,
+    )
+    app = browser._build_fastapi_app(None)
+    client = TestClient(app)
+
+    page_response = client.get("/", params={"run_id": "run-old"})
+    api_response = client.get("/api/summaries", params={"run_id": "run-old"})
+
+    assert page_response.status_code == 200
+    assert '<select name="run_id" onchange="this.form.submit()">' in page_response.text
+    assert '<option value="run-old" selected>' in page_response.text
+    assert page_response.text.index('value="run-new"') < page_response.text.index(
+        'value="run-old"'
+    )
+    assert api_response.status_code == 200
+    assert [row["run_id"] for row in api_response.json()["rows"]] == ["run-old"]
+    assert [run["run_id"] for run in api_response.json()["runs"]] == [
+        "run-new",
+        "run-old",
+    ]
+
+
 def test_fastapi_routes_keep_serving_when_volume_reload_fails(tmp_path, monkeypatch) -> None:
     pytest.importorskip("fastapi")
     pytest.importorskip("httpx")
@@ -306,6 +573,7 @@ def test_fastapi_routes_keep_serving_when_volume_reload_fails(tmp_path, monkeypa
             raise RuntimeError("temporary volume outage")
 
     monkeypatch.setattr(browser, "RUNS_MOUNT", tmp_path)
+    _write_picker_flag(tmp_path, run_id="run-a")
     _write_summary(
         tmp_path,
         run_id="run-a",

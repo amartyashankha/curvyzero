@@ -47,6 +47,21 @@ SOURCE_STATE_GRAY64_PIXEL_FIDELITY_BLOCKER = (
 )
 SOURCE_STATE_GRAY64_SOURCE_STATE_BACKED = True
 SOURCE_STATE_GRAY64_USES_ALE = False
+SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID = "curvyzero_source_state_rgb_canvas_like/v0"
+SOURCE_STATE_RGB_CANVAS_LIKE_RENDERER_IMPL_ID = (
+    "curvyzero_source_state_rgb_canvas_like_numpy/v0"
+)
+SOURCE_STATE_RGB_CANVAS_LIKE_TRUTH_LEVEL = "source_state_backed_browser_like_non_pixel_parity"
+SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE = 704
+SOURCE_STATE_RGB_CANVAS_LIKE_BACKGROUND_RGB = (34, 34, 34)
+SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_RGB = (255, 190, 40)
+SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_OUTLINE_RGB = (255, 255, 255)
+SOURCE_STATE_RGB_CANVAS_LIKE_PLAYER_RGB = (
+    (255, 0, 0),
+    (0, 255, 0),
+    (0, 80, 255),
+    (255, 240, 0),
+)
 SOURCE_STATE_GRAY64_STATE_FIELDS = (
     "state.tick",
     "state.elapsed_ms",
@@ -79,6 +94,29 @@ _SOURCE_STATE_OPTIONAL_ARRAY_KEYS = tuple(
 )
 SOURCE_STATE_GRAY64_BONUS_VALUE = 208
 SOURCE_STATE_GRAY64_DEFAULT_AVATAR_RADIUS = 0.6
+SOURCE_STATE_BONUS64_STACK4_PLAYER_PERSPECTIVE_SCHEMA_ID = (
+    "curvyzero_source_state_bonus64_stack4_player_perspective/v1"
+)
+SOURCE_STATE_BONUS64_STACK4_PLAYER_PERSPECTIVE_SHAPE = (22, 64, 64)
+SOURCE_STATE_BONUS64_STACK4_PLAYER_PERSPECTIVE_DTYPE = "float32"
+SOURCE_STATE_BONUS64_STACK4_PLAYER_PERSPECTIVE_VALUE_RANGE = (0.0, 1.0)
+SOURCE_STATE_BONUS64_STACK4_OCCUPANCY_CHANNELS = 4
+SOURCE_STATE_BONUS64_STACK4_BONUS_MASK_CHANNEL = 4
+SOURCE_STATE_BONUS64_STACK4_BONUS_TYPE_CHANNEL = 5
+SOURCE_STATE_BONUS64_STACK4_SELF_STATUS_CHANNELS = tuple(range(6, 13))
+SOURCE_STATE_BONUS64_STACK4_OTHER_STATUS_CHANNELS = tuple(range(13, 20))
+SOURCE_STATE_BONUS64_STACK4_GAME_BORDERLESS_CHANNEL = 20
+SOURCE_STATE_BONUS64_STACK4_GAME_TTL_CHANNEL = 21
+SOURCE_STATE_BONUS64_STACK4_MAX_BONUS_TYPE_CODE = 12.0
+SOURCE_STATE_BONUS64_STACK4_MAX_TTL_MS = 10_000.0
+_SOURCE_BODY_VALUE_BASE = 96
+_SOURCE_BODY_VALUE_STEP = 32
+_SOURCE_HEAD_VALUE_BASE = 224
+_SOURCE_HEAD_VALUE_STEP = 8
+_SELF_BODY_VALUE = 96
+_OTHER_BODY_VALUE = 128
+_SELF_HEAD_VALUE = 224
+_OTHER_HEAD_VALUE = 232
 
 _SOURCE_STATE_GRAY64_RENDERER_PAYLOAD: dict[str, Any] = {
     "renderer_impl_id": SOURCE_STATE_GRAY64_RENDERER_IMPL_ID,
@@ -221,6 +259,73 @@ def render_source_state_gray64(
     return SourceStateGray64Renderer(frame=out).render(state, row=row)
 
 
+def render_source_state_rgb_canvas_like(
+    state: Mapping[str, np.ndarray],
+    *,
+    row: int = 0,
+    out: np.ndarray | None = None,
+    frame_size: int = SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
+    player_rgb: Sequence[Sequence[int]] | None = None,
+    background_rgb: Sequence[int] = SOURCE_STATE_RGB_CANVAS_LIKE_BACKGROUND_RGB,
+) -> np.ndarray:
+    """Render one vector runtime row into a browser-like RGB frame.
+
+    This is for human inspection, not model input. It uses the source-state arrays,
+    the browser's dark background, player colors, visible trail bodies, live heads,
+    and active bonus circles. It is intentionally separate from the 64x64 gray
+    learning tensor.
+    """
+
+    arrays = _trusted_arrays(state)
+    row_index = _row_index(row, arrays["tick"].shape[0])
+    size = _rgb_frame_size(frame_size)
+    frame = (
+        np.empty((size, size, 3), dtype=np.uint8)
+        if out is None
+        else _validated_rgb_frame(out, frame_size=size)
+    )
+    frame[:, :] = _rgb_triplet(background_rgb)
+
+    map_size = float(arrays["map_size"][row_index])
+    colors = _player_rgb_values(arrays, row_index, player_rgb=player_rgb)
+
+    body_limit = _body_slot_limit(arrays, row_index)
+    active_slots = np.flatnonzero(arrays["body_active"][row_index, :body_limit])
+    _draw_body_circles_rgb(
+        frame,
+        arrays["body_pos"][row_index, active_slots],
+        arrays["body_radius"][row_index, active_slots],
+        arrays["body_owner"][row_index, active_slots],
+        map_size,
+        colors=colors,
+    )
+
+    if "bonus_active" in arrays:
+        bonus_slots = np.flatnonzero(arrays["bonus_active"][row_index])
+        _draw_bonus_circles_rgb(
+            frame,
+            arrays["bonus_pos"][row_index, bonus_slots],
+            arrays["bonus_radius"][row_index, bonus_slots],
+            map_size,
+        )
+
+    player_count = arrays["pos"].shape[1]
+    for player in range(player_count):
+        if not bool(arrays["present"][row_index, player]):
+            continue
+        if not bool(arrays["alive"][row_index, player]):
+            continue
+        _draw_world_circle_rgb(
+            frame,
+            arrays["pos"][row_index, player, 0],
+            arrays["pos"][row_index, player, 1],
+            arrays["radius"][row_index, player],
+            map_size,
+            color=colors[player],
+        )
+    return frame
+
+
 def render_source_snapshot_gray64(
     snapshot: Mapping[str, Any],
     *,
@@ -343,6 +448,98 @@ def normalize_source_state_gray64(
             raise VectorVisualObservationError(f"out dtype must be float32, got {normalized.dtype}")
     np.multiply(frame_array, np.float32(1.0 / 255.0), out=normalized, casting="unsafe")
     return normalized
+
+
+def render_source_state_bonus64_stack4_player_perspective_v1(
+    state: Mapping[str, np.ndarray],
+    *,
+    row: int = 0,
+    controlled_player: int = 0,
+    occupancy_stack: np.ndarray | None = None,
+    out: np.ndarray | None = None,
+) -> np.ndarray:
+    """Render the bonus-aware player-perspective visual tensor.
+
+    This is a separate v1 helper and typed-bonus parity gate. It does not
+    replace the gray64 v0 geometry gate. If ``occupancy_stack`` is omitted, the
+    current v0 frame is rendered, player-perspective remapped, normalized, and
+    repeated into the four history channels.
+    """
+
+    arrays = _validated_arrays(state)
+    row_index = _row_index(row, arrays["tick"].shape[0])
+    player_count = arrays["pos"].shape[1]
+    controlled = _row_index(controlled_player, player_count)
+    other = (
+        1 - controlled
+        if player_count == 2
+        else _first_other_player(controlled, player_count)
+    )
+    bonus_arrays = _bonus64_arrays(state, arrays)
+    output = _validated_bonus64_out(out)
+    output.fill(0.0)
+
+    if occupancy_stack is None:
+        raw_frame = render_source_state_gray64(state, row=row_index)
+        perspective_frame = _player_perspective_gray64(raw_frame, controlled)
+        output[:SOURCE_STATE_BONUS64_STACK4_OCCUPANCY_CHANNELS] = (
+            perspective_frame.astype(np.float32, copy=False) * np.float32(1.0 / 255.0)
+        )
+    else:
+        output[:SOURCE_STATE_BONUS64_STACK4_OCCUPANCY_CHANNELS] = (
+            _validated_occupancy_stack(occupancy_stack)
+        )
+
+    _draw_bonus64_bonus_planes(output, bonus_arrays, row_index)
+    _fill_player_status_planes(
+        output,
+        bonus_arrays,
+        row_index,
+        player=controlled,
+        start_channel=6,
+    )
+    _fill_player_status_planes(
+        output,
+        bonus_arrays,
+        row_index,
+        player=other,
+        start_channel=13,
+    )
+    output[SOURCE_STATE_BONUS64_STACK4_GAME_BORDERLESS_CHANNEL].fill(
+        _game_borderless_value(state, row_index)
+    )
+    output[SOURCE_STATE_BONUS64_STACK4_GAME_TTL_CHANNEL].fill(
+        _game_bonus_ttl_value(state, row_index)
+    )
+    return output
+
+
+def source_state_bonus64_stack4_player_perspective_v1_schema() -> dict[str, Any]:
+    """Return the draft v1 bonus-aware observation contract."""
+
+    return {
+        "schema_id": SOURCE_STATE_BONUS64_STACK4_PLAYER_PERSPECTIVE_SCHEMA_ID,
+        "shape": list(SOURCE_STATE_BONUS64_STACK4_PLAYER_PERSPECTIVE_SHAPE),
+        "dtype": SOURCE_STATE_BONUS64_STACK4_PLAYER_PERSPECTIVE_DTYPE,
+        "range": list(SOURCE_STATE_BONUS64_STACK4_PLAYER_PERSPECTIVE_VALUE_RANGE),
+        "channel_order": "CHW",
+        "status": "promoted_2p_typed_bonus_parity_gate_not_lightzero_default",
+        "parity_gate": True,
+        "parity_scope": (
+            "2p_source_vs_vector_active_map_bonus_mask_type_and_post_catch_status_planes"
+        ),
+        "replaces_gray64_v0": False,
+        "base_geometry_schema_id": SOURCE_STATE_GRAY64_SCHEMA_ID,
+        "channels": {
+            "0-3": "player-perspective occupancy history",
+            "4": "active map bonus mask",
+            "5": "active map bonus type code divided by 12",
+            "6-12": "controlled-player status planes",
+            "13-19": "other-player status planes",
+            "20": "game borderless flag",
+            "21": "game bonus ttl",
+        },
+    }
 
 
 def source_state_gray64_schema() -> dict[str, Any]:
@@ -601,6 +798,311 @@ def _validated_frame(frame: np.ndarray, *, name: str) -> np.ndarray:
     return frame_array
 
 
+def _validated_bonus64_out(out: np.ndarray | None) -> np.ndarray:
+    if out is None:
+        return np.zeros(SOURCE_STATE_BONUS64_STACK4_PLAYER_PERSPECTIVE_SHAPE, dtype=np.float32)
+    array = np.asarray(out)
+    if array.shape != SOURCE_STATE_BONUS64_STACK4_PLAYER_PERSPECTIVE_SHAPE:
+        raise VectorVisualObservationError(
+            "out must have shape "
+            f"{SOURCE_STATE_BONUS64_STACK4_PLAYER_PERSPECTIVE_SHAPE}, got {array.shape}"
+        )
+    if array.dtype != np.float32:
+        raise VectorVisualObservationError(f"out dtype must be float32, got {array.dtype}")
+    return array
+
+
+def _validated_occupancy_stack(stack: np.ndarray) -> np.ndarray:
+    array = np.asarray(stack)
+    expected = (
+        SOURCE_STATE_BONUS64_STACK4_OCCUPANCY_CHANNELS,
+        SOURCE_STATE_GRAY64_SHAPE[1],
+        SOURCE_STATE_GRAY64_SHAPE[2],
+    )
+    if array.shape != expected:
+        raise VectorVisualObservationError(
+            f"occupancy_stack must have shape {expected}, got {array.shape}"
+        )
+    if not np.issubdtype(array.dtype, np.number):
+        raise VectorVisualObservationError("occupancy_stack must be numeric")
+    if bool((~np.isfinite(array)).any()):
+        raise VectorVisualObservationError("occupancy_stack must contain finite values")
+    return np.clip(array.astype(np.float32, copy=False), 0.0, 1.0)
+
+
+def _bonus64_arrays(
+    state: Mapping[str, np.ndarray],
+    arrays: Mapping[str, np.ndarray],
+) -> dict[str, np.ndarray]:
+    result = dict(arrays)
+    for name in (
+        "bonus_type",
+        "bonus_id",
+        "base_radius",
+        "speed",
+        "base_speed",
+        "inverse",
+        "invincible",
+        "printing",
+        "angular_velocity_per_ms",
+        "base_angular_velocity_per_ms",
+        "bonus_stack_count",
+        "bonus_stack_duration_ms",
+    ):
+        if name in state:
+            result[name] = np.asarray(state[name])
+    return result
+
+
+def _player_perspective_gray64(frame: np.ndarray, controlled_player: int) -> np.ndarray:
+    frame_array = _validated_frame(frame, name="frame")
+    mapping = np.arange(256, dtype=np.uint8)
+    for source_player in range(2):
+        body_value = _SOURCE_BODY_VALUE_BASE + source_player * _SOURCE_BODY_VALUE_STEP
+        head_value = _SOURCE_HEAD_VALUE_BASE + source_player * _SOURCE_HEAD_VALUE_STEP
+        mapping[body_value] = (
+            _SELF_BODY_VALUE if source_player == controlled_player else _OTHER_BODY_VALUE
+        )
+        mapping[head_value] = (
+            _SELF_HEAD_VALUE if source_player == controlled_player else _OTHER_HEAD_VALUE
+        )
+    return np.take(mapping, frame_array)
+
+
+def _draw_bonus64_bonus_planes(
+    output: np.ndarray,
+    arrays: Mapping[str, np.ndarray],
+    row: int,
+) -> None:
+    if "bonus_active" not in arrays:
+        return
+    bonus_type = arrays.get("bonus_type")
+    bonus_id = arrays.get("bonus_id")
+    map_size = float(arrays["map_size"][row])
+    winners = np.full((64, 64), -1, dtype=np.int32)
+    bonus_slots = np.flatnonzero(arrays["bonus_active"][row])
+    for slot in bonus_slots:
+        x = float(arrays["bonus_pos"][row, slot, 0])
+        y = float(arrays["bonus_pos"][row, slot, 1])
+        radius = float(arrays["bonus_radius"][row, slot])
+        mask_info = _world_circle_patch_mask(x, y, radius, map_size)
+        if mask_info is None:
+            continue
+        y_slice, x_slice, mask = mask_info
+        slot_id = int(bonus_id[row, slot]) if bonus_id is not None else int(slot) + 1
+        patch_winners = winners[y_slice, x_slice]
+        replace = mask & (slot_id >= patch_winners)
+        if not bool(replace.any()):
+            continue
+        patch_winners[replace] = slot_id
+        output[SOURCE_STATE_BONUS64_STACK4_BONUS_MASK_CHANNEL, y_slice, x_slice][replace] = 1.0
+        code = int(bonus_type[row, slot]) if bonus_type is not None else 0
+        output[SOURCE_STATE_BONUS64_STACK4_BONUS_TYPE_CHANNEL, y_slice, x_slice][replace] = (
+            np.float32(np.clip(code, 0, int(SOURCE_STATE_BONUS64_STACK4_MAX_BONUS_TYPE_CODE)))
+            / np.float32(SOURCE_STATE_BONUS64_STACK4_MAX_BONUS_TYPE_CODE)
+        )
+
+
+def _world_circle_patch_mask(
+    x: float,
+    y: float,
+    radius: float,
+    map_size: float,
+) -> tuple[slice, slice, np.ndarray] | None:
+    if not np.isfinite(x) or not np.isfinite(y) or not np.isfinite(radius):
+        return None
+    if x + radius <= 0.0 or x - radius >= map_size:
+        return None
+    if y + radius <= 0.0 or y - radius >= map_size:
+        return None
+    radius_px = int(max(0, np.ceil((radius / map_size) * 64.0)))
+    px = int(np.clip(np.rint((x / map_size) * 63.0), 0, 63))
+    py = int(np.clip(np.rint((y / map_size) * 63.0), 0, 63))
+    if radius_px == 0:
+        return slice(py, py + 1), slice(px, px + 1), np.ones((1, 1), dtype=bool)
+    x0 = max(0, px - radius_px)
+    x1 = min(63, px + radius_px)
+    y0 = max(0, py - radius_px)
+    y1 = min(63, py + radius_px)
+    yy, xx = np.ogrid[y0 : y1 + 1, x0 : x1 + 1]
+    mask = (xx - px) ** 2 + (yy - py) ** 2 <= radius_px**2
+    return slice(y0, y1 + 1), slice(x0, x1 + 1), mask
+
+
+def _rgb_frame_size(value: int) -> int:
+    try:
+        size = int(value)
+    except (TypeError, ValueError) as exc:
+        raise VectorVisualObservationError("frame_size must be an integer") from exc
+    if size < 64:
+        raise VectorVisualObservationError("frame_size must be at least 64")
+    return size
+
+
+def _validated_rgb_frame(out: np.ndarray, *, frame_size: int) -> np.ndarray:
+    array = np.asarray(out)
+    expected = (frame_size, frame_size, 3)
+    if array.shape != expected:
+        raise VectorVisualObservationError(f"out must have shape {expected}, got {array.shape}")
+    if array.dtype != np.uint8:
+        raise VectorVisualObservationError(f"out dtype must be uint8, got {array.dtype}")
+    return array
+
+
+def _rgb_triplet(value: Sequence[int]) -> np.ndarray:
+    array = np.asarray(value, dtype=np.int16)
+    if array.shape != (3,):
+        raise VectorVisualObservationError("RGB values must have shape [3]")
+    if bool(((array < 0) | (array > 255)).any()):
+        raise VectorVisualObservationError("RGB values must be in [0, 255]")
+    return array.astype(np.uint8)
+
+
+def _player_rgb_values(
+    arrays: Mapping[str, np.ndarray],
+    row: int,
+    *,
+    player_rgb: Sequence[Sequence[int]] | None,
+) -> np.ndarray:
+    player_count = arrays["pos"].shape[1]
+    raw_colors = (
+        SOURCE_STATE_RGB_CANVAS_LIKE_PLAYER_RGB
+        if player_rgb is None
+        else tuple(tuple(color) for color in player_rgb)
+    )
+    colors = np.zeros((player_count, 3), dtype=np.uint8)
+    if "avatar_color" in arrays:
+        color_indices = np.asarray(arrays["avatar_color"][row, :player_count], dtype=np.int64)
+    else:
+        color_indices = np.arange(player_count, dtype=np.int64)
+    for player, color_index in enumerate(color_indices):
+        colors[player] = _rgb_triplet(raw_colors[int(color_index) % len(raw_colors)])
+    return colors
+
+
+def _fill_player_status_planes(
+    output: np.ndarray,
+    arrays: Mapping[str, np.ndarray],
+    row: int,
+    *,
+    player: int,
+    start_channel: int,
+) -> None:
+    output[start_channel + 0].fill(
+        _ratio_plane_value(arrays, "radius", "base_radius", row=row, player=player, scale=4.0)
+    )
+    output[start_channel + 1].fill(
+        _ratio_plane_value(arrays, "speed", "base_speed", row=row, player=player, scale=2.0)
+    )
+    output[start_channel + 2].fill(_bool_player_value(arrays, "inverse", row, player))
+    output[start_channel + 3].fill(
+        _turn_override_value(arrays, row=row, player=player)
+    )
+    output[start_channel + 4].fill(_bool_player_value(arrays, "invincible", row, player))
+    output[start_channel + 5].fill(_bool_player_value(arrays, "printing", row, player))
+    output[start_channel + 6].fill(_player_bonus_ttl_value(arrays, row=row, player=player))
+
+
+def _ratio_plane_value(
+    arrays: Mapping[str, np.ndarray],
+    value_name: str,
+    base_name: str,
+    *,
+    row: int,
+    player: int,
+    scale: float,
+) -> float:
+    value_array = arrays.get(value_name)
+    if value_array is None:
+        return 0.0
+    value = float(value_array[row, player])
+    base_array = arrays.get(base_name)
+    if base_array is None:
+        return 0.0
+    base = float(base_array[row, player])
+    if not np.isfinite(value) or not np.isfinite(base) or base <= 0.0:
+        return 0.0
+    return float(np.clip(value / base, 0.0, scale) / scale)
+
+
+def _bool_player_value(
+    arrays: Mapping[str, np.ndarray],
+    name: str,
+    row: int,
+    player: int,
+) -> float:
+    array = arrays.get(name)
+    if array is None:
+        return 0.0
+    return 1.0 if bool(array[row, player]) else 0.0
+
+
+def _turn_override_value(
+    arrays: Mapping[str, np.ndarray],
+    *,
+    row: int,
+    player: int,
+) -> float:
+    value_array = arrays.get("angular_velocity_per_ms")
+    base_array = arrays.get("base_angular_velocity_per_ms")
+    if value_array is None or base_array is None:
+        return 0.0
+    return 1.0 if not np.isclose(float(value_array[row, player]), float(base_array[row, player])) else 0.0
+
+
+def _player_bonus_ttl_value(
+    arrays: Mapping[str, np.ndarray],
+    *,
+    row: int,
+    player: int,
+) -> float:
+    count_array = arrays.get("bonus_stack_count")
+    duration_array = arrays.get("bonus_stack_duration_ms")
+    if count_array is None or duration_array is None:
+        return 0.0
+    count = int(count_array[row, player])
+    if count <= 0:
+        return 0.0
+    durations = np.asarray(duration_array[row, player, :count], dtype=np.float64)
+    if durations.size == 0:
+        return 0.0
+    return float(np.clip(np.nanmax(durations), 0.0, SOURCE_STATE_BONUS64_STACK4_MAX_TTL_MS) / SOURCE_STATE_BONUS64_STACK4_MAX_TTL_MS)
+
+
+def _game_borderless_value(state: Mapping[str, np.ndarray], row: int) -> float:
+    stack_count = state.get("bonus_game_stack_count")
+    stack_borderless = state.get("bonus_game_stack_borderless")
+    if stack_count is not None and stack_borderless is not None:
+        count = int(np.asarray(stack_count)[row])
+        if count > 0 and bool(np.asarray(stack_borderless)[row, :count].any()):
+            return 1.0
+    borderless = state.get("borderless")
+    if borderless is None:
+        return 0.0
+    return 1.0 if bool(np.asarray(borderless)[row]) else 0.0
+
+
+def _game_bonus_ttl_value(state: Mapping[str, np.ndarray], row: int) -> float:
+    count_array = state.get("bonus_game_stack_count")
+    duration_array = state.get("bonus_game_stack_duration_ms")
+    if count_array is None or duration_array is None:
+        return 0.0
+    count = int(np.asarray(count_array)[row])
+    if count <= 0:
+        return 0.0
+    durations = np.asarray(duration_array)[row, :count].astype(np.float64, copy=False)
+    if durations.size == 0:
+        return 0.0
+    return float(np.clip(np.nanmax(durations), 0.0, SOURCE_STATE_BONUS64_STACK4_MAX_TTL_MS) / SOURCE_STATE_BONUS64_STACK4_MAX_TTL_MS)
+
+
+def _first_other_player(controlled: int, player_count: int) -> int:
+    for player in range(player_count):
+        if player != controlled:
+            return player
+    return controlled
+
+
 def _body_slot_limit(arrays: Mapping[str, np.ndarray], row: int) -> int:
     capacity = arrays["body_active"].shape[1]
     cursor = int(arrays["body_write_cursor"][row])
@@ -733,6 +1235,97 @@ def _draw_uniform_circles(
         )
 
 
+def _draw_world_circle_rgb(
+    canvas: np.ndarray,
+    x_value: Any,
+    y_value: Any,
+    radius_value: Any,
+    map_size: float,
+    *,
+    color: Sequence[int] | np.ndarray,
+) -> None:
+    x = float(x_value)
+    y = float(y_value)
+    radius = float(radius_value)
+    if not np.isfinite(x) or not np.isfinite(y) or not np.isfinite(radius):
+        return
+    if x + radius <= 0.0 or x - radius >= map_size:
+        return
+    if y + radius <= 0.0 or y - radius >= map_size:
+        return
+
+    size = int(canvas.shape[0])
+    radius_px = int(max(0, np.ceil((radius / map_size) * float(size))))
+    px = int(np.clip(np.rint((x / map_size) * float(size - 1)), 0, size - 1))
+    py = int(np.clip(np.rint((y / map_size) * float(size - 1)), 0, size - 1))
+    rgb = _rgb_triplet(color)
+    if radius_px == 0:
+        canvas[py, px] = rgb
+        return
+
+    x0 = max(0, px - radius_px)
+    x1 = min(size - 1, px + radius_px)
+    y0 = max(0, py - radius_px)
+    y1 = min(size - 1, py + radius_px)
+    mask = _circle_mask(radius_px, mask_cache=None)
+    mask_x0 = x0 - (px - radius_px)
+    mask_y0 = y0 - (py - radius_px)
+    mask_view = mask[
+        mask_y0 : mask_y0 + (y1 - y0 + 1),
+        mask_x0 : mask_x0 + (x1 - x0 + 1),
+    ]
+    view = canvas[y0 : y1 + 1, x0 : x1 + 1]
+    view[mask_view] = rgb
+
+
+def _draw_body_circles_rgb(
+    canvas: np.ndarray,
+    positions: np.ndarray,
+    radii: np.ndarray,
+    owners: np.ndarray,
+    map_size: float,
+    *,
+    colors: np.ndarray,
+) -> None:
+    for position, radius, owner in zip(positions, radii, owners, strict=True):
+        owner_index = int(owner)
+        color = (120, 120, 120) if owner_index < 0 else colors[owner_index % len(colors)]
+        _draw_world_circle_rgb(
+            canvas,
+            position[0],
+            position[1],
+            radius,
+            map_size,
+            color=color,
+        )
+
+
+def _draw_bonus_circles_rgb(
+    canvas: np.ndarray,
+    positions: np.ndarray,
+    radii: np.ndarray,
+    map_size: float,
+) -> None:
+    outline_radius = map_size * 2.0 / float(canvas.shape[0])
+    for position, radius in zip(positions, radii, strict=True):
+        _draw_world_circle_rgb(
+            canvas,
+            position[0],
+            position[1],
+            float(radius) + outline_radius,
+            map_size,
+            color=SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_OUTLINE_RGB,
+        )
+        _draw_world_circle_rgb(
+            canvas,
+            position[0],
+            position[1],
+            radius,
+            map_size,
+            color=SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_RGB,
+        )
+
+
 def _body_values(owners: np.ndarray) -> np.ndarray:
     owner_index = owners.astype(np.int16, copy=False)
     values = np.where(owner_index < 0, 80, np.minimum(192, 96 + owner_index * 32))
@@ -844,6 +1437,19 @@ def _source_body_owner_index(
 
 
 __all__ = [
+    "SOURCE_STATE_BONUS64_STACK4_BONUS_MASK_CHANNEL",
+    "SOURCE_STATE_BONUS64_STACK4_BONUS_TYPE_CHANNEL",
+    "SOURCE_STATE_BONUS64_STACK4_GAME_BORDERLESS_CHANNEL",
+    "SOURCE_STATE_BONUS64_STACK4_GAME_TTL_CHANNEL",
+    "SOURCE_STATE_BONUS64_STACK4_MAX_BONUS_TYPE_CODE",
+    "SOURCE_STATE_BONUS64_STACK4_MAX_TTL_MS",
+    "SOURCE_STATE_BONUS64_STACK4_OCCUPANCY_CHANNELS",
+    "SOURCE_STATE_BONUS64_STACK4_OTHER_STATUS_CHANNELS",
+    "SOURCE_STATE_BONUS64_STACK4_PLAYER_PERSPECTIVE_DTYPE",
+    "SOURCE_STATE_BONUS64_STACK4_PLAYER_PERSPECTIVE_SCHEMA_ID",
+    "SOURCE_STATE_BONUS64_STACK4_PLAYER_PERSPECTIVE_SHAPE",
+    "SOURCE_STATE_BONUS64_STACK4_PLAYER_PERSPECTIVE_VALUE_RANGE",
+    "SOURCE_STATE_BONUS64_STACK4_SELF_STATUS_CHANNELS",
     "SOURCE_STATE_GRAY64_BONUS_VALUE",
     "SOURCE_STATE_GRAY64_BROWSER_PIXEL_FIDELITY",
     "SOURCE_STATE_GRAY64_BROWSER_PIXEL_FIDELITY_CLAIM",
@@ -873,8 +1479,11 @@ __all__ = [
     "SourceStateGray64Renderer",
     "VectorVisualObservationError",
     "normalize_source_state_gray64",
+    "render_source_state_bonus64_stack4_player_perspective_v1",
+    "render_source_state_rgb_canvas_like",
     "render_source_snapshot_gray64",
     "render_source_state_gray64",
+    "source_state_bonus64_stack4_player_perspective_v1_schema",
     "source_state_gray64_metadata",
     "source_state_gray64_schema",
 ]

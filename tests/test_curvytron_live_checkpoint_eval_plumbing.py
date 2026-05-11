@@ -1,5 +1,6 @@
 import json
 
+import numpy as np
 import pytest
 
 from curvyzero.infra.modal import lightzero_curvytron_visual_survival_eval as eval_mod
@@ -45,12 +46,38 @@ def test_default_env_variant_stays_fixed_opponent_while_turn_commit_is_profile_o
 
 def test_background_eval_inspection_and_gif_are_default_on_for_current_trainer():
     config = train_mod._background_eval_config_from_command({})
+    custom_config = train_mod._background_eval_config_from_command(
+        {"background_gif_frame_size": 512}
+    )
 
     assert train_mod.DEFAULT_BACKGROUND_EVAL_ENABLED is True
     assert train_mod.DEFAULT_BACKGROUND_GIF_ENABLED is True
     assert config["enabled"] is True
     assert config["selfplay_gif"]["enabled"] is True
     assert config["env_variant"] == train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT
+    assert config["selfplay_gif"]["training_reward_variant"] == train_mod.DEFAULT_REWARD_VARIANT
+    assert custom_config["selfplay_gif"]["frame_size"] == 512
+
+
+def test_gif_browser_run_marker_is_written_under_run_root(tmp_path, monkeypatch):
+    monkeypatch.setattr(train_mod, "RUNS_MOUNT", tmp_path)
+
+    summary = train_mod._write_gif_browser_run_marker(
+        run_id="run-marker",
+        created_at="2026-05-11T00:00:00Z",
+    )
+    marker_path = train_mod.runs.volume_path(
+        tmp_path,
+        train_mod.runs.gif_browser_run_marker_ref(train_mod.TASK_ID, "run-marker"),
+    )
+    payload = json.loads(marker_path.read_text(encoding="utf-8"))
+
+    assert marker_path.name == train_mod.runs.GIF_BROWSER_RUN_MARKER_FILENAME
+    assert summary["ref"].endswith("/show_in_gif_browser.flag")
+    assert payload["schema"] == train_mod.runs.GIF_BROWSER_RUN_MARKER_SCHEMA
+    assert payload["task_id"] == train_mod.TASK_ID
+    assert payload["run_id"] == "run-marker"
+    assert payload["created_at"] == "2026-05-11T00:00:00Z"
 
 
 def test_source_state_fixed_opponent_surface_identity_is_explicit_control_lane():
@@ -324,6 +351,7 @@ def test_live_checkpoint_trigger_spawns_eval_and_selfplay_gif_without_volume_com
         "num_simulations": 4,
         "batch_size": 8,
         "env_variant": train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT,
+        "reward_variant": train_mod.REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME,
         "opponent_policy_kind": train_mod.OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
         "opponent_checkpoint_ref": None,
         "opponent_snapshot_ref": None,
@@ -338,7 +366,9 @@ def test_live_checkpoint_trigger_spawns_eval_and_selfplay_gif_without_volume_com
             "frame_stride": 2,
             "fps": 12.0,
             "scale": 3,
+            "frame_size": 320,
             "training_env_variant": train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT,
+            "training_reward_variant": train_mod.REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME,
         },
     }
 
@@ -362,7 +392,12 @@ def test_live_checkpoint_trigger_spawns_eval_and_selfplay_gif_without_volume_com
     assert gif_call["frame_stride"] == 2
     assert gif_call["fps"] == 12.0
     assert gif_call["scale"] == 3
+    assert gif_call["frame_size"] == 320
     assert gif_call["training_env_variant"] == train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT
+    assert (
+        gif_call["training_reward_variant"]
+        == train_mod.REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME
+    )
     assert fake_volume.commit_count == 0
     assert not (attempt_train_root / "background_eval_requests").exists()
     request = result["requests"][0]
@@ -371,7 +406,36 @@ def test_live_checkpoint_trigger_spawns_eval_and_selfplay_gif_without_volume_com
     assert request["eval_inspection_scheduled"] is True
     assert request["selfplay_gif"]["scheduled"] is True
     assert request["selfplay_gif"]["function_call_id"] == "fc-live-gif-test"
+    assert request["selfplay_gif"]["config"]["frame_size"] == 320
+    assert (
+        request["selfplay_gif"]["config"]["training_reward_variant"]
+        == train_mod.REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME
+    )
     assert request["config"]["env_variant"] == train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT
+
+
+def test_save_raw_frames_gif_preserves_rgb_dimensions_without_gray64_scaling(tmp_path):
+    Image = pytest.importorskip("PIL.Image")
+    frames = np.zeros((2, 96, 128, 3), dtype=np.uint8)
+    frames[0, :, :] = np.asarray([255, 0, 0], dtype=np.uint8)
+    frames[1, :, :] = np.asarray([0, 255, 0], dtype=np.uint8)
+    gif_path = tmp_path / "rgb.gif"
+
+    artifact = train_mod._save_raw_frames_gif(
+        frames=frames,
+        gif_path=gif_path,
+        fps=12.0,
+        scale=4,
+    )
+
+    assert artifact["color_mode"] == "RGB"
+    assert artifact["scale"] == 1
+    assert artifact["pixel_size"] == [128, 96]
+    with Image.open(gif_path) as image:
+        assert image.size == (128, 96)
+        assert image.n_frames == 2
+        first_frame = image.convert("RGB")
+        assert first_frame.getpixel((0, 0)) == (255, 0, 0)
 
 
 def test_save_hook_trigger_uses_source_checkpoint_ref_not_future_mirror(tmp_path, monkeypatch):
@@ -640,6 +704,7 @@ def test_checkpoint_eval_poller_completes_eval_inspection_and_selfplay_gif_jobs(
         seed=3,
         source_max_steps=32,
         env_variant=train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT,
+        reward_variant=train_mod.REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME,
         opponent_policy_kind=train_mod.OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
         opponent_checkpoint_ref=None,
         opponent_snapshot_ref=None,
@@ -659,6 +724,7 @@ def test_checkpoint_eval_poller_completes_eval_inspection_and_selfplay_gif_jobs(
         background_gif_frame_stride=2,
         background_gif_fps=12.0,
         background_gif_scale=3,
+        background_gif_frame_size=320,
     )
 
     result = train_mod._run_checkpoint_eval_poller(
@@ -690,6 +756,7 @@ def test_checkpoint_eval_poller_completes_eval_inspection_and_selfplay_gif_jobs(
         "training/lightzero-curvytron-visual-survival/run-c/attempts/attempt-c/train/lightzero_exp/ckpt/iteration_1.pth.tar"
     )
     assert gif_call["checkpoint_ref"] == eval_call["checkpoint_ref"]
+    assert gif_call["frame_size"] == 320
     assert eval_call["eval_id"] == "live_checkpoint_iteration_1"
     assert gif_call["eval_id"] == "live_checkpoint_iteration_1"
     assert gif_call["seed"] == 10_003
@@ -697,6 +764,10 @@ def test_checkpoint_eval_poller_completes_eval_inspection_and_selfplay_gif_jobs(
     assert gif_call["frame_stride"] == 2
     assert gif_call["fps"] == 12.0
     assert gif_call["scale"] == 3
+    assert (
+        gif_call["training_reward_variant"]
+        == train_mod.REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME
+    )
     assert fake_volume.commit_count == 0
     status_path = train_mod._checkpoint_eval_poller_status_path(
         run_id="run-c",

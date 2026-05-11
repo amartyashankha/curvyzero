@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 from typing import Any
+from typing import Callable
 
 import numpy as np
 
@@ -32,6 +33,33 @@ from curvyzero.env.vector_multiplayer_env import (  # noqa: E402
 )
 from curvyzero.env.vector_multiplayer_env import VectorMultiplayerEnv  # noqa: E402
 from curvyzero.env.vector_visual_observation import (  # noqa: E402
+    SOURCE_STATE_BONUS64_STACK4_BONUS_MASK_CHANNEL,
+)
+from curvyzero.env.vector_visual_observation import (  # noqa: E402
+    SOURCE_STATE_BONUS64_STACK4_BONUS_TYPE_CHANNEL,
+)
+from curvyzero.env.vector_visual_observation import (  # noqa: E402
+    SOURCE_STATE_BONUS64_STACK4_GAME_BORDERLESS_CHANNEL,
+)
+from curvyzero.env.vector_visual_observation import (  # noqa: E402
+    SOURCE_STATE_BONUS64_STACK4_GAME_TTL_CHANNEL,
+)
+from curvyzero.env.vector_visual_observation import (  # noqa: E402
+    SOURCE_STATE_BONUS64_STACK4_MAX_BONUS_TYPE_CODE,
+)
+from curvyzero.env.vector_visual_observation import (  # noqa: E402
+    SOURCE_STATE_BONUS64_STACK4_MAX_TTL_MS,
+)
+from curvyzero.env.vector_visual_observation import (  # noqa: E402
+    SOURCE_STATE_BONUS64_STACK4_OTHER_STATUS_CHANNELS,
+)
+from curvyzero.env.vector_visual_observation import (  # noqa: E402
+    SOURCE_STATE_BONUS64_STACK4_PLAYER_PERSPECTIVE_SCHEMA_ID,
+)
+from curvyzero.env.vector_visual_observation import (  # noqa: E402
+    SOURCE_STATE_BONUS64_STACK4_SELF_STATUS_CHANNELS,
+)
+from curvyzero.env.vector_visual_observation import (  # noqa: E402
     SOURCE_STATE_GRAY64_BROWSER_PIXEL_FIDELITY,
 )
 from curvyzero.env.vector_visual_observation import (  # noqa: E402
@@ -39,6 +67,9 @@ from curvyzero.env.vector_visual_observation import (  # noqa: E402
 )
 from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_SCHEMA_ID  # noqa: E402
 from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_SHAPE  # noqa: E402
+from curvyzero.env.vector_visual_observation import (  # noqa: E402
+    render_source_state_bonus64_stack4_player_perspective_v1,
+)
 from curvyzero.env.vector_visual_observation import render_source_snapshot_gray64  # noqa: E402
 from curvyzero.env.vector_visual_observation import render_source_state_gray64  # noqa: E402
 
@@ -130,6 +161,25 @@ CORE_2P_SUITE = (
     / "scenarios"
     / "environment"
     / "source_bonus_spawn_cap_twenty_step.json",
+)
+PROGRAMMATIC_2P_STRESS_SCENARIO_IDS = (
+    "source_printing_trail_point_visual_stress",
+    "source_body_opponent_tangent_then_overlap_visual_stress",
+    "source_body_own_latency_delta3_then_delta4_visual_stress",
+    "source_print_manager_trail_gap_boundary_visual_stress",
+    "source_lifecycle_survivor_score_2p_warmdown_visual_stress",
+    "source_bonus_self_master_body_block_then_wall_death_visual_stress",
+    "source_bonus_game_borderless_expiry_then_wall_death_visual_stress",
+    "source_bonus_game_clear_clears_future_collision_body_visual_stress",
+)
+VISUAL_MISMATCH_CANARY_IDS = (
+    "missing_visible_world_body",
+    "missing_visible_map_bonus",
+)
+TYPED_BONUS_VISUAL_STATUS_GATE_ID = "source_default_bonus64_type_status_planes_2p"
+TYPED_BONUS_VISUAL_STATUS_GATE_TYPES = tuple(
+    vector_runtime.BONUS_TYPE_NAME_BY_CODE[int(code)]
+    for code in vector_runtime.SOURCE_DEFAULT_BONUS_TYPE_CODES
 )
 
 
@@ -327,7 +377,10 @@ def run_suite_comparison(
     paths: tuple[Path, ...] = CORE_2P_SUITE,
     *,
     max_steps: int | None = None,
+    include_programmatic_stress: bool | None = None,
 ) -> dict[str, Any]:
+    if include_programmatic_stress is None:
+        include_programmatic_stress = tuple(paths) == CORE_2P_SUITE
     reports = [
         run_comparison(
             scenario_path=path,
@@ -336,6 +389,14 @@ def run_suite_comparison(
         )
         for path in paths
     ]
+    if include_programmatic_stress:
+        reports.extend(
+            run_programmatic_stress_comparison(
+                scenario_id,
+                max_steps=max_steps,
+            )
+            for scenario_id in PROGRAMMATIC_2P_STRESS_SCENARIO_IDS
+        )
     failed = [report for report in reports if not report["match"]]
     return {
         "schema_id": f"{SCHEMA_ID}_suite",
@@ -345,6 +406,161 @@ def run_suite_comparison(
         "failed": len(failed),
         "match": not failed,
         "max_abs_diff": max((int(report["max_abs_diff"]) for report in reports), default=0),
+        "mismatch_pixels": sum(int(report["mismatch_pixels"]) for report in reports),
+        "reports": reports,
+    }
+
+
+def run_programmatic_stress_comparison(
+    scenario_id: str,
+    *,
+    max_steps: int | None = None,
+    out_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Run a source-env-backed visual stress case that has no JSON fixture.
+
+    These cases use CurvyTronSourceEnv snapshots as truth and mirror the same
+    state in VectorMultiplayerEnv. They intentionally do not assert source
+    expectations beyond source-vs-vector gray64 parity for the constructed
+    state sequence.
+    """
+
+    if max_steps is not None and int(max_steps) < 0:
+        raise ValueError("max_steps must be non-negative")
+    if scenario_id == "source_printing_trail_point_visual_stress":
+        return _run_printing_trail_point_visual_stress(
+            max_steps=max_steps,
+            out_dir=out_dir,
+        )
+    if scenario_id == "source_body_opponent_tangent_then_overlap_visual_stress":
+        return _run_body_opponent_tangent_then_overlap_visual_stress(
+            max_steps=max_steps,
+            out_dir=out_dir,
+        )
+    if scenario_id == "source_body_own_latency_delta3_then_delta4_visual_stress":
+        return _run_body_own_latency_delta3_then_delta4_visual_stress(
+            max_steps=max_steps,
+            out_dir=out_dir,
+        )
+    if scenario_id == "source_print_manager_trail_gap_boundary_visual_stress":
+        return _run_print_manager_trail_gap_boundary_visual_stress(
+            max_steps=max_steps,
+            out_dir=out_dir,
+        )
+    if scenario_id == "source_lifecycle_survivor_score_2p_warmdown_visual_stress":
+        return _run_lifecycle_survivor_score_2p_next_round_visual_stress(
+            max_steps=max_steps,
+            out_dir=out_dir,
+        )
+    if scenario_id == "source_bonus_self_master_body_block_then_wall_death_visual_stress":
+        return _run_bonus_self_master_body_block_then_wall_death_visual_stress(
+            max_steps=max_steps,
+            out_dir=out_dir,
+        )
+    if scenario_id == "source_bonus_game_borderless_expiry_then_wall_death_visual_stress":
+        return _run_bonus_game_borderless_expiry_then_wall_death_visual_stress(
+            max_steps=max_steps,
+            out_dir=out_dir,
+        )
+    if scenario_id == "source_bonus_game_clear_clears_future_collision_body_visual_stress":
+        return _run_bonus_game_clear_clears_future_collision_body_visual_stress(
+            max_steps=max_steps,
+            out_dir=out_dir,
+        )
+    raise ValueError(f"unknown programmatic stress scenario {scenario_id!r}")
+
+
+def run_visual_mismatch_canary(canary_id: str) -> dict[str, Any]:
+    """Prove the visual comparison fails when a visible source fact is missing."""
+
+    if canary_id == "missing_visible_world_body":
+        source_env, vector_env = _manual_2p_stress_env(
+            positions=((20.0, 20.0), (70.0, 70.0)),
+            headings=(0.0, 0.0),
+            world_bodies=(
+                {"owner_id": 2, "x": 25.0, "y": 20.0, "radius": 1.2, "num": 0},
+            ),
+        )
+        state = vector_env.state
+        state["body_active"][0, 0] = False
+        state["body_pos"][0, 0] = 0.0
+        state["body_radius"][0, 0] = 0.0
+        state["world_body_count"][0] = 0
+        state["body_count"][0, 1] = 0
+        expected_hole = "world body missing from vector state"
+    elif canary_id == "missing_visible_map_bonus":
+        source_env, vector_env = _manual_2p_stress_env(
+            positions=((20.0, 20.0), (70.0, 70.0)),
+            headings=(0.0, 0.0),
+            active_bonus={"type": "BonusSelfSmall", "x": 25.0, "y": 20.0},
+        )
+        state = vector_env.state
+        state["bonus_active"][0, :] = False
+        state["bonus_type"][0, :] = vector_runtime.BONUS_TYPE_NONE
+        state["bonus_pos"][0, :, :] = 0.0
+        state["bonus_count"][0] = 0
+        expected_hole = "map bonus missing from vector state"
+    else:
+        raise ValueError(f"unknown visual mismatch canary {canary_id!r}")
+
+    return _single_frame_visual_report(
+        report_id=canary_id,
+        comparison_kind="intentional_visual_mismatch_canary",
+        source_env=source_env,
+        vector_env=vector_env,
+        label="after_intentional_mismatch",
+        extra={
+            "expected_hole": expected_hole,
+            "expected_match": False,
+        },
+    )
+
+
+def run_typed_bonus_visual_status_gate() -> dict[str, Any]:
+    """Compare source bonus identities/status against the v1 typed planes.
+
+    The gray64 frame intentionally renders all map bonuses as one grayscale
+    value and omits bonus status. This gate keeps the promoted v1 mask/type
+    channels and post-catch status channels honest for every source-default
+    bonus type in a 2P row.
+    """
+
+    reports = [
+        _run_typed_bonus_visual_status_case(bonus_type)
+        for bonus_type in TYPED_BONUS_VISUAL_STATUS_GATE_TYPES
+    ]
+    failed = [report for report in reports if not report["match"]]
+    return {
+        "schema_id": f"{SCHEMA_ID}_bonus64_typed_gate",
+        "gate_id": TYPED_BONUS_VISUAL_STATUS_GATE_ID,
+        "comparison_kind": "typed_bonus_visual_status_gate",
+        "visual_observation_schema_id": SOURCE_STATE_BONUS64_STACK4_PLAYER_PERSPECTIVE_SCHEMA_ID,
+        "source_bonus_types": list(TYPED_BONUS_VISUAL_STATUS_GATE_TYPES),
+        "source_backed_status_scope": [
+            "active map bonus mask",
+            "active map bonus type code",
+            "post-catch radius ratio",
+            "post-catch speed ratio",
+            "post-catch inverse flag",
+            "post-catch turn override flag",
+            "post-catch invincible flag",
+            "post-catch printing flag",
+            "post-catch player bonus ttl",
+            "post-catch game borderless flag",
+            "post-catch game bonus ttl",
+        ],
+        "missing_source_backed_proof": [
+            "BonusAllColor post-catch color rotation is not encoded in bonus64 v1 status planes",
+            "BonusGameClear has no typed status plane after catch; clear geometry remains covered by gray64/runtime gates",
+        ],
+        "case_count": len(reports),
+        "passed": len(reports) - len(failed),
+        "failed": len(failed),
+        "match": not failed,
+        "max_abs_diff": max(
+            (float(report["max_abs_diff"]) for report in reports),
+            default=0.0,
+        ),
         "mismatch_pixels": sum(int(report["mismatch_pixels"]) for report in reports),
         "reports": reports,
     }
@@ -506,6 +722,1187 @@ def _run_forced_state_comparison(
         "first_mismatch": first_mismatch,
         "frames": rows,
     }
+
+
+def _run_bonus_self_master_body_block_then_wall_death_visual_stress(
+    *,
+    max_steps: int | None,
+    out_dir: Path | None,
+) -> dict[str, Any]:
+    source_env, vector_env = _manual_2p_stress_env(
+        positions=((20.0, 20.0), (70.0, 70.0)),
+        headings=(0.0, 0.0),
+        active_bonus={"type": "BonusSelfMaster", "x": 20.0, "y": 20.0},
+    )
+
+    def catch_bonus() -> tuple[Mapping[str, Any], Any]:
+        return _step_stress_pair(source_env, vector_env, step_ms=0.0)
+
+    def body_collision_is_blocked() -> tuple[Mapping[str, Any], Any]:
+        _seed_source_body(
+            source_env,
+            owner_id=2,
+            x=20.0,
+            y=21.0,
+            radius=1.0,
+            num=0,
+        )
+        _seed_vector_world_body(
+            vector_env,
+            slot=0,
+            owner_index=1,
+            x=20.0,
+            y=21.0,
+            radius=1.0,
+            num=0,
+        )
+        return _step_stress_pair(source_env, vector_env, step_ms=0.0)
+
+    def later_wall_death() -> tuple[Mapping[str, Any], Any]:
+        _set_stress_avatar_state(
+            source_env,
+            vector_env,
+            player_index=0,
+            x=0.3,
+            y=20.0,
+            angle=np.pi,
+        )
+        return _step_stress_pair(source_env, vector_env, step_ms=0.0)
+
+    return _run_programmatic_stress_case(
+        scenario_id="source_bonus_self_master_body_block_then_wall_death_visual_stress",
+        source_env=source_env,
+        vector_env=vector_env,
+        steps=(
+            ("after_bonus_self_master_catch", catch_bonus),
+            ("after_invincible_body_collision_probe", body_collision_is_blocked),
+            ("after_later_wall_death", later_wall_death),
+        ),
+        max_steps=max_steps,
+        out_dir=out_dir,
+        expected_terminal=True,
+        visual_limits=(
+            "gray64 does not encode the SelfMaster stack or invincible flag; it "
+            "only exposes the surviving live head after the body hit and the "
+            "later wall-death geometry"
+        ),
+    )
+
+
+def _run_printing_trail_point_visual_stress(
+    *,
+    max_steps: int | None,
+    out_dir: Path | None,
+) -> dict[str, Any]:
+    source_env, vector_env = _manual_2p_stress_env(
+        positions=((20.0, 20.0), (70.0, 70.0)),
+        headings=(0.0, 0.0),
+    )
+    _set_stress_avatar_state(
+        source_env,
+        vector_env,
+        player_index=0,
+        x=0.0,
+        y=20.0,
+        angle=0.0,
+    )
+    _set_stress_avatar_printing(
+        source_env,
+        vector_env,
+        player_index=0,
+        printing=True,
+        last_x=0.0,
+        last_y=20.0,
+    )
+
+    def emit_visible_trail_point() -> tuple[Mapping[str, Any], Any]:
+        return _step_stress_pair(source_env, vector_env, step_ms=38.0)
+
+    return _run_programmatic_stress_case(
+        scenario_id="source_printing_trail_point_visual_stress",
+        source_env=source_env,
+        vector_env=vector_env,
+        steps=(("after_printing_trail_point", emit_visible_trail_point),),
+        max_steps=max_steps,
+        out_dir=out_dir,
+        expected_terminal=False,
+        visual_limits=(
+            "gray64 can see the emitted trail/body point, but it does not "
+            "prove PrintManager random-call order or hidden print timer state"
+        ),
+    )
+
+
+def _run_body_opponent_tangent_then_overlap_visual_stress(
+    *,
+    max_steps: int | None,
+    out_dir: Path | None,
+) -> dict[str, Any]:
+    source_env, vector_env = _manual_2p_stress_env(
+        positions=((20.0, 20.0), (70.0, 70.0)),
+        headings=(0.0, 0.0),
+        world_bodies=(
+            {
+                "owner_id": 2,
+                "x": 21.200000000000003,
+                "y": 20.0,
+                "radius": 0.6,
+                "num": 0,
+            },
+        ),
+    )
+
+    def tangent_is_safe() -> tuple[Mapping[str, Any], Any]:
+        return _step_stress_pair(source_env, vector_env, step_ms=0.0)
+
+    def overlap_kills() -> tuple[Mapping[str, Any], Any]:
+        _seed_source_body(
+            source_env,
+            owner_id=2,
+            x=21.19,
+            y=20.0,
+            radius=0.6,
+            num=1,
+        )
+        _seed_vector_world_body(
+            vector_env,
+            slot=1,
+            owner_index=1,
+            x=21.19,
+            y=20.0,
+            radius=0.6,
+            num=1,
+        )
+        return _step_stress_pair(source_env, vector_env, step_ms=0.0)
+
+    return _run_programmatic_stress_case(
+        scenario_id="source_body_opponent_tangent_then_overlap_visual_stress",
+        source_env=source_env,
+        vector_env=vector_env,
+        steps=(
+            ("after_opponent_tangent_safe_probe", tangent_is_safe),
+            ("after_opponent_overlap_death_probe", overlap_kills),
+        ),
+        max_steps=max_steps,
+        out_dir=out_dir,
+        expected_terminal=True,
+        visual_limits=(
+            "gray64 sees the live heads, opponent body, and later death point; "
+            "the strict tangent-vs-overlap rule is still asserted through the "
+            "source/vector terminal transition"
+        ),
+    )
+
+
+def _run_body_own_latency_delta3_then_delta4_visual_stress(
+    *,
+    max_steps: int | None,
+    out_dir: Path | None,
+) -> dict[str, Any]:
+    source_env, vector_env = _manual_2p_stress_env(
+        positions=((20.0, 20.0), (70.0, 70.0)),
+        headings=(0.0, 0.0),
+        world_bodies=(
+            {"owner_id": 1, "x": 20.0, "y": 20.0, "radius": 0.6, "num": 0},
+        ),
+    )
+    _set_stress_body_counters(
+        source_env,
+        vector_env,
+        player_index=0,
+        body_count=3,
+    )
+
+    def own_delta3_is_safe() -> tuple[Mapping[str, Any], Any]:
+        return _step_stress_pair(source_env, vector_env, step_ms=0.0)
+
+    def own_delta4_kills() -> tuple[Mapping[str, Any], Any]:
+        _set_stress_body_counters(
+            source_env,
+            vector_env,
+            player_index=0,
+            body_count=4,
+        )
+        return _step_stress_pair(source_env, vector_env, step_ms=0.0)
+
+    return _run_programmatic_stress_case(
+        scenario_id="source_body_own_latency_delta3_then_delta4_visual_stress",
+        source_env=source_env,
+        vector_env=vector_env,
+        steps=(
+            ("after_own_body_delta3_safe_probe", own_delta3_is_safe),
+            ("after_own_body_delta4_death_probe", own_delta4_kills),
+        ),
+        max_steps=max_steps,
+        out_dir=out_dir,
+        expected_terminal=True,
+        visual_limits=(
+            "gray64 sees the own stored body and live/dead head geometry, but "
+            "not the hidden body counters that make delta 3 safe and delta 4 fatal"
+        ),
+    )
+
+
+def _run_print_manager_trail_gap_boundary_visual_stress(
+    *,
+    max_steps: int | None,
+    out_dir: Path | None,
+) -> dict[str, Any]:
+    source_env, vector_env = _manual_2p_stress_env(
+        positions=((20.0, 20.0), (70.0, 70.0)),
+        headings=(0.0, 0.0),
+    )
+    _set_stress_avatar_printing(
+        source_env,
+        vector_env,
+        player_index=0,
+        printing=True,
+        last_x=20.0,
+        last_y=20.0,
+    )
+    _set_stress_print_manager(
+        source_env,
+        vector_env,
+        player_index=0,
+        active=True,
+        distance=0.5,
+        last_x=20.0,
+        last_y=20.0,
+    )
+
+    def print_to_hole_boundary() -> tuple[Mapping[str, Any], Any]:
+        return _step_stress_pair(source_env, vector_env, step_ms=100.0)
+
+    def hole_to_print_boundary() -> tuple[Mapping[str, Any], Any]:
+        avatar = source_env.avatar_by_id(1)
+        _set_stress_print_manager(
+            source_env,
+            vector_env,
+            player_index=0,
+            active=True,
+            distance=0.5,
+            last_x=float(avatar.x),
+            last_y=float(avatar.y),
+        )
+        return _step_stress_pair(source_env, vector_env, step_ms=100.0)
+
+    return _run_programmatic_stress_case(
+        scenario_id="source_print_manager_trail_gap_boundary_visual_stress",
+        source_env=source_env,
+        vector_env=vector_env,
+        steps=(
+            ("after_print_to_hole_boundary", print_to_hole_boundary),
+            ("after_hole_to_print_boundary", hole_to_print_boundary),
+        ),
+        max_steps=max_steps,
+        out_dir=out_dir,
+        expected_terminal=False,
+        visual_limits=(
+            "gray64 sees the boundary bodies emitted when the PrintManager "
+            "switches printing off and on; random gap distances and hidden "
+            "manager state are outside this visual tensor"
+        ),
+    )
+
+
+def _run_lifecycle_survivor_score_2p_next_round_visual_stress(
+    *,
+    max_steps: int | None,
+    out_dir: Path | None,
+) -> dict[str, Any]:
+    source_env, vector_env = _manual_2p_stress_env(
+        positions=((20.591, 44.0), (87.0, 44.0)),
+        headings=(np.pi, 0.0),
+        episode_end_mode="match",
+        max_score=10,
+    )
+    vector_env.decision_ms = 100.0
+
+    def end_round() -> tuple[Mapping[str, Any], Any]:
+        source_snapshot = source_env.step((0, 0), elapsed_ms=100.0)
+        batch = vector_env.step(np.asarray([[1, 1]], dtype=np.int16))
+        return source_snapshot, batch
+
+    def move_survivor_during_warmdown() -> tuple[Mapping[str, Any], Any]:
+        source_env.now_ms = 1150.0
+        source_env._update_game(1150.0, require_in_round=False)  # noqa: SLF001
+        source_snapshot = source_env.snapshot("after_explicit_warmdown_frame")
+        batch = vector_env.advance_warmdown_frame(
+            np.asarray([[1, -1]], dtype=np.int16),
+            elapsed_ms=1150.0,
+        )
+        return source_snapshot, batch
+
+    return _run_programmatic_stress_case(
+        scenario_id="source_lifecycle_survivor_score_2p_warmdown_visual_stress",
+        source_env=source_env,
+        vector_env=vector_env,
+        steps=(
+            ("after_survivor_round_end", end_round),
+            ("after_warmdown_survivor_wall_death", move_survivor_during_warmdown),
+        ),
+        max_steps=max_steps,
+        out_dir=out_dir,
+        expected_terminal=False,
+        visual_limits=(
+            "gray64 shows survivor movement/death during an explicit warmdown "
+            "frame; next-round RNG/reset, event order, and score carry remain "
+            "protected by source/public lifecycle tests"
+        ),
+    )
+
+
+def _run_bonus_game_borderless_expiry_then_wall_death_visual_stress(
+    *,
+    max_steps: int | None,
+    out_dir: Path | None,
+) -> dict[str, Any]:
+    source_env, vector_env = _manual_2p_stress_env(
+        positions=((20.0, 20.0), (70.0, 70.0)),
+        headings=(0.0, 0.0),
+        active_bonus={"type": "BonusGameBorderless", "x": 20.0, "y": 20.0},
+    )
+
+    def catch_bonus() -> tuple[Mapping[str, Any], Any]:
+        return _step_stress_pair(source_env, vector_env, step_ms=0.0)
+
+    def expire_borderless() -> tuple[Mapping[str, Any], Any]:
+        return _step_stress_pair(
+            source_env,
+            vector_env,
+            step_ms=0.0,
+            timer_advance_ms=10_000.0,
+        )
+
+    def later_wall_death() -> tuple[Mapping[str, Any], Any]:
+        _set_stress_avatar_state(
+            source_env,
+            vector_env,
+            player_index=0,
+            x=0.3,
+            y=20.0,
+            angle=np.pi,
+        )
+        return _step_stress_pair(source_env, vector_env, step_ms=0.0)
+
+    return _run_programmatic_stress_case(
+        scenario_id="source_bonus_game_borderless_expiry_then_wall_death_visual_stress",
+        source_env=source_env,
+        vector_env=vector_env,
+        steps=(
+            ("after_bonus_game_borderless_catch", catch_bonus),
+            ("after_bonus_game_borderless_expiry", expire_borderless),
+            ("after_post_expiry_wall_death", later_wall_death),
+        ),
+        max_steps=max_steps,
+        out_dir=out_dir,
+        expected_terminal=True,
+        visual_limits=(
+            "gray64 does not encode the game borderless flag or game bonus "
+            "stack; it only exposes the later normal-wall death once the "
+            "source/vector states have applied expiry"
+        ),
+    )
+
+
+def _run_bonus_game_clear_clears_future_collision_body_visual_stress(
+    *,
+    max_steps: int | None,
+    out_dir: Path | None,
+) -> dict[str, Any]:
+    source_env, vector_env = _manual_2p_stress_env(
+        positions=((20.0, 20.0), (70.0, 70.0)),
+        headings=(0.0, 0.0),
+        active_bonus={"type": "BonusGameClear", "x": 20.0, "y": 20.0},
+        world_bodies=(
+            {"owner_id": 2, "x": 25.0, "y": 20.0, "radius": 1.2, "num": 0},
+        ),
+    )
+
+    def catch_bonus_and_clear_body() -> tuple[Mapping[str, Any], Any]:
+        return _step_stress_pair(source_env, vector_env, step_ms=0.0)
+
+    def probe_cleared_collision_site() -> tuple[Mapping[str, Any], Any]:
+        _set_stress_avatar_state(
+            source_env,
+            vector_env,
+            player_index=0,
+            x=25.0,
+            y=20.0,
+            angle=0.0,
+        )
+        return _step_stress_pair(source_env, vector_env, step_ms=0.0)
+
+    return _run_programmatic_stress_case(
+        scenario_id="source_bonus_game_clear_clears_future_collision_body_visual_stress",
+        source_env=source_env,
+        vector_env=vector_env,
+        steps=(
+            ("after_bonus_game_clear_catch", catch_bonus_and_clear_body),
+            ("after_cleared_body_collision_probe", probe_cleared_collision_site),
+        ),
+        max_steps=max_steps,
+        out_dir=out_dir,
+        expected_terminal=False,
+        visual_limits=(
+            "gray64 shows the seeded body disappearing and the later live head, "
+            "but it does not encode the BonusGameClear event or bonus identity "
+            "after the map bonus is caught"
+        ),
+    )
+
+
+def _run_programmatic_stress_case(
+    *,
+    scenario_id: str,
+    source_env: CurvyTronSourceEnv,
+    vector_env: VectorMultiplayerEnv,
+    steps: Sequence[tuple[str, Callable[[], tuple[Mapping[str, Any], Any]]]],
+    max_steps: int | None,
+    out_dir: Path | None,
+    expected_terminal: bool,
+    visual_limits: str,
+) -> dict[str, Any]:
+    selected_steps = list(steps)
+    if max_steps is not None:
+        selected_steps = selected_steps[: int(max_steps)]
+
+    rows: list[dict[str, Any]] = []
+    max_abs_diff = 0
+    mismatch_pixels_total = 0
+    first_mismatch: dict[str, Any] | None = None
+
+    def compare(
+        label: str,
+        tick: int,
+        source_snapshot: Mapping[str, Any],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        nonlocal first_mismatch
+        nonlocal max_abs_diff
+        nonlocal mismatch_pixels_total
+        source_frame = render_source_snapshot_gray64(
+            source_snapshot,
+            world_bodies=source_env.world_bodies_snapshot(),
+            bonus_bodies=source_env.bonus_bodies_snapshot(),
+            avatar_body_metadata=source_env.avatar_body_metadata_snapshot(),
+        )
+        vector_frame = render_source_state_gray64(vector_env.state)
+        diff = np.abs(
+            source_frame.astype(np.int16, copy=False)
+            - vector_frame.astype(np.int16, copy=False)
+        )
+        row_max = int(diff.max())
+        row_mismatches = int(np.count_nonzero(diff))
+        max_abs_diff = max(max_abs_diff, row_max)
+        mismatch_pixels_total += row_mismatches
+        if row_mismatches and first_mismatch is None:
+            yx = np.argwhere(diff[0] != 0)[0]
+            first_mismatch = {
+                "label": label,
+                "tick": int(tick),
+                "channel": 0,
+                "y": int(yx[0]),
+                "x": int(yx[1]),
+                "source": int(source_frame[0, yx[0], yx[1]]),
+                "vector": int(vector_frame[0, yx[0], yx[1]]),
+            }
+        rows.append(
+            {
+                "label": label,
+                "tick": int(tick),
+                "source_nonzero_pixels": int(np.count_nonzero(source_frame)),
+                "vector_nonzero_pixels": int(np.count_nonzero(vector_frame)),
+                "max_abs_diff": row_max,
+                "mismatch_pixels": row_mismatches,
+            }
+        )
+        return source_frame, vector_frame
+
+    reset_source_frame, reset_vector_frame = compare(
+        "after_programmatic_stress_setup",
+        0,
+        source_env.snapshot("after_programmatic_stress_setup"),
+    )
+    final_source_frame = reset_source_frame
+    final_vector_frame = reset_vector_frame
+    terminal_seen = False
+    for index, (label, step_fn) in enumerate(selected_steps):
+        source_snapshot, batch = step_fn()
+        final_source_frame, final_vector_frame = compare(label, index + 1, source_snapshot)
+        if bool(batch.done[0]):
+            terminal_seen = True
+            break
+
+    if out_dir is not None:
+        scenario_out_dir = out_dir / scenario_id
+        scenario_out_dir.mkdir(parents=True, exist_ok=True)
+        _write_pgm(scenario_out_dir / "reset_source.pgm", reset_source_frame)
+        _write_pgm(scenario_out_dir / "reset_vector.pgm", reset_vector_frame)
+        _write_pgm(scenario_out_dir / "final_source.pgm", final_source_frame)
+        _write_pgm(scenario_out_dir / "final_vector.pgm", final_vector_frame)
+        _write_pgm(
+            scenario_out_dir / "final_absdiff.pgm",
+            np.abs(
+                final_source_frame.astype(np.int16, copy=False)
+                - final_vector_frame.astype(np.int16, copy=False)
+            ).astype(np.uint8),
+        )
+
+    return {
+        "schema_id": SCHEMA_ID,
+        "scenario_id": scenario_id,
+        "scenario_path": None,
+        "comparison_kind": "programmatic_source_snapshot_stress",
+        "source_arena_size": int(source_env.snapshot("report")["game"]["size"]),
+        "raw_observation_schema_id": SOURCE_STATE_GRAY64_SCHEMA_ID,
+        "raw_observation_shape": list(SOURCE_STATE_GRAY64_SHAPE),
+        "raw_observation_dtype": "uint8",
+        "renderer_impl_id": SOURCE_STATE_GRAY64_RENDERER_IMPL_ID,
+        "browser_canvas_pixel_fidelity": SOURCE_STATE_GRAY64_BROWSER_PIXEL_FIDELITY,
+        "source_runner": "CurvyTronSourceEnv",
+        "source_runner_claim": (
+            "Python source-shaped env snapshot stress case; not browser canvas"
+        ),
+        "original_js_reset_check": None,
+        "steps_requested": len(selected_steps),
+        "frames_compared": len(rows),
+        "terminal_seen": terminal_seen,
+        "expected_terminal": expected_terminal,
+        "match": max_abs_diff == 0 and mismatch_pixels_total == 0,
+        "max_abs_diff": max_abs_diff,
+        "mismatch_pixels": mismatch_pixels_total,
+        "first_mismatch": first_mismatch,
+        "visual_limits": visual_limits,
+        "frames": rows,
+    }
+
+
+def _manual_2p_stress_env(
+    *,
+    positions: Sequence[tuple[float, float]],
+    headings: Sequence[float],
+    active_bonus: Mapping[str, Any] | None = None,
+    world_bodies: Sequence[Mapping[str, Any]] = (),
+    borderless: bool = False,
+    episode_end_mode: str = "round",
+    max_score: int = 10,
+) -> tuple[CurvyTronSourceEnv, VectorMultiplayerEnv]:
+    players = [
+        {
+            "id": f"p{index}",
+            "client_id": f"p{index}-client",
+            "avatar_id": index + 1,
+            "name": f"p{index}",
+            "color": "#ff0000" if index == 0 else "#00ff00",
+            "initial": {
+                "x": float(position[0]),
+                "y": float(position[1]),
+                "angle_rad": float(headings[index]),
+                "printing": False,
+            },
+        }
+        for index, position in enumerate(positions)
+    ]
+    source_env = CurvyTronSourceEnv(
+        random_constant=0.5,
+        max_score=float(max_score),
+        include_deaths_snapshot=True,
+        include_bonus_snapshot=True,
+    )
+    source_env.reset(
+        player_count=2,
+        players=players,
+        warmup_ms=0.0,
+        borderless=borderless,
+        bonus_types=[],
+        bonus_rate=0.0,
+    )
+    source_env.advance_timers(0.0)
+    if source_env.game is None or source_env.game.world is None:
+        raise RuntimeError("manual stress source env did not create a world")
+    source_env.game.print_start_due_ms = None
+    source_env.game.bonus_pop_due_ms = None
+    source_env.game.started = True
+    source_env.game.in_round = True
+    source_env.game.world_active = True
+    source_env.game.world.activate()
+    for index, position in enumerate(positions):
+        avatar = source_env.set_avatar_state(
+            index + 1,
+            x=float(position[0]),
+            y=float(position[1]),
+            angle=float(headings[index]),
+        )
+        avatar.printing = False
+        avatar.print_manager.clear()
+    for body in world_bodies:
+        _seed_source_body(
+            source_env,
+            owner_id=int(body["owner_id"]),
+            x=float(body["x"]),
+            y=float(body["y"]),
+            radius=float(body["radius"]),
+            num=int(body.get("num", 0)),
+        )
+    if active_bonus is not None:
+        source_env.seed_active_bonus(
+            str(active_bonus["type"]),
+            x=float(active_bonus["x"]),
+            y=float(active_bonus["y"]),
+        )
+    source_env.events.clear()
+    source_env.random.calls.clear()
+
+    vector_env = VectorMultiplayerEnv(
+        batch_size=1,
+        player_count=2,
+        decision_ms=1.0,
+        body_capacity=8,
+        event_capacity=16,
+        timer_capacity=4,
+        random_tape_capacity=8,
+        event_mode="debug-event",
+        episode_end_mode=episode_end_mode,
+        max_score=max_score,
+    )
+    vector_env.reset(
+        seed=np.asarray([101], dtype=np.uint64),
+        source_fixture_new_round_time_ms=0.0,
+        source_fixture_warmup_advance_ms=0.0,
+    )
+    vector_env.decision_ms = 0.0
+    state = vector_env.state
+    state["timer_active"][0] = False
+    state["env_active"][0] = True
+    state["started"][0] = True
+    state["in_round"][0] = True
+    state["done"][0] = False
+    state["terminated"][0] = False
+    state["truncated"][0] = False
+    state["world_active"][0] = True
+    state["borderless"][0] = bool(borderless)
+    state["alive"][0] = True
+    state["present"][0] = True
+    state["pos"][0] = np.asarray(positions, dtype=np.float64)
+    state["prev_pos"][0] = state["pos"][0]
+    state["heading"][0] = np.asarray(headings, dtype=np.float64)
+    state["printing"][0] = False
+    state["print_manager_active"][0] = False
+    state["print_manager_distance"][0] = 0.0
+    state["print_manager_last_pos"][0] = state["pos"][0]
+    state["has_draw_cursor"][0] = False
+    state["draw_cursor_pos"][0] = 0.0
+    state["body_active"][0] = False
+    state["body_pos"][0] = 0.0
+    state["body_radius"][0] = 0.0
+    state["body_owner"][0] = -1
+    state["body_num"][0] = -1
+    state["body_insert_tick"][0] = -1
+    state["body_insert_kind"][0] = -1
+    state["body_write_cursor"][0] = 0
+    state["world_body_count"][0] = 0
+    state["body_count"][0] = 0
+    state["live_body_num"][0] = 0
+    for slot, body in enumerate(world_bodies):
+        _seed_vector_world_body(
+            vector_env,
+            slot=slot,
+            owner_index=int(body["owner_id"]) - 1,
+            x=float(body["x"]),
+            y=float(body["y"]),
+            radius=float(body["radius"]),
+            num=int(body.get("num", 0)),
+        )
+    if active_bonus is not None:
+        vector_env.seed_active_bonus(
+            row=0,
+            bonus_type=str(active_bonus["type"]),
+            x=float(active_bonus["x"]),
+            y=float(active_bonus["y"]),
+        )
+    return source_env, vector_env
+
+
+def _step_stress_pair(
+    source_env: CurvyTronSourceEnv,
+    vector_env: VectorMultiplayerEnv,
+    *,
+    step_ms: float,
+    timer_advance_ms: float = 0.0,
+    source_moves: Sequence[int] = (0, 0),
+) -> tuple[Mapping[str, Any], Any]:
+    source_env.advance_timers(timer_advance_ms)
+    source_snapshot = source_env.step(source_moves, elapsed_ms=step_ms)
+    vector_env.decision_ms = float(step_ms)
+    batch = vector_env.step(
+        np.asarray([[move + 1 for move in source_moves]], dtype=np.int16),
+        timer_advance_ms=float(timer_advance_ms),
+    )
+    return source_snapshot, batch
+
+
+def _set_stress_avatar_state(
+    source_env: CurvyTronSourceEnv,
+    vector_env: VectorMultiplayerEnv,
+    *,
+    player_index: int,
+    x: float,
+    y: float,
+    angle: float,
+) -> None:
+    source_env.set_avatar_state(player_index + 1, x=float(x), y=float(y), angle=float(angle))
+    state = vector_env.state
+    state["pos"][0, player_index] = np.asarray([float(x), float(y)], dtype=np.float64)
+    state["prev_pos"][0, player_index] = state["pos"][0, player_index]
+    state["heading"][0, player_index] = float(angle)
+    state["print_manager_last_pos"][0, player_index] = state["pos"][0, player_index]
+
+
+def _set_stress_avatar_printing(
+    source_env: CurvyTronSourceEnv,
+    vector_env: VectorMultiplayerEnv,
+    *,
+    player_index: int,
+    printing: bool,
+    last_x: float,
+    last_y: float,
+) -> None:
+    avatar = source_env.avatar_by_id(player_index + 1)
+    avatar.printing = bool(printing)
+    avatar.print_manager.active = False
+    avatar.print_manager.distance = 999_999.0
+    avatar.print_manager.last_x = float(last_x)
+    avatar.print_manager.last_y = float(last_y)
+    avatar.trail_point_count = 1
+    avatar.trail_last_x = float(last_x)
+    avatar.trail_last_y = float(last_y)
+    state = vector_env.state
+    state["printing"][0, player_index] = bool(printing)
+    state["print_manager_active"][0, player_index] = False
+    state["print_manager_distance"][0, player_index] = 999_999.0
+    state["print_manager_last_pos"][0, player_index] = (float(last_x), float(last_y))
+    state["body_count"][0, player_index] = 1
+    state["live_body_num"][0, player_index] = 1
+    state["visible_trail_count"][0, player_index] = 1
+    state["has_visible_trail_last"][0, player_index] = True
+    state["visible_trail_last_pos"][0, player_index] = (float(last_x), float(last_y))
+
+
+def _set_stress_print_manager(
+    source_env: CurvyTronSourceEnv,
+    vector_env: VectorMultiplayerEnv,
+    *,
+    player_index: int,
+    active: bool,
+    distance: float,
+    last_x: float,
+    last_y: float,
+) -> None:
+    avatar = source_env.avatar_by_id(player_index + 1)
+    avatar.print_manager.active = bool(active)
+    avatar.print_manager.distance = float(distance)
+    avatar.print_manager.last_x = float(last_x)
+    avatar.print_manager.last_y = float(last_y)
+    state = vector_env.state
+    state["print_manager_active"][0, player_index] = bool(active)
+    state["print_manager_distance"][0, player_index] = float(distance)
+    state["print_manager_last_pos"][0, player_index] = (float(last_x), float(last_y))
+
+
+def _set_stress_body_counters(
+    source_env: CurvyTronSourceEnv,
+    vector_env: VectorMultiplayerEnv,
+    *,
+    player_index: int,
+    body_count: int,
+) -> None:
+    avatar = source_env.avatar_by_id(player_index + 1)
+    avatar.body_count = int(body_count)
+    avatar.body_num = int(body_count)
+    state = vector_env.state
+    state["body_count"][0, player_index] = int(body_count)
+    state["live_body_num"][0, player_index] = int(body_count)
+
+
+def _seed_vector_world_body(
+    env: VectorMultiplayerEnv,
+    *,
+    slot: int,
+    owner_index: int,
+    x: float,
+    y: float,
+    radius: float,
+    num: int,
+) -> None:
+    state = env.state
+    state["body_active"][0, slot] = True
+    state["body_pos"][0, slot] = (float(x), float(y))
+    state["body_radius"][0, slot] = float(radius)
+    state["body_owner"][0, slot] = int(owner_index)
+    state["body_num"][0, slot] = int(num)
+    state["body_insert_tick"][0, slot] = int(state["tick"][0])
+    state["body_insert_kind"][0, slot] = vector_runtime.BODY_KIND_NORMAL
+    state["body_write_cursor"][0] = max(int(state["body_write_cursor"][0]), slot + 1)
+    state["world_body_count"][0] = int(state["body_active"][0].sum())
+    state["body_count"][0, owner_index] = max(
+        int(state["body_count"][0, owner_index]),
+        int(num) + 1,
+    )
+
+
+def _single_frame_visual_report(
+    *,
+    report_id: str,
+    comparison_kind: str,
+    source_env: CurvyTronSourceEnv,
+    vector_env: VectorMultiplayerEnv,
+    label: str,
+    extra: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    source_snapshot = source_env.snapshot(label)
+    source_frame = render_source_snapshot_gray64(
+        source_snapshot,
+        world_bodies=source_env.world_bodies_snapshot(),
+        bonus_bodies=source_env.bonus_bodies_snapshot(),
+        avatar_body_metadata=source_env.avatar_body_metadata_snapshot(),
+    )
+    vector_frame = render_source_state_gray64(vector_env.state)
+    diff = np.abs(
+        source_frame.astype(np.int16, copy=False)
+        - vector_frame.astype(np.int16, copy=False)
+    )
+    max_abs_diff = int(diff.max())
+    mismatch_pixels = int(np.count_nonzero(diff))
+    first_mismatch = None
+    if mismatch_pixels:
+        yx = np.argwhere(diff[0] != 0)[0]
+        first_mismatch = {
+            "label": label,
+            "tick": 0,
+            "channel": 0,
+            "y": int(yx[0]),
+            "x": int(yx[1]),
+            "source": int(source_frame[0, yx[0], yx[1]]),
+            "vector": int(vector_frame[0, yx[0], yx[1]]),
+        }
+    report = {
+        "schema_id": SCHEMA_ID,
+        "scenario_id": report_id,
+        "scenario_path": None,
+        "comparison_kind": comparison_kind,
+        "source_arena_size": int(source_env.snapshot("report")["game"]["size"]),
+        "raw_observation_schema_id": SOURCE_STATE_GRAY64_SCHEMA_ID,
+        "raw_observation_shape": list(SOURCE_STATE_GRAY64_SHAPE),
+        "raw_observation_dtype": "uint8",
+        "renderer_impl_id": SOURCE_STATE_GRAY64_RENDERER_IMPL_ID,
+        "browser_canvas_pixel_fidelity": SOURCE_STATE_GRAY64_BROWSER_PIXEL_FIDELITY,
+        "source_runner": "CurvyTronSourceEnv",
+        "source_runner_claim": (
+            "Python source-shaped env snapshot canary; not browser canvas"
+        ),
+        "steps_requested": 0,
+        "frames_compared": 1,
+        "terminal_seen": False,
+        "match": max_abs_diff == 0 and mismatch_pixels == 0,
+        "max_abs_diff": max_abs_diff,
+        "mismatch_pixels": mismatch_pixels,
+        "first_mismatch": first_mismatch,
+        "frames": (
+            {
+                "label": label,
+                "tick": 0,
+                "source_nonzero_pixels": int(np.count_nonzero(source_frame)),
+                "vector_nonzero_pixels": int(np.count_nonzero(vector_frame)),
+                "max_abs_diff": max_abs_diff,
+                "mismatch_pixels": mismatch_pixels,
+            },
+        ),
+    }
+    if extra is not None:
+        report.update(dict(extra))
+    return report
+
+
+def _run_typed_bonus_visual_status_case(bonus_type: str) -> dict[str, Any]:
+    active_source_env, active_vector_env = _manual_2p_stress_env(
+        positions=((20.0, 20.0), (70.0, 70.0)),
+        headings=(0.0, 0.0),
+        active_bonus={"type": bonus_type, "x": 44.0, "y": 44.0},
+    )
+    source_mask, source_type = _source_bonus64_mask_type_planes(active_source_env)
+    vector_tensor = render_source_state_bonus64_stack4_player_perspective_v1(
+        active_vector_env.state,
+        controlled_player=0,
+    )
+    vector_mask = vector_tensor[SOURCE_STATE_BONUS64_STACK4_BONUS_MASK_CHANNEL]
+    vector_type = vector_tensor[SOURCE_STATE_BONUS64_STACK4_BONUS_TYPE_CHANNEL]
+    first_mismatch: dict[str, Any] | None = None
+    map_max_abs_diff = 0.0
+    map_mismatch_pixels = 0
+    for channel, source_plane, vector_plane in (
+        (SOURCE_STATE_BONUS64_STACK4_BONUS_MASK_CHANNEL, source_mask, vector_mask),
+        (SOURCE_STATE_BONUS64_STACK4_BONUS_TYPE_CHANNEL, source_type, vector_type),
+    ):
+        diff = np.abs(source_plane.astype(np.float32, copy=False) - vector_plane)
+        mismatch = diff > np.float32(1e-6)
+        map_max_abs_diff = max(map_max_abs_diff, float(diff.max()))
+        map_mismatch_pixels += int(np.count_nonzero(mismatch))
+        if bool(mismatch.any()) and first_mismatch is None:
+            yx = np.argwhere(mismatch)[0]
+            first_mismatch = {
+                "label": "after_active_typed_bonus_setup",
+                "tick": 0,
+                "channel": int(channel),
+                "y": int(yx[0]),
+                "x": int(yx[1]),
+                "source": float(source_plane[yx[0], yx[1]]),
+                "vector": float(vector_plane[yx[0], yx[1]]),
+            }
+
+    status_source_env, status_vector_env = _manual_2p_stress_env(
+        positions=((20.0, 20.0), (70.0, 70.0)),
+        headings=(0.0, 0.0),
+        active_bonus={"type": bonus_type, "x": 20.0, "y": 20.0},
+    )
+    _step_stress_pair(status_source_env, status_vector_env, step_ms=0.0)
+    status_tensor = render_source_state_bonus64_stack4_player_perspective_v1(
+        status_vector_env.state,
+        controlled_player=0,
+    )
+    status_values = _source_bonus64_status_channel_values(
+        status_source_env,
+        controlled_player=0,
+    )
+    status_max_abs_diff = 0.0
+    status_mismatch_pixels = 0
+    for channel, source_value in status_values.items():
+        vector_plane = status_tensor[channel]
+        source_plane = np.full((64, 64), np.float32(source_value), dtype=np.float32)
+        diff = np.abs(source_plane - vector_plane)
+        mismatch = diff > np.float32(1e-6)
+        status_max_abs_diff = max(status_max_abs_diff, float(diff.max()))
+        status_mismatch_pixels += int(np.count_nonzero(mismatch))
+        if bool(mismatch.any()) and first_mismatch is None:
+            yx = np.argwhere(mismatch)[0]
+            first_mismatch = {
+                "label": "after_typed_bonus_catch",
+                "tick": 1,
+                "channel": int(channel),
+                "y": int(yx[0]),
+                "x": int(yx[1]),
+                "source": float(source_plane[yx[0], yx[1]]),
+                "vector": float(vector_plane[yx[0], yx[1]]),
+            }
+
+    max_abs_diff = max(map_max_abs_diff, status_max_abs_diff)
+    mismatch_pixels = map_mismatch_pixels + status_mismatch_pixels
+    bonus_records = active_source_env.bonus_bodies_snapshot()
+    if len(bonus_records) != 1:
+        raise RuntimeError("typed bonus gate expected exactly one source bonus")
+    bonus_record = bonus_records[0]
+    map_size = float(active_source_env.snapshot("report")["game"]["size"])
+    px = int(
+        np.clip(
+            np.rint((float(bonus_record["x"]) / map_size) * 63.0),
+            0,
+            63,
+        )
+    )
+    py = int(
+        np.clip(
+            np.rint((float(bonus_record["y"]) / map_size) * 63.0),
+            0,
+            63,
+        )
+    )
+    bonus_type_code = _bonus_type_code(str(bonus_record["type"]))
+    expected_type_value = float(
+        np.float32(bonus_type_code)
+        / np.float32(SOURCE_STATE_BONUS64_STACK4_MAX_BONUS_TYPE_CODE)
+    )
+    return {
+        "schema_id": f"{SCHEMA_ID}_bonus64_typed_case",
+        "scenario_id": f"{TYPED_BONUS_VISUAL_STATUS_GATE_ID}:{bonus_type}",
+        "scenario_path": None,
+        "comparison_kind": "typed_bonus_visual_status_case",
+        "source_arena_size": int(map_size),
+        "visual_observation_schema_id": SOURCE_STATE_BONUS64_STACK4_PLAYER_PERSPECTIVE_SCHEMA_ID,
+        "bonus_type": bonus_type,
+        "bonus_type_code": bonus_type_code,
+        "center": {"y": py, "x": px},
+        "source_mask_at_center": float(source_mask[py, px]),
+        "vector_mask_at_center": float(vector_mask[py, px]),
+        "source_type_at_center": float(source_type[py, px]),
+        "vector_type_at_center": float(vector_type[py, px]),
+        "expected_type_at_center": expected_type_value,
+        "match": max_abs_diff <= 1e-6 and mismatch_pixels == 0,
+        "max_abs_diff": max_abs_diff,
+        "mismatch_pixels": mismatch_pixels,
+        "map_type_max_abs_diff": map_max_abs_diff,
+        "map_type_mismatch_pixels": map_mismatch_pixels,
+        "status_max_abs_diff": status_max_abs_diff,
+        "status_mismatch_pixels": status_mismatch_pixels,
+        "first_mismatch": first_mismatch,
+        "frames_compared": 2,
+        "planes_compared": (
+            SOURCE_STATE_BONUS64_STACK4_BONUS_MASK_CHANNEL,
+            SOURCE_STATE_BONUS64_STACK4_BONUS_TYPE_CHANNEL,
+            *status_values.keys(),
+        ),
+    }
+
+
+def _source_bonus64_mask_type_planes(
+    source_env: CurvyTronSourceEnv,
+) -> tuple[np.ndarray, np.ndarray]:
+    snapshot = source_env.snapshot("source_bonus64")
+    map_size = float(snapshot["game"]["size"])
+    mask_plane = np.zeros((64, 64), dtype=np.float32)
+    type_plane = np.zeros((64, 64), dtype=np.float32)
+    winners = np.full((64, 64), -1, dtype=np.int32)
+    for fallback_slot, bonus in enumerate(source_env.bonus_bodies_snapshot()):
+        mask_info = _source_bonus64_world_circle_patch_mask(
+            float(bonus["x"]),
+            float(bonus["y"]),
+            float(bonus["radius"]),
+            map_size,
+        )
+        if mask_info is None:
+            continue
+        y_slice, x_slice, circle_mask = mask_info
+        slot_id = int(bonus.get("id", fallback_slot + 1))
+        patch_winners = winners[y_slice, x_slice]
+        replace = circle_mask & (slot_id >= patch_winners)
+        if not bool(replace.any()):
+            continue
+        patch_winners[replace] = slot_id
+        mask_plane[y_slice, x_slice][replace] = 1.0
+        code = _bonus_type_code(str(bonus["type"]))
+        type_plane[y_slice, x_slice][replace] = (
+            np.float32(code)
+            / np.float32(SOURCE_STATE_BONUS64_STACK4_MAX_BONUS_TYPE_CODE)
+        )
+    return mask_plane, type_plane
+
+
+def _source_bonus64_status_channel_values(
+    source_env: CurvyTronSourceEnv,
+    *,
+    controlled_player: int,
+) -> dict[int, float]:
+    player_count = len(source_env.avatars)
+    controlled = int(controlled_player)
+    if controlled < 0 or controlled >= player_count:
+        raise ValueError("controlled_player is outside the source avatar range")
+    other = 1 - controlled if player_count == 2 else _first_other_player(controlled, player_count)
+    values: dict[int, float] = {}
+    for channels, player in (
+        (SOURCE_STATE_BONUS64_STACK4_SELF_STATUS_CHANNELS, controlled),
+        (SOURCE_STATE_BONUS64_STACK4_OTHER_STATUS_CHANNELS, other),
+    ):
+        player_values = _source_bonus64_player_status_values(source_env, player)
+        for channel, value in zip(channels, player_values, strict=True):
+            values[int(channel)] = float(value)
+
+    game = source_env.game
+    values[SOURCE_STATE_BONUS64_STACK4_GAME_BORDERLESS_CHANNEL] = (
+        1.0 if game is not None and bool(game.borderless) else 0.0
+    )
+    game_bonuses = () if game is None else tuple(game.active_bonuses)
+    values[SOURCE_STATE_BONUS64_STACK4_GAME_TTL_CHANNEL] = _source_bonus64_ttl_value(
+        bonus.duration for bonus in game_bonuses
+    )
+    return values
+
+
+def _source_bonus64_player_status_values(
+    source_env: CurvyTronSourceEnv,
+    player: int,
+) -> tuple[float, float, float, float, float, float, float]:
+    avatar = source_env.avatars[int(player)]
+    reference = source_env.reference
+    radius = _source_bonus64_ratio_value(
+        avatar.radius,
+        reference.avatar_radius,
+        scale=4.0,
+    )
+    speed = _source_bonus64_ratio_value(
+        avatar.velocity,
+        reference.avatar_velocity_units_per_s,
+        scale=2.0,
+    )
+    turn_override = (
+        (not bool(avatar.direction_in_loop))
+        or not np.isclose(
+            float(avatar.angular_velocity_base),
+            float(reference.angular_velocity_radians_per_ms),
+        )
+    )
+    ttl = _source_bonus64_ttl_value(bonus.duration for bonus in avatar.active_bonuses)
+    return (
+        radius,
+        speed,
+        1.0 if bool(avatar.inverse) else 0.0,
+        1.0 if turn_override else 0.0,
+        1.0 if bool(avatar.invincible) else 0.0,
+        1.0 if bool(avatar.printing) else 0.0,
+        ttl,
+    )
+
+
+def _source_bonus64_ratio_value(value: float, base: float, *, scale: float) -> float:
+    value_float = float(value)
+    base_float = float(base)
+    if not np.isfinite(value_float) or not np.isfinite(base_float) or base_float <= 0.0:
+        return 0.0
+    return float(np.clip(value_float / base_float, 0.0, scale) / scale)
+
+
+def _source_bonus64_ttl_value(durations: Any) -> float:
+    values = np.asarray(tuple(durations), dtype=np.float64)
+    if values.size == 0:
+        return 0.0
+    return float(
+        np.clip(
+            np.nanmax(values),
+            0.0,
+            SOURCE_STATE_BONUS64_STACK4_MAX_TTL_MS,
+        )
+        / SOURCE_STATE_BONUS64_STACK4_MAX_TTL_MS
+    )
+
+
+def _first_other_player(controlled: int, player_count: int) -> int:
+    for player in range(player_count):
+        if player != controlled:
+            return player
+    return controlled
+
+
+def _source_bonus64_world_circle_patch_mask(
+    x: float,
+    y: float,
+    radius: float,
+    map_size: float,
+) -> tuple[slice, slice, np.ndarray] | None:
+    if not np.isfinite(x) or not np.isfinite(y) or not np.isfinite(radius):
+        return None
+    if x + radius <= 0.0 or x - radius >= map_size:
+        return None
+    if y + radius <= 0.0 or y - radius >= map_size:
+        return None
+    radius_px = int(max(0, np.ceil((radius / map_size) * 64.0)))
+    px = int(np.clip(np.rint((x / map_size) * 63.0), 0, 63))
+    py = int(np.clip(np.rint((y / map_size) * 63.0), 0, 63))
+    if radius_px == 0:
+        return slice(py, py + 1), slice(px, px + 1), np.ones((1, 1), dtype=bool)
+    x0 = max(0, px - radius_px)
+    x1 = min(63, px + radius_px)
+    y0 = max(0, py - radius_px)
+    y1 = min(63, py + radius_px)
+    yy, xx = np.ogrid[y0 : y1 + 1, x0 : x1 + 1]
+    circle_mask = (xx - px) ** 2 + (yy - py) ** 2 <= radius_px**2
+    return slice(y0, y1 + 1), slice(x0, x1 + 1), circle_mask
 
 
 def _run_natural_bonus_spawn_comparison(

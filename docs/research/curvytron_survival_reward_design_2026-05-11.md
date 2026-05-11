@@ -2,10 +2,27 @@
 
 ## Short Answer
 
-Immediate note: shared `+1 per survived step` is acceptable as a short-term
-diagnostic while the training plumbing is still being proven. It is not the
-main blocker today. When using it, log shaped survival and sparse outcome
-separately so a long loss is not mistaken for a real win-rate improvement.
+Clarified rule: survival length is always an eval/telemetry metric. Trainer
+reward is separate. The first CurvyTron reward comparison should test two
+labeled trainer reward variants, with neither treated as settled:
+
+- `sparse_outcome`: game outcome reward only.
+- `dense_survival_plus_outcome`: sparse outcome plus a dense survival helper
+  for longer horizons.
+
+When using the dense helper, log trainer reward, sparse outcome, and survival
+length separately so a long loss is not mistaken for a real outcome
+improvement.
+
+Eval/progress survival is episode length. A reward variant or target profile
+stored with a model/checkpoint only helps reconstruct the checkpoint's model and
+target shape; it does not define the eval score.
+
+Keep this on the stock LightZero `train_muzero` path. The current CurvyTron
+patch surface should be env/reward hooks plus eval telemetry, not hidden trainer
+changes. Modal smokes for both first reward variants passed on the stock
+`train_muzero` path, and the omitted reward default now resolves to
+`sparse_outcome`.
 
 Do not make `+1 per survived step` plus `+episode_length` winner bonus the
 default objective. It is simple, but it makes both agents share a large survival
@@ -18,9 +35,10 @@ win at T=40  -> winner return 80
 loss at T=100 -> loser return 100
 ```
 
-That is the wrong default for "survive longer than the opponent." Use a
-competitive outcome-dominant reward first. If sparse reward is too hard, test a
-small bounded survival auxiliary that cannot outrank winning.
+That is the wrong default for "survive longer than the opponent." Keep the
+first comparison to the two explicit variants above. If the dense helper is
+used, bound or normalize it so horizon length does not silently dominate the
+game outcome.
 
 ## Stale Claims To Reject
 
@@ -32,8 +50,8 @@ small bounded survival auxiliary that cannot outrank winning.
 - Do not apply per-player winner/loser shaping to a one-scalar centralized
   control wrapper unless the wrapper first grows a real per-player target
   surface.
-- Do not promote checkpoints on shaped survival return alone; sparse outcome
-  and shaped survival must stay separate.
+- Do not promote checkpoints on survival length or dense helper return alone;
+  trainer reward, sparse outcome, and survival length must stay separate.
 
 ## Current Repo Status
 
@@ -127,9 +145,9 @@ should keep their documented unmodified shaped-return policy.
 
 ## Unresolved Integration Questions
 
-- Which scalar should stock LightZero optimize first: sparse terminal outcome,
-  bounded alive auxiliary, or anti-stall cost? Do not mix them under the old
-  survival schema id.
+- Which scalar should stock LightZero optimize first: `sparse_outcome` or
+  `dense_survival_plus_outcome`? Treat this as the first experiment, not a
+  settled answer. Do not mix either under the old survival schema id.
 - How should turn-commit credit be represented when LightZero exposes only one
   scalar per `env.step`? The current pending/commit asymmetry can teach seat and
   order artifacts.
@@ -138,20 +156,23 @@ should keep their documented unmodified shaped-return policy.
 - How do bonuses and source lifecycle scoring map into a 1v1 training payoff?
   The first stock LightZero patch should probably keep no-bonus/outcome-only
   semantics, then reintroduce source scoring explicitly.
-- Which metric is allowed to promote checkpoints? Recommendation: sparse
-  outcome only; shaped survival can diagnose and break ties inside an
-  equivalent sparse-outcome band.
+- Which metric is allowed to promote checkpoints? Sparse outcome should stay
+  primary until the eval policy is explicitly changed; survival length can
+  diagnose and possibly break ties inside an equivalent sparse-outcome band.
 
 ## Knobs To Expose
 
 Expose reward selection as explicit run metadata and config. Minimum useful
 knobs:
 
-- `reward_variant`: `sparse_zero_sum_outcome`,
-  `outcome_plus_bounded_alive_aux`, `sparse_outcome_plus_anti_stall`,
-  `survival_diagnostic`.
-- `alive_aux_epsilon`: total episode budget for bounded alive auxiliary; require
-  `0.0 <= epsilon <= 0.25` for the first runs.
+- `reward_variant`: first-run values are `sparse_outcome` and
+  `dense_survival_plus_outcome`. Older names such as
+  `sparse_zero_sum_outcome`, `outcome_plus_bounded_alive_aux`,
+  `sparse_outcome_plus_anti_stall`, and `survival_diagnostic` should be mapped
+  or retired before comparing runs.
+- `alive_aux_epsilon`: total episode budget for the dense survival helper;
+  require `0.0 <= epsilon <= 0.25` for first
+  `dense_survival_plus_outcome` runs.
 - `anti_stall_epsilon`: total episode budget for both-alive time cost; require
   `0.0 <= epsilon <= 0.10` for the first runs.
 - `max_decisions` or derived `max_ticks / decision_ms`: used to normalize any
@@ -166,19 +187,32 @@ knobs:
 
 ## Metrics That Must Stay Separate
 
-Every shaped run should log four separate families, not one blended return:
+Every run should log four separate families, not one blended return:
 
 - Scalar training reward: the exact value passed to LightZero.
 - Sparse outcome reward: win/loss/draw/timeout payoff under the clean
   zero-sum contract, even when not used for training.
-- Survival diagnostics: decisions survived, physical time survived, win/loss
-  conditioned episode length, timeout rate, and p90/max episode length.
+- Survival length diagnostics: decisions survived, physical time survived,
+  win/loss conditioned episode length, timeout rate, and p90/max episode
+  length.
 - Terminal facts: winner ids, loser ids, same-tick deaths, terminal reason,
   death cause/hit owner when available, and seat-swapped rates.
 
 For learner debugging, also log reward/value target min, max, mean, std, and
 support clipping rate separately for scalar training reward and sparse outcome
 return.
+
+Target/support tuning belongs in training config, not in the reward definition.
+If a run changes value/reward support size, support scale, discount, or td
+steps to fit a reward stream, label that as a separate ablation and report it
+next to the reward variant.
+
+Eval is separate from this. Survival eval should score episode length and
+terminal facts. A checkpoint eval may still need the checkpoint's
+`model_reward_variant` to rebuild the LightZero support/model shape, but that is
+load plumbing, not the progress metric.
+Likewise, any checkpoint-side reward variant or target profile is load-shape
+metadata, not an eval-score contract.
 
 ## Evidence
 
@@ -232,15 +266,15 @@ Concrete verdict for the proposed variants:
 
 | Variant | Reward | Verdict |
 | --- | --- | --- |
-| A | Sparse zero-sum terminal only | Best default and promotion metric. Slowest exploration, cleanest objective. |
-| B | Bounded alive auxiliary plus sparse outcome | Acceptable early ablation if total auxiliary mass stays below the win/loss payoff. |
+| A | `sparse_outcome` | First trainer reward candidate: game outcome reward only. Not yet settled. |
+| B | `dense_survival_plus_outcome` | First trainer reward candidate: sparse outcome plus dense survival helper for longer horizons. Not yet settled. |
 | C | Winner keeps survival, loser zero | Useful smoke/debug target, but not the real game payoff and can still overvalue long games. |
 | D | `+T` winner / `-T` loser terminal shaping | Reject as a default: horizon-dependent scale, no policy-invariance guarantee, and easy support/value-scale trouble. |
 | E | Loser keeps partial survival | Reject for competitive training: it explicitly rewards losing later and can mask flat win rate. |
 
-### 1. Sparse Zero-Sum Outcome
+### 1. `sparse_outcome`
 
-Default and promotion metric:
+Game outcome trainer reward only:
 
 ```text
 both alive:              0, 0
@@ -250,12 +284,13 @@ same-tick draw:          0, 0
 time-limit truncation:   0, 0  # logged separately
 ```
 
-This is boring in the best way. It matches the game objective, keeps reward
-scale stable, and makes self-play comparisons cleaner.
+This matches the game objective, keeps reward scale stable, and makes self-play
+comparisons cleaner. It may be slow to explore, so it should be compared
+against the dense-helper variant rather than assumed to be settled.
 
-### 2. Outcome Plus Small Normalized Alive Auxiliary
+### 2. `dense_survival_plus_outcome`
 
-Use only if sparse learning is too slow:
+Sparse outcome plus a dense survival helper for longer horizons:
 
 ```text
 per decision while alive: +epsilon / max_decisions
@@ -263,10 +298,10 @@ terminal:                +1 / -1 / 0
 epsilon:                 0.05 to 0.25
 ```
 
-No episode-length winner bonus. The entire survival bonus over a full episode is
-bounded below the terminal payoff, so a long loss cannot become better than any
-win. This is general-sum and can still encourage stalling, so evaluate and select
-on variant 1 metrics.
+No episode-length winner bonus. Prefer a bounded or normalized helper so value
+scale is not controlled by `max_ticks`. This is a trainer reward variant, while
+survival length remains eval/telemetry. It can still encourage stalling, so log
+terminal causes and timeout rate.
 
 ### 3. Sparse Outcome Plus Anti-Stall Time Cost
 
@@ -313,19 +348,22 @@ contact or suicide if too large, so keep it tiny and compare terminal causes.
 
 ## Recommendation
 
-Do the next stock-LightZero patch in this order:
+Do the next stock-LightZero reward work in this order:
 
 1. Add metadata-only reward accounting to the source-state LightZero runs:
    current scalar reward, sparse outcome reward, reward variant id, epsilon
    fields, timeout/draw convention, and terminal facts.
-2. Add a sparse-outcome reward variant without changing observation or
-   collection topology. Use it as the first real optimization objective.
-3. Add bounded alive auxiliary as a labeled ablation only if sparse learning is
-   flat after the plumbing and eval pipeline are trusted.
-4. Add anti-stall cost only if timeout farming appears in sparse or auxiliary
+2. Add `sparse_outcome` without changing observation or collection topology.
+3. Add `dense_survival_plus_outcome` as a separate labeled trainer reward
+   variant for longer horizons.
+4. Compare both first-run variants with the same eval scorecard. Do not claim
+   either variant is settled from design alone.
+5. Keep target/support changes explicit as training-config ablations, not
+   hidden reward shaping.
+6. Add anti-stall cost only if timeout farming appears in sparse or dense-helper
    runs.
 
-Keep promotion on sparse outcome metrics throughout. Do not test the proposed
+Keep survival length as telemetry throughout. Do not test the proposed
 unbounded `+1/step + T winner bonus` as a serious candidate unless the goal is
 explicitly to study the failure mode.
 

@@ -12,6 +12,9 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 _SCENARIO_DIR = Path(__file__).resolve().parents[1] / "scenarios" / "environment"
 _WARMUP_SCENARIO = _SCENARIO_DIR / "source_lifecycle_spawn_rng_warmup_print_start_2p.json"
 _NEXT_ROUND_SCENARIO = _SCENARIO_DIR / "source_lifecycle_spawn_rng_2p_next_round.json"
+_SURVIVOR_NEXT_2P_SCENARIO = (
+    _SCENARIO_DIR / "source_lifecycle_survivor_score_2p_next_round.json"
+)
 _MATCH_END_SCENARIO = _SCENARIO_DIR / "source_lifecycle_match_end_at_max_score_2p.json"
 _MATCH_END_3P_SCENARIO = (
     _SCENARIO_DIR / "source_lifecycle_match_end_at_max_score_3p.json"
@@ -85,6 +88,7 @@ _PRESENT_ABSENT_TIE_MAX_4P_SCENARIO = (
 _LIFECYCLE_SCENARIOS = [
     _WARMUP_SCENARIO,
     _NEXT_ROUND_SCENARIO,
+    _SURVIVOR_NEXT_2P_SCENARIO,
     _MATCH_END_SCENARIO,
     _MATCH_END_3P_SCENARIO,
     _MATCH_END_4P_SCENARIO,
@@ -168,11 +172,12 @@ def test_source_lifecycle_runner_matches_warmup_print_start_source_facts():
     assert payload["source_fidelity"] is True
     assert payload["source_fidelity_scope"] == (
         "source lifecycle event/random/snapshot facts for pinned 2P/3P/4P fixtures, "
-        "including one focused 3P all-dead warmdown/next-round fixture, one focused "
-        "3P survivor warmdown/next-round fixture, one focused 3P survivor-scoring "
-        "round-end fixture, one focused 3P warmdown removeAvatar/next-round "
-        "fixture, one focused 3P dead-then-removeAvatar round-end/next-round "
-        "fixture, focused 3P/4P present/absent round-new, "
+        "including one focused 2P survivor warmdown/next-round fixture, one focused "
+        "3P all-dead warmdown/next-round fixture, one focused 3P survivor "
+        "warmdown/next-round fixture, one focused 3P survivor-scoring round-end "
+        "fixture, one focused 3P warmdown removeAvatar/next-round fixture, one "
+        "focused 3P dead-then-removeAvatar round-end/next-round fixture, focused "
+        "3P/4P present/absent round-new, "
         "survivor-scoring round-end, tie-at-max-score continuation, and "
         "next-round fixtures, one focused 4P "
         "all-present all-dead warmdown/next-round fixture, one focused 4P "
@@ -255,6 +260,77 @@ def test_source_lifecycle_runner_matches_next_round_stop_spawn_rng_facts():
     ] == [
         (1, True, True),
         (2, True, True),
+    ]
+
+
+def test_source_lifecycle_runner_matches_2p_survivor_warmdown_next_round():
+    payload = run_source_lifecycle_scenario(_SURVIVOR_NEXT_2P_SCENARIO).to_payload()
+
+    assert payload["playerCount"] == 2
+    events = payload["events"]
+    assert [event["event"] for event in events].count("round:end") == 1
+    round_end_index = next(
+        index for index, event in enumerate(events) if event["event"] == "round:end"
+    )
+    assert events[round_end_index]["atMs"] == 3000
+    assert events[round_end_index]["data"] == {"winner": 1}
+
+    assert [
+        event["event"] for event in events[round_end_index + 1 : round_end_index + 6]
+    ] == [
+        "point",
+        "property",
+        "random",
+        "die",
+        "score:round",
+    ]
+    assert [
+        event["atMs"] for event in events[round_end_index + 1 : round_end_index + 6]
+    ] == [4150, 4150, 4150, 4150, 4150]
+
+    game_stop_index = next(
+        index for index, event in enumerate(events) if event["event"] == "game:stop"
+    )
+    assert events[game_stop_index]["atMs"] == 8000
+    assert events[game_stop_index + 1]["event"] == "round:new"
+    assert events[game_stop_index + 1]["atMs"] == 8000
+
+    assert [
+        (call["index"], call["label"]["site"], call["label"]["avatar"], round(call["atMs"]))
+        for call in payload["randomCalls"]
+        if 9 <= call["index"] <= 15
+    ] == [
+        (9, "print_manager.stop_distance", 1, 4150),
+        (10, "spawn.position_x", 2, 8000),
+        (11, "spawn.position_y", 2, 8000),
+        (12, "spawn.angle_attempt_0", 2, 8000),
+        (13, "spawn.position_x", 1, 8000),
+        (14, "spawn.position_y", 1, 8000),
+        (15, "spawn.angle_attempt_0", 1, 8000),
+    ]
+
+    after_update = payload["snapshots"][-2]
+    assert after_update["label"] == "after_action_4_update"
+    assert after_update["game"]["inRound"] is False
+    assert after_update["game"]["deaths"] == [2]
+    assert [
+        (avatar["id"], avatar["x"], avatar["alive"], avatar["printing"], avatar["score"])
+        for avatar in after_update["avatars"]
+    ] == [
+        (1, 18.991, True, True, 1),
+        (2, 88.6, False, False, 0),
+    ]
+
+    final_snapshot = payload["snapshots"][-1]
+    assert final_snapshot["label"] == "after_action_5_advance_timers"
+    assert final_snapshot["game"]["inRound"] is True
+    assert final_snapshot["game"]["deaths"] == []
+    assert [
+        (avatar["id"], avatar["x"], avatar["y"], avatar["angle"], avatar["alive"], avatar["score"])
+        for avatar in final_snapshot["avatars"]
+    ] == [
+        (1, 51.8, 44, 4.712389, True, 1),
+        (2, 36.2, 44, 1.570796, True, 0),
     ]
 
 
@@ -727,11 +803,12 @@ def test_source_lifecycle_runner_matches_3p_spawn_rng_order_facts():
     assert payload["timerAdvancesMs"] == []
     assert payload["source_fidelity_scope"] == (
         "source lifecycle event/random/snapshot facts for pinned 2P/3P/4P fixtures, "
-        "including one focused 3P all-dead warmdown/next-round fixture, one focused "
-        "3P survivor warmdown/next-round fixture, one focused 3P survivor-scoring "
-        "round-end fixture, one focused 3P warmdown removeAvatar/next-round "
-        "fixture, one focused 3P dead-then-removeAvatar round-end/next-round "
-        "fixture, focused 3P/4P present/absent round-new, "
+        "including one focused 2P survivor warmdown/next-round fixture, one focused "
+        "3P all-dead warmdown/next-round fixture, one focused 3P survivor "
+        "warmdown/next-round fixture, one focused 3P survivor-scoring round-end "
+        "fixture, one focused 3P warmdown removeAvatar/next-round fixture, one "
+        "focused 3P dead-then-removeAvatar round-end/next-round fixture, focused "
+        "3P/4P present/absent round-new, "
         "survivor-scoring round-end, tie-at-max-score continuation, and "
         "next-round fixtures, one focused 4P "
         "all-present all-dead warmdown/next-round fixture, one focused 4P "

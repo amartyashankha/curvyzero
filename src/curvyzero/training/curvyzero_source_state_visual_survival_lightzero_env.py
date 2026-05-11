@@ -15,6 +15,12 @@ from curvyzero.env.vector_multiplayer_env import NATURAL_BONUS_ENV_IMPL_ID
 from curvyzero.env.vector_multiplayer_env import NATURAL_BONUS_RULESET_ID
 from curvyzero.env.vector_multiplayer_env import PUBLIC_NATURAL_BONUS_ENV_CONTRACT_ID
 from curvyzero.env.vector_multiplayer_env import VectorMultiplayerEnv
+from curvyzero.env.trainer_contract import (
+    REWARD_SCHEMA_HASH as SPARSE_ROUND_OUTCOME_REWARD_SCHEMA_HASH,
+)
+from curvyzero.env.trainer_contract import (
+    REWARD_SCHEMA_ID as SPARSE_ROUND_OUTCOME_REWARD_SCHEMA_ID,
+)
 from curvyzero.env.trainer_contract import stable_contract_hash
 from curvyzero.env.vector_visual_observation import (
     SOURCE_STATE_GRAY64_BROWSER_PIXEL_FIDELITY,
@@ -47,12 +53,6 @@ from curvyzero.training.curvyzero_stacked_debug_visual_survival_lightzero_smoke 
     OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
     OPPONENT_TRAINING_RELATION_FIXED_STRAIGHT,
 )
-from curvyzero.training.curvyzero_survival_time_lightzero_smoke import (
-    SURVIVAL_TIME_REWARD_SCHEMA_HASH,
-    SURVIVAL_TIME_REWARD_SCHEMA_ID,
-)
-
-
 try:  # Imported inside a LightZero/DI-engine runtime.
     import gym
     from ding.envs import BaseEnv
@@ -143,6 +143,41 @@ DEFAULT_POLICY_ACTION_REPEAT_MIN = 1
 POLICY_ACTION_REPEAT_SEED_OFFSET = 2027
 CONTROL_STOCHASTICITY_SCHEMA_ID = "curvyzero_policy_action_repeat_stochasticity/v0"
 STRAIGHT_ACTION_ID = 1
+REWARD_VARIANT_SPARSE_OUTCOME = "sparse_outcome"
+REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME = "dense_survival_plus_outcome"
+REWARD_VARIANT_ALL_PLAYERS_ALIVE_DIAGNOSTIC = "all_players_alive_diagnostic"
+SOURCE_STATE_FIXED_OPPONENT_REWARD_VARIANTS = (
+    REWARD_VARIANT_SPARSE_OUTCOME,
+    REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME,
+)
+SOURCE_STATE_JOINT_ACTION_REWARD_VARIANTS = (
+    REWARD_VARIANT_ALL_PLAYERS_ALIVE_DIAGNOSTIC,
+)
+DENSE_SURVIVAL_PLUS_OUTCOME_REWARD_SCHEMA_ID = (
+    "curvyzero_dense_survival_plus_sparse_outcome/v0"
+)
+DENSE_SURVIVAL_PLUS_OUTCOME_REWARD_SCHEMA = {
+    "schema_id": DENSE_SURVIVAL_PLUS_OUTCOME_REWARD_SCHEMA_ID,
+    "dtype": "float32",
+    "episode_unit": "one_round",
+    "perspective": "ego_player",
+    "alignment": "reward_t_plus_1_after_one_source_tick",
+    "trainer_reward_terms": [
+        "dense_alive_helper_for_ego_player",
+        "sparse_round_outcome_for_ego_player",
+    ],
+    "dense_alive_helper": 1.0,
+    "sparse_round_outcome_schema_id": SPARSE_ROUND_OUTCOME_REWARD_SCHEMA_ID,
+    "survival_length_metric_is_telemetry": True,
+    "non_claims": [
+        "not_zero_sum_after_dense_helper",
+        "not_two_seat_self_play",
+        "not_a_learning_claim",
+    ],
+}
+DENSE_SURVIVAL_PLUS_OUTCOME_REWARD_SCHEMA_HASH = stable_contract_hash(
+    DENSE_SURVIVAL_PLUS_OUTCOME_REWARD_SCHEMA
+)
 ALL_PLAYERS_ALIVE_DIAGNOSTIC_REWARD_SCHEMA_ID = (
     "curvyzero_all_players_alive_diagnostic/v0"
 )
@@ -190,6 +225,9 @@ STACKED_SOURCE_STATE_GRAY64_SCHEMA_HASH = stable_contract_hash(
 class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
     """Native single-ego LightZero env over the reconstructed vector CurvyTron env."""
 
+    _default_reward_variant = REWARD_VARIANT_SPARSE_OUTCOME
+    _allowed_reward_variants = SOURCE_STATE_FIXED_OPPONENT_REWARD_VARIANTS
+
     config = {
         "env_id": LIGHTZERO_SOURCE_STATE_VISUAL_SURVIVAL_ENV_ID,
         "lightzero_env_type": LIGHTZERO_SOURCE_STATE_VISUAL_SURVIVAL_ENV_TYPE,
@@ -210,6 +248,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         "death_mode": vector_runtime.DEATH_MODE_NORMAL,
         "disable_death_for_profile": False,
         "control_stochasticity_schema_id": CONTROL_STOCHASTICITY_SCHEMA_ID,
+        "reward_variant": REWARD_VARIANT_SPARSE_OUTCOME,
         "policy_action_repeat_min": DEFAULT_POLICY_ACTION_REPEAT_MIN,
         "policy_action_repeat_max": DEFAULT_POLICY_ACTION_REPEAT_MAX,
         "policy_action_repeat_extra_probability": (
@@ -297,6 +336,22 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             if configured_profile is not None
             else self._default_control_noise_profile_id()
         )
+        default_reward_variant = str(
+            getattr(self, "_default_reward_variant", REWARD_VARIANT_SPARSE_OUTCOME)
+        )
+        allowed_reward_variants = tuple(
+            getattr(
+                self,
+                "_allowed_reward_variants",
+                SOURCE_STATE_FIXED_OPPONENT_REWARD_VARIANTS,
+            )
+        )
+        self._reward_variant = str(_cfg_get(cfg, "reward_variant", default_reward_variant))
+        if self._reward_variant not in allowed_reward_variants:
+            raise ValueError(
+                f"{type(self).__name__} reward_variant must be one of "
+                f"{allowed_reward_variants!r}; got {self._reward_variant!r}"
+            )
         self._env = self._new_env(self._seed)
         self._renderer = SourceStateGray64Renderer(validate_state=False)
         self._raw_frame = np.zeros(SOURCE_STATE_GRAY64_SHAPE, dtype=np.uint8)
@@ -318,13 +373,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             "high": 1.0,
         }
         self._action_space = {"type": "Discrete", "n": ACTION_COUNT}
-        self._reward_space = {
-            "type": "Box",
-            "shape": (),
-            "dtype": "float32",
-            "low": 0.0,
-            "high": float(self._policy_action_repeat_max),
-        }
+        self._reward_space = self._make_reward_space()
 
     @property
     def last_reset_info(self) -> dict[str, Any] | None:
@@ -400,6 +449,8 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         action_repeat_requested = self._sample_policy_action_repeat()
         action_repeat_executed = 0
         reward = 0.0
+        sparse_outcome_reward_sum = 0.0
+        dense_survival_helper_sum = 0.0
         done = False
         terminated = False
         truncated = False
@@ -409,7 +460,13 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             self._last_batch = batch
             action_repeat_executed += 1
             self._physical_step_index += 1
-            reward += self._survival_reward_for_player(self.ego_player_index)
+            components = self._reward_components_for_player(
+                batch=batch,
+                player_index=self.ego_player_index,
+            )
+            sparse_outcome_reward_sum += components["sparse_outcome_reward"]
+            dense_survival_helper_sum += components["dense_survival_helper"]
+            reward += components["trainer_reward"]
             done = bool(batch.done[0])
             terminated = bool(batch.terminated[0])
             truncated = bool(batch.truncated[0])
@@ -435,6 +492,8 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             truncated=truncated,
             next_obs=next_obs,
             batch=batch,
+            sparse_outcome_reward_sum=sparse_outcome_reward_sum,
+            dense_survival_helper_sum=dense_survival_helper_sum,
         )
         timestep = LocalDebugVisualLightZeroTimestep(next_obs, reward, done, info)
         self._write_telemetry_row(timestep=timestep)
@@ -573,6 +632,83 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         alive = bool(self._env.state["alive"][0, player_index])
         return 1.0 if alive else 0.0
 
+    def _reward_components_for_player(
+        self,
+        *,
+        batch: Any,
+        player_index: int,
+    ) -> dict[str, float]:
+        sparse_outcome = float(batch.reward[0, player_index])
+        dense_helper = 0.0
+        if self._reward_variant == REWARD_VARIANT_SPARSE_OUTCOME:
+            trainer_reward = sparse_outcome
+        elif self._reward_variant == REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME:
+            dense_helper = self._survival_reward_for_player(player_index)
+            trainer_reward = sparse_outcome + dense_helper
+        elif self._reward_variant == REWARD_VARIANT_ALL_PLAYERS_ALIVE_DIAGNOSTIC:
+            alive = self._env.state["alive"][0, :2].astype(bool)
+            trainer_reward = 1.0 if bool(np.all(alive)) else 0.0
+        else:
+            raise RuntimeError(f"unsupported reward_variant {self._reward_variant!r}")
+        return {
+            "trainer_reward": float(trainer_reward),
+            "sparse_outcome_reward": float(sparse_outcome),
+            "dense_survival_helper": float(dense_helper),
+        }
+
+    def _scalar_reward_for_player(self, *, batch: Any, player_index: int) -> float:
+        return self._reward_components_for_player(
+            batch=batch,
+            player_index=player_index,
+        )["trainer_reward"]
+
+    def _reward_schema_id(self) -> str:
+        if self._reward_variant == REWARD_VARIANT_SPARSE_OUTCOME:
+            return SPARSE_ROUND_OUTCOME_REWARD_SCHEMA_ID
+        if self._reward_variant == REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME:
+            return DENSE_SURVIVAL_PLUS_OUTCOME_REWARD_SCHEMA_ID
+        if self._reward_variant == REWARD_VARIANT_ALL_PLAYERS_ALIVE_DIAGNOSTIC:
+            return ALL_PLAYERS_ALIVE_DIAGNOSTIC_REWARD_SCHEMA_ID
+        raise RuntimeError(f"unsupported reward_variant {self._reward_variant!r}")
+
+    def _reward_schema_hash(self) -> str:
+        if self._reward_variant == REWARD_VARIANT_SPARSE_OUTCOME:
+            return SPARSE_ROUND_OUTCOME_REWARD_SCHEMA_HASH
+        if self._reward_variant == REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME:
+            return DENSE_SURVIVAL_PLUS_OUTCOME_REWARD_SCHEMA_HASH
+        if self._reward_variant == REWARD_VARIANT_ALL_PLAYERS_ALIVE_DIAGNOSTIC:
+            return ALL_PLAYERS_ALIVE_DIAGNOSTIC_REWARD_SCHEMA_HASH
+        raise RuntimeError(f"unsupported reward_variant {self._reward_variant!r}")
+
+    def _reward_perspective(self) -> str:
+        if self._reward_variant == REWARD_VARIANT_SPARSE_OUTCOME:
+            return "ego_player_sparse_round_outcome"
+        if self._reward_variant == REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME:
+            return "ego_player_dense_survival_helper_plus_sparse_outcome"
+        if self._reward_variant == REWARD_VARIANT_ALL_PLAYERS_ALIVE_DIAGNOSTIC:
+            return "diagnostic_all_players_alive_after_one_source_tick"
+        raise RuntimeError(f"unsupported reward_variant {self._reward_variant!r}")
+
+    def _make_reward_space(self) -> dict[str, Any]:
+        if self._reward_variant == REWARD_VARIANT_SPARSE_OUTCOME:
+            low = -1.0
+            high = 1.0
+        elif self._reward_variant == REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME:
+            low = -1.0
+            high = float(self._policy_action_repeat_max + 1)
+        elif self._reward_variant == REWARD_VARIANT_ALL_PLAYERS_ALIVE_DIAGNOSTIC:
+            low = 0.0
+            high = 1.0
+        else:
+            raise RuntimeError(f"unsupported reward_variant {self._reward_variant!r}")
+        return {
+            "type": "Box",
+            "shape": (),
+            "dtype": "float32",
+            "low": low,
+            "high": high,
+        }
+
     def _step_info(
         self,
         *,
@@ -589,20 +725,29 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         truncated: bool,
         next_obs: dict[str, Any],
         batch: Any,
+        sparse_outcome_reward_sum: float,
+        dense_survival_helper_sum: float,
     ) -> dict[str, Any]:
         info = self._base_info()
         final_reward_map = None
+        final_step_training_reward_map = None
+        survival_reward_map = None
         source_terminal_reward_map = None
         if done:
-            final_reward_map = {
+            survival_reward_map = {
                 "player_0": self._survival_reward_for_player(0),
                 "player_1": self._survival_reward_for_player(1),
+            }
+            final_step_training_reward_map = {
+                "player_0": self._scalar_reward_for_player(batch=batch, player_index=0),
+                "player_1": self._scalar_reward_for_player(batch=batch, player_index=1),
             }
             if batch.final_reward is not None:
                 source_terminal_reward_map = {
                     "player_0": float(batch.final_reward[0, 0]),
                     "player_1": float(batch.final_reward[0, 1]),
                 }
+                final_reward_map = source_terminal_reward_map
         info.update(
             {
                 "step_index": int(self._step_index - 1),
@@ -645,8 +790,15 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
                 "opponent_action_id": int(opponent_action),
                 "physical_env_advanced": True,
                 "reward": float(reward),
+                "trainer_reward": float(reward),
+                "sparse_outcome_reward_for_ego": float(sparse_outcome_reward_sum),
+                "dense_survival_helper_for_ego": float(dense_survival_helper_sum),
                 "reward_player_id": self.ego_player_id,
-                "reward_perspective": "ego_player_survival_after_step",
+                "reward_perspective": self._reward_perspective(),
+                "scalar_training_reward_variant": self._reward_variant,
+                "survival_reward_for_ego": self._survival_reward_for_player(
+                    self.ego_player_index
+                ),
                 "done": bool(done),
                 "terminated": bool(terminated),
                 "truncated": bool(truncated),
@@ -654,7 +806,10 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
                 "terminal_reason": self._terminal_reason_name(),
                 "final_observation": _copy_lightzero_observation(next_obs) if done else None,
                 "final_reward_map": final_reward_map,
+                "final_step_training_reward_map": final_step_training_reward_map,
+                "survival_reward_map": survival_reward_map,
                 "source_terminal_reward_map": source_terminal_reward_map,
+                "episode_training_return": float(self._episode_return) if done else None,
                 "eval_episode_return": float(self._episode_return) if done else None,
                 **self._public_outcome_info(),
                 "trace_hash": self._trace_hash(joint_action=joint_action),
@@ -718,8 +873,13 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             "model_observation_shape": list(STACKED_SOURCE_STATE_GRAY64_SHAPE),
             "frame_stack_owner": "curvyzero_source_state_survival_wrapper",
             "frame_stack_proof": "wrapper_owned_fifo_stack; not LightZero env-manager stacking",
-            "reward_schema_id": SURVIVAL_TIME_REWARD_SCHEMA_ID,
-            "reward_schema_hash": SURVIVAL_TIME_REWARD_SCHEMA_HASH,
+            "reward_schema_id": self._reward_schema_id(),
+            "reward_schema_hash": self._reward_schema_hash(),
+            "scalar_training_reward_variant": self._reward_variant,
+            "dense_survival_helper_enabled": (
+                self._reward_variant == REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME
+            ),
+            "survival_length_is_eval_metric": True,
             "bonus_support_mode": str(public_info["bonus_support_mode"]),
             "natural_bonus_spawn": bool(public_info["bonus_support"]["natural_bonus_spawn"]),
             "natural_bonus_pop_count": int(public_info["natural_bonus_pop_count"][0]),
@@ -746,9 +906,33 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
                 if self._disable_death_for_profile
                 else "none"
             ),
-            "terminal_outcome_bonus": 0.0,
-            "loser_penalty": 0.0,
-            "winner_bonus": 0.0,
+            "terminal_outcome_bonus": (
+                1.0
+                if self._reward_variant
+                in (
+                    REWARD_VARIANT_SPARSE_OUTCOME,
+                    REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME,
+                )
+                else 0.0
+            ),
+            "loser_penalty": (
+                -1.0
+                if self._reward_variant
+                in (
+                    REWARD_VARIANT_SPARSE_OUTCOME,
+                    REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME,
+                )
+                else 0.0
+            ),
+            "winner_bonus": (
+                1.0
+                if self._reward_variant
+                in (
+                    REWARD_VARIANT_SPARSE_OUTCOME,
+                    REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME,
+                )
+                else 0.0
+            ),
             "opponent_policy_id": "curvyzero_source_state_fixed_straight_opponent",
             "opponent_policy_kind": OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
             "opponent_training_relation": OPPONENT_TRAINING_RELATION_FIXED_STRAIGHT,
@@ -866,8 +1050,15 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             "physical_env_advanced": True,
             "pending_action_count": 0,
             "reward": float(timestep.reward),
+            "trainer_reward": info.get("trainer_reward"),
+            "sparse_outcome_reward_for_ego": info.get("sparse_outcome_reward_for_ego"),
+            "dense_survival_helper_for_ego": info.get("dense_survival_helper_for_ego"),
             "reward_player_id": info.get("reward_player_id"),
             "reward_perspective": info.get("reward_perspective"),
+            "scalar_training_reward_variant": info.get("scalar_training_reward_variant"),
+            "dense_survival_helper_enabled": info.get("dense_survival_helper_enabled"),
+            "survival_length_is_eval_metric": info.get("survival_length_is_eval_metric"),
+            "survival_reward_for_ego": info.get("survival_reward_for_ego"),
             "done": bool(timestep.done),
             "terminated": bool(info.get("terminated", False)),
             "truncated": bool(info.get("truncated", False)),
@@ -880,6 +1071,11 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             "death_cause": info.get("death_cause"),
             "death_cause_name": info.get("death_cause_name"),
             "death_hit_owner": info.get("death_hit_owner"),
+            "final_reward_map": info.get("final_reward_map"),
+            "final_step_training_reward_map": info.get("final_step_training_reward_map"),
+            "survival_reward_map": info.get("survival_reward_map"),
+            "source_terminal_reward_map": info.get("source_terminal_reward_map"),
+            "eval_episode_return": info.get("eval_episode_return"),
             "reward_schema_id": info.get("reward_schema_id"),
             "observation_schema_id": info.get("observation_schema_id"),
             "frame_stack_owner": info.get("frame_stack_owner"),
@@ -961,6 +1157,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroEnv(
         super().__init__(cfg)
         self.lightzero_env_type = LIGHTZERO_SOURCE_STATE_VISUAL_SURVIVAL_ENV_TYPE
         if gym is not None:
+            reward_space = self._make_reward_space()
             self._action_space = gym.spaces.Discrete(ACTION_COUNT)
             self._observation_space = gym.spaces.Box(
                 low=0.0,
@@ -969,8 +1166,8 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroEnv(
                 dtype=np.float32,
             )
             self._reward_space = gym.spaces.Box(
-                low=0.0,
-                high=float(self._policy_action_repeat_max),
+                low=float(reward_space["low"]),
+                high=float(reward_space["high"]),
                 shape=(),
                 dtype=np.float32,
             )
@@ -997,6 +1194,9 @@ class CurvyZeroSourceStateVisualJointActionLightZeroLocalEnv(
 ):
     """Centralized 9-action wrapper: one scalar picks both player actions."""
 
+    _default_reward_variant = REWARD_VARIANT_ALL_PLAYERS_ALIVE_DIAGNOSTIC
+    _allowed_reward_variants = SOURCE_STATE_JOINT_ACTION_REWARD_VARIANTS
+
     config = {
         **CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv.config,
         "env_id": LIGHTZERO_SOURCE_STATE_VISUAL_JOINT_ACTION_ENV_ID,
@@ -1004,6 +1204,7 @@ class CurvyZeroSourceStateVisualJointActionLightZeroLocalEnv(
         "lightzero_import_names": LIGHTZERO_SOURCE_STATE_VISUAL_JOINT_ACTION_IMPORT_NAMES,
         "action_space_size": JOINT_ACTION_COUNT,
         "env_variant": SOURCE_STATE_JOINT_ACTION_ENV_VARIANT,
+        "reward_variant": REWARD_VARIANT_ALL_PLAYERS_ALIVE_DIAGNOSTIC,
         "reward_schema_id": ALL_PLAYERS_ALIVE_DIAGNOSTIC_REWARD_SCHEMA_ID,
         "reward_schema_hash": ALL_PLAYERS_ALIVE_DIAGNOSTIC_REWARD_SCHEMA_HASH,
         "runtime_topology": SOURCE_STATE_JOINT_ACTION_RUNTIME_TOPOLOGY,
@@ -1078,6 +1279,8 @@ class CurvyZeroSourceStateVisualJointActionLightZeroLocalEnv(
             truncated=truncated,
             next_obs=next_obs,
             batch=batch,
+            sparse_outcome_reward_sum=0.0,
+            dense_survival_helper_sum=0.0,
         )
         info.update(
             {

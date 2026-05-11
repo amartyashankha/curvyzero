@@ -36,8 +36,19 @@ from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_SOURCE_S
 from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_SURFACE
 from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_TRUTH_LEVEL
 from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_USES_ALE
+from curvyzero.env.vector_visual_observation import (
+    SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
+)
+from curvyzero.env.vector_visual_observation import (
+    SOURCE_STATE_RGB_CANVAS_LIKE_RENDERER_IMPL_ID,
+)
+from curvyzero.env.vector_visual_observation import SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID
+from curvyzero.env.vector_visual_observation import (
+    SOURCE_STATE_RGB_CANVAS_LIKE_TRUTH_LEVEL,
+)
 from curvyzero.env.vector_visual_observation import SourceStateGray64Renderer
 from curvyzero.env.vector_visual_observation import normalize_source_state_gray64
+from curvyzero.env.vector_visual_observation import render_source_state_rgb_canvas_like
 from curvyzero.training.curvyzero_debug_visual_lightzero_smoke import (
     LocalDebugVisualLightZeroTimestep,
 )
@@ -297,6 +308,8 @@ class CurvyZeroSourceStateVisualTurnCommitLightZeroLocalEnv:
             return self.raw_observation()
         if mode == "source_state_player_perspective_raw_visual_tensor":
             return self.raw_observation(player_perspective=True)
+        if mode == "source_state_rgb_canvas_like":
+            return self.human_rgb_observation()
         return None
 
     def raw_observation(self, *, player_perspective: bool = False) -> np.ndarray | None:
@@ -304,6 +317,15 @@ class CurvyZeroSourceStateVisualTurnCommitLightZeroLocalEnv:
             return None
         frame = self._perspective_frame if player_perspective else self._raw_frame
         return frame.copy()
+
+    def human_rgb_observation(
+        self,
+        *,
+        frame_size: int = SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
+    ) -> np.ndarray | None:
+        if not self._has_reset:
+            return None
+        return render_source_state_rgb_canvas_like(self._env.state, row=0, frame_size=frame_size)
 
     def _new_env(self, seed: int) -> VectorMultiplayerEnv:
         return VectorMultiplayerEnv(
@@ -527,6 +549,14 @@ class CurvyZeroSourceStateVisualTurnCommitLightZeroLocalEnv:
             "raw_observation_available": True,
             "player_perspective_schema_id": PLAYER_PERSPECTIVE_SCHEMA_ID,
             "renderer_impl_id": SOURCE_STATE_GRAY64_RENDERER_IMPL_ID,
+            "human_rgb_renderer_impl_id": SOURCE_STATE_RGB_CANVAS_LIKE_RENDERER_IMPL_ID,
+            "human_rgb_schema_id": SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID,
+            "human_rgb_truth_level": SOURCE_STATE_RGB_CANVAS_LIKE_TRUTH_LEVEL,
+            "human_rgb_default_frame_shape": [
+                SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
+                SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
+                3,
+            ],
             "truth_level": SOURCE_STATE_GRAY64_TRUTH_LEVEL,
             "source_fidelity_level": SOURCE_STATE_GRAY64_SOURCE_FIDELITY_LEVEL,
             "source_fidelity_claim": "source_state_backed_non_browser_pixel",

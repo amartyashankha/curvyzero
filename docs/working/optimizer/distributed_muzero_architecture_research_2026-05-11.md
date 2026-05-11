@@ -80,9 +80,10 @@ simultaneous current-policy `[B,P]` collection.
 
 ## Correction To Optimizer Plan
 
-The first serious 10x target is not "make the current local loop 10x faster."
-The target is to move from one synchronous collector/learner loop toward a data
-factory:
+Current fact: stock `train_muzero` is one synchronous collector/learner loop.
+The next scale experiment should be coarse synchronous fanout: run multiple
+frozen-checkpoint collection jobs, merge their searched trajectory chunks, then
+train the next checkpoint.
 
 ```text
 many actors/search workers
@@ -93,12 +94,45 @@ many actors/search workers
   -> actors refresh checkpoint on cadence
 ```
 
-Do not read `policy_version` / policy lag as a reason not to parallelize. It is
-metadata that keeps a parallel system honest. Massive self-play is useful when
-the learner can turn searched trajectories into updates fast enough and the
-replay window remains representative. If actors outrun the learner by too much,
-the issue is usually sample efficiency and replay balance, not an immediate
-off-policy correctness failure.
+In the coarse fanout experiment, all actors use the same frozen checkpoint, so
+there is no live actor/learner lag inside that batch. If we later build a
+continuous actor/replay system, record checkpoint ids, sample age, and policy
+version as normal run metadata. Massive self-play is useful when the learner
+can turn searched trajectories into updates fast enough and the replay window
+remains representative.
+
+## Massive Self-Play Question
+
+Running far more self-play at the same checkpoint is policy-valid in a
+synchronous generation: freeze checkpoint `K`, launch many actors, collect
+searched games, merge them, then train `K+1`. The danger is not off-policy
+correctness. The danger is wasting wall-clock and storage on too much data from
+one old policy before the learner has a chance to improve.
+
+A million parallel games is only useful if these are true:
+
+- actors/search workers are the bottleneck and scale nearly linearly;
+- replay merge/write is not the new bottleneck;
+- learner can consume enough samples before the policy should refresh;
+- the next checkpoint is better per wall-clock after Coach's quality check,
+  not just raw games/sec;
+- chunks carry checkpoint id, env/reward/action/obs schema, search settings,
+  seed, and completed-game counts.
+
+The tradeoff is simple: bigger self-play batches give more searched positions
+per learner update, but delay the next policy update. That is fine when search
+is the bottleneck and the learner can digest the batch. It is wasteful when the
+batch is so large that actors keep generating checkpoint-`K` data after a
+smaller batch would already have produced a better `K+1`. Diversity also
+matters: many identical actors can produce a large but correlated replay slice.
+
+So the first test should be small and explicit: `N={1,2,4,8}` collect-only
+actors from one frozen checkpoint, same CurvyTron config, same MCTS sims, each
+writing compact searched chunks. Measure games/sec, decisions/sec, MCTS
+sims/sec, chunk bytes/sec, write/merge time, learner update time after merge,
+and checkpoint-quality change per wall-clock. If N=8 scales cleanly and learner/merge are
+small, then scale N aggressively. If learner/merge dominate, more actors alone
+will not speed training.
 
 There are three separate regimes:
 
@@ -198,10 +232,10 @@ Every profile should report:
 
 The optimizer correction is: current CurvyTron runs are useful smokes, but they
 are not yet architecturally comparable to fast AlphaZero/MuZero. The next speed
-lane should be a distributed searched self-play data factory: actor chunks,
-explicit policy versions, replay chunks, learner merge, checkpoint publish, and
-freshness metrics. In the current synchronous `train_muzero` loop there is no
-actor-fleet staleness issue. In a future continuous actor/replay design,
-freshness is a metric to log and control, not a reason to avoid parallel
-self-play. Keep MuZero search on decisions; do not use policy-head-only
-collection as a training replacement.
+lane should be coarse synchronous searched-trajectory fanout: actor chunks from
+one frozen checkpoint, replay chunks, learner merge, checkpoint publish, and
+checkpoint ids/sample age only if actors and learner are decoupled. In the
+current synchronous `train_muzero` loop there is no actor-fleet staleness issue.
+In a future continuous actor/replay design, freshness is a metric to log and
+control, not a reason to avoid parallel self-play. Keep MuZero search on
+decisions; do not use policy-head-only collection as a training replacement.

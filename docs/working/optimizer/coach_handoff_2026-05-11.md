@@ -59,14 +59,14 @@ is the repo path closest to the promising Pong-style LightZero runs.
   GPU model/search, MCTS, replay sample, one learner step, copied
   `iteration_0`, and wrote env-step telemetry.
 - Boundary: `source_state_turn_commit` is a plumbing smoke/profile path right
-  now, not a learning-quality self-play path. Target audit showed fake pending
-  rows and bad reward credit: player 0 has a pending/no-physics scalar step and
-  player 1 has the physical commit scalar step. Profile it as stock-LightZero
-  plumbing; do not optimize or scale it as a trainer.
+  now, not a learning-quality self-play path. Target audit showed artificial
+  pending/no-physics rows and bad reward credit: player 0 has a pending scalar
+  step and player 1 has the physical commit scalar step. Profile it as
+  stock-LightZero plumbing; do not optimize or scale it as a trainer.
 - Coach target audit now confirmed that boundary:
   `curvytron-source-state-turncommit-audit-smoke-s20260511c` /
   `profile-audit-smoke-sim2-c2-steps64-20260511c` wrote `target_audit.json`.
-  GameSegments contained fake pending rows with alternating rewards like
+  GameSegments contained artificial pending/no-physics rows with alternating rewards like
   `0,1,0,1`, and sampled value targets propagated commit rewards through
   pending rows.
   `mode=train` is now blocked for this variant.
@@ -190,7 +190,15 @@ For current Coach runs, the conservative fast shape is:
 --num-simulations 16 for fast profiles/control
 --num-simulations 50 for serious MuZero-style proof lanes
 --env-telemetry-stride 50 or higher unless dense action JSONL is needed
+--save-ckpt-after-iter 1000 or similarly sparse for normal runs
+--lightzero-eval-freq 1000 or similarly sparse unless stock in-loop eval is needed
 ```
+
+Important eval split: stock LightZero eval is an in-loop evaluator inside
+`train_muzero`, not the checkpoint-triggered eval/inspection/GIF path. The
+checkpoint path is spawned from checkpoint artifacts and can be kept sparse by
+saving checkpoints sparsely. Optimizer profiles now skip stock in-loop eval by
+default so Amdahl reads focus on collect/search/replay/learner.
 
 Do not read `source_state_turn_commit` as trainable. Optimizer did profile it
 through stock `train_muzero`, and it is useful speed/plumbing evidence, but the
@@ -200,9 +208,16 @@ Next optimizer recommendation: after stock-loop runs, test synchronous coarse
 Modal fanout from a frozen checkpoint. Run N collect-only actor chunks in
 parallel, write searched trajectory chunks with `checkpoint_id` and schema
 metadata, then import/merge them into a learner step. This is not a full async
-service yet and does not create hidden policy staleness. It is the smallest
-honest test of whether searched CurvyTron self-play can scale beyond one
-`train_muzero` process without changing MuZero semantics.
+service; every collection chunk in the batch uses one frozen checkpoint, then
+the learner runs after merge. It is the smallest honest test of whether
+searched CurvyTron self-play can scale beyond one `train_muzero` process
+without changing MuZero semantics.
+
+Scaling caveat: larger self-play batches help only if the next checkpoint gets
+better per wall-clock after merge, learner time, and Coach's quality check. They
+can waste compute if actors keep collecting lots of correlated checkpoint-`K`
+data after a smaller batch would already have produced a better `K+1`. First
+sweep should be `N={1,2,4,8}` actor chunks before jumping to huge fanout.
 
 ## Validation Done By Optimizer
 

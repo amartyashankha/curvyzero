@@ -15,6 +15,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import quote
 
+from curvyzero.infra.modal import run_management as run_mgmt
+
 try:
     import modal
 except ModuleNotFoundError:  # pragma: no cover - lets helper tests run without modal.
@@ -28,6 +30,23 @@ RUNS_MOUNT = Path("/runs")
 BASE_REF = PurePosixPath("training") / TASK_ID
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 500
+RUN_PICKER_FLAG_FILENAME = run_mgmt.GIF_BROWSER_RUN_MARKER_FILENAME
+RUN_RECENCY_PATTERNS = (
+    "attempts/*/eval/*/selfplay/summary.json",
+    "attempts/*/eval/*/selfplay/raw.gif",
+    "attempts/*/train/summary.json",
+    "attempts/*/train/status.json",
+    "attempts/*/train/progress/latest.json",
+    "attempts/*/train/checkpoint_eval_poller.json",
+    "attempts/*/train/checkpoint.*",
+    "attempts/*/train/checkpoints/*",
+    "attempts/*/train/checkpoints/*/*",
+    "attempts/*/train/lightzero_exp/ckpt/*",
+    "checkpoints/latest.json",
+    "checkpoints/best.json",
+    "checkpoints/lightzero/*",
+    "checkpoints/lightzero/*/*",
+)
 
 if modal is not None:
     image = modal.Image.debian_slim(python_version="3.11").uv_pip_install("fastapi>=0.115")
@@ -154,6 +173,93 @@ def _coerce_limit(limit: int) -> int:
     return min(max(1, int(limit)), MAX_LIMIT)
 
 
+def _safe_stat(path: Path):
+    try:
+        return path.stat()
+    except OSError:
+        return None
+
+
+def _safe_is_dir(path: Path) -> bool:
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
+def _safe_is_file(path: Path) -> bool:
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
+def _safe_iterdir(path: Path) -> list[Path]:
+    try:
+        return list(path.iterdir())
+    except OSError:
+        return []
+
+
+def _safe_glob(path: Path, pattern: str) -> list[Path]:
+    try:
+        return list(path.glob(pattern))
+    except OSError:
+        return []
+
+
+def _run_has_picker_flag(run_path: Path) -> bool:
+    return _safe_is_file(run_path / RUN_PICKER_FLAG_FILENAME)
+
+
+def _list_runs(mount: Path) -> list[dict[str, Any]]:
+    base_path = _path_for_ref(mount, BASE_REF)
+    if not _safe_is_dir(base_path):
+        return []
+
+    runs: list[dict[str, Any]] = []
+    for run_path in _safe_iterdir(base_path):
+        if not _safe_is_dir(run_path) or not _run_has_picker_flag(run_path):
+            continue
+        artifact_count = 0
+        updated_ts: float | None = None
+        seen_artifacts: set[Path] = set()
+        for pattern in RUN_RECENCY_PATTERNS:
+            for artifact_path in _safe_glob(run_path, pattern):
+                if artifact_path in seen_artifacts:
+                    continue
+                artifact_stat = _safe_stat(artifact_path)
+                if artifact_stat is None:
+                    continue
+                if not _safe_is_file(artifact_path):
+                    continue
+                seen_artifacts.add(artifact_path)
+                artifact_count += 1
+                updated_ts = (
+                    artifact_stat.st_mtime
+                    if updated_ts is None
+                    else max(updated_ts, artifact_stat.st_mtime)
+                )
+        if updated_ts is None:
+            run_stat = _safe_stat(run_path)
+            if run_stat is None:
+                continue
+            updated_ts = run_stat.st_mtime
+        runs.append(
+            {
+                "run_id": run_path.name,
+                "artifact_count": artifact_count,
+                "updated_at": datetime.fromtimestamp(updated_ts, UTC)
+                .isoformat()
+                .replace("+00:00", "Z"),
+                "updated_ts": updated_ts,
+            }
+        )
+
+    runs.sort(key=lambda item: (item["updated_ts"], item["run_id"]), reverse=True)
+    return runs
+
+
 def _summary_row(mount: Path, summary_path: Path) -> dict[str, Any] | None:
     summary_ref = _ref_from_path(mount, summary_path)
     try:
@@ -175,7 +281,11 @@ def _summary_row(mount: Path, summary_path: Path) -> dict[str, Any] | None:
         gif_ref = sibling_gif_ref
 
     gif_path = _path_for_ref(mount, gif_ref)
-    stat = summary_path.stat()
+    stat = _safe_stat(summary_path)
+    if stat is None:
+        return None
+    gif_stat = _safe_stat(gif_path)
+    gif_exists = gif_stat is not None and _safe_is_file(gif_path)
     checkpoint_ref = summary.get("checkpoint_ref")
     checkpoint_label = summary.get("checkpoint_label") or (
         PurePosixPath(checkpoint_ref).name if isinstance(checkpoint_ref, str) else None
@@ -185,8 +295,8 @@ def _summary_row(mount: Path, summary_path: Path) -> dict[str, Any] | None:
         "ok": summary.get("ok") if load_error is None else False,
         "summary_ref": summary_ref.as_posix(),
         "gif_ref": gif_ref.as_posix(),
-        "gif_exists": gif_path.is_file(),
-        "gif_bytes": gif_path.stat().st_size if gif_path.is_file() else None,
+        "gif_exists": gif_exists,
+        "gif_bytes": gif_stat.st_size if gif_exists and gif_stat is not None else None,
         "updated_at": datetime.fromtimestamp(stat.st_mtime, UTC).isoformat().replace(
             "+00:00", "Z"
         ),
@@ -207,19 +317,41 @@ def _list_selfplay_summaries(
     mount: Path,
     *,
     run_filter: str = "",
+    run_id: str = "",
     attempt_filter: str = "",
     eval_filter: str = "",
     ok_filter: str = "all",
     limit: int = DEFAULT_LIMIT,
 ) -> list[dict[str, Any]]:
     base_path = _path_for_ref(mount, BASE_REF)
-    if not base_path.is_dir():
+    if not _safe_is_dir(base_path):
         return []
 
     rows: list[dict[str, Any]] = []
-    for summary_path in base_path.glob("*/attempts/*/eval/*/selfplay/summary.json"):
+    if run_id:
+        try:
+            clean_run_id = run_mgmt.clean_id(run_id, label="run_id")
+        except ValueError:
+            return []
+        summary_paths = _safe_glob(
+            base_path / clean_run_id,
+            "attempts/*/eval/*/selfplay/summary.json",
+        )
+    else:
+        summary_paths = []
+        for run in _list_runs(mount):
+            summary_paths.extend(
+                _safe_glob(
+                    base_path / str(run["run_id"]),
+                    "attempts/*/eval/*/selfplay/summary.json",
+                )
+            )
+
+    for summary_path in summary_paths:
         row = _summary_row(mount, summary_path)
         if row is None:
+            continue
+        if run_id and row["run_id"] != run_id:
             continue
         if not _matches_text(row["run_id"], run_filter):
             continue
@@ -250,19 +382,30 @@ def _link(path: str, ref: str, **params: Any) -> str:
 
 def _render_filters(
     *,
+    runs: list[dict[str, Any]],
+    selected_run_id: str,
     run_filter: str,
     attempt_filter: str,
     eval_filter: str,
     ok_filter: str,
     limit: int,
 ) -> str:
+    run_options = ['<option value="">All runs</option>']
+    for run in runs:
+        run_id = str(run["run_id"])
+        selected = " selected" if run_id == selected_run_id else ""
+        label = f"{run_id} ({run['updated_at']})"
+        run_options.append(
+            f'<option value="{_html_attr(run_id)}"{selected}>{_html_attr(label)}</option>'
+        )
     status_options = []
     for value, label in (("all", "All"), ("ok", "OK"), ("failed", "Failed")):
         selected = " selected" if ok_filter.lower() == value else ""
         status_options.append(f'<option value="{value}"{selected}>{label}</option>')
     return f"""
         <form method="get" class="filters">
-            <label>Run <input name="run" value="{_html_attr(run_filter)}"></label>
+            <label>Run <select name="run_id" onchange="this.form.submit()">{''.join(run_options)}</select></label>
+            <label>Run text <input name="run" value="{_html_attr(run_filter)}"></label>
             <label>Attempt <input name="attempt" value="{_html_attr(attempt_filter)}"></label>
             <label>Eval <input name="eval" value="{_html_attr(eval_filter)}"></label>
             <label>Status <select name="ok">{''.join(status_options)}</select></label>
@@ -337,6 +480,8 @@ def _render_rows(rows: list[dict[str, Any]]) -> str:
 def _render_page(
     rows: list[dict[str, Any]],
     *,
+    runs: list[dict[str, Any]],
+    selected_run_id: str,
     run_filter: str,
     attempt_filter: str,
     eval_filter: str,
@@ -346,6 +491,8 @@ def _render_page(
 ) -> str:
     generated_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
     filters = _render_filters(
+        runs=runs,
+        selected_run_id=selected_run_id,
         run_filter=run_filter,
         attempt_filter=attempt_filter,
         eval_filter=eval_filter,
@@ -450,6 +597,7 @@ def _build_fastapi_app(volume: Any) -> Any:
 
     @web_app.get("/", response_class=HTMLResponse)
     def index(
+        run_id: str = "",
         run: str = "",
         attempt: str = "",
         eval: str = "",
@@ -457,8 +605,10 @@ def _build_fastapi_app(volume: Any) -> Any:
         limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     ) -> HTMLResponse:
         reload_error = reload_volume()
+        runs = _list_runs(RUNS_MOUNT)
         rows = _list_selfplay_summaries(
             RUNS_MOUNT,
+            run_id=run_id,
             run_filter=run,
             attempt_filter=attempt,
             eval_filter=eval,
@@ -468,6 +618,8 @@ def _build_fastapi_app(volume: Any) -> Any:
         return HTMLResponse(
             _render_page(
                 rows,
+                runs=runs,
+                selected_run_id=run_id,
                 run_filter=run,
                 attempt_filter=attempt,
                 eval_filter=eval,
@@ -479,6 +631,7 @@ def _build_fastapi_app(volume: Any) -> Any:
 
     @web_app.get("/api/summaries")
     def summaries(
+        run_id: str = "",
         run: str = "",
         attempt: str = "",
         eval: str = "",
@@ -486,15 +639,17 @@ def _build_fastapi_app(volume: Any) -> Any:
         limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     ) -> JSONResponse:
         reload_error = reload_volume()
+        runs = _list_runs(RUNS_MOUNT)
         rows = _list_selfplay_summaries(
             RUNS_MOUNT,
+            run_id=run_id,
             run_filter=run,
             attempt_filter=attempt,
             eval_filter=eval,
             ok_filter=ok,
             limit=limit,
         )
-        return JSONResponse({"rows": rows, "reload_error": reload_error})
+        return JSONResponse({"rows": rows, "runs": runs, "reload_error": reload_error})
 
     @web_app.get("/gif")
     def gif(ref: str) -> Response:

@@ -1,0 +1,114 @@
+{
+  "schema_version": "environment-scenario-v0",
+  "scenario_id": "source_lifecycle_survivor_score_2p_next_round",
+  "title": "Source lifecycle survivor score 2P next round",
+  "ruleset_id": "curvytron-v1-reference",
+  "provenance": {
+    "labels": [
+      "source-derived",
+      "round-lifecycle",
+      "survivor-scoring",
+      "warmdown",
+      "next-round",
+      "rng-order",
+      "2p",
+      "js-oracle-pinned"
+    ],
+    "source_target": "third_party/curvytron-reference",
+    "source_commit": "8fec14c",
+    "notes": [
+      "JS lifecycle oracle proof for one two-player source Game.update() where avatar 2 dies, avatar 1 wins the round, and the source frame loop keeps moving avatar 1 during warmdown.",
+      "Avatar 1 then hits the wall during warmdown; source does not emit a second round:end and still emits game:stop plus the next round:new at 8000 ms because max_score is not reached.",
+      "Bonuses are disabled so the pinned random stream contains spawn and PrintManager distances only."
+    ]
+  },
+  "source_setup": {
+    "player_count": 2,
+    "random": {
+      "math_random_sequence": [
+        0.32051282051282054,
+        0.5,
+        0.015915494309189534,
+        0.6794871794871795,
+        0.5,
+        0.5159154943091895,
+        0.5,
+        0.999,
+        0.5,
+        0.5,
+        0.4,
+        0.5,
+        0.25,
+        0.6,
+        0.5,
+        0.75
+      ]
+    },
+    "room": {
+      "name": "source-lifecycle-survivor-score-2p-next-round",
+      "max_score": 10,
+      "bonuses": [],
+      "bonus_rate": 0
+    }
+  },
+  "player_count": 2,
+  "lifecycle": {
+    "new_round_time_ms": 0,
+    "timer_advances_ms": [
+      0,
+      3000
+    ],
+    "include_deaths_snapshot": true,
+    "actions": [
+      {
+        "type": "advance_timers",
+        "ms": 0
+      },
+      {
+        "type": "advance_timers",
+        "ms": 3000
+      },
+      {
+        "type": "set_avatar_state",
+        "avatar": 1,
+        "x": 20.591,
+        "y": 44,
+        "angle_rad": 3.141592653589793
+      },
+      {
+        "type": "set_avatar_state",
+        "avatar": 2,
+        "x": 87,
+        "y": 44,
+        "angle_rad": 0
+      },
+      {
+        "type": "update",
+        "step_ms": 100
+      },
+      {
+        "type": "advance_timers",
+        "ms": 5000
+      }
+    ]
+  },
+  "players": [
+    {
+      "id": "p0",
+      "client_id": "p0-client",
+      "avatar_id": 1,
+      "name": "p0",
+      "color": "#ff0000"
+    },
+    {
+      "id": "p1",
+      "client_id": "p1-client",
+      "avatar_id": 2,
+      "name": "p1",
+      "color": "#00ff00"
+    }
+  ],
+  "expectations": {
+    "scope": "2P survivor warmdown movement, no second round:end, and next-round RNG"
+  }
+}

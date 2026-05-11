@@ -8,10 +8,13 @@ This is a remaining-gap catalog, not a status victory lap. A hole is closed only
 
 - Product runtime direction is `VectorMultiplayerEnv`. `VectorTrainerEnv1v1NoBonus` remains a strict proof/profile surface, not the product gameplay environment.
 - Source/original rules have been reconstructed from the server JS around `Game`, `BaseGame`, `Avatar`, `BaseAvatar`, `PrintManager`, `BonusManager`, and bonus stacks.
-- 2P source lifecycle fixtures exist for warmup/PrintManager start, next round after draw, spawn heading rejection retry, max-score match end, active mid-round `removeAvatar`, and long 1v1 no-bonus wall terminal.
-- Public/runtime no-bonus 2P checks cover long reset-to-terminal wall rollout, terminal metadata-only final rows, autoreset preservation of previous final metadata, draw warmdown into next round, unique max-score match-end metadata, and active leave immediate survivor scoring.
+- 2P source lifecycle fixtures exist for warmup/PrintManager start, next round after draw, survivor movement/death during warmdown before the next round, spawn heading rejection retry, max-score match end, active mid-round `removeAvatar`, and long 1v1 no-bonus wall terminal.
+- Public/runtime no-bonus 2P checks cover long reset-to-terminal wall rollout, terminal metadata-only final rows, autoreset preservation of previous final metadata, draw warmdown into next round, survivor movement/death during warmdown with no rescore before next round, unique max-score match-end metadata, and active leave immediate survivor scoring.
 - 2P collision-order canaries cover death-point ordering and same-frame head/head reverse-order behavior.
 - Focused 2P seeded and natural bonus paths now cover all source-default effect families: self small/slow/fast/master, enemy slow/fast/big/inverse/straight-angle, game borderless, game clear, and all color. SelfMaster body/wall behavior and AllColor overlap have focused tests.
+- Speed-changing bonuses now update turn rate with the source formula and
+  restore it on expiry. Focused runtime/public tests cover self/enemy slow/fast
+  catch and expiry.
 - Natural bonus generation has seed/generated tape extension, fixture strictness, generated-row position retry, and no artificial callback cap in the public environment path.
 - Current multiplayer replay packaging can carry metadata-only public rows and seeded bonus audit metadata. It explicitly is not a full trainer replay or full replay array surface.
 - Source-state raw 64x64 visual observations exist and are backed by vector
@@ -22,51 +25,66 @@ This is a remaining-gap catalog, not a status victory lap. A hole is closed only
 - `scripts/compare_2p_raw_visual_observation.py` now compares a 2P
   source-env snapshot raster against the `VectorMultiplayerEnv` raw gray64
   raster. On 2026-05-11, the core 2P source-state gray64 suite passed across
-  26 scenarios: long wall terminal, movement traces, normal wall/draw cases,
+  31 scenarios: long wall terminal, movement traces, normal wall/draw cases,
   collision-order cases, borderless wrap cases, `BonusSelfSmall`
   catch/no-catch/expiry/wall-death cases, `BonusGameClear`, and
-  `BonusGameBorderless`, plus the four natural bonus spawn/retry/cap fixtures.
+  `BonusGameBorderless`, plus the four natural bonus spawn/retry/cap fixtures
+  and five programmatic source-snapshot stress cases:
+  printing trail-point emission, explicit 2P survivor warmdown-frame movement
+  and death,
+  `BonusSelfMaster` blocks a body collision before later wall death,
+  `BonusGameBorderless` expires before later wall death, and `BonusGameClear`
+  clears a body before a later collision probe.
   The long no-bonus wall scenario matched exactly for 112 frames through
   terminal (`max_abs_diff=0`, `mismatch_pixels=0`), and the suite-level result
   is exact (`max_abs_diff=0`, `mismatch_pixels=0`). This is the current raw
   visual gate.
 - Fixture accounting: 26 total 2P step fixtures exist. The `core2p` visual
   suite covers 25 of those step fixtures plus the long no-bonus wall rollout,
-  for 26 visual scenarios total. `source_print_manager_random_call_order_step`
-  is intentionally outside gray64 because it proves RNG/event order, not a
-  distinct rendered state.
+  plus 5 programmatic source-snapshot stress cases, for 31 visual scenarios
+  total. `source_print_manager_random_call_order_step` is intentionally outside
+  gray64 because it proves RNG/event order, not a distinct rendered state.
+- The visual harness now has two intentional mismatch canaries:
+  one removes a visible world body from the vector state, and one removes a
+  visible map bonus. Both are expected to fail and prove the harness really
+  catches visible missing geometry.
 - Current gray64 values distinguish 2P player trails and heads, but all active
   map bonuses collapse to one value (`208`). That is acceptable for the current
   geometry/fidelity gate, but it is not a full visual policy signal for natural
   bonus play because the model cannot see bonus type before contact. The model
-  tensor also has no explicit ego bonus stack/status channels.
+  tensor also has no explicit ego bonus stack/status channels. In the new stress
+  cases, gray64 shows geometry/consequence parity only: it does not encode the
+  SelfMaster invincible flag, the game borderless stack/expiry flag, or the
+  GameClear event/bonus identity after catch.
 
 ## Next-Work Checklist
 
-The current source-state visual gate passes: 26/26 `core2p` gray64 scenarios
+The current source-state visual gate passes: 31/31 `core2p` gray64 scenarios
 match exactly. The PrintManager RNG canary is intentionally not a gray64 case;
 it proves random/event ordering, not a distinct rendered state.
 
 1. Decide and prove typed bonus visual/status sufficiency beyond gray64 v0.
 2. Add bonus stack/death stress across timers, PrintManager, and terminal frames.
-3. Add 2P survivor-movement warmdown source/public coverage.
-4. Promote final/replay bonus state beyond metadata-only audit rows.
-5. Add broader 2P trail/body canaries if they are still open after the current
+3. Promote final/replay bonus state beyond metadata-only audit rows.
+4. Add broader 2P trail/body canaries if they are still open after the current
    collision-order and visual coverage audit.
 
 ## Remaining Holes
 
 ### P0 - Typed Bonus Visual And Status Sufficiency
 
-Hole: source-state raw 64x64 comparison is now real and the current 26/26
+Hole: source-state raw 64x64 comparison is now real and the current 31/31
 `core2p` gray64 gate passes exactly. The only intentionally excluded 2P step
 fixture is `source_print_manager_random_call_order_step`, because gray64 does
 not encode PrintManager random-call order or event order. The remaining visual
 promotion question is typed bonus visual/status sufficiency: gray64 v0 proves
 covered geometry/occupancy parity, but it does not expose active bonus type or
-ego stack/status needed for natural-bonus policy decisions. Warmdown survivor
-movement, bonus stack/death stress, final observation/replay handoff, and
-broader trail/body canaries also remain outside the current gate.
+ego stack/status needed for natural-bonus policy decisions. The added
+programmatic stress cases cover source-vs-vector rendered consequences for
+SelfMaster/body/wall, Borderless/expiry/wall, and GameClear/clear/collision,
+but they still do not visualize the hidden stack/status facts. Full
+source/original bonus stack/death fixtures, final observation/replay handoff,
+and broader trail/body canaries also remain outside the current gate.
 
 How to test against source/original:
 
@@ -107,12 +125,14 @@ Future comparison metrics checklist:
 Current source-state gate:
 
 - Command: `uv run python scripts/compare_2p_raw_visual_observation.py --suite core2p --format plain`
-- Latest result: exact source-vs-vector gray64 match across 26 core 2P
-  scenarios, including the long no-bonus wall rollout through terminal and the
-  four natural bonus spawn/retry/cap fixtures.
-- Step-fixture coverage: 25 of 26 total 2P step fixtures are in `core2p`.
-  The remaining fixture is `source_print_manager_random_call_order_step`, which
-  is verified by source/event-order tests rather than gray64.
+- Latest result: exact source-vs-vector gray64 match across 31 core 2P
+  scenarios, including the long no-bonus wall rollout through terminal, the
+  four natural bonus spawn/retry/cap fixtures, and the five programmatic
+  source-snapshot stress cases.
+- Step-fixture coverage: 25 of 26 total 2P step fixtures are in `core2p`,
+  alongside 5 programmatic source-snapshot stress cases. The remaining fixture
+  is `source_print_manager_random_call_order_step`, which is verified by
+  source/event-order tests rather than gray64.
 - What this proves: the learned raw source-state raster can be regenerated from
   both source-shaped state and fast vector state for these covered fixtures.
 - What this does not prove: original browser/canvas pixels, antialiasing,
@@ -125,7 +145,7 @@ Natural-bonus policy sufficiency:
 
 - Gray64 v0 is a geometry/fidelity gate. It proves source-shaped and vector
   rasters agree for covered body/head/trail/bonus occupancy states.
-- Gray64 v0 remains the current gate: 26/26 `core2p` gray64 scenarios, exact
+- Gray64 v0 remains the current gate: 31/31 `core2p` gray64 scenarios, exact
   match, one intentionally excluded PrintManager RNG canary. Do not silently
   replace this gate with a new tensor. Any richer tensor must get its own schema
   id, hashes, comparison command, fixture list, and promotion note.
@@ -218,6 +238,25 @@ Likely code area:
 
 Hole: bonus effect families are covered in focused paths, but broad 2P stress around simultaneous timers, PrintManager, death, warmdown, and stacking is still missing.
 
+2026-05-11 public/runtime update: `tests/test_vector_multiplayer_env.py` now
+adds two 2P seeded stress guards: `BonusGameClear` caught by the later-ordered
+player clears a body before the earlier player collision pass, and
+`BonusGameBorderless` expiry is applied before same-tick wall death/final-info
+metadata. These reduce the public-env regression surface, but this P1 hole
+stays open until matching source/original fixtures or probes exist.
+
+2026-05-11 visual harness update: `core2p` now also includes five
+programmatic source-snapshot stress comparisons: printing trail-point emission,
+explicit 2P survivor warmdown-frame movement/death,
+`BonusSelfMaster` body-hit protection followed by wall death,
+`BonusGameBorderless` expiry followed by wall death, and `BonusGameClear`
+clearing a future collision body. These are source-env snapshot comparisons,
+not new JS/original fixture files. They prove gray64 source-vs-vector
+geometry/consequence parity for those states, but gray64 still hides the
+important stack/status facts: PrintManager RNG/event order, invincibility,
+borderless-active/expired status, and the clear event/bonus identity are not
+visible channels.
+
 How to test against source/original:
 
 - Add 2P source/original scenarios for:
@@ -225,10 +264,12 @@ How to test against source/original:
   - bonus catch and wall/body death in the same frame
   - death while boosted clears stack and later expiry callbacks become no-ops
   - inverse/double-inverse while turning
-  - speed bonus with turn-rate and collision consequences
+  - longer speed-bonus movement/collision consequences after the turn-rate fix
   - straight-angle applied while already turning
-  - borderless expiry followed by wall death
-  - game clear before body collision
+  - JS/original fixture parity for SelfMaster body-hit protection followed by
+    wall death
+  - JS/original fixture parity for borderless expiry followed by wall death
+  - JS/original fixture parity for game clear before body collision
 - Assert event order, stack order, remaining timers, effective avatar/game properties, death order, and round/match state.
 
 Likely code area:
@@ -238,22 +279,28 @@ Likely code area:
 - `src/curvyzero/env/source_env.py`
 - Scenario/oracle tooling under `scenarios/environment`
 
-### P2 - 2P Warmdown-Frame Survivor Lifecycle
+### Closed - 2P Warmdown-Frame Survivor Lifecycle
 
-Hole: 2P has public checks for draw warmdown, max-score match end, active leave, and long wall terminal. It does not yet have a 2P source-backed survivor-moving-during-warmdown fixture. Existing broader survivor warmdown evidence outside 2P should not close this gap.
+Status: closed for the focused continuing-round 2P case.
 
-How to test against source/original:
+What is now covered:
 
-- Create a 2P source/original scenario with `max_score > 1` where one player dies, the survivor continues during warmdown, then hits a wall/body before `game:stop`.
-- Verify source behavior: no second scoring event, no second `round:end`, final round winner unchanged, next-round transition unchanged.
-- Match `VectorMultiplayerEnv.advance_warmdown_frame` and `advance_warmdown` metadata to that source trace.
-- Test both continuing-round and match-ending variants for final observation policy.
+- `scenarios/environment/source_lifecycle_survivor_score_2p_next_round.json`
+  pins the source/original behavior: avatar 2 dies at round end, avatar 1
+  keeps moving during warmdown, avatar 1 dies at 4150 ms, source emits no
+  second `round:end`, and `game:stop -> round:new` still fires at 8000 ms.
+- `tests/test_lifecycle_oracle.py` and `tests/test_source_lifecycle_runner.py`
+  prove the fixture against the original JS oracle and `CurvyTronSourceEnv`.
+- `tests/test_vector_multiplayer_env.py` proves the public
+  `advance_warmdown_frame(...)` bridge for 2P match-mode metadata: no rescore,
+  death order `[1, 0]`, score stays `[1, 0]`, warmdown timer continues from
+  3850 ms, and the next round consumes the same source RNG cursor through 16.
 
-Likely code area:
+Still not claimed:
 
-- `src/curvyzero/env/vector_multiplayer_env.py`
-- `src/curvyzero/env/vector_lifecycle.py`
-- `tests/test_vector_multiplayer_env.py`
+- A separate match-ending survivor-warmdown variant.
+- Visual/browser pixel parity for warmdown frames.
+- Trainer/replay final-observation promotion for this lifecycle shape.
 
 ### P2 - 2P Body/Trail Collision Canaries Beyond Collision Order
 
@@ -326,13 +373,12 @@ Likely code area:
 
 1. P0 typed bonus visual/status sufficiency.
 2. P1 bonus timer, stack, and death stress.
-3. P2 2P warmdown-frame survivor lifecycle.
-4. P1 bonus replay and final-state facts.
-5. P2 2P body/trail collision canaries beyond collision order, if still open.
-6. P1 trainer/learned observation and final observation contract.
-7. P2 row-local RNG and replay history.
-8. P3 fully blocked generated bonus-position policy.
-9. P3 true two-seat training/replay surface.
+3. P1 bonus replay and final-state facts.
+4. P2 2P body/trail collision canaries beyond collision order, if still open.
+5. P1 trainer/learned observation and final observation contract.
+6. P2 row-local RNG and replay history.
+7. P3 fully blocked generated bonus-position policy.
+8. P3 true two-seat training/replay surface.
 
 ## Practical Acceptance Pattern
 

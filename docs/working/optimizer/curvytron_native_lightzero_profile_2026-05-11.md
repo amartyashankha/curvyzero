@@ -368,9 +368,66 @@ Plain read: wider subprocess collection still helps on the current env, but it
 is not a free 2x per doubling. Throughput improves about `1.26x` from c16 to
 c32 and `1.18x` from c32 to c64. Learner and replay stay small. Search and
 collector forward are still the main wall-clock buckets. This points toward
-actor/search fanout or better batched search before a GPU-env rewrite, unless a
-future base-manager profile shows env step becoming the dominant share at
-longer survival horizons.
+either better batching inside the stock loop or a coarse synchronous
+collect-only fanout before a GPU-env rewrite, unless a future base-manager
+profile shows env step becoming the dominant share at longer survival horizons.
+
+Aggressive no-death follow-up with sparse telemetry, no background eval/GIF,
+and `gpu-l4-t4-cpu40`:
+
+```text
+attempt                         c    sims  steps   wall    steps/s  MCTS    policy collect  learner  replay  eval
+c64/sim4/traincalls10           64   4     15360   44.65s  344.04   6.23s   8.92s           2.03s    0.21s   6.13s
+c64/sim16/traincalls20          64   16    15360   69.50s  221.01   31.98s  25.95s          3.61s    0.54s   17.34s
+c128/sim16/traincalls10         128  16    30720   96.73s  317.57   38.14s  37.72s          2.44s    0.54s   17.81s
+c32/sim50/traincalls5           32   50    7680    87.08s  88.19    64.15s  38.70s          1.69s    0.12s   32.66s
+```
+
+Plain read: no-death is doing its job here; the rollouts reach the
+`source_max_steps=240` cap, so these are long-survival timing profiles rather
+than bad-policy short-episode timings. Lowering `num_simulations` from `16` to
+`4` speeds the c64 profile from `221` to `344` steps/s, but that is a profile
+or quality knob, not a hidden algorithmic optimization. Raising serious search
+pressure to `sim50` makes MCTS/eval the dominant wall-clock cost. Amdahl read:
+the next big speed question is searched collection/search parallelism, not
+learner, replay, or checkpoint micro-polish.
+
+Contract-fix rerun after adding the LightZero-required terminal
+`eval_episode_return` key to the source-state env wrapper and skipping stock
+in-loop eval in profile mode:
+
+```text
+run_id=opt-profile-contractfix-s20260511a
+env_variant=source_state_fixed_opponent
+reward_variant=dense_survival_plus_outcome
+death_mode=profile_no_death
+env_manager_type=subprocess
+stock_lightzero_eval=skipped_for_profile
+background_eval=false
+background_gif=false
+telemetry_stride=10000
+```
+
+```text
+compute          c   sims  steps   wall    steps/s  MCTS    policy collect  learner  replay
+gpu-l4-t4-cpu40  32  16    7680    38.09s  201.60   16.75s  22.23s          1.99s    0.17s
+gpu-l4-t4-cpu40  64  16    15360   50.78s  302.46   18.98s  27.33s          2.56s    0.29s
+gpu-l4-t4-cpu40  32  50    7680    72.25s  106.30   48.76s  54.27s          1.93s    0.17s
+cpu64            32  16    7680    74.93s  102.49   32.71s  57.81s          2.30s    0.79s
+```
+
+Plain read: the corrected stock path now reaches collection, replay, sample,
+and learner cleanly. The cheap GPU is worth using: c32/sim16 is about `2x`
+faster on `gpu-l4-t4-cpu40` than on `cpu64`. Widening from c32 to c64 improves
+throughput by about `1.5x`, mostly by feeding bigger MCTS/model batches. Raising
+search from sim16 to sim50 drops c32 throughput about `47%`; MCTS/search becomes
+the clear dominant bucket. Learner and replay are still too small to be the next
+optimization target.
+
+Tooling note: `scripts/summarize_curvytron_lightzero_profiles.py` now fetches
+and summarizes Modal profile summaries, including inferred MCTS root-batch
+means. The trainer's compact result now includes command/runtime fields and
+prints compact remote output; full summaries still live in the Volume.
 
 The same pass also profiled turn-commit as requested, despite its reward-credit
 caveat:
@@ -631,9 +688,9 @@ Near term:
 Bigger picture:
 
 - A 10x wall-clock win probably does not come from more single-loop polish.
-- The likely 10x path is many actor/search workers producing searched chunks,
-  explicit policy versions, replay merge, learner update, checkpoint publish,
-  and actor refresh cadence.
+- The likely 10x path is coarse synchronous fanout from a frozen checkpoint:
+  collect searched chunks in parallel, merge them, then run
+  learner/update/publish. Do not jump straight to an async service.
 - Do not change the MuZero algorithm to get speed. Lowering simulations is a
   profiling/quality knob, not a silent optimization.
 

@@ -7,12 +7,29 @@ in linked docs.
 
 North Star: [coach_north_star_2026-05-10.md](coach_north_star_2026-05-10.md).
 
-Lead metric: survival time. Score/return is secondary unless survival is also
-moving.
+Next reward gate: first CurvyTron runs should compare two trainer reward
+variants, without treating either as settled:
+
+- `sparse_outcome`: game outcome reward only.
+- `dense_survival_plus_outcome`: sparse outcome plus a dense survival helper
+  for longer horizons.
+
+Survival length is always eval/telemetry, not the trainer reward by itself.
+Promotion needs heldout eval and telemetry that separate trainer reward, sparse
+outcome, survival length, timeout/truncation, action behavior, and terminal
+causes.
+
+Implementation guardrail: keep the current CurvyTron LightZero lane on stock
+`train_muzero`. The intended changes are env/reward hooks and labeled eval
+telemetry, not a custom trainer.
+
+Eval guardrail: survival progress is measured from episode length. Eval may
+need `model_reward_variant` only to reconstruct a checkpoint's LightZero
+support/model shape; that is not the eval score.
 
 ## Current State
 
-Updated 2026-05-11 21:08 EDT.
+Updated 2026-05-11 22:36 EDT.
 
 - Pong replication has passed the basic learning-signal gate. Stock-like visual
   LightZero Pong learned to survive longer across several same-run checkpoint
@@ -68,16 +85,34 @@ Updated 2026-05-11 21:08 EDT.
 - Env-wrapper cleanup now covers the safe plumbing issues from the audit:
   source-state env knobs, metadata, telemetry, stack schema hash, and
   non-mutating render. This does not fix reward credit.
-- One CurvyTron app is still active:
-  `ap-pzRnD0oXuFYb4N7yWzORA3` /
-  `curvyzero-lightzero-curvytron-two-seat-train-smoke`.
+- Joint-action smoke passed on Modal:
+  `curvytron-source-state-joint-action-smoke-20260511a` /
+  `smoke-sim2-c2-steps64-20260511a`. It used stock `train_muzero`, saved
+  `iteration_0` through `iteration_6` plus `ckpt_best`, collected `53`
+  physical rows, had no action-collapse warning, and used all 9 scalar joint
+  actions (`0:11, 1:4, 2:1, 3:4, 4:11, 5:8, 6:4, 7:7, 8:3`).
+- That smoke is a stock-path control, not a learning claim. It uses
+  `curvyzero_all_players_alive_diagnostic/v0`: reward `+1` if both players are
+  alive after the tick, else `0`. Stock LightZero targets here are still the
+  configured discounted scalar reward, not the two-seat `gamma=1`
+  winner/loser return schema.
+- Sparse/dense fixed-opponent reward variant smokes passed on Modal under
+  `curvytron-reward-variant-smoke-20260511`. Both called stock
+  `lzero.entry.train_muzero`, passed readiness, wrote checkpoints, and had no
+  action-collapse warning. Sparse produced trainer reward only from terminal
+  outcome (`trainer_reward_sum=3.0` over `35` telemetry rows); dense produced
+  survival helper plus terminal outcome (`trainer_reward_sum=38.0` over `35`
+  rows). Both logged survival separately.
+- Default reward dry smoke passed under
+  `curvytron-reward-default-smoke-20260511` / `auto-default-sparse-dry`.
+  Omitting `--reward-variant` now resolves to `sparse_outcome`, not dense.
 
 ## Pong Facts
 
 Final cleanup evals confirmed that several Pong runs learned to survive longer.
 The curves are noisy, so compare each run to its own `iteration_0`.
 
-| run | checkpoints | mean survival steps | mean score |
+| run | checkpoints | mean survival steps | mean game score |
 | --- | --- | --- | --- |
 | `s114` L4/T4 stock64 | `0/13159` | `759.625 -> 1014.75` | `-21 -> -19.875` |
 | `s120` L4/T4 stock64 | `0/14012` | `759.625 -> 1125.88` | `-21 -> -19.75` |
@@ -99,7 +134,7 @@ src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_trai
 ```
 
 Despite the stale filename, the native path is source-state visual CurvyTron.
-There are now two important variants:
+There are now three important variants:
 
 - `env_variant=source_state_fixed_opponent`: fixed/frozen opponent control, not
   self-play.
@@ -112,7 +147,7 @@ There are now two important variants:
   `(player_0_action, player_1_action)`. This is one real source tick per
   transition and avoids turn-commit pending rows, but it is centralized control,
   not true competitive self-play.
-- Both use non-ALE visual stack `[4,64,64]`.
+- All three use non-ALE visual stack `[4,64,64]`.
 
 Optimizer smoke evidence:
 
@@ -132,11 +167,11 @@ credit the pending/player0 state for player1 survival. Use turn-commit for
 stock plumbing smoke/profile only; do not call it trainable or current-policy
 self-play.
 
-Turing recommendation, candidate/control only until tested: a 9-action
-centralized joint-action wrapper. One LightZero scalar action maps to
-`(p0_action, p1_action)`, one real CurvyTron tick, one reward,
-`to_play=-1`, and `action_space_size=9`. Loud caveat: centralized control, not
-true competitive self-play.
+Turing recommendation, candidate/control only until tested:
+`source_state_joint_action`, a 9-action centralized joint-action wrapper. One
+LightZero scalar action maps to `(p0_action, p1_action)`, one real CurvyTron
+tick, one reward, `to_play=-1`, and `action_space_size=9`. Loud caveat:
+centralized control, not true competitive self-play.
 
 Implementation note: the first diagnostic scalar is `+1` only while both
 players are alive after the real tick, otherwise `0`. That is a single control
@@ -147,10 +182,29 @@ target surface.
 
 Related cleanup ref: [native reuse critique](training/curvytron_lightzero_native_reuse_critique_2026-05-10.md).
 
-Reward-shaping note: a shared `+1 per survived step` signal is acceptable as a
-short-term diagnostic, but log sparse outcome and shaped survival separately.
-Long-loss-vs-short-win scale issues are recorded for later reward design, not
-the current plumbing blocker.
+Reward-shaping note: run the next comparison as explicit trainer reward
+variants, not as a single blended claim. Test both `sparse_outcome` and
+`dense_survival_plus_outcome`, each with its own reward schema id and scorecard.
+Survival length is always eval/telemetry. In
+`dense_survival_plus_outcome`, the dense survival term is a labeled training
+helper for longer horizons, not a promotion metric by itself. Use eval and
+telemetry to decide: trainer reward, sparse outcome, survival length,
+timeout/truncation, action behavior, and terminal causes must stay separate.
+The unbounded `+1 per step + T winner / -T loser` idea is recorded as rejected
+for default training because it changes the objective and ties value scale to
+horizon length.
+
+Target/support note: any value/reward support or discount tuning is a separate
+training-config ablation. Do not hide it inside reward shaping. If support size
+changes to fit a reward stream, report it next to the reward variant.
+Any reward variant or target profile saved with a model/checkpoint is for
+reconstructing the model and target shape needed to load that checkpoint. It
+does not define the eval score.
+
+Two-seat debug return schema: `terminal_winner_keeps_survival_loser_zero/v0`
+uses raw finite survival count with `gamma=1.0`; the decisive winner keeps its
+episode survival return and the loser trajectory is zeroed. This is a debug
+target path, not the current stock LightZero joint-action scalar reward.
 
 The active two-seat path now exposes policy-action-repeat/dropout knobs. The
 default is no repeat. Robustness variants may set these knobs, but learning
@@ -221,7 +275,10 @@ Validation:
 
 ## Reporting Rules
 
-- Report survival first.
+- Report trainer reward, sparse outcome, and survival length side by side; do
+  not let dense/helper reward stand in for true outcome.
+- Treat eval/progress survival as episode length. Checkpoint reward variant or
+  target profile only tells loaders how to rebuild checkpoint shape.
 - Compare each run to its own `iteration_0`.
 - Do not call early flat Pong reads failures before enough horizon.
 - Do not mix Pong and CurvyTron claims.
@@ -232,9 +289,12 @@ Validation:
 ## Current Gates
 
 - Keep CurvyTron as the active training lane.
-- Use CurvyTron checkpoint eval/inspection artifacts for survival curves,
-  action behavior, and death causes.
-- Treat no survival growth in CurvyTron as a stop-and-debug signal.
+- Use CurvyTron checkpoint eval/inspection artifacts for trainer reward, sparse
+  outcome, survival length, timeout/truncation, action behavior, and death
+  causes.
+- Treat no survival growth in CurvyTron as an early stop-and-debug signal, but
+  promote only after eval shows sparse outcome progress or an explicitly
+  accepted tie-break inside a sparse-outcome-equivalent band.
 
 ## Links
 

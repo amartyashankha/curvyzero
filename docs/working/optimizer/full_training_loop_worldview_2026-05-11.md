@@ -11,15 +11,19 @@ Related replication-control backlog:
 
 ## One-Line Goal
 
-Build a fast searched self-play data factory for visual CurvyTron, then train a
-MuZero-style model from the resulting replay. Do not confuse this with merely
-speeding up one local training loop.
+Current baseline: stock LightZero `train_muzero` on
+`source_state_fixed_opponent`. Future goal: if the stock loop is too slow, test
+coarse synchronous fanout of searched trajectory collection before designing
+any continuous actor/replay service.
 
 Plain English: we need actors to play games, search to choose good actions,
 replay to store those games, a learner to update the model, checkpoints to move
 new weights back to actors, and evals to tell whether anything improved.
 
-## Core Loop
+## Future Loop
+
+This is not the current stock `train_muzero` loop. It is the later decoupled
+shape if coarse fanout proves useful.
 
 ```text
 checkpoint N

@@ -21,6 +21,8 @@ ATTEMPT_SCHEMA = "curvyzero_modal_training_attempt/v1"
 LATEST_ATTEMPT_SCHEMA = "curvyzero_modal_training_latest_attempt/v1"
 CHECKPOINT_POINTER_SCHEMA = "curvyzero_modal_training_checkpoint_pointer/v1"
 BEST_CHECKPOINT_SCHEMA = "curvyzero_modal_training_best_checkpoint/v1"
+GIF_BROWSER_RUN_MARKER_SCHEMA = "curvyzero_modal_gif_browser_run_marker/v1"
+GIF_BROWSER_RUN_MARKER_FILENAME = "show_in_gif_browser.flag"
 
 ATTEMPT_STATUSES = {"running", "completed", "failed", "superseded"}
 
@@ -78,6 +80,10 @@ def run_root_ref(task_id: str, run_id: str) -> PurePosixPath:
 
 def run_manifest_ref(task_id: str, run_id: str) -> PurePosixPath:
     return run_root_ref(task_id, run_id) / "run.json"
+
+
+def gif_browser_run_marker_ref(task_id: str, run_id: str) -> PurePosixPath:
+    return run_root_ref(task_id, run_id) / GIF_BROWSER_RUN_MARKER_FILENAME
 
 
 def latest_attempt_ref(task_id: str, run_id: str) -> PurePosixPath:
@@ -283,6 +289,21 @@ def run_manifest(
         "run_id": clean_id(run_id, label="run_id"),
         "created_at": created_at or utc_timestamp(),
         "config": config or {},
+    }
+
+
+def gif_browser_run_marker(
+    *,
+    task_id: str,
+    run_id: str,
+    created_at: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "schema": GIF_BROWSER_RUN_MARKER_SCHEMA,
+        "task_id": clean_id(task_id, label="task_id"),
+        "run_id": clean_id(run_id, label="run_id"),
+        "created_at": created_at or utc_timestamp(),
+        "purpose": "show this run in the CurvyTron GIF browser run picker",
     }
 
 
