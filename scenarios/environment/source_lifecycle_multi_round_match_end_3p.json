@@ -1,0 +1,1122 @@
+{
+  "schema_version": "environment-scenario-v0",
+  "scenario_id": "source_lifecycle_multi_round_match_end_3p",
+  "title": "Source lifecycle multi-round match end 3P",
+  "ruleset_id": "curvytron-v1-reference",
+  "provenance": {
+    "labels": [
+      "source-derived",
+      "round-lifecycle",
+      "multi-round",
+      "match-end",
+      "max-score",
+      "all-present",
+      "3p",
+      "js-oracle-pinned"
+    ],
+    "source_target": "third_party/curvytron-reference",
+    "source_commit": "8fec14c",
+    "notes": [
+      "JS lifecycle oracle proof for source Game.onRoundEnd resolving round score into persistent match score across two all-present 3P rounds.",
+      "The harness starts with bonuses disabled and max_score 3, forces avatars 3 and 2 into same-frame wall deaths in round 1, and keeps avatar 1 on a slow safe path so avatar 1 survives the terminal source update and reaches persistent score 2.",
+      "The first warmdown emits game:stop and round:new because no present avatar is uniquely at or above max_score.",
+      "After the second warmup and delayed PrintManager.start timers, the harness repeats the controlled deaths so avatar 1 reaches persistent score 4; the second warmdown emits game:stop and end, with no following round:new.",
+      "This is only the focused 3P all-present multi-round match-end proof; it does not claim 4P, present/non-present broadening, removeAvatar, vector/full lifecycle, production self-play, bonuses, wire, or pixels."
+    ]
+  },
+  "source_setup": {
+    "player_count": 3,
+    "random": {
+      "math_random_sequence": [
+        0.25,
+        0.5,
+        0.015915494309189534,
+        0.29240806642941874,
+        0.5,
+        0.015915494309189534,
+        0.75,
+        0.5,
+        0.5,
+        0.5,
+        0.5,
+        0.999,
+        0.5,
+        0.5,
+        0.5,
+        0.25,
+        0.5,
+        0.015915494309189534,
+        0.29240806642941874,
+        0.5,
+        0.015915494309189534,
+        0.75,
+        0.5,
+        0.5,
+        0.5,
+        0.5,
+        0.999,
+        0.5,
+        0.5
+      ]
+    },
+    "room": {
+      "name": "source-lifecycle-multi-round-match-end-3p",
+      "max_score": 3,
+      "bonuses": [],
+      "bonus_rate": 0
+    }
+  },
+  "player_count": 3,
+  "lifecycle": {
+    "new_round_time_ms": 0,
+    "timer_advances_ms": [
+      0,
+      3000
+    ],
+    "include_deaths_snapshot": true,
+    "actions": [
+      {
+        "type": "advance_timers",
+        "ms": 0
+      },
+      {
+        "type": "set_avatar_state",
+        "avatar": 1,
+        "x": 5,
+        "y": 5,
+        "angle_rad": 0.7853981633974483,
+        "velocity": 8
+      },
+      {
+        "type": "advance_timers",
+        "ms": 3000
+      },
+      {
+        "type": "set_avatar_state",
+        "avatar": 3,
+        "x": 93,
+        "y": 47.5,
+        "angle_rad": 0,
+        "velocity": 16
+      },
+      {
+        "type": "set_avatar_state",
+        "avatar": 2,
+        "x": 1,
+        "y": 47.5,
+        "angle_rad": 3.141592653589793,
+        "velocity": 16
+      },
+      {
+        "type": "update",
+        "step_ms": 100
+      },
+      {
+        "type": "advance_timers",
+        "ms": 5000
+      },
+      {
+        "type": "advance_timers",
+        "ms": 3000
+      },
+      {
+        "type": "set_avatar_state",
+        "avatar": 1,
+        "x": 5,
+        "y": 5,
+        "angle_rad": 0.7853981633974483,
+        "velocity": 8
+      },
+      {
+        "type": "set_avatar_state",
+        "avatar": 2,
+        "x": 70,
+        "y": 20,
+        "angle_rad": 0.7853981633974483,
+        "velocity": 8
+      },
+      {
+        "type": "set_avatar_state",
+        "avatar": 3,
+        "x": 70,
+        "y": 70,
+        "angle_rad": 5.497787143782138,
+        "velocity": 8
+      },
+      {
+        "type": "advance_timers",
+        "ms": 3000
+      },
+      {
+        "type": "set_avatar_state",
+        "avatar": 3,
+        "x": 93,
+        "y": 47.5,
+        "angle_rad": 0,
+        "velocity": 16
+      },
+      {
+        "type": "set_avatar_state",
+        "avatar": 2,
+        "x": 1,
+        "y": 47.5,
+        "angle_rad": 3.141592653589793,
+        "velocity": 16
+      },
+      {
+        "type": "update",
+        "step_ms": 100
+      },
+      {
+        "type": "advance_timers",
+        "ms": 5000
+      }
+    ]
+  },
+  "players": [
+    {
+      "id": "p0",
+      "client_id": "p0-client",
+      "avatar_id": 1,
+      "name": "p0",
+      "color": "#ff0000"
+    },
+    {
+      "id": "p1",
+      "client_id": "p1-client",
+      "avatar_id": 2,
+      "name": "p1",
+      "color": "#00ff00"
+    },
+    {
+      "id": "p2",
+      "client_id": "p2-client",
+      "avatar_id": 3,
+      "name": "p2",
+      "color": "#0000ff"
+    }
+  ],
+  "expectations": {
+    "event_order": [
+      {
+        "order": 0,
+        "atMs": 0,
+        "event": "round:new",
+        "data": {}
+      },
+      {
+        "order": 1,
+        "atMs": 0,
+        "event": "random",
+        "data": {
+          "index": 0,
+          "value": 0.25,
+          "site": "spawn.position_x",
+          "avatar": 3
+        }
+      },
+      {
+        "order": 2,
+        "atMs": 0,
+        "event": "random",
+        "data": {
+          "index": 1,
+          "value": 0.5,
+          "site": "spawn.position_y",
+          "avatar": 3
+        }
+      },
+      {
+        "order": 3,
+        "atMs": 0,
+        "event": "position",
+        "data": {
+          "avatar": 3,
+          "x": 26.425,
+          "y": 47.5
+        }
+      },
+      {
+        "order": 4,
+        "atMs": 0,
+        "event": "random",
+        "data": {
+          "index": 2,
+          "value": 0.015915494309189534,
+          "site": "spawn.angle_attempt_0",
+          "avatar": 3
+        }
+      },
+      {
+        "order": 5,
+        "atMs": 0,
+        "event": "angle",
+        "data": {
+          "avatar": 3,
+          "angle": 0.1
+        }
+      },
+      {
+        "order": 6,
+        "atMs": 0,
+        "event": "random",
+        "data": {
+          "index": 3,
+          "value": 0.29240806642941874,
+          "site": "spawn.position_x",
+          "avatar": 2
+        }
+      },
+      {
+        "order": 7,
+        "atMs": 0,
+        "event": "random",
+        "data": {
+          "index": 4,
+          "value": 0.5,
+          "site": "spawn.position_y",
+          "avatar": 2
+        }
+      },
+      {
+        "order": 8,
+        "atMs": 0,
+        "event": "position",
+        "data": {
+          "avatar": 2,
+          "x": 30,
+          "y": 47.5
+        }
+      },
+      {
+        "order": 9,
+        "atMs": 0,
+        "event": "random",
+        "data": {
+          "index": 5,
+          "value": 0.015915494309189534,
+          "site": "spawn.angle_attempt_0",
+          "avatar": 2
+        }
+      },
+      {
+        "order": 10,
+        "atMs": 0,
+        "event": "angle",
+        "data": {
+          "avatar": 2,
+          "angle": 0.1
+        }
+      },
+      {
+        "order": 11,
+        "atMs": 0,
+        "event": "random",
+        "data": {
+          "index": 6,
+          "value": 0.75,
+          "site": "spawn.position_x",
+          "avatar": 1
+        }
+      },
+      {
+        "order": 12,
+        "atMs": 0,
+        "event": "random",
+        "data": {
+          "index": 7,
+          "value": 0.5,
+          "site": "spawn.position_y",
+          "avatar": 1
+        }
+      },
+      {
+        "order": 13,
+        "atMs": 0,
+        "event": "position",
+        "data": {
+          "avatar": 1,
+          "x": 68.575,
+          "y": 47.5
+        }
+      },
+      {
+        "order": 14,
+        "atMs": 0,
+        "event": "random",
+        "data": {
+          "index": 8,
+          "value": 0.5,
+          "site": "spawn.angle_attempt_0",
+          "avatar": 1
+        }
+      },
+      {
+        "order": 15,
+        "atMs": 0,
+        "event": "angle",
+        "data": {
+          "avatar": 1,
+          "angle": 3.141593
+        }
+      },
+      {
+        "order": 16,
+        "atMs": 0,
+        "event": "game:start",
+        "data": {}
+      },
+      {
+        "order": 17,
+        "atMs": 3000,
+        "event": "print_manager:start",
+        "data": {
+          "avatar": 3
+        }
+      },
+      {
+        "order": 18,
+        "atMs": 3000,
+        "event": "point",
+        "data": {
+          "avatar": 3,
+          "x": 74.16928,
+          "y": 52.290407,
+          "important": true
+        }
+      },
+      {
+        "order": 19,
+        "atMs": 3000,
+        "event": "property",
+        "data": {
+          "avatar": 3,
+          "property": "printing",
+          "value": true
+        }
+      },
+      {
+        "order": 20,
+        "atMs": 3000,
+        "event": "random",
+        "data": {
+          "index": 9,
+          "value": 0.5,
+          "site": "print_manager.start_distance",
+          "avatar": 3
+        }
+      },
+      {
+        "order": 21,
+        "atMs": 3000,
+        "event": "print_manager:start",
+        "data": {
+          "avatar": 2
+        }
+      },
+      {
+        "order": 22,
+        "atMs": 3000,
+        "event": "point",
+        "data": {
+          "avatar": 2,
+          "x": 77.74428,
+          "y": 52.290407,
+          "important": true
+        }
+      },
+      {
+        "order": 23,
+        "atMs": 3000,
+        "event": "property",
+        "data": {
+          "avatar": 2,
+          "property": "printing",
+          "value": true
+        }
+      },
+      {
+        "order": 24,
+        "atMs": 3000,
+        "event": "random",
+        "data": {
+          "index": 10,
+          "value": 0.5,
+          "site": "print_manager.start_distance",
+          "avatar": 2
+        }
+      },
+      {
+        "order": 25,
+        "atMs": 3000,
+        "event": "print_manager:start",
+        "data": {
+          "avatar": 1
+        }
+      },
+      {
+        "order": 26,
+        "atMs": 3000,
+        "event": "point",
+        "data": {
+          "avatar": 1,
+          "x": 21.964906,
+          "y": 21.964906,
+          "important": true
+        }
+      },
+      {
+        "order": 27,
+        "atMs": 3000,
+        "event": "property",
+        "data": {
+          "avatar": 1,
+          "property": "printing",
+          "value": true
+        }
+      },
+      {
+        "order": 28,
+        "atMs": 3000,
+        "event": "random",
+        "data": {
+          "index": 11,
+          "value": 0.999,
+          "site": "print_manager.start_distance",
+          "avatar": 1
+        }
+      },
+      {
+        "order": 29,
+        "atMs": 3000,
+        "event": "point",
+        "data": {
+          "avatar": 3,
+          "x": 94.6,
+          "y": 47.5,
+          "important": true
+        }
+      },
+      {
+        "order": 30,
+        "atMs": 3000,
+        "event": "property",
+        "data": {
+          "avatar": 3,
+          "property": "printing",
+          "value": false
+        }
+      },
+      {
+        "order": 31,
+        "atMs": 3000,
+        "event": "random",
+        "data": {
+          "index": 12,
+          "value": 0.5,
+          "site": "print_manager.stop_distance",
+          "avatar": 3
+        }
+      },
+      {
+        "order": 32,
+        "atMs": 3000,
+        "event": "die",
+        "data": {
+          "avatar": 3,
+          "killer": null,
+          "old": null
+        }
+      },
+      {
+        "order": 33,
+        "atMs": 3000,
+        "event": "score:round",
+        "data": {
+          "avatar": 3,
+          "score": 0,
+          "roundScore": 0
+        }
+      },
+      {
+        "order": 34,
+        "atMs": 3000,
+        "event": "point",
+        "data": {
+          "avatar": 2,
+          "x": -0.6,
+          "y": 47.5,
+          "important": true
+        }
+      },
+      {
+        "order": 35,
+        "atMs": 3000,
+        "event": "property",
+        "data": {
+          "avatar": 2,
+          "property": "printing",
+          "value": false
+        }
+      },
+      {
+        "order": 36,
+        "atMs": 3000,
+        "event": "random",
+        "data": {
+          "index": 13,
+          "value": 0.5,
+          "site": "print_manager.stop_distance",
+          "avatar": 2
+        }
+      },
+      {
+        "order": 37,
+        "atMs": 3000,
+        "event": "die",
+        "data": {
+          "avatar": 2,
+          "killer": null,
+          "old": null
+        }
+      },
+      {
+        "order": 38,
+        "atMs": 3000,
+        "event": "score:round",
+        "data": {
+          "avatar": 2,
+          "score": 0,
+          "roundScore": 0
+        }
+      },
+      {
+        "order": 39,
+        "atMs": 3000,
+        "event": "score:round",
+        "data": {
+          "avatar": 1,
+          "score": 0,
+          "roundScore": 2
+        }
+      },
+      {
+        "order": 40,
+        "atMs": 3000,
+        "event": "score",
+        "data": {
+          "avatar": 3,
+          "score": 0,
+          "roundScore": 0
+        }
+      },
+      {
+        "order": 41,
+        "atMs": 3000,
+        "event": "score",
+        "data": {
+          "avatar": 2,
+          "score": 0,
+          "roundScore": 0
+        }
+      },
+      {
+        "order": 42,
+        "atMs": 3000,
+        "event": "score",
+        "data": {
+          "avatar": 1,
+          "score": 2,
+          "roundScore": 2
+        }
+      },
+      {
+        "order": 43,
+        "atMs": 3000,
+        "event": "round:end",
+        "data": {
+          "winner": 1
+        }
+      },
+      {
+        "order": 44,
+        "atMs": 8000,
+        "event": "game:stop",
+        "data": {}
+      },
+      {
+        "order": 45,
+        "atMs": 8000,
+        "event": "round:new",
+        "data": {}
+      },
+      {
+        "order": 46,
+        "atMs": 8000,
+        "event": "property",
+        "data": {
+          "avatar": 1,
+          "property": "printing",
+          "value": false
+        }
+      },
+      {
+        "order": 47,
+        "atMs": 8000,
+        "event": "random",
+        "data": {
+          "index": 14,
+          "value": 0.5,
+          "site": "print_manager.stop_distance",
+          "avatar": 1
+        }
+      },
+      {
+        "order": 48,
+        "atMs": 8000,
+        "event": "random",
+        "data": {
+          "index": 15,
+          "value": 0.25,
+          "site": "spawn.position_x",
+          "avatar": 3
+        }
+      },
+      {
+        "order": 49,
+        "atMs": 8000,
+        "event": "random",
+        "data": {
+          "index": 16,
+          "value": 0.5,
+          "site": "spawn.position_y",
+          "avatar": 3
+        }
+      },
+      {
+        "order": 50,
+        "atMs": 8000,
+        "event": "position",
+        "data": {
+          "avatar": 3,
+          "x": 26.425,
+          "y": 47.5
+        }
+      },
+      {
+        "order": 51,
+        "atMs": 8000,
+        "event": "random",
+        "data": {
+          "index": 17,
+          "value": 0.015915494309189534,
+          "site": "spawn.angle_attempt_0",
+          "avatar": 3
+        }
+      },
+      {
+        "order": 52,
+        "atMs": 8000,
+        "event": "angle",
+        "data": {
+          "avatar": 3,
+          "angle": 0.1
+        }
+      },
+      {
+        "order": 53,
+        "atMs": 8000,
+        "event": "random",
+        "data": {
+          "index": 18,
+          "value": 0.29240806642941874,
+          "site": "spawn.position_x",
+          "avatar": 2
+        }
+      },
+      {
+        "order": 54,
+        "atMs": 8000,
+        "event": "random",
+        "data": {
+          "index": 19,
+          "value": 0.5,
+          "site": "spawn.position_y",
+          "avatar": 2
+        }
+      },
+      {
+        "order": 55,
+        "atMs": 8000,
+        "event": "position",
+        "data": {
+          "avatar": 2,
+          "x": 30,
+          "y": 47.5
+        }
+      },
+      {
+        "order": 56,
+        "atMs": 8000,
+        "event": "random",
+        "data": {
+          "index": 20,
+          "value": 0.015915494309189534,
+          "site": "spawn.angle_attempt_0",
+          "avatar": 2
+        }
+      },
+      {
+        "order": 57,
+        "atMs": 8000,
+        "event": "angle",
+        "data": {
+          "avatar": 2,
+          "angle": 0.1
+        }
+      },
+      {
+        "order": 58,
+        "atMs": 8000,
+        "event": "random",
+        "data": {
+          "index": 21,
+          "value": 0.75,
+          "site": "spawn.position_x",
+          "avatar": 1
+        }
+      },
+      {
+        "order": 59,
+        "atMs": 8000,
+        "event": "random",
+        "data": {
+          "index": 22,
+          "value": 0.5,
+          "site": "spawn.position_y",
+          "avatar": 1
+        }
+      },
+      {
+        "order": 60,
+        "atMs": 8000,
+        "event": "position",
+        "data": {
+          "avatar": 1,
+          "x": 68.575,
+          "y": 47.5
+        }
+      },
+      {
+        "order": 61,
+        "atMs": 8000,
+        "event": "random",
+        "data": {
+          "index": 23,
+          "value": 0.5,
+          "site": "spawn.angle_attempt_0",
+          "avatar": 1
+        }
+      },
+      {
+        "order": 62,
+        "atMs": 8000,
+        "event": "angle",
+        "data": {
+          "avatar": 1,
+          "angle": 3.141593
+        }
+      },
+      {
+        "order": 63,
+        "atMs": 11000,
+        "event": "game:start",
+        "data": {}
+      },
+      {
+        "order": 64,
+        "atMs": 14000,
+        "event": "print_manager:start",
+        "data": {
+          "avatar": 3
+        }
+      },
+      {
+        "order": 65,
+        "atMs": 14000,
+        "event": "point",
+        "data": {
+          "avatar": 3,
+          "x": 86.964906,
+          "y": 53.035094,
+          "important": true
+        }
+      },
+      {
+        "order": 66,
+        "atMs": 14000,
+        "event": "property",
+        "data": {
+          "avatar": 3,
+          "property": "printing",
+          "value": true
+        }
+      },
+      {
+        "order": 67,
+        "atMs": 14000,
+        "event": "random",
+        "data": {
+          "index": 24,
+          "value": 0.5,
+          "site": "print_manager.start_distance",
+          "avatar": 3
+        }
+      },
+      {
+        "order": 68,
+        "atMs": 14000,
+        "event": "print_manager:start",
+        "data": {
+          "avatar": 2
+        }
+      },
+      {
+        "order": 69,
+        "atMs": 14000,
+        "event": "point",
+        "data": {
+          "avatar": 2,
+          "x": 86.964906,
+          "y": 36.964906,
+          "important": true
+        }
+      },
+      {
+        "order": 70,
+        "atMs": 14000,
+        "event": "property",
+        "data": {
+          "avatar": 2,
+          "property": "printing",
+          "value": true
+        }
+      },
+      {
+        "order": 71,
+        "atMs": 14000,
+        "event": "random",
+        "data": {
+          "index": 25,
+          "value": 0.5,
+          "site": "print_manager.start_distance",
+          "avatar": 2
+        }
+      },
+      {
+        "order": 72,
+        "atMs": 14000,
+        "event": "print_manager:start",
+        "data": {
+          "avatar": 1
+        }
+      },
+      {
+        "order": 73,
+        "atMs": 14000,
+        "event": "point",
+        "data": {
+          "avatar": 1,
+          "x": 21.964906,
+          "y": 21.964906,
+          "important": true
+        }
+      },
+      {
+        "order": 74,
+        "atMs": 14000,
+        "event": "property",
+        "data": {
+          "avatar": 1,
+          "property": "printing",
+          "value": true
+        }
+      },
+      {
+        "order": 75,
+        "atMs": 14000,
+        "event": "random",
+        "data": {
+          "index": 26,
+          "value": 0.999,
+          "site": "print_manager.start_distance",
+          "avatar": 1
+        }
+      },
+      {
+        "order": 76,
+        "atMs": 14000,
+        "event": "point",
+        "data": {
+          "avatar": 3,
+          "x": 94.6,
+          "y": 47.5,
+          "important": true
+        }
+      },
+      {
+        "order": 77,
+        "atMs": 14000,
+        "event": "property",
+        "data": {
+          "avatar": 3,
+          "property": "printing",
+          "value": false
+        }
+      },
+      {
+        "order": 78,
+        "atMs": 14000,
+        "event": "random",
+        "data": {
+          "index": 27,
+          "value": 0.5,
+          "site": "print_manager.stop_distance",
+          "avatar": 3
+        }
+      },
+      {
+        "order": 79,
+        "atMs": 14000,
+        "event": "die",
+        "data": {
+          "avatar": 3,
+          "killer": null,
+          "old": null
+        }
+      },
+      {
+        "order": 80,
+        "atMs": 14000,
+        "event": "score:round",
+        "data": {
+          "avatar": 3,
+          "score": 0,
+          "roundScore": 0
+        }
+      },
+      {
+        "order": 81,
+        "atMs": 14000,
+        "event": "point",
+        "data": {
+          "avatar": 2,
+          "x": -0.6,
+          "y": 47.5,
+          "important": true
+        }
+      },
+      {
+        "order": 82,
+        "atMs": 14000,
+        "event": "property",
+        "data": {
+          "avatar": 2,
+          "property": "printing",
+          "value": false
+        }
+      },
+      {
+        "order": 83,
+        "atMs": 14000,
+        "event": "random",
+        "data": {
+          "index": 28,
+          "value": 0.5,
+          "site": "print_manager.stop_distance",
+          "avatar": 2
+        }
+      },
+      {
+        "order": 84,
+        "atMs": 14000,
+        "event": "die",
+        "data": {
+          "avatar": 2,
+          "killer": null,
+          "old": null
+        }
+      },
+      {
+        "order": 85,
+        "atMs": 14000,
+        "event": "score:round",
+        "data": {
+          "avatar": 2,
+          "score": 0,
+          "roundScore": 0
+        }
+      },
+      {
+        "order": 86,
+        "atMs": 14000,
+        "event": "score:round",
+        "data": {
+          "avatar": 1,
+          "score": 2,
+          "roundScore": 2
+        }
+      },
+      {
+        "order": 87,
+        "atMs": 14000,
+        "event": "score",
+        "data": {
+          "avatar": 3,
+          "score": 0,
+          "roundScore": 0
+        }
+      },
+      {
+        "order": 88,
+        "atMs": 14000,
+        "event": "score",
+        "data": {
+          "avatar": 2,
+          "score": 0,
+          "roundScore": 0
+        }
+      },
+      {
+        "order": 89,
+        "atMs": 14000,
+        "event": "score",
+        "data": {
+          "avatar": 1,
+          "score": 4,
+          "roundScore": 2
+        }
+      },
+      {
+        "order": 90,
+        "atMs": 14000,
+        "event": "round:end",
+        "data": {
+          "winner": 1
+        }
+      },
+      {
+        "order": 91,
+        "atMs": 19000,
+        "event": "game:stop",
+        "data": {}
+      },
+      {
+        "order": 92,
+        "atMs": 19000,
+        "event": "end",
+        "data": {}
+      }
+    ]
+  }
+}

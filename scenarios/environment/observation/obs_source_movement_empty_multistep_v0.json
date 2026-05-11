@@ -1,0 +1,80 @@
+{
+  "schema_version": "observation-fixture-manifest-v0",
+  "fixture_id": "obs_source_movement_empty_multistep_v0",
+  "status": "distilled_source_state_observation_canary",
+  "title": "Source straight-movement empty-arena observation canary",
+  "observation_schema_id": "curvyzero_egocentric_rays/v0",
+  "observation_schema_hash": "61767187ffa4a3a6",
+  "ruleset_id": "curvyzero-v0",
+  "state_source": {
+    "kind": "source_scenario_expected_frames_distilled_state",
+    "source_backed_observation_fidelity": true,
+    "source_backing_scope": "Trusted source kinematics expected frames are distilled into EnvState snapshots with empty occupancy; this is not a learned-observation oracle from the original browser source.",
+    "source_scenario": "scenarios/environment/source_kinematics_straight_multistep.json",
+    "source_scenario_id": "source_kinematics_straight_multistep",
+    "source_expected_frame_ticks": [0, 3],
+    "state_snapshot_policy": "Use comparison.expected.frames positions/headings/alive for the listed ticks; leave occupancy empty because the source fixture forces printing off.",
+    "browser_pixel_fidelity": false,
+    "full_trail_body_fidelity": false,
+    "notes": [
+      "The original source has no learned ray observation; this canary only checks how the v0 trainer helper encodes trusted source movement states.",
+      "The wall channel is allowed to encode absolute arena geometry, so perspective checks intentionally target non-wall channels and scalars."
+    ]
+  },
+  "config": {
+    "width": 88,
+    "height": 88,
+    "players": 2,
+    "max_ticks": 120,
+    "action_repeat": 1,
+    "speed": 0.2666666667,
+    "turn_rate_radians": 0.0466666667,
+    "trail_radius": 0.6,
+    "allow_straight_action": true
+  },
+  "player_ids": ["p0", "p1"],
+  "checks": {
+    "source_fixture_reference": {
+      "require_source_fidelity": true,
+      "expected_frame_ticks": [0, 3],
+      "expected_initial_printing": [false, false]
+    },
+    "empty_trail_channels": {
+      "ego_ids": ["p0", "p1"],
+      "source_frame_ticks": [0, 3],
+      "channel_indices": {
+        "own_trail": 1,
+        "opponent_trail": 2
+      },
+      "expect_no_hit": 1.0,
+      "absolute_tolerance": 0.000001
+    },
+    "ego_perspective_non_wall_symmetry": {
+      "ego_ids": ["p0", "p1"],
+      "source_frame_ticks": [0, 3],
+      "equal_fields": [
+        "rays[0, opponent_head]",
+        "rays[:, own_trail]",
+        "rays[:, opponent_trail]",
+        "scalars"
+      ],
+      "intentionally_unchecked_fields": ["rays[:, wall_or_out_of_bounds]"],
+      "absolute_tolerance": 0.00001
+    },
+    "movement_closes_forward_head_distance": {
+      "ego_id": "p0",
+      "source_frame_ticks": [0, 3],
+      "ray_index": 0,
+      "channel_index": 3,
+      "expect_later_less_than_earlier": true,
+      "also_check_tick_scalar": true,
+      "tick_scalar_index": 2,
+      "absolute_tolerance": 0.000001
+    }
+  },
+  "remaining_before_promotion": [
+    "Use source body/trail arrays, not empty occupancy, before claiming trail or collision observation fidelity.",
+    "Add borderless wrap, normal-wall terminal, and same-frame death observation canaries only after their trusted state snapshots are represented without helper-only shortcuts.",
+    "Keep browser pixel checks separate from this semantic ray canary."
+  ]
+}

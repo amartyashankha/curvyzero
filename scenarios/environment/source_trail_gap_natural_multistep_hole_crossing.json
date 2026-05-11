@@ -1,0 +1,178 @@
+{
+  "schema_version": "environment-scenario-v0",
+  "scenario_id": "source_trail_gap_natural_multistep_hole_crossing",
+  "title": "Source trail gap natural multistep hole crossing",
+  "ruleset_id": "curvytron-v1-reference",
+  "provenance": {
+    "labels": [
+      "source-derived",
+      "trail-gap",
+      "print-manager",
+      "random-tape",
+      "multi-step",
+      "js-oracle-pinned",
+      "python-runner-verified"
+    ],
+    "source_target": "third_party/curvytron-reference",
+    "source_commit": "8fec14c",
+    "notes": [
+      "Three-player JS oracle for a natural multi-step PrintManager gap, without seeded bodies or forced per-frame printing changes.",
+      "p1 starts in a hole with an active PrintManager at exact-zero distance; the first tick toggles to printing and consumes tape value 0.0 for an 18-unit print distance.",
+      "The next two 1000 ms ticks spend that print distance, emit normal trail bodies, then toggle p1 back into a hole at x=58 with tape value 0.5 for a 5.25-unit hole distance.",
+      "On the third tick p1 toggles into a hole at x=58 using tape value 0.5, while p0 reaches x=66,y=40 inside that natural hole and stays alive.",
+      "This fixture proves the newly created natural gap interior is body-free after a multi-step print cadence; it does not claim broader trail-gap, bonus, wall, or round-lifecycle fidelity."
+    ]
+  },
+  "source_setup": {
+    "player_count": 3,
+    "map_size": 95,
+    "random": {
+      "math_random_sequence": [
+        0,
+        0.5
+      ]
+    },
+    "room": {
+      "name": "source-trail-gap-natural-multistep-hole-crossing",
+      "max_score": 10,
+      "bonuses": [],
+      "bonus_rate": 0
+    },
+    "game": {
+      "started": true,
+      "in_round": true,
+      "borderless": false,
+      "world_active": true
+    }
+  },
+  "player_count": 3,
+  "initial_state": {
+    "map_size": 95,
+    "world_bodies": []
+  },
+  "time_policy": {
+    "kind": "fixed",
+    "step_ms": 1000
+  },
+  "players": [
+    {
+      "id": "p0",
+      "client_id": "p0-client",
+      "avatar_id": 1,
+      "name": "p0",
+      "color": "#ff0000",
+      "initial": {
+        "x": 66,
+        "y": 88,
+        "angle_rad": -1.5707963267948966,
+        "printing": false,
+        "trail": {
+          "points": []
+        }
+      }
+    },
+    {
+      "id": "p1",
+      "client_id": "p1-client",
+      "avatar_id": 2,
+      "name": "p1",
+      "color": "#00ff00",
+      "initial": {
+        "x": 10,
+        "y": 40,
+        "angle_rad": 0,
+        "printing": false,
+        "print_manager": {
+          "active": true,
+          "distance": 0,
+          "last_x": 10,
+          "last_y": 40
+        }
+      }
+    },
+    {
+      "id": "p2",
+      "client_id": "p2-client",
+      "avatar_id": 3,
+      "name": "p2",
+      "color": "#0000ff",
+      "initial": {
+        "x": 110,
+        "y": 20,
+        "angle_rad": 3.141592653589793,
+        "printing": false,
+        "trail": {
+          "points": []
+        }
+      }
+    }
+  ],
+  "steps": [
+    {
+      "tick": 0,
+      "step_ms": 1000,
+      "moves": [
+        {
+          "player_id": "p0",
+          "move": 0
+        },
+        {
+          "player_id": "p1",
+          "move": 0
+        },
+        {
+          "player_id": "p2",
+          "move": 0
+        }
+      ]
+    },
+    {
+      "tick": 1,
+      "step_ms": 1000,
+      "moves": [
+        {
+          "player_id": "p0",
+          "move": 0
+        },
+        {
+          "player_id": "p1",
+          "move": 0
+        },
+        {
+          "player_id": "p2",
+          "move": 0
+        }
+      ]
+    },
+    {
+      "tick": 2,
+      "step_ms": 1000,
+      "moves": [
+        {
+          "player_id": "p0",
+          "move": 0
+        },
+        {
+          "player_id": "p1",
+          "move": 0
+        },
+        {
+          "player_id": "p2",
+          "move": 0
+        }
+      ]
+    }
+  ],
+  "comparison": {
+    "kind": "js-oracle-raw-state-trace",
+    "trace_schema_version": "environment-trace-v0",
+    "include_events": true,
+    "python_target": "source-trail-gap-canary",
+    "source_fidelity_required": true,
+    "tolerances": {
+      "position": 0.000001,
+      "angle": 0.000001,
+      "velocity": 0.000001
+    }
+  }
+}

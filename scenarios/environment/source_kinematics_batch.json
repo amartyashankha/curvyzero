@@ -1,0 +1,13 @@
+{
+  "schema": "curvyzero_fidelity_batch/v1",
+  "description": "Tiny source-kinematics movement batch. These scenarios check forced-state movement only.",
+  "scenarios": [
+    "scenarios/environment/source_kinematics_straight_step.json",
+    "scenarios/environment/source_kinematics_straight_multistep.json",
+    "scenarios/environment/source_kinematics_turn_multistep.json",
+    "scenarios/environment/source_kinematics_varied_elapsed_multistep.json",
+    "scenarios/environment/source_kinematics_left_turn_step.json",
+    "scenarios/environment/source_kinematics_right_turn_step.json",
+    "scenarios/environment/forced_two_player_turn_step.json"
+  ]
+}

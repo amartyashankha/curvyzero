@@ -1,0 +1,172 @@
+{
+  "schema_version": "environment-scenario-v0",
+  "scenario_id": "source_lifecycle_spawn_heading_rejection_retry_2p",
+  "title": "Source lifecycle spawn heading rejection retry 2P",
+  "ruleset_id": "curvytron-v1-reference",
+  "provenance": {
+    "labels": [
+      "source-derived",
+      "round-lifecycle",
+      "natural-spawn",
+      "rng-order",
+      "heading-rejection",
+      "js-oracle-pinned"
+    ],
+    "source_target": "third_party/curvytron-reference",
+    "source_commit": "8fec14c",
+    "notes": [
+      "JS lifecycle oracle proof for source World.getRandomDirection() retry behavior during natural Game.newRound() spawn.",
+      "The fixture stops immediately after first-round natural spawn so it proves heading rejection without adding PrintManager, wall-death, or next-round behavior.",
+      "In this source checkout BaseAvatar.prototype.radius is 0.6, so the 2P spawn margin is 5.0 and the first spawned avatar lands at x=5,y=44."
+    ]
+  },
+  "source_setup": {
+    "player_count": 2,
+    "random": {
+      "math_random_sequence": [
+        0.0,
+        0.5,
+        0.5,
+        0.25,
+        0.6794871794871795,
+        0.5,
+        0.5159154943091895
+      ]
+    },
+    "room": {
+      "name": "source-lifecycle-spawn-heading-rejection-retry-2p",
+      "max_score": 10,
+      "bonuses": [],
+      "bonus_rate": 0
+    }
+  },
+  "player_count": 2,
+  "lifecycle": {
+    "new_round_time_ms": 0,
+    "timer_advances_ms": []
+  },
+  "players": [
+    {
+      "id": "p0",
+      "client_id": "p0-client",
+      "avatar_id": 1,
+      "name": "p0",
+      "color": "#ff0000"
+    },
+    {
+      "id": "p1",
+      "client_id": "p1-client",
+      "avatar_id": 2,
+      "name": "p1",
+      "color": "#00ff00"
+    }
+  ],
+  "expectations": {
+    "event_order": [
+      {
+        "event": "round:new",
+        "atMs": 0
+      },
+      {
+        "event": "random",
+        "data": {
+          "index": 0,
+          "value": 0.0,
+          "site": "spawn.position_x",
+          "avatar": 2
+        }
+      },
+      {
+        "event": "random",
+        "data": {
+          "index": 1,
+          "value": 0.5,
+          "site": "spawn.position_y",
+          "avatar": 2
+        }
+      },
+      {
+        "event": "position",
+        "data": {
+          "avatar": 2,
+          "x": 5,
+          "y": 44
+        }
+      },
+      {
+        "event": "random",
+        "data": {
+          "index": 2,
+          "value": 0.5,
+          "site": "spawn.angle_attempt_0",
+          "avatar": 2
+        }
+      },
+      {
+        "event": "random",
+        "data": {
+          "index": 3,
+          "value": 0.25,
+          "site": "spawn.angle_attempt_1",
+          "avatar": 2
+        }
+      },
+      {
+        "event": "angle",
+        "data": {
+          "avatar": 2,
+          "angle": 1.570796
+        }
+      },
+      {
+        "event": "random",
+        "data": {
+          "index": 4,
+          "value": 0.6794871794871795,
+          "site": "spawn.position_x",
+          "avatar": 1
+        }
+      },
+      {
+        "event": "random",
+        "data": {
+          "index": 5,
+          "value": 0.5,
+          "site": "spawn.position_y",
+          "avatar": 1
+        }
+      },
+      {
+        "event": "position",
+        "data": {
+          "avatar": 1,
+          "x": 58,
+          "y": 44
+        }
+      },
+      {
+        "event": "random",
+        "data": {
+          "index": 6,
+          "value": 0.5159154943091895,
+          "site": "spawn.angle_attempt_0",
+          "avatar": 1
+        }
+      },
+      {
+        "event": "angle",
+        "data": {
+          "avatar": 1,
+          "angle": 3.241593
+        }
+      }
+    ]
+  },
+  "comparison": {
+    "kind": "js-lifecycle-oracle-raw-event-order",
+    "trace_schema_version": "environment-lifecycle-trace-v0",
+    "include_events": true,
+    "source_fidelity_required": true,
+    "python_target": null
+  }
+}

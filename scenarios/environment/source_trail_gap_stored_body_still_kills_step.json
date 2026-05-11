@@ -1,0 +1,147 @@
+{
+  "schema_version": "environment-scenario-v0",
+  "scenario_id": "source_trail_gap_stored_body_still_kills_step",
+  "title": "Source trail gap stored body still kills step",
+  "ruleset_id": "curvytron-v1-reference",
+  "provenance": {
+    "labels": [
+      "source-derived",
+      "trail-gap",
+      "body-collision",
+      "js-oracle-pinned"
+    ],
+    "source_target": "third_party/curvytron-reference",
+    "source_commit": "8fec14c",
+    "notes": [
+      "Three-player JS oracle proving that visual hole state does not delete stored collision bodies.",
+      "p1 owns a forced visual hole and moves from (40,40) to (41.6,40) while printing is false.",
+      "A seeded p1 body at the endpoint kills p0 when p0 moves there later in the same source update.",
+      "p1 itself ignores its own stored body through source own-body latency, so p0 is the crossing victim/control."
+    ]
+  },
+  "source_setup": {
+    "player_count": 3,
+    "map_size": 95,
+    "random": {
+      "math_random": 0.5
+    },
+    "room": {
+      "name": "source-trail-gap-stored-body-still-kills-step",
+      "max_score": 10,
+      "bonuses": [],
+      "bonus_rate": 0
+    },
+    "game": {
+      "started": true,
+      "in_round": true,
+      "borderless": false,
+      "world_active": true
+    }
+  },
+  "player_count": 3,
+  "initial_state": {
+    "map_size": 95,
+    "world_bodies": [
+      {
+        "player_id": "p1",
+        "x": 41.6,
+        "y": 40,
+        "radius": 0.6,
+        "num": 0
+      }
+    ]
+  },
+  "time_policy": {
+    "kind": "fixed",
+    "step_ms": 100
+  },
+  "players": [
+    {
+      "id": "p0",
+      "client_id": "p0-client",
+      "avatar_id": 1,
+      "name": "p0",
+      "color": "#ff0000",
+      "initial": {
+        "x": 43.2,
+        "y": 40,
+        "angle_rad": 3.141592653589793,
+        "printing": false,
+        "trail": {
+          "points": []
+        }
+      }
+    },
+    {
+      "id": "p1",
+      "client_id": "p1-client",
+      "avatar_id": 2,
+      "name": "p1",
+      "color": "#00ff00",
+      "initial": {
+        "x": 40,
+        "y": 40,
+        "angle_rad": 0,
+        "printing": false,
+        "body_count": 1,
+        "trail": {
+          "points": []
+        },
+        "print_manager": {
+          "active": true,
+          "distance": 10,
+          "last_x": 40,
+          "last_y": 40
+        }
+      }
+    },
+    {
+      "id": "p2",
+      "client_id": "p2-client",
+      "avatar_id": 3,
+      "name": "p2",
+      "color": "#0000ff",
+      "initial": {
+        "x": 80,
+        "y": 20,
+        "angle_rad": 3.141592653589793,
+        "printing": false,
+        "trail": {
+          "points": []
+        }
+      }
+    }
+  ],
+  "steps": [
+    {
+      "tick": 0,
+      "step_ms": 100,
+      "moves": [
+        {
+          "player_id": "p0",
+          "move": 0
+        },
+        {
+          "player_id": "p1",
+          "move": 0
+        },
+        {
+          "player_id": "p2",
+          "move": 0
+        }
+      ]
+    }
+  ],
+  "comparison": {
+    "kind": "js-oracle-raw-state-trace",
+    "trace_schema_version": "environment-trace-v0",
+    "include_events": true,
+    "python_target": "pending-source-trail-gap",
+    "source_fidelity_required": true,
+    "tolerances": {
+      "position": 0.000001,
+      "angle": 0.000001,
+      "velocity": 0.000001
+    }
+  }
+}

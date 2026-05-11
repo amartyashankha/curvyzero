@@ -1,0 +1,90 @@
+{
+  "schema_version": "environment-scenario-v0",
+  "scenario_id": "source_lifecycle_long_1v1_no_bonus_wall_round_done",
+  "title": "Source lifecycle long 1v1 no-bonus wall round done",
+  "ruleset_id": "curvytron-v1-reference",
+  "provenance": {
+    "labels": [
+      "source-derived",
+      "round-lifecycle",
+      "natural-spawn",
+      "long-rollout",
+      "no-bonus",
+      "js-reuse-worker"
+    ],
+    "source_target": "third_party/curvytron-reference",
+    "source_commit": "8fec14c",
+    "notes": [
+      "Persistent-worker proof fixture for one deterministic Game.newRound() reset followed by many manual game.update(step_ms) calls.",
+      "Both players naturally spawn from a Math.random tape and move west with no bonuses configured; avatar 2 reaches the wall first.",
+      "The intended assertion stops at source round:end/roundDone. Full warmdown to game:stop/gameDone is not covered by this fixture."
+    ]
+  },
+  "source_setup": {
+    "player_count": 2,
+    "random": {
+      "math_random_sequence": [
+        0.32051282051282054,
+        0.5,
+        0.5,
+        0.6794871794871795,
+        0.5,
+        0.5
+      ]
+    },
+    "room": {
+      "name": "source-lifecycle-long-1v1-no-bonus-wall-round-done",
+      "max_score": 1,
+      "bonuses": [],
+      "bonus_rate": 0
+    }
+  },
+  "player_count": 2,
+  "lifecycle": {
+    "new_round_time_ms": 0
+  },
+  "players": [
+    {
+      "id": "p0",
+      "client_id": "p0-client",
+      "avatar_id": 1,
+      "name": "p0",
+      "color": "#ff0000"
+    },
+    {
+      "id": "p1",
+      "client_id": "p1-client",
+      "avatar_id": 2,
+      "name": "p1",
+      "color": "#00ff00"
+    }
+  ],
+  "rollout": {
+    "step_count": 111,
+    "step_ms_expr": "1000 / 60",
+    "step_ms": 16.666666666666668,
+    "advance_timers_ms": 0,
+    "moves": [0, 0],
+    "terminal_tick": 110,
+    "expected": {
+      "round_done": true,
+      "game_done": false,
+      "round_winner": 1,
+      "deaths": [2],
+      "scores": [1, 0],
+      "alive": [true, false],
+      "final_positions": [
+        [28.4, 44],
+        [0.4, 44]
+      ],
+      "reward": [1, 0]
+    },
+    "remaining_gap": "The persistent step API reaches source roundDone. It does not drive the source warmdown timer to gameDone without also exercising the source free-running frame loop."
+  },
+  "comparison": {
+    "kind": "js-reuse-worker-long-natural-rollout",
+    "trace_schema_version": "environment-trace-v0",
+    "source_fidelity_required": true,
+    "python_target": null
+  }
+}

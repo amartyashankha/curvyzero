@@ -1,0 +1,153 @@
+{
+  "schema_version": "environment-scenario-v0",
+  "scenario_id": "source_collision_head_head_reverse_order_single_death_step",
+  "title": "Source collision order head-head reverse-order single death step",
+  "ruleset_id": "curvytron-v1-reference",
+  "provenance": {
+    "labels": [
+      "source-derived",
+      "collision-order",
+      "head-head",
+      "same-frame-point",
+      "js-oracle-pinned",
+      "python-runner-verified"
+    ],
+    "source_target": "third_party/curvytron-reference",
+    "source_commit": "8fec14c",
+    "notes": [
+      "Two-player JS oracle backup for head-head-looking same-endpoint movement under reverse source avatar update order.",
+      "p1 updates first, reaches (44,44), emits a normal point body, and survives because its own fresh body is ignored by own-trail latency.",
+      "p0 updates second, reaches the same endpoint, emits its own normal point, then dies to p1's same-frame emitted point body.",
+      "The live p1 head alone is not a collision body; this fixture proves the source order asymmetry comes from synchronous point insertion, not a symmetric live-head collision rule.",
+      "Forced trail state makes initial printing a direct runtime state and avoids setup-time printManager.start() point side effects."
+    ]
+  },
+  "source_setup": {
+    "player_count": 2,
+    "map_size": 88,
+    "random": {
+      "math_random": 0.5
+    },
+    "room": {
+      "name": "source-collision-head-head-reverse-order-single-death-step",
+      "max_score": 10,
+      "bonuses": [],
+      "bonus_rate": 0
+    },
+    "game": {
+      "started": true,
+      "in_round": true,
+      "borderless": false,
+      "world_active": true
+    }
+  },
+  "player_count": 2,
+  "initial_state": {
+    "map_size": 88,
+    "world_bodies": []
+  },
+  "time_policy": {
+    "kind": "fixed",
+    "step_ms": 100
+  },
+  "players": [
+    {
+      "id": "p0",
+      "client_id": "p0-client",
+      "avatar_id": 1,
+      "name": "p0",
+      "color": "#ff0000",
+      "initial": {
+        "x": 42.4,
+        "y": 44,
+        "angle_rad": 0,
+        "printing": true,
+        "trail": {
+          "points": []
+        },
+        "print_manager": {
+          "active": false,
+          "distance": 0,
+          "last_x": 0,
+          "last_y": 0
+        }
+      }
+    },
+    {
+      "id": "p1",
+      "client_id": "p1-client",
+      "avatar_id": 2,
+      "name": "p1",
+      "color": "#00ff00",
+      "initial": {
+        "x": 45.6,
+        "y": 44,
+        "angle_rad": 3.141592653589793,
+        "printing": true,
+        "trail": {
+          "points": []
+        },
+        "print_manager": {
+          "active": false,
+          "distance": 0,
+          "last_x": 0,
+          "last_y": 0
+        }
+      }
+    }
+  ],
+  "steps": [
+    {
+      "tick": 0,
+      "step_ms": 100,
+      "moves": [
+        {
+          "player_id": "p0",
+          "move": 0
+        },
+        {
+          "player_id": "p1",
+          "move": 0
+        }
+      ]
+    }
+  ],
+  "comparison": {
+    "kind": "js-oracle-raw-state-trace",
+    "trace_schema_version": "environment-trace-v0",
+    "include_events": true,
+    "python_target": "source-body-canary",
+    "source_fidelity_required": true,
+    "tolerances": {
+      "position": 0.000001,
+      "angle": 0.000001,
+      "velocity": 0.000001
+    },
+    "expected": {
+      "oracle_command": "node tools/reference_oracle/scenario_runner.js scenarios/environment/source_collision_head_head_reverse_order_single_death_step.json",
+      "events": [
+        {"event": "position", "player_id": "p1", "x": 44, "y": 44},
+        {"event": "point", "player_id": "p1", "x": 44, "y": 44, "important": false},
+        {"event": "position", "player_id": "p0", "x": 44, "y": 44},
+        {"event": "point", "player_id": "p0", "x": 44, "y": 44, "important": false},
+        {"event": "point", "player_id": "p0", "x": 44, "y": 44, "important": false},
+        {"event": "die", "player_id": "p0", "killer_id": "p1", "old": false},
+        {"event": "score:round", "player_id": "p0", "roundScore": 0},
+        {"event": "score:round", "player_id": "p1", "roundScore": 1},
+        {"event": "score", "player_id": "p1", "score": 1},
+        {"event": "score", "player_id": "p0", "score": 0},
+        {"event": "round:end", "winner": "p1"}
+      ],
+      "final_state": {
+        "alive": [false, true],
+        "scores": [0, 1],
+        "roundScores": [0, 0],
+        "deathKillers": ["p1", null],
+        "deathCount": 1,
+        "deaths": ["p0"],
+        "roundWinner": "p1",
+        "worldBodyCount": 3
+      }
+    }
+  }
+}

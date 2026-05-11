@@ -1,0 +1,119 @@
+{
+  "schema_version": "environment-scenario-v0",
+  "scenario_id": "source_bonus_spawn_type_position_rng_step",
+  "title": "Source natural bonus type and position RNG step",
+  "ruleset_id": "curvytron-v1-reference",
+  "provenance": {
+    "labels": [
+      "source-derived",
+      "bonus",
+      "rng",
+      "js-oracle"
+    ],
+    "source_target": "third_party/curvytron-reference",
+    "source_commit": "8fec14c",
+    "notes": [
+      "Tiny JS oracle proof for natural BonusManager.start -> popBonus RNG call order with a one-type bonus list.",
+      "bonus_rate=1 makes the first pop delay 1500ms, before the source 3000ms PrintManager starts, so no print-manager random draw contaminates this proof.",
+      "The fixture proves initial delay, next delay, type draw, x/y position draws, bonus:pop event order, spawned type/x/y, and bonus counts only; it does not claim catch, effects, stack, expiry, cap, or retry behavior."
+    ]
+  },
+  "source_setup": {
+    "player_count": 2,
+    "map_size": 88,
+    "random": {
+      "math_random_sequence": [
+        {
+          "label": "bonus.start_delay",
+          "value": 0
+        },
+        {
+          "label": "bonus.next_delay_after_pop",
+          "value": 0.5
+        },
+        {
+          "label": "bonus.type.BonusSelfSmall",
+          "value": 0.2
+        },
+        {
+          "label": "bonus.position.x",
+          "value": 0.25
+        },
+        {
+          "label": "bonus.position.y",
+          "value": 0.75
+        }
+      ]
+    },
+    "room": {
+      "name": "source-bonus-spawn-type-position-rng-step",
+      "max_score": 10,
+      "bonuses": [
+        "BonusSelfSmall"
+      ],
+      "bonus_rate": 1
+    },
+    "game": {
+      "started": true,
+      "in_round": true,
+      "borderless": false,
+      "world_active": false,
+      "invoke_on_start": true
+    }
+  },
+  "player_count": 2,
+  "initial_state": {},
+  "players": [
+    {
+      "id": "p0",
+      "client_id": "p0-client",
+      "avatar_id": 1,
+      "name": "p0",
+      "color": "#ff0000",
+      "initial": {
+        "x": 20,
+        "y": 20,
+        "angle_rad": 0,
+        "printing": false
+      }
+    },
+    {
+      "id": "p1",
+      "client_id": "p1-client",
+      "avatar_id": 2,
+      "name": "p1",
+      "color": "#00ff00",
+      "initial": {
+        "x": 70,
+        "y": 70,
+        "angle_rad": 0,
+        "printing": false
+      }
+    }
+  ],
+  "steps": [
+    {
+      "tick": 0,
+      "step_ms": 0,
+      "advance_timers_ms": 1500,
+      "moves": [
+        {
+          "player_id": "p0",
+          "move": 0
+        },
+        {
+          "player_id": "p1",
+          "move": 0
+        }
+      ]
+    }
+  ],
+  "comparison": {
+    "kind": "js-oracle-state-trace",
+    "trace_schema_version": "environment-trace-v0",
+    "include_events": true,
+    "python_target": "source-bonus-js-oracle",
+    "source_fidelity_required": true,
+    "scope": "natural bonus one-type spawn/type/position RNG only"
+  }
+}

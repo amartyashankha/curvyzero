@@ -1,0 +1,171 @@
+{
+  "schema_version": "environment-scenario-v0",
+  "scenario_id": "source_lifecycle_present_absent_3p_round_new",
+  "title": "Source lifecycle present absent 3P round new",
+  "ruleset_id": "curvytron-v1-reference",
+  "provenance": {
+    "labels": [
+      "source-derived",
+      "round-lifecycle",
+      "natural-spawn",
+      "present-absent",
+      "3p",
+      "js-oracle-pinned"
+    ],
+    "source_target": "third_party/curvytron-reference",
+    "source_commit": "8fec14c",
+    "notes": [
+      "JS lifecycle oracle proof for source Game.onRoundNew() with one non-present avatar in a three-player room.",
+      "The fixture marks avatar 2 absent before the first Game.newRound() and stops immediately after round-new spawn.",
+      "It proves the absent avatar consumes no spawn RNG and is added to the source deaths collection during Game.onRoundNew()."
+    ]
+  },
+  "source_setup": {
+    "player_count": 3,
+    "random": {
+      "math_random_sequence": [
+        0.25,
+        0.5,
+        0.25,
+        0.75,
+        0.5,
+        0.75
+      ]
+    },
+    "room": {
+      "name": "source-lifecycle-present-absent-3p-round-new",
+      "max_score": 10,
+      "bonuses": [],
+      "bonus_rate": 0
+    }
+  },
+  "player_count": 3,
+  "lifecycle": {
+    "new_round_time_ms": 0,
+    "timer_advances_ms": [],
+    "include_deaths_snapshot": true
+  },
+  "players": [
+    {
+      "id": "p0",
+      "client_id": "p0-client",
+      "avatar_id": 1,
+      "name": "p0",
+      "color": "#ff0000"
+    },
+    {
+      "id": "p1",
+      "client_id": "p1-client",
+      "avatar_id": 2,
+      "name": "p1",
+      "color": "#00ff00",
+      "present": false
+    },
+    {
+      "id": "p2",
+      "client_id": "p2-client",
+      "avatar_id": 3,
+      "name": "p2",
+      "color": "#0000ff"
+    }
+  ],
+  "expectations": {
+    "event_order": [
+      {
+        "event": "round:new",
+        "atMs": 0
+      },
+      {
+        "event": "random",
+        "data": {
+          "index": 0,
+          "value": 0.25,
+          "site": "spawn.position_x",
+          "avatar": 3
+        }
+      },
+      {
+        "event": "random",
+        "data": {
+          "index": 1,
+          "value": 0.5,
+          "site": "spawn.position_y",
+          "avatar": 3
+        }
+      },
+      {
+        "event": "position",
+        "data": {
+          "avatar": 3,
+          "x": 26.425,
+          "y": 47.5
+        }
+      },
+      {
+        "event": "random",
+        "data": {
+          "index": 2,
+          "value": 0.25,
+          "site": "spawn.angle_attempt_0",
+          "avatar": 3
+        }
+      },
+      {
+        "event": "angle",
+        "data": {
+          "avatar": 3,
+          "angle": 1.570796
+        }
+      },
+      {
+        "event": "random",
+        "data": {
+          "index": 3,
+          "value": 0.75,
+          "site": "spawn.position_x",
+          "avatar": 1
+        }
+      },
+      {
+        "event": "random",
+        "data": {
+          "index": 4,
+          "value": 0.5,
+          "site": "spawn.position_y",
+          "avatar": 1
+        }
+      },
+      {
+        "event": "position",
+        "data": {
+          "avatar": 1,
+          "x": 68.575,
+          "y": 47.5
+        }
+      },
+      {
+        "event": "random",
+        "data": {
+          "index": 5,
+          "value": 0.75,
+          "site": "spawn.angle_attempt_0",
+          "avatar": 1
+        }
+      },
+      {
+        "event": "angle",
+        "data": {
+          "avatar": 1,
+          "angle": 4.712389
+        }
+      }
+    ]
+  },
+  "comparison": {
+    "kind": "js-lifecycle-oracle-raw-event-order",
+    "trace_schema_version": "environment-lifecycle-trace-v0",
+    "include_events": true,
+    "source_fidelity_required": true,
+    "python_target": null
+  }
+}

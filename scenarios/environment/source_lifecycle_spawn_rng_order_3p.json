@@ -1,0 +1,214 @@
+{
+  "schema_version": "environment-scenario-v0",
+  "scenario_id": "source_lifecycle_spawn_rng_order_3p",
+  "title": "Source lifecycle spawn RNG order 3P",
+  "ruleset_id": "curvytron-v1-reference",
+  "provenance": {
+    "labels": [
+      "source-derived",
+      "round-lifecycle",
+      "natural-spawn",
+      "rng-order",
+      "3p",
+      "js-oracle-pinned"
+    ],
+    "source_target": "third_party/curvytron-reference",
+    "source_commit": "8fec14c",
+    "notes": [
+      "JS lifecycle oracle proof for source Game.newRound() natural spawn order with three present avatars.",
+      "The fixture stops immediately after first-round natural spawn, so it proves 3P spawn and labeled RNG call order without PrintManager, wall-death, or next-round behavior.",
+      "The source Game.onRoundNew() loop walks avatars.items backward, so the pinned spawn/RNG order is avatar 3, then 2, then 1."
+    ]
+  },
+  "source_setup": {
+    "player_count": 3,
+    "random": {
+      "math_random_sequence": [
+        0.25,
+        0.5,
+        0.25,
+        0.5,
+        0.5,
+        0.5,
+        0.75,
+        0.5,
+        0.75
+      ]
+    },
+    "room": {
+      "name": "source-lifecycle-spawn-rng-order-3p",
+      "max_score": 10,
+      "bonuses": [],
+      "bonus_rate": 0
+    }
+  },
+  "player_count": 3,
+  "lifecycle": {
+    "new_round_time_ms": 0,
+    "timer_advances_ms": []
+  },
+  "players": [
+    {
+      "id": "p0",
+      "client_id": "p0-client",
+      "avatar_id": 1,
+      "name": "p0",
+      "color": "#ff0000"
+    },
+    {
+      "id": "p1",
+      "client_id": "p1-client",
+      "avatar_id": 2,
+      "name": "p1",
+      "color": "#00ff00"
+    },
+    {
+      "id": "p2",
+      "client_id": "p2-client",
+      "avatar_id": 3,
+      "name": "p2",
+      "color": "#0000ff"
+    }
+  ],
+  "expectations": {
+    "event_order": [
+      {
+        "event": "round:new",
+        "atMs": 0
+      },
+      {
+        "event": "random",
+        "data": {
+          "index": 0,
+          "value": 0.25,
+          "site": "spawn.position_x",
+          "avatar": 3
+        }
+      },
+      {
+        "event": "random",
+        "data": {
+          "index": 1,
+          "value": 0.5,
+          "site": "spawn.position_y",
+          "avatar": 3
+        }
+      },
+      {
+        "event": "position",
+        "data": {
+          "avatar": 3,
+          "x": 26.425,
+          "y": 47.5
+        }
+      },
+      {
+        "event": "random",
+        "data": {
+          "index": 2,
+          "value": 0.25,
+          "site": "spawn.angle_attempt_0",
+          "avatar": 3
+        }
+      },
+      {
+        "event": "angle",
+        "data": {
+          "avatar": 3,
+          "angle": 1.570796
+        }
+      },
+      {
+        "event": "random",
+        "data": {
+          "index": 3,
+          "value": 0.5,
+          "site": "spawn.position_x",
+          "avatar": 2
+        }
+      },
+      {
+        "event": "random",
+        "data": {
+          "index": 4,
+          "value": 0.5,
+          "site": "spawn.position_y",
+          "avatar": 2
+        }
+      },
+      {
+        "event": "position",
+        "data": {
+          "avatar": 2,
+          "x": 47.5,
+          "y": 47.5
+        }
+      },
+      {
+        "event": "random",
+        "data": {
+          "index": 5,
+          "value": 0.5,
+          "site": "spawn.angle_attempt_0",
+          "avatar": 2
+        }
+      },
+      {
+        "event": "angle",
+        "data": {
+          "avatar": 2,
+          "angle": 3.141593
+        }
+      },
+      {
+        "event": "random",
+        "data": {
+          "index": 6,
+          "value": 0.75,
+          "site": "spawn.position_x",
+          "avatar": 1
+        }
+      },
+      {
+        "event": "random",
+        "data": {
+          "index": 7,
+          "value": 0.5,
+          "site": "spawn.position_y",
+          "avatar": 1
+        }
+      },
+      {
+        "event": "position",
+        "data": {
+          "avatar": 1,
+          "x": 68.575,
+          "y": 47.5
+        }
+      },
+      {
+        "event": "random",
+        "data": {
+          "index": 8,
+          "value": 0.75,
+          "site": "spawn.angle_attempt_0",
+          "avatar": 1
+        }
+      },
+      {
+        "event": "angle",
+        "data": {
+          "avatar": 1,
+          "angle": 4.712389
+        }
+      }
+    ]
+  },
+  "comparison": {
+    "kind": "js-lifecycle-oracle-raw-event-order",
+    "trace_schema_version": "environment-lifecycle-trace-v0",
+    "include_events": true,
+    "source_fidelity_required": true,
+    "python_target": null
+  }
+}

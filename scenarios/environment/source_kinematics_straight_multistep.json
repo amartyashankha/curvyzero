@@ -1,0 +1,208 @@
+{
+  "schema_version": "environment-scenario-v0",
+  "id": "source_kinematics_straight_multistep",
+  "title": "Source kinematics straight multi-step",
+  "ruleset_id": "curvytron-v1-reference",
+  "provenance": {
+    "labels": [
+      "source-derived",
+      "movement-only"
+    ],
+    "source_target": "third_party/curvytron-reference",
+    "source_commit": "8fec14c",
+    "notes": [
+      "Deterministic four-step source movement fixture for straight fixed-step motion.",
+      "Intended proof: each source update keeps heading fixed and advances position by source speed over the fixed step_ms.",
+      "Printing is forced off so the fixture asserts movement event order only; no trail, collision, bonus, score, or round outcome behavior is asserted."
+    ]
+  },
+  "source_setup": {
+    "player_count": 2,
+    "map_size": 88,
+    "random": {
+      "math_random": 0.5
+    },
+    "room": {
+      "name": "source-kinematics-straight-multistep",
+      "max_score": 10,
+      "bonuses": [],
+      "bonus_rate": 0
+    },
+    "game": {
+      "started": true,
+      "in_round": true,
+      "borderless": false,
+      "world_active": true
+    }
+  },
+  "players": [
+    {
+      "id": "p0",
+      "client_id": "p0-client",
+      "avatar_id": 1,
+      "name": "p0",
+      "color": "#ff0000",
+      "initial": {
+        "x": 20,
+        "y": 40,
+        "angle_rad": 0,
+        "printing": false
+      }
+    },
+    {
+      "id": "p1",
+      "client_id": "p1-client",
+      "avatar_id": 2,
+      "name": "p1",
+      "color": "#00ff00",
+      "initial": {
+        "x": 60,
+        "y": 40,
+        "angle_rad": 3.141592653589793,
+        "printing": false
+      }
+    }
+  ],
+  "steps": [
+    {
+      "tick": 0,
+      "step_ms_expr": "1000 / 60",
+      "step_ms": 16.666666666666668,
+      "moves": [
+        {
+          "player_id": "p0",
+          "move": 0
+        },
+        {
+          "player_id": "p1",
+          "move": 0
+        }
+      ]
+    },
+    {
+      "tick": 1,
+      "step_ms_expr": "1000 / 60",
+      "step_ms": 16.666666666666668,
+      "moves": [
+        {
+          "player_id": "p0",
+          "move": 0
+        },
+        {
+          "player_id": "p1",
+          "move": 0
+        }
+      ]
+    },
+    {
+      "tick": 2,
+      "step_ms_expr": "1000 / 60",
+      "step_ms": 16.666666666666668,
+      "moves": [
+        {
+          "player_id": "p0",
+          "move": 0
+        },
+        {
+          "player_id": "p1",
+          "move": 0
+        }
+      ]
+    },
+    {
+      "tick": 3,
+      "step_ms_expr": "1000 / 60",
+      "step_ms": 16.666666666666668,
+      "moves": [
+        {
+          "player_id": "p0",
+          "move": 0
+        },
+        {
+          "player_id": "p1",
+          "move": 0
+        }
+      ]
+    }
+  ],
+  "comparison": {
+    "kind": "js-python-state-trace",
+    "trace_schema_version": "environment-trace-v0",
+    "python_target": "curvyzero-v0",
+    "source_fidelity_required": true,
+    "include_events": true,
+    "tolerances": {
+      "position": 0.000001,
+      "angle": 0.000001,
+      "velocity": 0.000001
+    },
+    "expected": {
+      "oracle_command": "node tools/reference_oracle/scenario_runner.js scenarios/environment/source_kinematics_straight_multistep.json",
+      "tolerance_policy": "Compare rounded source movement state with position, angle, and velocity tolerance 0.000001.",
+      "frames": [
+        {
+          "tick": 0,
+          "positions": [
+            [20.266667, 40],
+            [59.733333, 40]
+          ],
+          "headings": [0, 3.141593],
+          "alive": [true, true],
+          "events": [
+            {"event": "position", "player_id": "p1"},
+            {"event": "position", "player_id": "p0"}
+          ]
+        },
+        {
+          "tick": 1,
+          "positions": [
+            [20.533333, 40],
+            [59.466667, 40]
+          ],
+          "headings": [0, 3.141593],
+          "alive": [true, true],
+          "events": [
+            {"event": "position", "player_id": "p1"},
+            {"event": "position", "player_id": "p0"}
+          ]
+        },
+        {
+          "tick": 2,
+          "positions": [
+            [20.8, 40],
+            [59.2, 40]
+          ],
+          "headings": [0, 3.141593],
+          "alive": [true, true],
+          "events": [
+            {"event": "position", "player_id": "p1"},
+            {"event": "position", "player_id": "p0"}
+          ]
+        },
+        {
+          "tick": 3,
+          "positions": [
+            [21.066667, 40],
+            [58.933333, 40]
+          ],
+          "headings": [0, 3.141593],
+          "alive": [true, true],
+          "events": [
+            {"event": "position", "player_id": "p1"},
+            {"event": "position", "player_id": "p0"}
+          ]
+        }
+      ],
+      "final_state": {
+        "positions": [
+          [21.066667, 40],
+          [58.933333, 40]
+        ],
+        "headings": [0, 3.141593],
+        "alive": [true, true],
+        "scores": [0, 0],
+        "roundScores": [0, 0]
+      }
+    }
+  }
+}

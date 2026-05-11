@@ -1,0 +1,418 @@
+{
+  "schema_version": "environment-scenario-v0",
+  "scenario_id": "source_lifecycle_tie_at_max_score_4p",
+  "title": "Source lifecycle tie at max score 4P",
+  "ruleset_id": "curvytron-v1-reference",
+  "provenance": {
+    "labels": [
+      "source-derived",
+      "round-lifecycle",
+      "tie-at-max-score",
+      "max-score",
+      "next-round",
+      "4p",
+      "js-oracle-pinned"
+    ],
+    "source_target": "third_party/curvytron-reference",
+    "source_commit": "8fec14c",
+    "notes": [
+      "JS lifecycle oracle proof for source Game.onStop() continuing a 4P match when multiple present avatars are tied at max score.",
+      "The harness starts a real all-present 4P source round with max_score 2, waits for delayed PrintManager.start timers, forces avatars 4 and 3 to die first, then forces avatars 2 and 1 to die together in the next source update.",
+      "Because Game.update() captures deaths.count() at frame start, avatars 2 and 1 both resolve to score 2; source isWon() sees tied leaders at max score and starts the next round instead of emitting end.",
+      "This is a JS-oracle source fixture only. It does not claim Python source-runner parity, vector lifecycle parity, public-env parity, replay, trainer observations, bonuses, wire behavior, or pixels."
+    ]
+  },
+  "source_setup": {
+    "player_count": 4,
+    "random": {
+      "math_random_sequence": [
+        0.2,
+        0.5,
+        0.25,
+        0.4,
+        0.5,
+        0.015915494309189534,
+        0.6,
+        0.5,
+        0.5,
+        0.8,
+        0.5,
+        0.75,
+        0.5,
+        0.5,
+        0.5,
+        0.5,
+        0.5,
+        0.5,
+        0.5,
+        0.5,
+        0.2,
+        0.5,
+        0.25,
+        0.4,
+        0.5,
+        0.015915494309189534,
+        0.6,
+        0.5,
+        0.5,
+        0.8,
+        0.5,
+        0.75
+      ]
+    },
+    "room": {
+      "name": "source-lifecycle-tie-at-max-score-4p",
+      "max_score": 2,
+      "bonuses": [],
+      "bonus_rate": 0
+    }
+  },
+  "player_count": 4,
+  "lifecycle": {
+    "new_round_time_ms": 0,
+    "timer_advances_ms": [
+      0,
+      3000
+    ],
+    "include_deaths_snapshot": true,
+    "actions": [
+      {
+        "type": "advance_timers",
+        "ms": 0
+      },
+      {
+        "type": "advance_timers",
+        "ms": 3000
+      },
+      {
+        "type": "set_avatar_state",
+        "avatar": 4,
+        "x": 99,
+        "y": 50.5,
+        "angle_rad": 0
+      },
+      {
+        "type": "set_avatar_state",
+        "avatar": 3,
+        "x": 1,
+        "y": 50.5,
+        "angle_rad": 3.141592653589793
+      },
+      {
+        "type": "update",
+        "step_ms": 100
+      },
+      {
+        "type": "set_avatar_state",
+        "avatar": 2,
+        "x": 50.5,
+        "y": 1,
+        "angle_rad": 4.71238898038469
+      },
+      {
+        "type": "set_avatar_state",
+        "avatar": 1,
+        "x": 50.5,
+        "y": 99,
+        "angle_rad": 1.5707963267948966
+      },
+      {
+        "type": "update",
+        "step_ms": 100
+      },
+      {
+        "type": "advance_timers",
+        "ms": 5000
+      }
+    ]
+  },
+  "players": [
+    {
+      "id": "p0",
+      "client_id": "p0-client",
+      "avatar_id": 1,
+      "name": "p0",
+      "color": "#ff0000"
+    },
+    {
+      "id": "p1",
+      "client_id": "p1-client",
+      "avatar_id": 2,
+      "name": "p1",
+      "color": "#00ff00"
+    },
+    {
+      "id": "p2",
+      "client_id": "p2-client",
+      "avatar_id": 3,
+      "name": "p2",
+      "color": "#0000ff"
+    },
+    {
+      "id": "p3",
+      "client_id": "p3-client",
+      "avatar_id": 4,
+      "name": "p3",
+      "color": "#ffff00"
+    }
+  ],
+  "expectations": {
+    "event_order": [
+      {
+        "event": "round:new"
+      },
+      {
+        "event": "random"
+      },
+      {
+        "event": "random"
+      },
+      {
+        "event": "position"
+      },
+      {
+        "event": "random"
+      },
+      {
+        "event": "angle"
+      },
+      {
+        "event": "random"
+      },
+      {
+        "event": "random"
+      },
+      {
+        "event": "position"
+      },
+      {
+        "event": "random"
+      },
+      {
+        "event": "angle"
+      },
+      {
+        "event": "random"
+      },
+      {
+        "event": "random"
+      },
+      {
+        "event": "position"
+      },
+      {
+        "event": "random"
+      },
+      {
+        "event": "angle"
+      },
+      {
+        "event": "random"
+      },
+      {
+        "event": "random"
+      },
+      {
+        "event": "position"
+      },
+      {
+        "event": "random"
+      },
+      {
+        "event": "angle"
+      },
+      {
+        "event": "game:start"
+      },
+      {
+        "event": "print_manager:start"
+      },
+      {
+        "event": "point"
+      },
+      {
+        "event": "property"
+      },
+      {
+        "event": "random"
+      },
+      {
+        "event": "print_manager:start"
+      },
+      {
+        "event": "point"
+      },
+      {
+        "event": "property"
+      },
+      {
+        "event": "random"
+      },
+      {
+        "event": "print_manager:start"
+      },
+      {
+        "event": "point"
+      },
+      {
+        "event": "property"
+      },
+      {
+        "event": "random"
+      },
+      {
+        "event": "print_manager:start"
+      },
+      {
+        "event": "point"
+      },
+      {
+        "event": "property"
+      },
+      {
+        "event": "random"
+      },
+      {
+        "event": "point"
+      },
+      {
+        "event": "property"
+      },
+      {
+        "event": "random"
+      },
+      {
+        "event": "die"
+      },
+      {
+        "event": "score:round"
+      },
+      {
+        "event": "point"
+      },
+      {
+        "event": "property"
+      },
+      {
+        "event": "random"
+      },
+      {
+        "event": "die"
+      },
+      {
+        "event": "score:round"
+      },
+      {
+        "event": "point"
+      },
+      {
+        "event": "property"
+      },
+      {
+        "event": "random"
+      },
+      {
+        "event": "die"
+      },
+      {
+        "event": "score:round"
+      },
+      {
+        "event": "point"
+      },
+      {
+        "event": "property"
+      },
+      {
+        "event": "random"
+      },
+      {
+        "event": "die"
+      },
+      {
+        "event": "score:round"
+      },
+      {
+        "event": "score"
+      },
+      {
+        "event": "score"
+      },
+      {
+        "event": "score"
+      },
+      {
+        "event": "score"
+      },
+      {
+        "event": "round:end"
+      },
+      {
+        "event": "game:stop"
+      },
+      {
+        "event": "round:new"
+      },
+      {
+        "event": "random"
+      },
+      {
+        "event": "random"
+      },
+      {
+        "event": "position"
+      },
+      {
+        "event": "random"
+      },
+      {
+        "event": "angle"
+      },
+      {
+        "event": "random"
+      },
+      {
+        "event": "random"
+      },
+      {
+        "event": "position"
+      },
+      {
+        "event": "random"
+      },
+      {
+        "event": "angle"
+      },
+      {
+        "event": "random"
+      },
+      {
+        "event": "random"
+      },
+      {
+        "event": "position"
+      },
+      {
+        "event": "random"
+      },
+      {
+        "event": "angle"
+      },
+      {
+        "event": "random"
+      },
+      {
+        "event": "random"
+      },
+      {
+        "event": "position"
+      },
+      {
+        "event": "random"
+      },
+      {
+        "event": "angle"
+      }
+    ]
+  }
+}

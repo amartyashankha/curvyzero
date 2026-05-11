@@ -1,0 +1,100 @@
+{
+  "schema_version": "environment-scenario-v0",
+  "scenario_id": "source_borderless_wrap_step",
+  "title": "Source borderless wrap step",
+  "ruleset_id": "curvytron-v1-reference",
+  "provenance": {
+    "labels": [
+      "source-derived",
+      "borderless",
+      "wall-behavior"
+    ],
+    "source_target": "third_party/curvytron-reference",
+    "source_commit": "8fec14c",
+    "notes": [
+      "Promotes the borderless case from tools/reference_oracle/border_probe.js into the shared scenario path.",
+      "p0 starts at x 87.35 with radius 0.6 in an 88-unit arena, moves straight for 100 ms, crosses to x 88.95, and source borderless wraps it to x 0.",
+      "This fixture asserts source borderless wrap state only. It does not assert event order, trail/body collision, bonus stack timing, or full scoring fidelity."
+    ]
+  },
+  "source_setup": {
+    "player_count": 2,
+    "map_size": 88,
+    "random": {
+      "math_random": 0.5
+    },
+    "room": {
+      "name": "source-borderless-wrap-step",
+      "max_score": 10,
+      "bonuses": [],
+      "bonus_rate": 0
+    },
+    "game": {
+      "started": true,
+      "in_round": true,
+      "borderless": true,
+      "world_active": true
+    }
+  },
+  "player_count": 2,
+  "time_policy": {
+    "kind": "fixed",
+    "step_ms": 100
+  },
+  "players": [
+    {
+      "id": "p0",
+      "client_id": "p0-client",
+      "avatar_id": 1,
+      "name": "p0",
+      "color": "#ff0000",
+      "initial": {
+        "x": 87.35,
+        "y": 44,
+        "angle_rad": 0,
+        "printing": false
+      }
+    },
+    {
+      "id": "p1",
+      "client_id": "p1-client",
+      "avatar_id": 2,
+      "name": "p1",
+      "color": "#00ff00",
+      "initial": {
+        "x": 44,
+        "y": 44,
+        "angle_rad": 3.141592653589793,
+        "printing": false
+      }
+    }
+  ],
+  "steps": [
+    {
+      "tick": 0,
+      "step_ms": 100,
+      "moves": [
+        {
+          "player_id": "p0",
+          "move": 0
+        },
+        {
+          "player_id": "p1",
+          "move": 0
+        }
+      ]
+    }
+  ],
+  "comparison": {
+    "kind": "js-python-state-trace",
+    "trace_schema_version": "environment-trace-v0",
+    "include_events": true,
+    "python_target": "curvyzero-v0",
+    "source_fidelity_required": false,
+    "tolerances": {
+      "position": 0.000001,
+      "angle": 0.000001,
+      "velocity": 0.000001
+    }
+  }
+}

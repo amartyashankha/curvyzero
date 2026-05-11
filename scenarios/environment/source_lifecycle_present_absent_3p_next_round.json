@@ -1,0 +1,574 @@
+{
+  "schema_version": "environment-scenario-v0",
+  "scenario_id": "source_lifecycle_present_absent_3p_next_round",
+  "title": "Source lifecycle present absent 3P next round",
+  "ruleset_id": "curvytron-v1-reference",
+  "provenance": {
+    "labels": [
+      "source-derived",
+      "round-lifecycle",
+      "natural-spawn",
+      "present-absent",
+      "next-round",
+      "3p",
+      "js-oracle-pinned"
+    ],
+    "source_target": "third_party/curvytron-reference",
+    "source_commit": "8fec14c",
+    "notes": [
+      "JS lifecycle oracle proof for a three-player room with avatar 2 non-present continuing beyond the first Game.onRoundNew().",
+      "The harness starts a real source round, waits for delayed PrintManager.start timers, forces the two present avatars into same-frame wall deaths, then advances through warmdown to the next round:new.",
+      "It proves the next onRoundNew() still skips the non-present avatar for spawn RNG, re-adds it to deaths, and spawns only the two present avatars after source onStop resized the arena to the present-player count."
+    ]
+  },
+  "source_setup": {
+    "player_count": 3,
+    "random": {
+      "math_random_sequence": [
+        0.25,
+        0.5,
+        0.015915494309189534,
+        0.75,
+        0.5,
+        0.5,
+        0.5,
+        0.5,
+        0.5,
+        0.5,
+        0.5,
+        0.25,
+        0.5,
+        0.25,
+        0.75,
+        0.5,
+        0.75
+      ]
+    },
+    "room": {
+      "name": "source-lifecycle-present-absent-3p-next-round",
+      "max_score": 10,
+      "bonuses": [],
+      "bonus_rate": 0
+    }
+  },
+  "player_count": 3,
+  "lifecycle": {
+    "new_round_time_ms": 0,
+    "timer_advances_ms": [
+      0,
+      3000
+    ],
+    "include_deaths_snapshot": true,
+    "actions": [
+      {
+        "type": "advance_timers",
+        "ms": 0
+      },
+      {
+        "type": "advance_timers",
+        "ms": 3000
+      },
+      {
+        "type": "set_avatar_state",
+        "avatar": 3,
+        "x": 93,
+        "y": 47.5,
+        "angle_rad": 0
+      },
+      {
+        "type": "set_avatar_state",
+        "avatar": 1,
+        "x": 1,
+        "y": 47.5,
+        "angle_rad": 3.141592653589793
+      },
+      {
+        "type": "update",
+        "step_ms": 100
+      },
+      {
+        "type": "advance_timers",
+        "ms": 5000
+      }
+    ]
+  },
+  "players": [
+    {
+      "id": "p0",
+      "client_id": "p0-client",
+      "avatar_id": 1,
+      "name": "p0",
+      "color": "#ff0000"
+    },
+    {
+      "id": "p1",
+      "client_id": "p1-client",
+      "avatar_id": 2,
+      "name": "p1",
+      "color": "#00ff00",
+      "present": false
+    },
+    {
+      "id": "p2",
+      "client_id": "p2-client",
+      "avatar_id": 3,
+      "name": "p2",
+      "color": "#0000ff"
+    }
+  ],
+  "expectations": {
+    "event_order": [
+      {
+        "atMs": 0,
+        "event": "round:new",
+        "data": {}
+      },
+      {
+        "atMs": 0,
+        "event": "random",
+        "data": {
+          "index": 0,
+          "value": 0.25,
+          "site": "spawn.position_x",
+          "avatar": 3
+        }
+      },
+      {
+        "atMs": 0,
+        "event": "random",
+        "data": {
+          "index": 1,
+          "value": 0.5,
+          "site": "spawn.position_y",
+          "avatar": 3
+        }
+      },
+      {
+        "atMs": 0,
+        "event": "position",
+        "data": {
+          "avatar": 3,
+          "x": 26.425,
+          "y": 47.5
+        }
+      },
+      {
+        "atMs": 0,
+        "event": "random",
+        "data": {
+          "index": 2,
+          "value": 0.015915494309189534,
+          "site": "spawn.angle_attempt_0",
+          "avatar": 3
+        }
+      },
+      {
+        "atMs": 0,
+        "event": "angle",
+        "data": {
+          "avatar": 3,
+          "angle": 0.1
+        }
+      },
+      {
+        "atMs": 0,
+        "event": "random",
+        "data": {
+          "index": 3,
+          "value": 0.75,
+          "site": "spawn.position_x",
+          "avatar": 1
+        }
+      },
+      {
+        "atMs": 0,
+        "event": "random",
+        "data": {
+          "index": 4,
+          "value": 0.5,
+          "site": "spawn.position_y",
+          "avatar": 1
+        }
+      },
+      {
+        "atMs": 0,
+        "event": "position",
+        "data": {
+          "avatar": 1,
+          "x": 68.575,
+          "y": 47.5
+        }
+      },
+      {
+        "atMs": 0,
+        "event": "random",
+        "data": {
+          "index": 5,
+          "value": 0.5,
+          "site": "spawn.angle_attempt_0",
+          "avatar": 1
+        }
+      },
+      {
+        "atMs": 0,
+        "event": "angle",
+        "data": {
+          "avatar": 1,
+          "angle": 3.141593
+        }
+      },
+      {
+        "atMs": 0,
+        "event": "game:start",
+        "data": {}
+      },
+      {
+        "atMs": 3000,
+        "event": "print_manager:start",
+        "data": {
+          "avatar": 3
+        }
+      },
+      {
+        "atMs": 3000,
+        "event": "point",
+        "data": {
+          "avatar": 3,
+          "x": 74.16928,
+          "y": 52.290407,
+          "important": true
+        }
+      },
+      {
+        "atMs": 3000,
+        "event": "property",
+        "data": {
+          "avatar": 3,
+          "property": "printing",
+          "value": true
+        }
+      },
+      {
+        "atMs": 3000,
+        "event": "random",
+        "data": {
+          "index": 6,
+          "value": 0.5,
+          "site": "print_manager.start_distance",
+          "avatar": 3
+        }
+      },
+      {
+        "atMs": 3000,
+        "event": "print_manager:start",
+        "data": {
+          "avatar": 2
+        }
+      },
+      {
+        "atMs": 3000,
+        "event": "point",
+        "data": {
+          "avatar": 2,
+          "x": 0.6,
+          "y": 0.6,
+          "important": true
+        }
+      },
+      {
+        "atMs": 3000,
+        "event": "property",
+        "data": {
+          "avatar": 2,
+          "property": "printing",
+          "value": true
+        }
+      },
+      {
+        "atMs": 3000,
+        "event": "random",
+        "data": {
+          "index": 7,
+          "value": 0.5,
+          "site": "print_manager.start_distance",
+          "avatar": 2
+        }
+      },
+      {
+        "atMs": 3000,
+        "event": "print_manager:start",
+        "data": {
+          "avatar": 1
+        }
+      },
+      {
+        "atMs": 3000,
+        "event": "point",
+        "data": {
+          "avatar": 1,
+          "x": 20.591,
+          "y": 47.5,
+          "important": true
+        }
+      },
+      {
+        "atMs": 3000,
+        "event": "property",
+        "data": {
+          "avatar": 1,
+          "property": "printing",
+          "value": true
+        }
+      },
+      {
+        "atMs": 3000,
+        "event": "random",
+        "data": {
+          "index": 8,
+          "value": 0.5,
+          "site": "print_manager.start_distance",
+          "avatar": 1
+        }
+      },
+      {
+        "atMs": 3000,
+        "event": "point",
+        "data": {
+          "avatar": 3,
+          "x": 94.6,
+          "y": 47.5,
+          "important": true
+        }
+      },
+      {
+        "atMs": 3000,
+        "event": "property",
+        "data": {
+          "avatar": 3,
+          "property": "printing",
+          "value": false
+        }
+      },
+      {
+        "atMs": 3000,
+        "event": "random",
+        "data": {
+          "index": 9,
+          "value": 0.5,
+          "site": "print_manager.stop_distance",
+          "avatar": 3
+        }
+      },
+      {
+        "atMs": 3000,
+        "event": "die",
+        "data": {
+          "avatar": 3,
+          "killer": null,
+          "old": null
+        }
+      },
+      {
+        "atMs": 3000,
+        "event": "score:round",
+        "data": {
+          "avatar": 3,
+          "score": 0,
+          "roundScore": 1
+        }
+      },
+      {
+        "atMs": 3000,
+        "event": "point",
+        "data": {
+          "avatar": 1,
+          "x": -0.6,
+          "y": 47.5,
+          "important": true
+        }
+      },
+      {
+        "atMs": 3000,
+        "event": "property",
+        "data": {
+          "avatar": 1,
+          "property": "printing",
+          "value": false
+        }
+      },
+      {
+        "atMs": 3000,
+        "event": "random",
+        "data": {
+          "index": 10,
+          "value": 0.5,
+          "site": "print_manager.stop_distance",
+          "avatar": 1
+        }
+      },
+      {
+        "atMs": 3000,
+        "event": "die",
+        "data": {
+          "avatar": 1,
+          "killer": null,
+          "old": null
+        }
+      },
+      {
+        "atMs": 3000,
+        "event": "score:round",
+        "data": {
+          "avatar": 1,
+          "score": 0,
+          "roundScore": 1
+        }
+      },
+      {
+        "atMs": 3000,
+        "event": "score",
+        "data": {
+          "avatar": 3,
+          "score": 1,
+          "roundScore": 1
+        }
+      },
+      {
+        "atMs": 3000,
+        "event": "score",
+        "data": {
+          "avatar": 2,
+          "score": 0,
+          "roundScore": 0
+        }
+      },
+      {
+        "atMs": 3000,
+        "event": "score",
+        "data": {
+          "avatar": 1,
+          "score": 1,
+          "roundScore": 1
+        }
+      },
+      {
+        "atMs": 3000,
+        "event": "round:end",
+        "data": {
+          "winner": null
+        }
+      },
+      {
+        "atMs": 8000,
+        "event": "game:stop",
+        "data": {}
+      },
+      {
+        "atMs": 8000,
+        "event": "round:new",
+        "data": {}
+      },
+      {
+        "atMs": 8000,
+        "event": "random",
+        "data": {
+          "index": 11,
+          "value": 0.25,
+          "site": "spawn.position_x",
+          "avatar": 3
+        }
+      },
+      {
+        "atMs": 8000,
+        "event": "random",
+        "data": {
+          "index": 12,
+          "value": 0.5,
+          "site": "spawn.position_y",
+          "avatar": 3
+        }
+      },
+      {
+        "atMs": 8000,
+        "event": "position",
+        "data": {
+          "avatar": 3,
+          "x": 24.5,
+          "y": 44
+        }
+      },
+      {
+        "atMs": 8000,
+        "event": "random",
+        "data": {
+          "index": 13,
+          "value": 0.25,
+          "site": "spawn.angle_attempt_0",
+          "avatar": 3
+        }
+      },
+      {
+        "atMs": 8000,
+        "event": "angle",
+        "data": {
+          "avatar": 3,
+          "angle": 1.570796
+        }
+      },
+      {
+        "atMs": 8000,
+        "event": "random",
+        "data": {
+          "index": 14,
+          "value": 0.75,
+          "site": "spawn.position_x",
+          "avatar": 1
+        }
+      },
+      {
+        "atMs": 8000,
+        "event": "random",
+        "data": {
+          "index": 15,
+          "value": 0.5,
+          "site": "spawn.position_y",
+          "avatar": 1
+        }
+      },
+      {
+        "atMs": 8000,
+        "event": "position",
+        "data": {
+          "avatar": 1,
+          "x": 63.5,
+          "y": 44
+        }
+      },
+      {
+        "atMs": 8000,
+        "event": "random",
+        "data": {
+          "index": 16,
+          "value": 0.75,
+          "site": "spawn.angle_attempt_0",
+          "avatar": 1
+        }
+      },
+      {
+        "atMs": 8000,
+        "event": "angle",
+        "data": {
+          "avatar": 1,
+          "angle": 4.712389
+        }
+      }
+    ]
+  },
+  "comparison": {
+    "kind": "js-lifecycle-oracle-raw-event-order",
+    "trace_schema_version": "environment-lifecycle-trace-v0",
+    "include_events": true,
+    "source_fidelity_required": true,
+    "python_target": null
+  }
+}

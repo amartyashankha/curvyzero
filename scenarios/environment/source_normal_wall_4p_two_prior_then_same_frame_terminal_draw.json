@@ -1,0 +1,179 @@
+{
+  "schema_version": "environment-scenario-v0",
+  "scenario_id": "source_normal_wall_4p_two_prior_then_same_frame_terminal_draw",
+  "title": "Source normal-wall 4P two prior then same-frame terminal draw",
+  "ruleset_id": "curvytron-v1-reference",
+  "provenance": {
+    "labels": [
+      "source-derived",
+      "wall-behavior",
+      "multiplayer",
+      "scoring"
+    ],
+    "source_target": "third_party/curvytron-reference",
+    "source_commit": "8fec14c",
+    "notes": [
+      "Four-player normal-wall canary from the source oracle scouting pass.",
+      "p3 dies first, p2 dies on the next tick, then p1 and p0 die in the same terminal Game.update frame.",
+      "Expected source scores after round resolution are [2, 2, 1, 0] with no round winner."
+    ]
+  },
+  "source_setup": {
+    "player_count": 4,
+    "map_size": 101,
+    "random": {
+      "math_random": 0.5
+    },
+    "room": {
+      "name": "source-normal-wall-4p-two-prior-then-same-frame-terminal-draw",
+      "max_score": 10,
+      "bonuses": [],
+      "bonus_rate": 0
+    },
+    "game": {
+      "started": true,
+      "in_round": true,
+      "borderless": false,
+      "world_active": true
+    }
+  },
+  "player_count": 4,
+  "time_policy": {
+    "kind": "fixed",
+    "step_ms": 100
+  },
+  "players": [
+    {
+      "id": "p0",
+      "client_id": "p0-client",
+      "avatar_id": 1,
+      "name": "p0",
+      "color": "#ff0000",
+      "initial": {
+        "x": 96.15,
+        "y": 20,
+        "angle_rad": 0,
+        "printing": false
+      }
+    },
+    {
+      "id": "p1",
+      "client_id": "p1-client",
+      "avatar_id": 2,
+      "name": "p1",
+      "color": "#00ff00",
+      "initial": {
+        "x": 96.15,
+        "y": 40,
+        "angle_rad": 0,
+        "printing": false
+      }
+    },
+    {
+      "id": "p2",
+      "client_id": "p2-client",
+      "avatar_id": 3,
+      "name": "p2",
+      "color": "#0000ff",
+      "initial": {
+        "x": 97.75,
+        "y": 60,
+        "angle_rad": 0,
+        "printing": false
+      }
+    },
+    {
+      "id": "p3",
+      "client_id": "p3-client",
+      "avatar_id": 4,
+      "name": "p3",
+      "color": "#ffff00",
+      "initial": {
+        "x": 99.35,
+        "y": 80,
+        "angle_rad": 0,
+        "printing": false
+      }
+    }
+  ],
+  "steps": [
+    {
+      "tick": 0,
+      "step_ms": 100,
+      "moves": [
+        {
+          "player_id": "p0",
+          "move": 0
+        },
+        {
+          "player_id": "p1",
+          "move": 0
+        },
+        {
+          "player_id": "p2",
+          "move": 0
+        },
+        {
+          "player_id": "p3",
+          "move": 0
+        }
+      ]
+    },
+    {
+      "tick": 1,
+      "step_ms": 100,
+      "moves": [
+        {
+          "player_id": "p0",
+          "move": 0
+        },
+        {
+          "player_id": "p1",
+          "move": 0
+        },
+        {
+          "player_id": "p2",
+          "move": 0
+        },
+        {
+          "player_id": "p3",
+          "move": 0
+        }
+      ]
+    },
+    {
+      "tick": 2,
+      "step_ms": 100,
+      "moves": [
+        {
+          "player_id": "p0",
+          "move": 0
+        },
+        {
+          "player_id": "p1",
+          "move": 0
+        },
+        {
+          "player_id": "p2",
+          "move": 0
+        },
+        {
+          "player_id": "p3",
+          "move": 0
+        }
+      ]
+    }
+  ],
+  "comparison": {
+    "kind": "js-python-state-trace",
+    "trace_schema_version": "environment-trace-v0",
+    "include_events": true,
+    "python_target": "source-border-rules",
+    "source_fidelity_required": true,
+    "tolerances": {
+      "position": 0.000001,
+      "angle": 0.000001,
+      "velocity": 0.000001
+    }
+  }
+}

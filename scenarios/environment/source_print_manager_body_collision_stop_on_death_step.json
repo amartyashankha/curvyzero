@@ -1,0 +1,143 @@
+{
+  "schema_version": "environment-scenario-v0",
+  "scenario_id": "source_print_manager_body_collision_stop_on_death_step",
+  "title": "Source PrintManager body collision stop on death step",
+  "ruleset_id": "curvytron-v1-reference",
+  "provenance": {
+    "labels": [
+      "source-derived",
+      "print-manager",
+      "body-collision",
+      "death-side-effect",
+      "js-oracle-pinned",
+      "python-runner-verified"
+    ],
+    "source_target": "third_party/curvytron-reference",
+    "source_commit": "8fec14c",
+    "notes": [
+      "Three-player JS oracle canary for active PrintManager.stop side effects after a body-collision death.",
+      "p0 starts printing with an active PrintManager and overlaps a seeded p1 AvatarBody while p1 and p2 survive so the round does not end.",
+      "The collision happens after Avatar.update and before PrintManager.test, so the manager is stopped by Avatar.die instead of updating distance or lastX/lastY.",
+      "Avatar.die emits the normal non-important death point before PrintManager.stop emits the important stop point and printing=false property.",
+      "The p0 trail cursor starts at the collision point to keep Avatar.update from adding a normal trail point before the body collision."
+    ]
+  },
+  "source_setup": {
+    "player_count": 3,
+    "map_size": 95,
+    "random": {
+      "math_random": 0.5
+    },
+    "room": {
+      "name": "source-print-manager-body-collision-stop-on-death-step",
+      "max_score": 10,
+      "bonuses": [],
+      "bonus_rate": 0
+    },
+    "game": {
+      "started": true,
+      "in_round": true,
+      "borderless": false,
+      "world_active": true
+    }
+  },
+  "player_count": 3,
+  "initial_state": {
+    "world_bodies": [
+      {
+        "player_id": "p1",
+        "x": 21.19,
+        "y": 20,
+        "radius": 0.6,
+        "num": 0
+      }
+    ]
+  },
+  "time_policy": {
+    "kind": "fixed",
+    "step_ms": 0
+  },
+  "players": [
+    {
+      "id": "p0",
+      "client_id": "p0-client",
+      "avatar_id": 1,
+      "name": "p0",
+      "color": "#ff0000",
+      "initial": {
+        "x": 20,
+        "y": 20,
+        "angle_rad": 0,
+        "printing": true,
+        "trail": {
+          "last_x": 20,
+          "last_y": 20
+        },
+        "print_manager": {
+          "active": true,
+          "distance": 10,
+          "last_x": 20,
+          "last_y": 20
+        }
+      }
+    },
+    {
+      "id": "p1",
+      "client_id": "p1-client",
+      "avatar_id": 2,
+      "name": "p1",
+      "color": "#00ff00",
+      "initial": {
+        "x": 70,
+        "y": 70,
+        "angle_rad": 0,
+        "printing": false
+      }
+    },
+    {
+      "id": "p2",
+      "client_id": "p2-client",
+      "avatar_id": 3,
+      "name": "p2",
+      "color": "#0000ff",
+      "initial": {
+        "x": 80,
+        "y": 20,
+        "angle_rad": 3.141592653589793,
+        "printing": false
+      }
+    }
+  ],
+  "steps": [
+    {
+      "tick": 0,
+      "step_ms": 0,
+      "moves": [
+        {
+          "player_id": "p0",
+          "move": 0
+        },
+        {
+          "player_id": "p1",
+          "move": 0
+        },
+        {
+          "player_id": "p2",
+          "move": 0
+        }
+      ]
+    }
+  ],
+  "comparison": {
+    "kind": "js-oracle-raw-state-trace",
+    "trace_schema_version": "environment-trace-v0",
+    "include_events": true,
+    "python_target": "source-print-manager-canary",
+    "source_fidelity_required": true,
+    "tolerances": {
+      "position": 0.000001,
+      "angle": 0.000001,
+      "velocity": 0.000001
+    }
+  }
+}

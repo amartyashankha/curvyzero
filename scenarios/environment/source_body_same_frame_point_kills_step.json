@@ -1,0 +1,129 @@
+{
+  "schema_version": "environment-scenario-v0",
+  "scenario_id": "source_body_same_frame_point_kills_step",
+  "title": "Source same-frame point materialization kills step",
+  "ruleset_id": "curvytron-v1-reference",
+  "provenance": {
+    "labels": [
+      "source-derived",
+      "body-collision",
+      "same-frame-point",
+      "js-oracle-pinned",
+      "python-runner-verified"
+    ],
+    "source_target": "third_party/curvytron-reference",
+    "source_commit": "8fec14c",
+    "notes": [
+      "Three-player JS/Python canary for same-frame point materialization before a lower-index avatar's body-collision phase.",
+      "Source update order is p2, then p1, then p0. p1 starts printing, emits a point at (41.6,40) during Avatar.update, and Game.onPoint inserts the collision body immediately.",
+      "p0 then moves to the same endpoint in the same Game.update frame and dies to p1's newly inserted body.",
+      "Forced trail state makes initial printing a direct setup state and avoids setup-time printManager.start() body insertion."
+    ]
+  },
+  "source_setup": {
+    "player_count": 3,
+    "map_size": 95,
+    "random": {
+      "math_random": 0.5
+    },
+    "room": {
+      "name": "source-body-same-frame-point-kills-step",
+      "max_score": 10,
+      "bonuses": [],
+      "bonus_rate": 0
+    },
+    "game": {
+      "started": true,
+      "in_round": true,
+      "borderless": false,
+      "world_active": true
+    }
+  },
+  "player_count": 3,
+  "time_policy": {
+    "kind": "fixed",
+    "step_ms": 100
+  },
+  "players": [
+    {
+      "id": "p0",
+      "client_id": "p0-client",
+      "avatar_id": 1,
+      "name": "p0",
+      "color": "#ff0000",
+      "initial": {
+        "x": 40,
+        "y": 40,
+        "angle_rad": 0,
+        "printing": false,
+        "trail": {
+          "points": []
+        }
+      }
+    },
+    {
+      "id": "p1",
+      "client_id": "p1-client",
+      "avatar_id": 2,
+      "name": "p1",
+      "color": "#00ff00",
+      "initial": {
+        "x": 40,
+        "y": 40,
+        "angle_rad": 0,
+        "printing": true,
+        "trail": {
+          "points": []
+        }
+      }
+    },
+    {
+      "id": "p2",
+      "client_id": "p2-client",
+      "avatar_id": 3,
+      "name": "p2",
+      "color": "#0000ff",
+      "initial": {
+        "x": 80,
+        "y": 20,
+        "angle_rad": 3.141592653589793,
+        "printing": false,
+        "trail": {
+          "points": []
+        }
+      }
+    }
+  ],
+  "steps": [
+    {
+      "tick": 0,
+      "step_ms": 100,
+      "moves": [
+        {
+          "player_id": "p0",
+          "move": 0
+        },
+        {
+          "player_id": "p1",
+          "move": 0
+        },
+        {
+          "player_id": "p2",
+          "move": 0
+        }
+      ]
+    }
+  ],
+  "comparison": {
+    "kind": "js-oracle-state-trace",
+    "trace_schema_version": "environment-trace-v0",
+    "include_events": true,
+    "python_target": "pending-source-body",
+    "source_fidelity_required": true,
+    "tolerances": {
+      "position": 0.000001,
+      "angle": 0.000001,
+      "velocity": 0.000001
+    }
+  }
+}

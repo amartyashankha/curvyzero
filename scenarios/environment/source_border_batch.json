@@ -1,0 +1,12 @@
+{
+  "schema": "curvyzero_fidelity_batch/v1",
+  "description": "Tiny source border-rule batch. These scenarios check forced-state normal-wall, plain borderless wrap, the first borderless trail/PrintManager wrap canary, the destination-body skip canary, and exact-edge/corner borderless behavior.",
+  "scenarios": [
+    "scenarios/environment/source_normal_wall_death_step.json",
+    "scenarios/environment/source_normal_wall_same_frame_draw_step.json",
+    "scenarios/environment/source_borderless_wrap_step.json",
+    "scenarios/environment/source_borderless_print_manager_wrap_toggle_step.json",
+    "scenarios/environment/source_borderless_wrap_skips_destination_body_then_next_frame_kills.json",
+    "scenarios/environment/source_borderless_exact_edge_corner_axis_step.json"
+  ]
+}

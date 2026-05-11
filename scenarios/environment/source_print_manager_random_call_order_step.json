@@ -1,0 +1,120 @@
+{
+  "schema_version": "environment-scenario-v0",
+  "scenario_id": "source_print_manager_random_call_order_step",
+  "title": "Source PrintManager random call-order step",
+  "ruleset_id": "curvytron-v1-reference",
+  "provenance": {
+    "labels": [
+      "source-derived",
+      "print-manager",
+      "random-tape",
+      "call-order",
+      "js-oracle-pinned",
+      "python-runner-verified"
+    ],
+    "source_target": "third_party/curvytron-reference",
+    "source_commit": "8fec14c",
+    "notes": [
+      "Two-player JS oracle canary for same-frame PrintManager random call order without bonuses or round lifecycle.",
+      "Both players start in a hole with active PrintManagers at exact-zero distance, so both toggle to printing during the same Game.update.",
+      "Game.update iterates avatars in reverse array order, so p1 calls PrintManager.test and consumes Math.random before p0.",
+      "The random tape [0.1, 0.9] makes the order visible: p1 receives print distance 22.2 and p0 receives print distance 55.8.",
+      "This fixture is verified through the narrow Python source-print-manager-canary runner and common trace includes avatar.printing, printManager internals, body/trail counters, and property payloads for this random-tape call-order slice."
+    ]
+  },
+  "source_setup": {
+    "player_count": 2,
+    "map_size": 88,
+    "random": {
+      "math_random_sequence": [
+        0.1,
+        0.9
+      ]
+    },
+    "room": {
+      "name": "source-print-manager-random-call-order-step",
+      "max_score": 10,
+      "bonuses": [],
+      "bonus_rate": 0
+    },
+    "game": {
+      "started": true,
+      "in_round": true,
+      "borderless": false,
+      "world_active": true
+    }
+  },
+  "player_count": 2,
+  "time_policy": {
+    "kind": "fixed",
+    "step_ms": 0
+  },
+  "players": [
+    {
+      "id": "p0",
+      "client_id": "p0-client",
+      "avatar_id": 1,
+      "name": "p0",
+      "color": "#ff0000",
+      "initial": {
+        "x": 20,
+        "y": 40,
+        "angle_rad": 0,
+        "printing": false,
+        "print_manager": {
+          "active": true,
+          "distance": 0,
+          "last_x": 20,
+          "last_y": 40
+        }
+      }
+    },
+    {
+      "id": "p1",
+      "client_id": "p1-client",
+      "avatar_id": 2,
+      "name": "p1",
+      "color": "#00ff00",
+      "initial": {
+        "x": 60,
+        "y": 40,
+        "angle_rad": 3.141592653589793,
+        "printing": false,
+        "print_manager": {
+          "active": true,
+          "distance": 0,
+          "last_x": 60,
+          "last_y": 40
+        }
+      }
+    }
+  ],
+  "steps": [
+    {
+      "tick": 0,
+      "step_ms": 0,
+      "moves": [
+        {
+          "player_id": "p0",
+          "move": 0
+        },
+        {
+          "player_id": "p1",
+          "move": 0
+        }
+      ]
+    }
+  ],
+  "comparison": {
+    "kind": "js-oracle-raw-state-trace",
+    "trace_schema_version": "environment-trace-v0",
+    "include_events": true,
+    "python_target": "source-print-manager-canary",
+    "source_fidelity_required": true,
+    "tolerances": {
+      "position": 0.000001,
+      "angle": 0.000001,
+      "velocity": 0.000001
+    }
+  }
+}

@@ -1,0 +1,157 @@
+{
+  "schema_version": "environment-scenario-v0",
+  "scenario_id": "source_live_movement_event_trace_2p_no_bonus_multistep",
+  "title": "Source live movement event trace 2P no-bonus multistep",
+  "ruleset_id": "curvytron-v1-reference",
+  "provenance": {
+    "labels": [
+      "source-derived",
+      "movement-events",
+      "no-bonus",
+      "forced-state"
+    ],
+    "source_target": "third_party/curvytron-reference",
+    "source_commit": "8fec14c",
+    "notes": [
+      "Forced-state live movement fixture that records original Avatar angle/position events during Game.update(step_ms).",
+      "It proves source emits position on every updated avatar in reverse avatar order and emits angle only when updateAngle changes the heading.",
+      "Printing is forced off; this fixture does not assert trails, collisions, bonuses, scoring, or lifecycle warmup/warmdown."
+    ]
+  },
+  "source_setup": {
+    "player_count": 2,
+    "map_size": 88,
+    "random": {
+      "math_random": 0.5
+    },
+    "room": {
+      "name": "source-live-movement-event-trace-2p-no-bonus-multistep",
+      "max_score": 10,
+      "bonuses": [],
+      "bonus_rate": 0
+    },
+    "game": {
+      "started": true,
+      "in_round": true,
+      "borderless": false,
+      "world_active": true
+    }
+  },
+  "player_count": 2,
+  "players": [
+    {
+      "id": "p0",
+      "client_id": "p0-client",
+      "avatar_id": 1,
+      "name": "p0",
+      "color": "#ff0000",
+      "initial": {
+        "x": 20,
+        "y": 40,
+        "angle_rad": 0,
+        "printing": false
+      }
+    },
+    {
+      "id": "p1",
+      "client_id": "p1-client",
+      "avatar_id": 2,
+      "name": "p1",
+      "color": "#00ff00",
+      "initial": {
+        "x": 60,
+        "y": 40,
+        "angle_rad": 3.141592653589793,
+        "printing": false
+      }
+    }
+  ],
+  "steps": [
+    {
+      "tick": 0,
+      "step_ms_expr": "1000 / 60",
+      "step_ms": 16.666666666666668,
+      "moves": [
+        {
+          "player_id": "p0",
+          "move": -1
+        },
+        {
+          "player_id": "p1",
+          "move": 0
+        }
+      ]
+    },
+    {
+      "tick": 1,
+      "step_ms_expr": "1000 / 60",
+      "step_ms": 16.666666666666668,
+      "moves": [
+        {
+          "player_id": "p0",
+          "move": 0
+        },
+        {
+          "player_id": "p1",
+          "move": 1
+        }
+      ]
+    },
+    {
+      "tick": 2,
+      "step_ms_expr": "1000 / 60",
+      "step_ms": 16.666666666666668,
+      "moves": [
+        {
+          "player_id": "p0",
+          "move": 0
+        },
+        {
+          "player_id": "p1",
+          "move": 0
+        }
+      ]
+    },
+    {
+      "tick": 3,
+      "step_ms_expr": "1000 / 60",
+      "step_ms": 16.666666666666668,
+      "moves": [
+        {
+          "player_id": "p0",
+          "move": 1
+        },
+        {
+          "player_id": "p1",
+          "move": -1
+        }
+      ]
+    }
+  ],
+  "comparison": {
+    "kind": "source-live-movement-event-order",
+    "trace_schema_version": "environment-trace-v0",
+    "python_target": "curvyzero-source-env",
+    "source_fidelity_required": true,
+    "include_events": true,
+    "tolerances": {
+      "position": 0.000001,
+      "angle": 0.000001
+    },
+    "expected": {
+      "event_order_policy": "For each Game.update(step_ms), avatars update in reverse avatar order. A position event is emitted for every alive avatar update; an angle event is emitted before that avatar's position only when updateAngle changes the heading.",
+      "position_avatar_order_per_step": [
+        [2, 1],
+        [2, 1],
+        [2, 1],
+        [2, 1]
+      ],
+      "angle_avatar_order_per_step": [
+        [1],
+        [2],
+        [],
+        [2, 1]
+      ]
+    }
+  }
+}

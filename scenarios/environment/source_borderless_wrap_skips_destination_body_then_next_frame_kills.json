@@ -1,0 +1,152 @@
+{
+  "schema_version": "environment-scenario-v0",
+  "scenario_id": "source_borderless_wrap_skips_destination_body_then_next_frame_kills",
+  "title": "Source borderless wrap skips destination body then next frame kills",
+  "ruleset_id": "curvytron-v1-reference",
+  "provenance": {
+    "labels": [
+      "source-derived",
+      "borderless",
+      "body-collision",
+      "js-oracle-pinned",
+      "python-runner-verified"
+    ],
+    "source_target": "third_party/curvytron-reference",
+    "source_commit": "8fec14c",
+    "notes": [
+      "Three-player JS oracle canary for the borderless wrap branch skipping destination-body lookup on the wrap frame.",
+      "p0 starts at x 94.8 in a 95-unit borderless arena, moves to x 95.12, wraps to x 0, and overlaps a seeded p1 body at (0,44) without dying on tick 0.",
+      "On tick 1, step_ms 0 keeps p0 at the wrapped position; strict edge equality is safe, the no-border branch runs body lookup, and p0 dies to p1.",
+      "This fixture pins destination-body skip and next-frame collision only; Python/common-trace parity is verified through the source borderless runner."
+    ]
+  },
+  "source_setup": {
+    "player_count": 3,
+    "map_size": 95,
+    "random": {
+      "math_random": 0.5
+    },
+    "room": {
+      "name": "source-borderless-wrap-skips-destination-body-then-next-frame-kills",
+      "max_score": 10,
+      "bonuses": [],
+      "bonus_rate": 0
+    },
+    "game": {
+      "started": true,
+      "in_round": true,
+      "borderless": true,
+      "world_active": true
+    }
+  },
+  "player_count": 3,
+  "initial_state": {
+    "map_size": 95,
+    "world_bodies": [
+      {
+        "player_id": "p1",
+        "x": 0,
+        "y": 44,
+        "radius": 0.6,
+        "num": 0
+      }
+    ]
+  },
+  "time_policy": {
+    "kind": "per-step",
+    "step_ms_sequence": [20, 0]
+  },
+  "players": [
+    {
+      "id": "p0",
+      "client_id": "p0-client",
+      "avatar_id": 1,
+      "name": "p0",
+      "color": "#ff0000",
+      "initial": {
+        "x": 94.8,
+        "y": 44,
+        "angle_rad": 0,
+        "printing": false,
+        "body_count": 0,
+        "body_num": 0
+      }
+    },
+    {
+      "id": "p1",
+      "client_id": "p1-client",
+      "avatar_id": 2,
+      "name": "p1",
+      "color": "#00ff00",
+      "initial": {
+        "x": 20,
+        "y": 20,
+        "angle_rad": 0,
+        "printing": false
+      }
+    },
+    {
+      "id": "p2",
+      "client_id": "p2-client",
+      "avatar_id": 3,
+      "name": "p2",
+      "color": "#0000ff",
+      "initial": {
+        "x": 80,
+        "y": 20,
+        "angle_rad": 3.141592653589793,
+        "printing": false
+      }
+    }
+  ],
+  "steps": [
+    {
+      "tick": 0,
+      "step_ms": 20,
+      "moves": [
+        {
+          "player_id": "p0",
+          "move": 0
+        },
+        {
+          "player_id": "p1",
+          "move": 0
+        },
+        {
+          "player_id": "p2",
+          "move": 0
+        }
+      ]
+    },
+    {
+      "tick": 1,
+      "step_ms": 0,
+      "moves": [
+        {
+          "player_id": "p0",
+          "move": 0
+        },
+        {
+          "player_id": "p1",
+          "move": 0
+        },
+        {
+          "player_id": "p2",
+          "move": 0
+        }
+      ]
+    }
+  ],
+  "comparison": {
+    "kind": "js-oracle-raw-state-trace",
+    "trace_schema_version": "environment-trace-v0",
+    "include_events": true,
+    "python_target": "source-borderless-wrap",
+    "source_fidelity_required": true,
+    "tolerances": {
+      "position": 0.000001,
+      "angle": 0.000001,
+      "velocity": 0.000001
+    }
+  }
+}

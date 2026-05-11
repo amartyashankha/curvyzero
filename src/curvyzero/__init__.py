@@ -1,0 +1,2 @@
+"""CurvyZero project package."""
+

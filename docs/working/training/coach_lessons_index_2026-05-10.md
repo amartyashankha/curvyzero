@@ -7,14 +7,18 @@ No pytest was run for this index.
 
 ## Current Read
 
+- Main path: native LightZero `train_muzero` CurvyTron visual survival, with
+  CurvyTron shaped like Pong/Atari for trainer reuse.
 - CurvyTron training evidence is mechanically cleaner after the target,
-  batch-size, reset-row, and replay-scope fixes, but the survival curves are
-  still flat.
+  batch-size, reset-row, and replay-scope fixes. New native background curves
+  show weak positive signs, but still not a robust pass.
+- CurvyTron target reward is survival time; the real signal is steps survived
+  across checkpoint curves, not seed stories or raw win/loss.
 - Pong now has a real survival signal in the normal LightZero lane, so the
   broad stack can carry signal; Pong is a control, not the CurvyTron gate.
 - The custom two-seat adapter proved one live policy can control both seats and
-  train from both seats, but it is too much private trainer machinery to scale
-  as the main path.
+  train from both seats, but it stayed flat and can diverge from LightZero
+  internals. Keep it diagnostic only.
 - Native LightZero should own the boring trainer pieces. The missing CurvyTron
   piece is a joint-action/current-policy collector for true simultaneous
   self-play.
@@ -44,6 +48,18 @@ No pytest was run for this index.
 
 ## Result Curves
 
+- [Matched frozen-opponent signal](curvytron_next_native_experiment_decision_2026-05-10.md):
+  s92 matched against its training frozen opponent confirmed a real 32-seed
+  survival lift: `151.781` at `iteration_0`, `417.031` at `iteration_384`, and
+  `500.438` at `iteration_434`, with 9-10 capped 1024-step episodes in the
+  trained checkpoints. This is the strongest CurvyTron learning signal so far,
+  but it is matched-opponent evidence, not broad generalization.
+- [Native background s103/s104 eval](curvytron_native_train_muzero_eval_2026-05-10.md):
+  fixed s103 rose from `159.594` at `iteration_0` to `195.406` at
+  `iteration_1024`, with no capped episodes. Frozen s104 matched against s42
+  `iteration_293` spiked to `271.750` at `iteration_192` and `269.688` at
+  `iteration_512`, with five capped episodes total, but final `iteration_518`
+  fell back to `182.906`.
 - [Current-iteration flat curve](curvytron_targetfix_eval_and_scale_2026-05-10.md):
   corrected scale eval over 64 seeds stayed in a narrow `192.703-197.453` mean
   steps band; final `iteration_16` was only `+1.297` mean steps over
@@ -86,7 +102,9 @@ No pytest was run for this index.
 ## Next Gate
 
 - Keep CurvyTron evals as survival-time distributions over reproducible random
-  seed panels, not fixed-seed score chasing.
+  seed panels, run in parallel, not fixed-seed score chasing.
 - Scale native LightZero single-ego/frozen-opponent work for trainer plumbing.
+- Treat current-policy two-seat self-play as not implemented in native runs;
+  current native jobs use a fixed or frozen opponent inside the env.
 - Keep the two-seat adapter as a narrow research harness until the needed
   joint-action collector shape is explicit.

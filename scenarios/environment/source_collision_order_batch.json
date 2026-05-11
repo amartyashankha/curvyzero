@@ -1,0 +1,8 @@
+{
+  "schema": "curvyzero_fidelity_batch/v1",
+  "description": "Tiny source collision-order batch. These fixtures check same-frame death-point insertion and head-head-looking same-endpoint order under reverse source avatar update order.",
+  "scenarios": [
+    "scenarios/environment/source_collision_death_point_kills_later_player_step.json",
+    "scenarios/environment/source_collision_head_head_reverse_order_single_death_step.json"
+  ]
+}

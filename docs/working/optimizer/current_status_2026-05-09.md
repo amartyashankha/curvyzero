@@ -1,0 +1,593 @@
+# Optimizer Current Status
+
+Date: 2026-05-09
+
+Optimizer scope: synthesize speed and training-loop setup. Do not claim
+environment fidelity or policy quality from this lane.
+
+Fresh 2026-05-10 read: active optimizer target is CurvyTron visual, non-ALE,
+wrapper-stacked debug survival profiling. The missing artifact is a bounded
+`[4,64,64]` collect -> MCTS/search -> replay -> sample -> learner profile.
+Scalar/ray rows and old Pong profiles are diagnostics/history unless explicitly
+reopened; Pong eval-speed work is a separate optimizer side task about runtime
+architecture, not CurvyTron readiness.
+
+Fresh 2026-05-11 read: active profile and coach-facing CurvyTron trainer target
+is now the source-state visual native LightZero path, not the old debug visual
+surface: `env_variant=source_state_fixed_opponent`, non-ALE `[4,64,64]`,
+`train_muzero`, fixed-straight opponent. The latest evidence is in
+[CurvyTron native LightZero profile](curvytron_native_lightzero_profile_2026-05-11.md).
+Renderer/stack/obs packing was a real long-trail bottleneck and has been
+reduced sharply. GPU runs are genuinely CUDA-backed (`cuda:0` model samples),
+but MCTS/model inference is underbatched. Simple speed knob: raise
+`collector_env_num` and `n_episode` together. In short-episode profiles,
+`c4/sim16 -> c32/sim16` improved collected-step throughput about `8x`, and
+`c4/sim50 -> c16/sim50` improved about `4x`. Sparse telemetry is available
+through `--env-telemetry-stride`; sampled summaries are labeled. This remains
+setup/speed evidence, not a learning claim and not current-policy self-play.
+
+2026-05-11 no-death/source-default profile rerun: the long-survival profile is
+now unblocked for optimizer timing. Environment fixed the old `BonusAllColor` /
+`BonusSelfMaster` source-default catch/effect gap. Optimizer raised the vector
+natural-bonus placement retry slab from `16` to `256` because scalar source
+placement retries until it finds a free spot. Matched no-death profiles now
+reach collector, LightZero MCTS/search, replay, learner, evaluator, and sparse
+checkpoint hooks:
+
+```text
+c16/sim16: 3840 collected env steps, 56.86s wall, 67.5 steps/s, 5 learner calls
+c32/sim16: 7680 collected env steps, 74.76s wall, 102.7 steps/s, 5 learner calls
+```
+
+Plain read: wider collectors improve search batching, but long-survival env
+step/runtime work is now visible and grows almost linearly with decisions. Keep
+death suppression labeled `profile_only_not_source_fidelity`; this is not a
+source-fidelity claim or a learning-quality claim. The old blocker handoff is
+now historical:
+[environment_handoff_bonus_runtime_blocker_2026-05-11.md](environment_handoff_bonus_runtime_blocker_2026-05-11.md).
+
+2026-05-11 env-manager optimization: CurvyTron trainer now exposes
+`--env-manager-type` and defaults to `subprocess`, matching the stock
+LightZero/Pong pattern. Long no-death A/B profiles:
+
+```text
+base c16: 56.86s, 3840 steps, 67.5 steps/s
+sub  c16: 48.20s, 3840 steps, 79.7 steps/s
+base c32: 74.76s, 7680 steps, 102.7 steps/s
+sub  c32: 52.50s, 7680 steps, 146.3 steps/s
+base c64: 109.47s, 15360 steps, 140.3 steps/s
+sub  c64: 68.05s, 15360 steps, 225.7 steps/s
+```
+
+Plain read: subprocess is a real wall-clock win, up to about `1.6x` in the
+c64/sim16 long profile. It hides detailed env method timers because envs run in
+worker processes, so use `--env-manager-type base` when timing env internals.
+A tiny normal train smoke with subprocess returned `ok=true` and copied
+checkpoints; ignored `BrokenPipeError` lines may appear during DI-engine
+subprocess teardown.
+
+2026-05-11 train smoke: the native source-state trainer completed a tiny
+`--wait-for-train` Modal run on `gpu-l4-t4`
+(`opt-native-train-smoke-c16-s1121-wait`,
+`train-smoke-c16-sim16-sparse-wait`). It called `train_muzero`, returned
+`ok=true`, kept profiler hooks disabled, and copied `iteration_0`,
+`iteration_35`, and `ckpt_best`. This proves the normal trainer path runs; it
+is not a learning-quality claim.
+
+2026-05-11 coach-usage check: Coach should use the native source-state trainer
+path for CurvyTron unless a newer decision replaces it. Native single-ego runs
+go through
+`src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py`
+with `env_variant=source_state_fixed_opponent`, source-state `[4,64,64]`
+visual observations, fixed-straight or frozen-checkpoint opponent support, and
+stock LightZero `train_muzero`. The `--mode profile` / `phase_profile` hook is
+available there, but normal `--mode train` runs do not install profiler stop
+hooks. Separate two-seat custom-loop runs use
+`lightzero_curvytron_two_seat_train_smoke.py`; those are not the native
+`train_muzero` profile path, but they reuse optimizer profile helpers for
+LightZero policy/search/learn-mode plumbing. Treat the two lanes separately in
+speed reports.
+
+MCTS/collector clarity: native single-ego runs call stock LightZero
+`train_muzero`, so collector, GameBuffer, learner loop, and MuZero MCTS/search
+are LightZero internals with our env/config wrapper around them. The custom
+two-seat smoke does not use stock `train_muzero`, the LightZero Collector, or
+the upstream GameBuffer. It does use installed LightZero `MuZeroPolicy`
+`collect_mode.forward`/`eval_mode.forward` and `learn_mode.forward`, but action
+selection is currently one active policy row at a time. If the two-seat lane
+becomes speed-critical, first profile/batch that row-wise policy/search call;
+do not assume it has the same batching behavior as stock LightZero collection.
+
+2026-05-11 MCTS/GPU recheck: current native CurvyTron profiles are
+GPU-configured when launched with `--compute gpu-l4-t4` (`policy.cuda=True`),
+and profiler samples see model parameters on `cuda:0`. Observed L4 utilization
+is still low/sampled noisily because root/model batches are still small
+relative to GPU capacity. The profiler wraps
+LightZero `MuZeroMCTSCtree` / `MuZeroMCTSPtree`, so the search bucket is
+LightZero-native, not a repo-owned MCTS loop. Do not jump straight to a GPU env
+rewrite or framework migration. First use subprocess env manager and
+`32/32` or `64/64` collection, then consider actor/search fanout if the
+single-process loop remains underfed.
+
+## 2026-05-10 Runtime Verdict
+
+See [runtime verdict](runtime_verdict_2026-05-10.md) for the compact source of
+truth.
+
+- Observation is optimizable; it is not a dead end. First pass vectorized the
+  wall-hit and hit-normalization helpers in
+  `vector_trainer_observation.py` while leaving circle-hit semantics unchanged.
+  Strict native `B=32,T=64` improved from `2985/s` to `5046/s`; source-backed
+  circle-ray `B=8,T=64` improved from `1087/s` to `1748/s`.
+- Current source-backed circle-ray path is stacked and cursor-bounded:
+  benchmark source rows are padded into one vector-trainer batch and
+  `source_snapshot_to_vector_trainer_state` exposes `body_write_cursor`.
+  Current source matrix: `B=8,T=64` loop `0.252s`, obs `0.174s`, ray
+  `0.144s`, `2035/s`; `B=16,T=64` loop `0.467s`, obs `0.324s`, ray
+  `0.277s`, `2194/s`; `B=32,T=32` loop `0.403s`, obs `0.298s`, ray
+  `0.255s`, `2540/s`. Observation is still the largest bucket, so the next
+  useful work is dense/chunked exact circle-ray math or a compiled CPU kernel,
+  not replay.
+- Fresh local optimizer refresh after reviewing the latest env/coach docs:
+  source-backed circle-ray rows with observation probes still put observation
+  first: `B=8,T=64` loop `0.471s`, obs `0.381s`, ray `0.322s`, `1087/s`;
+  `B=16,T=64` loop `0.875s`, obs `0.708s`, ray `0.603s`, `1170/s`;
+  `B=32,T=32` loop `0.831s`, obs `0.706s`, ray `0.595s`, `1233/s`.
+  Strict native vector no-event rows: `B=8,T=64` `2470/s`,
+  `B=16,T=64` `2529/s`, `B=32,T=64` `2985/s`, `B=128,T=16`
+  `3360/s`, all still dominated by public env.step/observation;
+  synthetic Modal Mctx `B=64,P=2,sim=8` measured steady search `2.454ms`,
+  steady H2D `0.511ms`, action D2H `0.0147ms`, app
+  `ap-EkNEv5A3xDRj7QxZbmeTFe`; new native-observation Modal Mctx sample
+  `curvytron_vector_trainer_sample` on app `ap-ZkCdPu0mPNrniXaQAgxDjv`
+  used real strict native `[64,2,106]` observations and masks, took `0.206s`
+  for env init/reset/two env steps/mapping, then steady synthetic Mctx search
+  `2.330ms`, steady H2D `0.536ms`, action D2H `0.0157ms`.
+  Read: source/native observation remains the
+  measured CurvyTron tax; synthetic GPU search is not enough evidence for a
+  full GPU env rewrite.
+- Lane split: Optimizer owns setup, profiling, Amdahl, CPU/GPU, Modal, and
+  process architecture; Coach owns learning/checkpoint/eval quality and
+  LightZero replication status; Environment/RAM owns source truth, fidelity,
+  parity, reset/final-observation contracts, and reward semantics.
+- Environment reorientation: the strict public `VectorTrainerEnv1v1NoBonus`
+  path is usable for `1v1/no_bonus/P=2` profiling and replay plumbing, but it
+  is not full CurvyTron. Source fidelity still flows through JS/source claims,
+  `CurvyTronSourceEnv`, and promoted bridge tests. Open optimizer-relevant gaps
+  are row-local RNG/seed history, broad lifecycle/3P/4P runtime coverage,
+  bonuses, source-faithful visual truth, and whole-loop
+  policy/search/replay measurement.
+- Coach reorientation: official/control LightZero Atari Pong is the current
+  training-pipeline reference lane. It uses installed `LightZero==0.2.0`,
+  ALE/Pong visuals, stock-ish `8` collectors, `3` evaluators, `50` MCTS sims,
+  and same-run checkpoint evals. Its speed evidence points at
+  evaluator/collector/env/MCTS wall time, not learner GPU bulk. Do not use Pong
+  scores as CurvyTron readiness.
+- Historical diagnostic: scalar-ray sidecar observation is a compact vector, not the primary visual
+  target:
+  `24` ray directions * `4` channels plus `10` scalars = `106` `float32`
+  values per ego.
+- Historical diagnostic: the old visual smoke target was non-ALE
+  `debug_visual_tensor` / `curvyzero_debug_occupancy_gray64/v0`. The active
+  visual trainer/profile target is the source-state stack
+  `curvyzero_source_state_gray64_stack4_player_perspective/v1`.
+- Historical diagnostic: the source scalar/ray path is CPU/Python/NumPy:
+  `CurvyTronSourceEnv` snapshots ->
+  `source_snapshot_to_vector_trainer_state` ->
+  `observe_vector_1v1_egocentric_rays_v0` -> `[B,2,106]` observations plus
+  `[B,2,3]` masks -> policy/search/replay profile.
+- Latest source profile refresh: env step is tiny and observation/raycast
+  dominates. `B=8,T=64` loop `0.392s`, env step `0.011s`, source adapter
+  `0.058s`, obs `0.318s`, ray cast `0.272s`, `1306.6/s`; `B=16,T=64` loop
+  `0.783s`, obs `0.632s`, ray cast `0.540s`, `1307.3/s`; `B=32,T=32` loop
+  `0.680s`, obs `0.577s`, ray cast `0.490s`, `1506.7/s`. Ray casting is about
+  `69-72%` of loop time.
+- Native vector trainer profile now exists for strict
+  `VectorTrainerEnv1v1NoBonus` plumbing only. Corrected results:
+  `B=8,T=64` loop `0.259s`, public env.step `0.252s`, throughput `1980/s`;
+  `B=16,T=64` loop `0.582s`, step `0.572s`, `1760/s`;
+  `B=32,T=32` loop `0.640s`, step `0.635s`, `1600/s`;
+  `B=128,T=64` loop `6.846s`, step `6.830s`, `1197/s`.
+  Separate one-pass ray probes were `0.0035s`, `0.0069s`, `0.0124s`, and
+  `0.0561s` for `B=8/16/32/128`. Read: native vector removes source adapter
+  cost but remains observation/ray-bound; bigger CPU batch is not automatically
+  better.
+- First native batch-array observation writer is now wired into
+  `VectorTrainerEnv1v1NoBonus._observe_arrays`. It validates once per batch and
+  avoids per-row trainer dataclass construction, but keeps the scalar ray
+  kernel. Post-patch profiles with the corrected phase probe:
+  `B=8,T=64` `1993/s`, `B=16,T=64` `2375/s`, `B=32,T=64` `2241/s`,
+  `B=128,T=16` `2493/s`. Read: this helps medium/large batch overhead but
+  does not solve the ray-bound observation path. The `B=128` run is `T=16`
+  because the longer straight-action run hit a terminal row.
+- Second native ray cleanup slices body arrays by `body_write_cursor[row]`
+  before trail/ray work, avoiding scans over unused fixed body-buffer tail.
+  Post-slice profiles: `B=8,T=64` `3038/s`, `B=16,T=64` `2599/s`,
+  `B=32,T=64` `3108/s`, `B=128,T=16` `3399/s`. Read: real speed win; still
+  strict native plumbing evidence, not source fidelity.
+- LightZero is not all GPU: subprocess envs, ALE/preprocessing, replay,
+  checkpoint/eval, artifacts, and MCTS tree/control are CPU/host-side, while
+  Torch model/learner calls use GPU when CUDA is active.
+- Coach/resource context: official LightZero Pong looks slow in
+  collect/eval/env/MCTS rather than learner GPU. Keep that for later resource
+  profiling; it is not the current CurvyTron optimizer task.
+- No fundamental blocker is known for full GPU env/obs/model/search, but the
+  current source env is a CPU object graph. Full GPU means a new tensor runtime
+  and parity tests. Near-term: CPU env/obs producers feeding GPU model/search,
+  larger batches, and process sharding before a GPU raycaster rewrite.
+- Toy bridge refresh supports process sharding as a near-term systems probe:
+  serial `22063.6` env steps/s, threads `18950.4/s` (`0.813x`, bad), process
+  shards `51859.3/s` (`3.579x`, `0.895` efficiency). Caveat: toy object env and
+  synthetic CPU policy only, not source/Modal/MCTS production evidence.
+- Retimed Modal Mctx check on L4, app `ap-u3YpTqQcqArxzFk5PI6ZbH`,
+  `curvytron_trainer_flat B=64,P=2,obs=106,sim=8,hidden=64,depth=8` reported
+  compile+first `5.0005s`, steady Mctx median `2.904ms`, host obs setup
+  `0.622ms`, steady H2D `0.545ms`, selected-action D2H median `0.0471ms`, and
+  action-weights D2H median `0.0055ms`. First action conversion was `19.14ms`,
+  likely first-use/sync overhead. This synthetic boundary does not measure CPU
+  ray generation or source fidelity.
+- Reprioritized next optimizer actions: keep the native source-state
+  `train_muzero` path as the active trainer/profile surface; use wider
+  collector batches (`16/16`, then `32/32` sweeps); add a profile-only
+  scripted-survivor stress mode only if true long-survival timing is needed;
+  then evaluate actor/search fanout if single-process LightZero still underfeeds
+  GPU. Keep scalar-ray policy/search and ray work as diagnostics, not the main
+  path.
+
+## Current Read
+
+- Coach now reports weak movement on the stock-ish LightZero Atari Pong control:
+  the completed `8192` faithful-short run moved from roughly `-13` at
+  `iteration_0` to `-8` stock-ish / `-5` manual at final `iteration_3697`.
+  Optimizer should treat this as a reason to profile LightZero seriously, not
+  as a learning-quality claim.
+- The active concrete slow loop is the installed-package LightZero Atari Pong
+  faithful-short `32768` scale/accounting run on Modal:
+  `train-faithful-short-installed-0.2.0-s0-32768-relpath`, app
+  `ap-xiGLACKHPZLvL1eYgygqvm`. It is `gpu-l4-t4`, one Modal training function,
+  one mounted `curvyzero-runs` Volume, and stock-ish settings except the
+  shortened `train_muzero(max_env_step=32768)` argument.
+- Local process check immediately after stopping the optimizer profile still
+  showed coach-owned Modal commands for `32768-relpath` and
+  `32768-ckpt1000-relpath`; optimizer did not touch them. A later local
+  `pgrep` showed no matching Modal commands, so do not infer current remote job
+  status from the local process table without checking Modal/artifacts.
+- Full actor-loop measurement comes before isolated simulator optimization.
+  See [Amdahl's law](../../research/training_loop_bottlenecks_amdhals_law_2026-05-09.md).
+- For the current LightZero lane, the first optimizer question is not "make the
+  env faster." It is: how much wall time is setup/eval, collect/search,
+  replay push/sample/target construction, learner update, checkpointing,
+  artifact scan/Volume commit, and CPU wait versus GPU work?
+- The current CPU/vector speed evidence is useful but narrow: fixture-backed
+  rows, debug/no-event splits, debug obs/reward packing, synthetic feedback,
+  and in-memory replay staging. See
+  [self-play speed lane](../environment/selfplay_speed_lane_2026-05-09.md).
+- Modal/JAX/Mctx runs prove dependency and boundary timing on small synthetic or
+  debug-shaped roots. They are not real CurvyTron rollout throughput.
+- Environment owns source parity and unsupported-case labels. See
+  [environment active lanes](../environment/active_lanes.md).
+- Training owns Pong, dummy Pong, eval, and checkpoint-quality claims. See
+  [training state index](../training_state_index_2026-05-09.md).
+- Setup synthesis now keeps LightZero as a serious replication/control lane
+  while the optimizer lane prototypes an owned CurvyTron runner path. See
+  [setup synthesis](setup_synthesis_2026-05-09.md).
+- Historical CurvyTron interface verdict: the old primary visual hook was
+  non-ALE `debug_visual_tensor` smoke/profiling. The active visual hook is now
+  the source-state `[4,64,64]` native LightZero trainer. The repo-native
+  source/trainer scalar-ray path remains diagnostic:
+  `CurvyTronSourceEnv` snapshots ->
+  `source_snapshot_to_vector_trainer_state` ->
+  `observe_vector_1v1_egocentric_rays_v0` -> policy-row mapping -> replay-v0.
+  That trainer row is flat rays/scalars `float32[106]` per ego plus a `bool[3]`
+  action mask, arranged as all-player wrapper `[B, P]` rows with `P=2`.
+  ALE is only for the official Atari Pong control lane.
+- Native vector trainer verdict: `scripts/benchmark_vector_trainer_actor_loop_profile.py`
+  profiles the strict `1v1/no_bonus/P=2` path with public `[B,2,106]`
+  observations/masks, policy-row mapping, a tiny policy/search stand-in, and a
+  replay-v0 chunk. Treat it as plumbing speed evidence; source-backed
+  JS/`CurvyTronSourceEnv` remains the oracle for environment semantics.
+- Framework stance is explicit but not final: owned PPO/IPPO-style runner is the
+  leading repo-native optimizer bench hypothesis; LightZero remains a serious
+  MuZero replication/control lane; Mctx is a later search-module hypothesis.
+  See [framework working hypotheses](framework_decision_2026-05-09.md).
+- The current bottleneck ranking is not knowable yet. See the
+  [MuZero loop bottleneck map](muzero_loop_bottleneck_map_2026-05-09.md).
+
+## Working Stance
+
+- Keep the real environment on CPU first.
+- Treat training quality as an input from the coach lane, not an optimizer
+  deliverable.
+- Measure env step, observation packing, real policy/search, transfer,
+  action-unmap, replay stage/write, reset/autoreset, actor idle, learner idle,
+  and policy staleness in one report.
+- Use a transparent project-owned PPO/CleanRL-style baseline as a leading
+  measurement hypothesis alongside the LightZero replication/control lane.
+- Optimize the largest comparison-valid bucket after debug events are off and
+  calibrated model/search timing is included.
+- Treat replay JSON-per-row, Modal hot-loop calls, and GPU env rewrites as
+  blocked until evidence changes the premise.
+- Latest tiny local actor-loop scouts reinforce the same rule: with light fake
+  search the P2 fixture loop is env/autoreset-heavy, but heavier fake search
+  quickly becomes the top bucket. Real policy/search timing is the next needed
+  measurement before env-only optimization.
+- The current actor-loop bridge can write a replay-v0-shaped file, but it is
+  explicitly blocked for training because it still carries debug obs/reward
+  payloads (`obs_dim=9`) instead of trainer rays (`obs_dim=106`).
+- The repo-native dry run does exercise trainer-shaped arrays
+  (`obs[T,B,P,106]`, `mask[T,B,P,3]`), but it uses toy scalar env rows, masked
+  uniform policy, and no learner.
+- The profile report shape has been cut back to the useful minimum: run
+  provenance, schema IDs, shapes/dtypes/checksums, denominators, timings,
+  latency, integrity checks, artifacts, and caveats.
+- Live optimizer-owned reports now use the same lean key names:
+  `policy_search`, `latency_sec.policy_action`, `env_transitions_per_sec`,
+  `ego_decisions_per_sec`, and `artifacts.report_json`.
+- A narrow source snapshot adapter now exists for the next profile:
+  `source_trainer_adapter.py` maps source positions/headings/alive into
+  trainer-shaped `EnvState` with empty or coarse center-cell occupancy. It
+  supports shape/timing probes, not source-faithful trail/body observation
+  claims.
+- `benchmark_source_trainer_actor_loop_profile.py` now runs a tiny source-stepped
+  `[B,2,106]` profile, writes replay-v0, and read-validates replay schema. Its
+  caveat is central: occupancy is approximate or empty depending on mode, and
+  replay semantic validation is not done.
+- The source/trainer profile is hookable today for optimizer profiling, but not
+  yet for a final training claim. It covers real source stepping, trainer-shaped
+  observations, action masks, rewards, policy-row mapping, and replay-v0
+  shape. It still lacks exact source trail/body geometry, broad lifecycle and
+  bonus coverage, a production replay handoff, real policy/search, and a
+  learner.
+- Source profile reports now record `occupancy_policy`,
+  `occupancy_source_fields`, and `approximate_fields` so center-cell body
+  occupancy does not get mistaken for exact source-faithful observation.
+- In the first small sweeps, Python observation packing dominates the
+  source-stepped trainer profile; increasing the tiny NumPy hidden size did not
+  materially move the needle. This is a clue about the current helper, not a
+  final production bottleneck verdict.
+- A center-cell source body occupancy mode now exists. It is better than empty
+  occupancy for profile plumbing, but still not exact source circle geometry,
+  visible trail history, or own-body latency semantics.
+- Base local dependencies are NumPy-only. Torch, JAX, Mctx, and LightZero are
+  not importable in the default local environment, so any real framework timing
+  must be a deliberate optional/Modal run or a project-owned NumPy/Torch stub
+  with dependencies pinned.
+- Latest mini probes: local Torch PPO learner smoke skipped because Torch is not
+  importable; synthetic policy/search stand-in became search-dominated as
+  simulations rose; scalar source-env scout was fast on one narrow 1v1 lifecycle
+  but is not production vector-loop throughput.
+- Latest cleanup validation: focused optimizer/runtime tests passed
+  (`72 passed`), dry-run JSON emitted the lean report keys, source trainer
+  profile emitted center-cell occupancy caveats, and the optional Torch learner
+  smoke still wrote a skipped report because Torch is not importable in `uv`.
+- Latest wrapper sanity from a prior sub-agent: the exact reproduction wrapper
+  locally `py_compile`s, imports with Modal extras, and passes `ruff`; no source
+  edits were made. That clears wrapper syntax/lint as a blocker for profiling.
+- The exact reproduction wrapper now exposes opt-in phase profiling
+  (`--profile-phases`, `--gpu-sample-interval-sec`) plus optimizer-only
+  iteration caps (`--max-train-iter-override`) for tiny profile/control runs.
+  Defaults remain off. The profiler was hardened after review: in-place method
+  patching, installed-hook reporting, partial-install restore, broader
+  GameBuffer class coverage, inheritance-aware method owner patching, and
+  profiler-only count extraction guarded away from training failures. Local
+  `py_compile` and `ruff` pass. A local fake-LightZero smoke confirms
+  collector/evaluator/learner/replay hooks fire and restore cleanly, including
+  inherited GameBuffer methods.
+- Sub-agent wave requested on 2026-05-10: deep Modal disaggregation review,
+  LightZero internals map, CPU/GPU Amdahl map, CurvyTron transfer critique,
+  Modal systems critique, async/overlap critique, and profiler patch review.
+  First completed reviews agree: keep the hot loop one Modal function for now,
+  split only coarse eval/probe/artifact jobs, and profile before actor/learner
+  or replay disaggregation.
+- Optimizer-owned profile run launched then stopped:
+  `train-faithful-short-installed-0.2.0-s0-2048-profile-v0`, app
+  `ap-CLIw2m3bXwNbKVHItDQP33`. It reached learner iteration `1300` while still
+  running, proving that `max_env_step=2048` was still too training-shaped for
+  cheap phase profiling. The local Modal process was killed and the specific
+  profile app was stopped. Treat this as an aborted profiler-design lesson, not
+  a usable final profile report.
+- Correction from that abort: for optimizer profiling, a few learner train
+  calls are enough if the goal is phase shares, but stock `max_env_step` and
+  `max_train_iter` controls are not reliable tiny-run caps in this path. Use
+  either the explicit learner-train hook stop or a separate direct profile
+  harness.
+- Second correction: `max_train_iter_override=5` still did not cap the actual
+  hot learner loop; the run reached `Training Iteration 600` and app
+  `ap-xkTDXj5wNV8DiwVvLFpYJ9` was stopped. The wrapper now needs/has an
+  explicit profiler stop in the `BaseLearner.train` hook
+  (`profile_stop_after_learner_train_calls`) so the next run can produce a
+  summary after a fixed number of learner train calls.
+- Local fake-LightZero test now verifies that the profiler stop hook raises
+  after the requested number of `BaseLearner.train` calls and restores the
+  original method. Focused validation: `29 passed`; `ruff` passes.
+- LightZero bypass scout verdict: the best optimizer profile path is a direct
+  one-collect + replay sample + learner train harness that copies
+  `train_muzero` setup but omits `Evaluator` entirely. Stock `train_muzero`
+  always pays evaluator setup and an unconditional initial eval before first
+  collect, so even a learner-hook stop cap still includes that startup tax.
+  A bounded worker spike to implement this directly was stopped after it ran
+  too long without producing a harness file; keep the task, but decompose it
+  into smaller local inspection/implementation steps.
+- Profile interpretation guard: do not optimize from inclusive bucket names
+  alone. `collector_collect_sec` may hide Atari env stepping, preprocessing,
+  policy/search, and segment construction. Branch only after comparing phase
+  time with denominators, GPU samples, envstep deltas, train-iter deltas, and
+  checkpoint/artifact bytes.
+- LightZero Pong is now the concrete slow control loop to profile, not a reason
+  to chase scores from the optimizer lane. The current stock-ish wrapper runs
+  one Modal training function with one `L4`/`T4` GPU allocation, `8` CPUs,
+  `32GB` memory, one mounted `curvyzero-runs` Volume, and LightZero-owned
+  collector/replay/learner/evaluator internals in that container. See
+  [LightZero Modal loop](lightzero_modal_loop_2026-05-09.md).
+- Current LightZero disaggregation stance: keep train hot loops inside one
+  container until timers prove otherwise. Split only coarse train/eval/probe/
+  artifact jobs. Do not stream env steps, MCTS nodes, replay rows, or opponent
+  inference through Modal Queue/Dict/function boundaries.
+- Fresh Modal disaggregation review agrees with the stance: one hot Modal
+  training function for now; split whole train attempts, checkpoint evals,
+  checkpoint probes/diffs, artifact summaries, and manifest repair only.
+  Candidate experiments: coarse split A/B for eval/artifact jobs, and an
+  in-container actor/search handoff microbench before trying a Modal boundary.
+- Fresh LightZero internals review says the next fine hooks, if collect/search
+  dominates, are `MuZeroPolicy._forward_collect`, `_forward_eval`, runtime
+  model `initial_inference`/`recurrent_inference`, `MuZeroMCTSCtree.search`,
+  env-manager `step`, and selected `MuZeroGameBuffer.sample` helpers. Exact
+  class owners should be discovered in-container with `inspect` because
+  `lzero`/`ding` are not importable locally.
+- Discovery-only metadata for those LightZero deep-hook candidates is now
+  implemented behind `--profile-phases`: `phase_profile.candidate_hooks` and
+  `phase_profile.deep_hook_discovery_notes`. It imports/inspects candidate
+  owners but does not patch or instantiate them. The already-running
+  `iter5` profile was launched before this patch, so it will not include these
+  fields.
+- CurvyTron no-train hookup scout passed locally with center-cell source body
+  occupancy: `[T,B,P,106]` trainer observations, `[T,B,P]` actions/rewards,
+  replay-v0 write/read, no terminal-mask integrity failures, and about `1,037`
+  env transitions/sec on a tiny `B=2,T=8` run. Observation packing dominated the
+  useful loop time. This proves plumbing, not source-faithful training.
+- Larger local CurvyTron no-train profile `B=16,T=64` reinforced the same
+  bottleneck shape: `1024` env transitions, loop `0.778s`, observation packing
+  `0.733s`, source env step `0.013s`, policy forward `0.0028s`. In this
+  plumbing lane, optimize/split trainer ray observation packing before env-step
+  speed, unless real policy/search later changes the Amdahl picture.
+- First optimizer patch landed on that bottleneck: empty-occupancy fast path in
+  `_cast_rays` skips trail occupancy lookups when occupancy is all zero. Focused
+  tests passed. Worker timing: empty observation call about `237us`; local
+  `B=16,T=64` center-cell/warmup-0 profile improved to observation packing
+  `0.604s`, loop `0.649s`. This helps the current empty/no-body plumbing case;
+  exact trail/body geometry still needs separate work.
+- Second narrow observation patch precomputes the fixed ray angle sin/cos table
+  and builds all ray directions per ego heading at once. Focused validation
+  still passes (`29 passed`, `ruff`, `py_compile`). A fresh local
+  `B=16,T=64` source/trainer no-train profile reported loop `0.641s`,
+  observation packing `0.594s`, env step `0.013s`, and policy `0.004s`
+  (`/private/tmp/curvy-source-trainer-b16-t64-raydir-scout`). This is a small
+  improvement, not a final bottleneck verdict.
+- Self-critique/caveat: current `source_world_bodies_center_cell_v0` profiles
+  are still mostly empty-body plumbing. A direct check after source warmup and
+  a few steps showed `world_bodies_snapshot()` length `0`, so these numbers
+  prove the current observation helper dominates the current profile, not that
+  source-faithful trail/body observation is cheap. Exact trail/body occupancy
+  may make observation packing worse and must be profiled separately.
+- The source/trainer profile report now records `source_body_trail` counts:
+  source world body count, adapted occupancy nonzero cell count, per-player
+  occupied-cell counts, and nonempty sample counts. Smoke run
+  `/private/tmp/curvy-source-trainer-body-count-smoke` confirmed the current
+  center-cell profile had `0` nonempty body/occupancy samples, so the caveat is
+  machine-visible instead of buried in prose.
+- Root cause found: the default benchmark reached `game:start` but did not fire
+  the delayed source PrintManager trail-start timer, so the rare nonempty
+  samples were death artifacts, not steady trail bodies. The profile now exposes
+  `source_setup_mode=controlled_trail`, which force-places two live avatars in
+  safe lanes and fires `trail_start_delay_ms` before the measured loop. This is
+  explicitly a body/trail observation benchmark, not natural reset/spawn
+  evidence.
+- First controlled trail/body profile:
+  `/private/tmp/curvy-source-trainer-b2-t64-controlled-trail`,
+  `B=2,T=64`, center-cell body occupancy. All `256` pre/post samples had
+  nonempty source bodies/occupancy; mean `world_bodies_count=22.67`, mean
+  adapted occupied cells `20.38`, max occupied cells `38`. Loop `0.351s`,
+  observation packing `0.331s`, env step `0.0034s`, policy `0.0017s`.
+  This is the strongest current CurvyTron optimizer signal: with nonempty
+  approximate body/trail occupancy and no real search/learner, observation
+  packing dominates.
+- Observation phase profiling confirmed the hot sub-bucket: `ray_cast_sec`
+  was `0.318s` out of `0.330s` observation packing on the controlled trail
+  run. A narrow vectorized center-hit patch replaced the per-cell Python loop in
+  trail/body ray hits; a second patch batches all rays against center arrays at
+  once. Clean post-patch run
+  `/private/tmp/curvy-source-trainer-b2-t64-controlled-trail-raybatch-clean`
+  improved loop `0.351s -> 0.105s`, observation packing `0.331s -> 0.086s`,
+  and throughput `364 -> 1,220` env transitions/sec. Phase timing after the
+  patch reported `ray_cast_sec=0.078s`. This is a real local speed win on the
+  nonempty center-cell trail/body profile, but still not a production training
+  verdict because geometry is approximate and policy/search/learner are absent.
+- Larger controlled-trail check `B=8,T=64` kept the same shape:
+  `/private/tmp/curvy-source-trainer-b8-t64-controlled-trail-raybatch-clean`
+  had all `1024` body/occupancy samples nonempty, loop `0.432s`, observation
+  packing `0.363s`, env step `0.012s`, and throughput `1,186` env
+  transitions/sec. Phase run showed `ray_cast_sec=0.296s` and
+  `source_adapter_sec=0.049s`. Read: the local bottleneck still scales with the
+  scalar observation path, so the next optimizer branch should be a batched
+  two-ego/source-observation writer or calibrated real policy/search timing,
+  not more fake environment work.
+- The batched two-ego observation writer landed in
+  `trainer_observation.py`. It validates once, shares the simple ray context,
+  writes both ego rows directly, and keeps scalar parity/copy semantics. Focused
+  validation passed (`31 passed`, `ruff`, `py_compile`). It cleared the stop
+  rule on larger controlled-trail profiles: `B=8,T=64` improved loop
+  `0.432s -> 0.357s` and observation packing `0.363s -> 0.296s`; `B=32,T=16`
+  improved loop `0.410s -> 0.328s` and observation packing
+  `0.367s -> 0.288s`. This is worth keeping, but observation packing remains
+  the top no-train bucket.
+- Matched CPU policy/search overlay did not overturn that priority. For the
+  same `1024` policy rows, fake NumPy search at `32` simulations took
+  `0.036s` at `B=8,T=64` and `0.0146s` at `B=32,T=16`, while source/trainer
+  observation packing was `0.327s` and `0.274s` respectively in phase runs.
+  This is only a CPU proxy, not Mctx/LightZero/GPU, but it says current
+  source/trainer profiling should still prioritize observation geometry and
+  source-faithful body/trail representation before env-step or replay polish.
+- Separation of responsibility is now explicit in
+  [optimizer lane contract](lane_contract_2026-05-10.md): Optimizer owns setup,
+  measurement, Amdahl reads, and speed architecture; Coach owns learning and
+  checkpoint/eval claims; Environment/RAM reconstruction owns source truth and
+  fidelity labels.
+- Source body-circle CurvyTron profiling is now the preferred local optimizer
+  bench over center-cell occupancy. The path is
+  `CurvyTronSourceEnv` snapshots plus `world_bodies_snapshot()` and
+  `avatar_body_metadata_snapshot()` ->
+  `source_snapshot_to_vector_trainer_state(...)` ->
+  `observe_vector_1v1_egocentric_rays_v0(...)` -> `[B,2,106]` trainer rows.
+  It is still not Atari/ALE, not a real LightZero env, and not a
+  browser-visible-trail or bonus-geometry claim.
+- Circle-ray profiling now exposes observation sub-timers. Latest short source
+  refresh: `B=8,T=64` loop `0.392s`, observation `0.318s`, ray cast `0.272s`,
+  throughput `1,306.6/s`; `B=16,T=64` loop `0.783s`, observation `0.632s`,
+  ray cast `0.540s`, throughput `1,307.3/s`; `B=32,T=32` loop `0.680s`,
+  observation `0.577s`, ray cast `0.490s`, throughput `1,506.7/s`. Ray casting
+  remains the main measured sub-bucket at about `69-72%` of loop time.
+- Native vector trainer path validation landed alongside the profile script:
+  reset now scales the warmup timer callback cap for larger `B`, a `B=128`
+  reset regression exists, and focused validation passed:
+  `pytest tests/test_benchmark_vector_trainer_actor_loop_profile.py tests/test_vector_trainer_env.py -q`
+  -> `14 passed`; `ruff` passed for the new script, tests, and env files.
+- Post-review native vector trainer profile patch was report-shape/metadata
+  correctness, not a new speed conclusion. The report now carries
+  `optimizer_profile_schema/status`, `run.debug_event_mode`, explicit timing
+  notes that `env_step_public` includes observation/mask/reward/done packing,
+  real masked-action violations checked against pre-step legal masks, separate
+  `selected_action_positive_weight_violations`, the straight-action mixed
+  fallback fix, and nonnegative seed validation. Focused validation passed:
+  `ruff` for the script/test, `pytest tests/test_benchmark_vector_trainer_actor_loop_profile.py -q`
+  -> `3 passed`, and `py_compile`.
+- Batch-array observation writer patch landed after that report cleanup:
+  `observe_vector_1v1_egocentric_rays_batch_arrays_v0` now builds
+  `[B,2,106]` observations and masks for the public env path while the scalar
+  observer remains the oracle. Parity tests cover mixed live/terminal,
+  borderless, and own-trail-latency cases. Focused validation:
+  `ruff` passed for touched env/script/tests and
+  `pytest tests/test_vector_trainer_observation.py tests/test_vector_trainer_env.py tests/test_benchmark_vector_trainer_actor_loop_profile.py -q`
+  -> `31 passed`.
+- Body cursor slicing patch landed next: observation ray code now uses
+  `body_write_cursor[row]` as the native fixed-buffer bound, with fallback for
+  source-adapter states lacking that key. Added a regression that active junk
+  beyond the cursor is ignored. Focused validation:
+  `ruff` passed for touched files and the same focused pytest target returned
+  `32 passed`.
+
+## Caveats
+
+- No full CurvyTron training-speed proof yet.
+- No GPU-env recommendation yet.
+- No training-quality claim from any speed scout.
+- No environment-fidelity claim from optimizer notes.
+- No claim that current CurvyTron is using Atari/ALE. Current primary visual
+  optimizer work is the debug occupancy tensor; source/trainer `[B,2,106]`
+  remains scalar-ray diagnostic work. Official Atari Pong remains a separate
+  LightZero control.
+- No claim that strict native vector `1v1/no_bonus` is the environment oracle.
+  It is optimizer plumbing evidence; source-backed JS/`CurvyTronSourceEnv`
+  remains the oracle boundary.
+- No claim that LightZero is rejected. It remains a serious
+  replication/control lane unless the coach lane records a credible
+  reproduction outcome or a decisive blocker.

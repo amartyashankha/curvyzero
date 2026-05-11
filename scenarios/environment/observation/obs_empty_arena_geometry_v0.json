@@ -1,0 +1,82 @@
+{
+  "schema_version": "observation-fixture-manifest-v0",
+  "fixture_id": "obs_empty_arena_geometry_v0",
+  "status": "analytic_observation_canary",
+  "title": "Empty-arena trainer observation geometry canary",
+  "observation_schema_id": "curvyzero_egocentric_rays/v0",
+  "observation_schema_hash": "61767187ffa4a3a6",
+  "ruleset_id": "curvyzero-v0",
+  "state_source": {
+    "kind": "analytic_curvytron_like_state",
+    "source_backed_observation_fidelity": false,
+    "related_source_scenarios": [
+      "scenarios/environment/source_kinematics_straight_multistep.json",
+      "scenarios/environment/source_borderless_wrap_step.json"
+    ],
+    "notes": [
+      "This manifest pins trainer-observation semantics for simple states; it is not browser pixel fidelity.",
+      "The original source has no learned observation, so this is a target for later source-state-backed checks rather than a source oracle."
+    ]
+  },
+  "config": {
+    "width": 88,
+    "height": 88,
+    "players": 2,
+    "max_ticks": 120,
+    "action_repeat": 1,
+    "speed": 0.2666666667,
+    "turn_rate_radians": 0.0466666667,
+    "trail_radius": 0.6,
+    "allow_straight_action": true
+  },
+  "player_ids": ["player_0", "player_1"],
+  "states": {
+    "symmetric_empty": {
+      "tick": 4,
+      "positions": [[20.0, 44.0], [68.0, 44.0]],
+      "headings": [0.0, 3.141592653589793],
+      "alive": [true, true],
+      "occupancy_nonzero": []
+    },
+    "translated_empty": {
+      "tick": 4,
+      "positions": [[25.0, 30.0], [73.0, 30.0]],
+      "headings": [0.0, 3.141592653589793],
+      "alive": [true, true],
+      "occupancy_nonzero": []
+    },
+    "borderless_edge": {
+      "tick": 0,
+      "positions": [[87.35, 44.0], [44.0, 44.0]],
+      "headings": [0.0, 3.141592653589793],
+      "alive": [true, true],
+      "occupancy_nonzero": []
+    }
+  },
+  "checks": {
+    "symmetric_empty": {
+      "ego_ids": ["player_0", "player_1"],
+      "expect_full_observation_equal": true,
+      "absolute_tolerance": 0.000001
+    },
+    "no_absolute_position_leak": {
+      "ego_id": "player_0",
+      "compare_states": ["symmetric_empty", "translated_empty"],
+      "equal_fields": ["rays[:, 1:]", "scalars"],
+      "intentionally_different_fields": ["rays[:, 0]"],
+      "absolute_tolerance": 0.000001
+    },
+    "borderless_wall_channel": {
+      "ego_id": "player_0",
+      "state": "borderless_edge",
+      "normal_wall_forward_ray_less_than": 1.0,
+      "borderless_wall_channel_all": 1.0,
+      "absolute_tolerance": 0.000001
+    }
+  },
+  "remaining_before_actor_bridge_replacement": [
+    "Replace analytic states with source-state-backed manifests once the referenced state fixtures pass.",
+    "Add trail gap, stored body, borderless wrap body, same-frame death, and normal-wall terminal observation manifests.",
+    "Validate vector/body-array occupancy semantics before using this schema as learned observation evidence."
+  ]
+}

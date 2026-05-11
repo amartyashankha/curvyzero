@@ -1,0 +1,341 @@
+{
+  "schema_version": "environment-scenario-v0",
+  "scenario_id": "source_lifecycle_mid_round_remove_avatar_3p_continue_round_end",
+  "title": "Source lifecycle mid-round removeAvatar 3P continuation",
+  "ruleset_id": "curvytron-v1-reference",
+  "provenance": {
+    "labels": [
+      "source-derived",
+      "round-lifecycle",
+      "mid-round-leave",
+      "remove-avatar",
+      "3p",
+      "js-oracle-pinned"
+    ],
+    "source_target": "third_party/curvytron-reference",
+    "source_commit": "8fec14c",
+    "notes": [
+      "JS lifecycle oracle proof for source Game.removeAvatar() during an active three-player round.",
+      "The fixture advances through Game.onStart() and delayed PrintManager.start(), then calls Game.removeAvatar() for avatar 2.",
+      "It proves the leaver is destroyed to present=false/alive=false, emits player:leave, is not added to Game.deaths, and the round continues while avatars 1 and 3 remain alive.",
+      "A later forced wall death for avatar 3 ends the round and shows survivor scoring still uses the full avatar collection size."
+    ]
+  },
+  "source_setup": {
+    "player_count": 3,
+    "random": {
+      "math_random_sequence": [
+        0.25,
+        0.5,
+        0.015915494309189534,
+        0.29240806642941874,
+        0.5,
+        0.015915494309189534,
+        0.75,
+        0.5,
+        0.5,
+        0.5,
+        0.5,
+        0.5,
+        0.25,
+        0.5
+      ]
+    },
+    "room": {
+      "name": "source-lifecycle-mid-round-remove-avatar-3p-continue-round-end",
+      "max_score": 10,
+      "bonuses": [],
+      "bonus_rate": 0
+    }
+  },
+  "player_count": 3,
+  "lifecycle": {
+    "new_round_time_ms": 0,
+    "timer_advances_ms": [
+      0,
+      3000
+    ],
+    "include_deaths_snapshot": true,
+    "actions": [
+      {
+        "type": "advance_timers",
+        "ms": 0
+      },
+      {
+        "type": "advance_timers",
+        "ms": 3000
+      },
+      {
+        "type": "remove_avatar",
+        "avatar": 2
+      },
+      {
+        "type": "set_avatar_state",
+        "avatar": 3,
+        "x": 93,
+        "y": 47.5,
+        "angle_rad": 0
+      },
+      {
+        "type": "update",
+        "step_ms": 100
+      }
+    ]
+  },
+  "players": [
+    {
+      "id": "p0",
+      "client_id": "p0-client",
+      "avatar_id": 1,
+      "name": "p0",
+      "color": "#ff0000"
+    },
+    {
+      "id": "p1",
+      "client_id": "p1-client",
+      "avatar_id": 2,
+      "name": "p1",
+      "color": "#00ff00"
+    },
+    {
+      "id": "p2",
+      "client_id": "p2-client",
+      "avatar_id": 3,
+      "name": "p2",
+      "color": "#0000ff"
+    }
+  ],
+  "expectations": {
+    "event_order": [
+      {
+        "event": "round:new",
+        "atMs": 0
+      },
+      {
+        "event": "random",
+        "atMs": 0
+      },
+      {
+        "event": "random",
+        "atMs": 0
+      },
+      {
+        "event": "position",
+        "atMs": 0
+      },
+      {
+        "event": "random",
+        "atMs": 0
+      },
+      {
+        "event": "angle",
+        "atMs": 0
+      },
+      {
+        "event": "random",
+        "atMs": 0
+      },
+      {
+        "event": "random",
+        "atMs": 0
+      },
+      {
+        "event": "position",
+        "atMs": 0
+      },
+      {
+        "event": "random",
+        "atMs": 0
+      },
+      {
+        "event": "angle",
+        "atMs": 0
+      },
+      {
+        "event": "random",
+        "atMs": 0
+      },
+      {
+        "event": "random",
+        "atMs": 0
+      },
+      {
+        "event": "position",
+        "atMs": 0
+      },
+      {
+        "event": "random",
+        "atMs": 0
+      },
+      {
+        "event": "angle",
+        "atMs": 0
+      },
+      {
+        "event": "game:start",
+        "atMs": 0
+      },
+      {
+        "event": "print_manager:start",
+        "atMs": 3000
+      },
+      {
+        "event": "point",
+        "atMs": 3000
+      },
+      {
+        "event": "property",
+        "atMs": 3000
+      },
+      {
+        "event": "random",
+        "atMs": 3000
+      },
+      {
+        "event": "print_manager:start",
+        "atMs": 3000
+      },
+      {
+        "event": "point",
+        "atMs": 3000
+      },
+      {
+        "event": "property",
+        "atMs": 3000
+      },
+      {
+        "event": "random",
+        "atMs": 3000
+      },
+      {
+        "event": "print_manager:start",
+        "atMs": 3000
+      },
+      {
+        "event": "point",
+        "atMs": 3000
+      },
+      {
+        "event": "property",
+        "atMs": 3000
+      },
+      {
+        "event": "random",
+        "atMs": 3000
+      },
+      {
+        "event": "point",
+        "atMs": 3000
+      },
+      {
+        "event": "property",
+        "atMs": 3000
+      },
+      {
+        "event": "random",
+        "atMs": 3000,
+        "data": {
+          "index": 12,
+          "value": 0.25,
+          "site": "print_manager.stop_distance",
+          "avatar": 2
+        }
+      },
+      {
+        "event": "die",
+        "atMs": 3000,
+        "data": {
+          "avatar": 2,
+          "killer": null,
+          "old": null
+        }
+      },
+      {
+        "event": "player:leave",
+        "atMs": 3000,
+        "data": {
+          "player": 2
+        }
+      },
+      {
+        "event": "point",
+        "atMs": 3000
+      },
+      {
+        "event": "property",
+        "atMs": 3000
+      },
+      {
+        "event": "random",
+        "atMs": 3000,
+        "data": {
+          "index": 13,
+          "value": 0.5,
+          "site": "print_manager.stop_distance",
+          "avatar": 3
+        }
+      },
+      {
+        "event": "die",
+        "atMs": 3000,
+        "data": {
+          "avatar": 3,
+          "killer": null,
+          "old": null
+        }
+      },
+      {
+        "event": "score:round",
+        "atMs": 3000,
+        "data": {
+          "avatar": 3,
+          "score": 0,
+          "roundScore": 0
+        }
+      },
+      {
+        "event": "score:round",
+        "atMs": 3000,
+        "data": {
+          "avatar": 1,
+          "score": 0,
+          "roundScore": 2
+        }
+      },
+      {
+        "event": "score",
+        "atMs": 3000,
+        "data": {
+          "avatar": 3,
+          "score": 0,
+          "roundScore": 0
+        }
+      },
+      {
+        "event": "score",
+        "atMs": 3000,
+        "data": {
+          "avatar": 2,
+          "score": 0,
+          "roundScore": 0
+        }
+      },
+      {
+        "event": "score",
+        "atMs": 3000,
+        "data": {
+          "avatar": 1,
+          "score": 2,
+          "roundScore": 2
+        }
+      },
+      {
+        "event": "round:end",
+        "atMs": 3000,
+        "data": {
+          "winner": 1
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "schema": "curvyzero_fidelity_batch/v1",
+  "description": "Tiny source body-canary batch. These scenarios check seeded opponent strict-overlap behavior, own-body latency at the >3 point-number gate, and same-frame point materialization.",
+  "scenarios": [
+    "scenarios/environment/source_body_opponent_tangent_safe_step.json",
+    "scenarios/environment/source_body_opponent_overlap_kills_step.json",
+    "scenarios/environment/source_body_own_delta3_safe_step.json",
+    "scenarios/environment/source_body_own_delta4_kills_step.json",
+    "scenarios/environment/source_body_same_frame_point_kills_step.json",
+    "scenarios/environment/source_body_same_frame_point_control_safe_step.json"
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "schema": "curvyzero_fidelity_batch/v1",
+  "description": "Source trail gap canaries for hole-space safety, stored-body positive control, and boundary collision in both toggle directions.",
+  "scenarios": [
+    "scenarios/environment/source_trail_gap_hole_space_safe_step.json",
+    "scenarios/environment/source_trail_gap_stored_body_still_kills_step.json",
+    "scenarios/environment/source_trail_gap_print_to_hole_boundary_kills_step.json",
+    "scenarios/environment/source_trail_gap_hole_to_print_boundary_kills_step.json"
+  ]
+}

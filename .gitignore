@@ -1,0 +1,30 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.cache/
+.venv/
+dist/
+build/
+*.egg-info/
+
+# Local scratch and fetched artifacts
+tmp/
+logs/
+*.log
+
+# Experiment artifacts
+runs/
+artifacts/
+checkpoints/
+replay/
+videos/
+
+# Local secrets/config
+.env
+.env.*
+
+# Local reference clones. Track provenance in docs/sources instead.
+third_party/curvytron-reference/

@@ -1,0 +1,94 @@
+{
+  "schema_version": "environment-scenario-v0",
+  "id": "forced_two_player_turn_step",
+  "title": "Forced 2-player turn step",
+  "ruleset_id": "curvytron-v1-reference",
+  "provenance": {
+    "labels": [
+      "source-derived",
+      "toy-v0",
+      "unresolved"
+    ],
+    "source_target": "third_party/curvytron-reference",
+    "source_commit": "8fec14c",
+    "notes": [
+      "Matches the hard-coded case in tools/reference_oracle/headless_probe.js.",
+      "toy-v0 is the default Python comparison target, not a source-fidelity claim.",
+      "This fixture is consumed by the JS scenario runner, Python scenario runner, local loop, and local batch runner."
+    ]
+  },
+  "source_setup": {
+    "player_count": 2,
+    "map_size": 88,
+    "random": {
+      "math_random": 0.5
+    },
+    "room": {
+      "name": "oracle-probe",
+      "max_score": 10,
+      "bonuses": [],
+      "bonus_rate": 0
+    },
+    "game": {
+      "started": true,
+      "in_round": true,
+      "borderless": false,
+      "world_active": true
+    }
+  },
+  "players": [
+    {
+      "id": "p0",
+      "client_id": "p0-client",
+      "avatar_id": 1,
+      "name": "p0",
+      "color": "#ff0000",
+      "initial": {
+        "x": 20,
+        "y": 40,
+        "angle_rad": 0,
+        "printing": true
+      }
+    },
+    {
+      "id": "p1",
+      "client_id": "p1-client",
+      "avatar_id": 2,
+      "name": "p1",
+      "color": "#00ff00",
+      "initial": {
+        "x": 60,
+        "y": 40,
+        "angle_rad": 3.141592653589793,
+        "printing": true
+      }
+    }
+  ],
+  "steps": [
+    {
+      "tick": 0,
+      "step_ms_expr": "1000 / 60",
+      "step_ms": 16.666666666666668,
+      "moves": [
+        {
+          "player_id": "p0",
+          "move": -1
+        },
+        {
+          "player_id": "p1",
+          "move": 1
+        }
+      ]
+    }
+  ],
+  "comparison": {
+    "kind": "js-python-state-trace",
+    "trace_schema_version": "environment-trace-v0",
+    "python_target": "curvyzero-v0",
+    "tolerances": {
+      "position": 0.000001,
+      "angle": 0.000001,
+      "velocity": 0.000001
+    }
+  }
+}

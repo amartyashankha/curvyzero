@@ -1,0 +1,107 @@
+{
+  "schema_version": "environment-scenario-v0",
+  "scenario_id": "source_borderless_exact_edge_corner_axis_step",
+  "title": "Source borderless exact-edge and corner-axis step",
+  "ruleset_id": "curvytron-v1-reference",
+  "provenance": {
+    "labels": [
+      "source-derived",
+      "borderless",
+      "wall-behavior",
+      "js-oracle-pinned",
+      "python-runner-verified"
+    ],
+    "source_target": "third_party/curvytron-reference",
+    "source_commit": "8fec14c",
+    "notes": [
+      "Two-player JS oracle control for strict borderless edge equality and one-axis corner wrapping.",
+      "p1 starts at x 86.4 in an 88-unit borderless arena, moves to exactly x 88, and does not wrap because source border checks use strict greater-than.",
+      "p0 starts near the lower-right corner, moves past both x and y bounds, and wraps only the x axis first to (0, 88.481371).",
+      "This fixture pins exact-edge safety and first-axis corner behavior only; it does not assert torus collision, next-frame second-axis wrap, trails, bodies, bonuses, or scoring."
+    ]
+  },
+  "source_setup": {
+    "player_count": 2,
+    "map_size": 88,
+    "random": {
+      "math_random": 0.5
+    },
+    "room": {
+      "name": "source-borderless-exact-edge-corner-axis-step",
+      "max_score": 10,
+      "bonuses": [],
+      "bonus_rate": 0
+    },
+    "game": {
+      "started": true,
+      "in_round": true,
+      "borderless": true,
+      "world_active": true
+    }
+  },
+  "player_count": 2,
+  "time_policy": {
+    "kind": "fixed",
+    "step_ms": 100
+  },
+  "players": [
+    {
+      "id": "p0",
+      "client_id": "p0-client",
+      "avatar_id": 1,
+      "name": "p0",
+      "color": "#ff0000",
+      "initial": {
+        "x": 87.35,
+        "y": 87.35,
+        "angle_rad": 0.7853981633974483,
+        "printing": false,
+        "body_count": 0,
+        "body_num": 0
+      }
+    },
+    {
+      "id": "p1",
+      "client_id": "p1-client",
+      "avatar_id": 2,
+      "name": "p1",
+      "color": "#00ff00",
+      "initial": {
+        "x": 86.4,
+        "y": 20,
+        "angle_rad": 0,
+        "printing": false,
+        "body_count": 0,
+        "body_num": 0
+      }
+    }
+  ],
+  "steps": [
+    {
+      "tick": 0,
+      "step_ms": 100,
+      "moves": [
+        {
+          "player_id": "p0",
+          "move": 0
+        },
+        {
+          "player_id": "p1",
+          "move": 0
+        }
+      ]
+    }
+  ],
+  "comparison": {
+    "kind": "js-oracle-raw-state-trace",
+    "trace_schema_version": "environment-trace-v0",
+    "include_events": true,
+    "python_target": "source-borderless-wrap",
+    "source_fidelity_required": true,
+    "tolerances": {
+      "position": 0.000001,
+      "angle": 0.000001,
+      "velocity": 0.000001
+    }
+  }
+}

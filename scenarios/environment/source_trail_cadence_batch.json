@@ -1,0 +1,8 @@
+{
+  "schema": "curvyzero_fidelity_batch/v1",
+  "description": "JS-oracle-only source trail cadence canaries for normal point insertion and below-radius no-point control.",
+  "scenarios": [
+    "scenarios/environment/source_trail_normal_point_step.json",
+    "scenarios/environment/source_trail_no_point_below_radius_step.json"
+  ]
+}

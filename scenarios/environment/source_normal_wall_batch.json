@@ -1,0 +1,8 @@
+{
+  "schema": "curvyzero_fidelity_batch/v1",
+  "description": "Tiny source normal-wall batch. These scenarios check forced-state wall death and same-frame wall draw state only.",
+  "scenarios": [
+    "scenarios/environment/source_normal_wall_death_step.json",
+    "scenarios/environment/source_normal_wall_same_frame_draw_step.json"
+  ]
+}

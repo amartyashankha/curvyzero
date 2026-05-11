@@ -1,0 +1,93 @@
+{
+  "schema_version": "environment-scenario-v0",
+  "scenario_id": "source_trail_normal_point_step",
+  "title": "Source trail normal point step",
+  "ruleset_id": "curvytron-v1-reference",
+  "provenance": {
+    "labels": [
+      "source-derived",
+      "trail-cadence",
+      "js-oracle-pinned"
+    ],
+    "source_target": "third_party/curvytron-reference",
+    "source_commit": "8fec14c",
+    "notes": [
+      "One-player JS oracle for normal trail point cadence.",
+      "p0 starts printing with the forced trail cursor at (20,40), moves to (21.6,40), and crosses the source radius threshold, so Avatar.update emits a non-important point.",
+      "The forced trail cursor seeds no prior trail point or world body, so trailPointCount and worldBodyCount pin only this frame's point and Game.onPoint body insertion."
+    ]
+  },
+  "source_setup": {
+    "player_count": 1,
+    "map_size": 80,
+    "random": {
+      "math_random": 0.5
+    },
+    "room": {
+      "name": "source-trail-normal-point-step",
+      "max_score": 1,
+      "bonuses": [],
+      "bonus_rate": 0
+    },
+    "game": {
+      "started": true,
+      "in_round": true,
+      "borderless": false,
+      "world_active": true
+    }
+  },
+  "player_count": 1,
+  "time_policy": {
+    "kind": "fixed",
+    "step_ms": 100
+  },
+  "players": [
+    {
+      "id": "p0",
+      "client_id": "p0-client",
+      "avatar_id": 1,
+      "name": "p0",
+      "color": "#ff0000",
+      "initial": {
+        "x": 20,
+        "y": 40,
+        "angle_rad": 0,
+        "printing": true,
+        "trail": {
+          "last_x": 20,
+          "last_y": 40
+        },
+        "print_manager": {
+          "active": false,
+          "distance": 0,
+          "last_x": 20,
+          "last_y": 40
+        }
+      }
+    }
+  ],
+  "steps": [
+    {
+      "tick": 0,
+      "step_ms": 100,
+      "moves": [
+        {
+          "player_id": "p0",
+          "move": 0
+        }
+      ]
+    }
+  ],
+  "comparison": {
+    "kind": "js-oracle-raw-state-trace",
+    "trace_schema_version": "environment-trace-v0",
+    "include_events": true,
+    "python_target": "pending-source-trail-cadence",
+    "source_fidelity_required": true,
+    "tolerances": {
+      "position": 0.000001,
+      "angle": 0.000001,
+      "velocity": 0.000001
+    }
+  }
+}

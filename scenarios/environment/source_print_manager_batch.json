@@ -1,0 +1,14 @@
+{
+  "schema": "curvyzero_fidelity_batch/v1",
+  "description": "Source PrintManager canaries for deterministic print/hole toggles, exact-zero toggle threshold, active no-toggle distance bookkeeping, delayed 3000 ms start, and active wall/body stop-on-death side effects.",
+  "scenarios": [
+    "scenarios/environment/source_print_manager_print_to_hole_step.json",
+    "scenarios/environment/source_print_manager_hole_to_print_step.json",
+    "scenarios/environment/source_print_manager_exact_zero_toggle_step.json",
+    "scenarios/environment/source_print_manager_no_toggle_control_step.json",
+    "scenarios/environment/source_print_manager_delayed_start_timer_step.json",
+    "scenarios/environment/source_print_manager_active_stop_on_death_step.json",
+    "scenarios/environment/source_print_manager_active_hole_stop_on_death_step.json",
+    "scenarios/environment/source_print_manager_body_collision_stop_on_death_step.json"
+  ]
+}

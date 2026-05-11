@@ -1,0 +1,232 @@
+{
+  "schema_version": "environment-scenario-v0",
+  "id": "source_kinematics_varied_elapsed_multistep",
+  "title": "Source kinematics varied elapsed multi-step",
+  "ruleset_id": "curvytron-v1-reference",
+  "provenance": {
+    "labels": [
+      "source-derived",
+      "movement-only",
+      "js-oracle-pinned"
+    ],
+    "source_target": "third_party/curvytron-reference",
+    "source_commit": "8fec14c",
+    "notes": [
+      "Deterministic four-step source movement fixture with varied per-tick elapsed milliseconds.",
+      "The elapsed sequence 10 + 20 + 15 + 21.666666666666668 ms equals the existing four-step fixed-60Hz controls.",
+      "The move sequence matches source_kinematics_turn_multistep so the fixture isolates per-tick elapsed time from the fixed-60Hz control.",
+      "Printing is forced off so the fixture asserts movement event order only; no trail, collision, bonus, score, or round outcome behavior is asserted.",
+      "Python source-kinematics parity uses per-step elapsed-ms support in source_runners.py."
+    ]
+  },
+  "source_setup": {
+    "player_count": 2,
+    "map_size": 88,
+    "random": {
+      "math_random": 0.5
+    },
+    "room": {
+      "name": "source-kinematics-varied-elapsed-multistep",
+      "max_score": 10,
+      "bonuses": [],
+      "bonus_rate": 0
+    },
+    "game": {
+      "started": true,
+      "in_round": true,
+      "borderless": false,
+      "world_active": true
+    }
+  },
+  "player_count": 2,
+  "time_policy": {
+    "kind": "per-step",
+    "step_ms_sequence": [10, 20, 15, 21.666666666666668],
+    "total_step_ms": 66.66666666666667,
+    "fixed_control_step_ms": 16.666666666666668,
+    "fixed_control_steps": 4
+  },
+  "players": [
+    {
+      "id": "p0",
+      "client_id": "p0-client",
+      "avatar_id": 1,
+      "name": "p0",
+      "color": "#ff0000",
+      "initial": {
+        "x": 20,
+        "y": 40,
+        "angle_rad": 0,
+        "printing": false
+      }
+    },
+    {
+      "id": "p1",
+      "client_id": "p1-client",
+      "avatar_id": 2,
+      "name": "p1",
+      "color": "#00ff00",
+      "initial": {
+        "x": 60,
+        "y": 40,
+        "angle_rad": 3.141592653589793,
+        "printing": false
+      }
+    }
+  ],
+  "steps": [
+    {
+      "tick": 0,
+      "step_ms": 10,
+      "moves": [
+        {
+          "player_id": "p0",
+          "move": -1
+        },
+        {
+          "player_id": "p1",
+          "move": 1
+        }
+      ]
+    },
+    {
+      "tick": 1,
+      "step_ms": 20,
+      "moves": [
+        {
+          "player_id": "p0",
+          "move": -1
+        },
+        {
+          "player_id": "p1",
+          "move": 0
+        }
+      ]
+    },
+    {
+      "tick": 2,
+      "step_ms": 15,
+      "moves": [
+        {
+          "player_id": "p0",
+          "move": 0
+        },
+        {
+          "player_id": "p1",
+          "move": 1
+        }
+      ]
+    },
+    {
+      "tick": 3,
+      "step_ms": 21.666666666666668,
+      "moves": [
+        {
+          "player_id": "p0",
+          "move": 1
+        },
+        {
+          "player_id": "p1",
+          "move": -1
+        }
+      ]
+    }
+  ],
+  "comparison": {
+    "kind": "js-oracle-raw-state-trace",
+    "trace_schema_version": "environment-trace-v0",
+    "include_events": true,
+    "python_target": "source-kinematics",
+    "source_fidelity_required": true,
+    "tolerances": {
+      "position": 0.000001,
+      "angle": 0.000001,
+      "velocity": 0.000001
+    },
+    "expected": {
+      "oracle_command": "node tools/reference_oracle/scenario_runner.js scenarios/environment/source_kinematics_varied_elapsed_multistep.json",
+      "tolerance_policy": "Compare rounded source movement state with position, angle, and velocity tolerance 0.000001.",
+      "total_step_ms": 66.66666666666667,
+      "fixed_control": {
+        "scenario": "scenarios/environment/source_kinematics_turn_multistep.json",
+        "step_ms": 16.666666666666668,
+        "steps": 4,
+        "total_step_ms": 66.66666666666667
+      },
+      "frames": [
+        {
+          "tick": 0,
+          "step_ms": 10,
+          "positions": [
+            [20.159937, 39.995521],
+            [59.840063, 39.995521]
+          ],
+          "headings": [-0.028, 3.169593],
+          "alive": [true, true],
+          "events": [
+            {"event": "angle", "player_id": "p1", "angle": 3.169593},
+            {"event": "position", "player_id": "p1", "x": 59.840063, "y": 39.995521},
+            {"event": "angle", "player_id": "p0", "angle": -0.028},
+            {"event": "position", "player_id": "p0", "x": 20.159937, "y": 39.995521}
+          ]
+        },
+        {
+          "tick": 1,
+          "step_ms": 20,
+          "positions": [
+            [20.478809, 39.968672],
+            [59.520188, 39.986562]
+          ],
+          "headings": [-0.084, 3.169593],
+          "alive": [true, true],
+          "events": [
+            {"event": "position", "player_id": "p1", "x": 59.520188, "y": 39.986562},
+            {"event": "angle", "player_id": "p0", "angle": -0.084},
+            {"event": "position", "player_id": "p0", "x": 20.478809, "y": 39.968672}
+          ]
+        },
+        {
+          "tick": 2,
+          "step_ms": 15,
+          "positions": [
+            [20.717963, 39.948536],
+            [59.280776, 39.969775]
+          ],
+          "headings": [-0.084, 3.211593],
+          "alive": [true, true],
+          "events": [
+            {"event": "angle", "player_id": "p1", "angle": 3.211593},
+            {"event": "position", "player_id": "p1", "x": 59.280776, "y": 39.969775},
+            {"event": "position", "player_id": "p0", "x": 20.717963, "y": 39.948536}
+          ]
+        },
+        {
+          "tick": 3,
+          "step_ms": 21.666667,
+          "positions": [
+            [21.064535, 39.940448],
+            [58.934124, 39.96654]
+          ],
+          "headings": [-0.023333, 3.150926],
+          "alive": [true, true],
+          "events": [
+            {"event": "angle", "player_id": "p1", "angle": 3.150926},
+            {"event": "position", "player_id": "p1", "x": 58.934124, "y": 39.96654},
+            {"event": "angle", "player_id": "p0", "angle": -0.023333},
+            {"event": "position", "player_id": "p0", "x": 21.064535, "y": 39.940448}
+          ]
+        }
+      ],
+      "final_state": {
+        "positions": [
+          [21.064535, 39.940448],
+          [58.934124, 39.96654]
+        ],
+        "headings": [-0.023333, 3.150926],
+        "alive": [true, true],
+        "scores": [0, 0],
+        "roundScores": [0, 0]
+      }
+    }
+  }
+}

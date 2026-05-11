@@ -1,0 +1,538 @@
+{
+  "schema_version": "environment-scenario-v0",
+  "scenario_id": "source_lifecycle_match_end_at_max_score_3p",
+  "title": "Source lifecycle match end at max score 3P",
+  "ruleset_id": "curvytron-v1-reference",
+  "provenance": {
+    "labels": [
+      "source-derived",
+      "round-lifecycle",
+      "match-end",
+      "max-score",
+      "3p",
+      "js-oracle-pinned"
+    ],
+    "source_target": "third_party/curvytron-reference",
+    "source_commit": "8fec14c",
+    "notes": [
+      "JS lifecycle oracle proof for source Game.onStop() choosing match end after a three-player survivor reaches max score.",
+      "The harness starts a normal 3P source round, moves avatar 1 onto a safe slow path before delayed PrintManager.start, forces avatars 3 and 2 into same-frame wall deaths, and advances through warmdown.",
+      "The room max_score is 2 so avatar 1 reaches the terminal threshold from the 3P survivor bonus; avatar 1's long print distance avoids unrelated warmdown hole toggles."
+    ]
+  },
+  "source_setup": {
+    "player_count": 3,
+    "random": {
+      "math_random_sequence": [
+        0.25,
+        0.5,
+        0.015915494309189534,
+        0.29240806642941874,
+        0.5,
+        0.015915494309189534,
+        0.75,
+        0.5,
+        0.5,
+        0.5,
+        0.5,
+        0.999,
+        0.5,
+        0.5
+      ]
+    },
+    "room": {
+      "name": "source-lifecycle-match-end-at-max-score-3p",
+      "max_score": 2,
+      "bonuses": [],
+      "bonus_rate": 0
+    }
+  },
+  "player_count": 3,
+  "lifecycle": {
+    "new_round_time_ms": 0,
+    "timer_advances_ms": [
+      0,
+      3000
+    ],
+    "actions": [
+      {
+        "type": "advance_timers",
+        "ms": 0
+      },
+      {
+        "type": "set_avatar_state",
+        "avatar": 1,
+        "x": 5,
+        "y": 5,
+        "angle_rad": 0.7853981633974483,
+        "velocity": 8
+      },
+      {
+        "type": "advance_timers",
+        "ms": 3000
+      },
+      {
+        "type": "set_avatar_state",
+        "avatar": 3,
+        "x": 93,
+        "y": 47.5,
+        "angle_rad": 0
+      },
+      {
+        "type": "set_avatar_state",
+        "avatar": 2,
+        "x": 1,
+        "y": 47.5,
+        "angle_rad": 3.141592653589793
+      },
+      {
+        "type": "update",
+        "step_ms": 100
+      },
+      {
+        "type": "advance_timers",
+        "ms": 5000
+      }
+    ]
+  },
+  "players": [
+    {
+      "id": "p0",
+      "client_id": "p0-client",
+      "avatar_id": 1,
+      "name": "p0",
+      "color": "#ff0000"
+    },
+    {
+      "id": "p1",
+      "client_id": "p1-client",
+      "avatar_id": 2,
+      "name": "p1",
+      "color": "#00ff00"
+    },
+    {
+      "id": "p2",
+      "client_id": "p2-client",
+      "avatar_id": 3,
+      "name": "p2",
+      "color": "#0000ff"
+    }
+  ],
+  "expectations": {
+    "event_order": [
+      {
+        "event": "round:new",
+        "atMs": 0,
+        "data": {}
+      },
+      {
+        "event": "random",
+        "atMs": 0,
+        "data": {
+          "index": 0,
+          "value": 0.25,
+          "site": "spawn.position_x",
+          "avatar": 3
+        }
+      },
+      {
+        "event": "random",
+        "atMs": 0,
+        "data": {
+          "index": 1,
+          "value": 0.5,
+          "site": "spawn.position_y",
+          "avatar": 3
+        }
+      },
+      {
+        "event": "position",
+        "atMs": 0,
+        "data": {
+          "avatar": 3,
+          "x": 26.425,
+          "y": 47.5
+        }
+      },
+      {
+        "event": "random",
+        "atMs": 0,
+        "data": {
+          "index": 2,
+          "value": 0.015915494309189534,
+          "site": "spawn.angle_attempt_0",
+          "avatar": 3
+        }
+      },
+      {
+        "event": "angle",
+        "atMs": 0,
+        "data": {
+          "avatar": 3,
+          "angle": 0.1
+        }
+      },
+      {
+        "event": "random",
+        "atMs": 0,
+        "data": {
+          "index": 3,
+          "value": 0.29240806642941874,
+          "site": "spawn.position_x",
+          "avatar": 2
+        }
+      },
+      {
+        "event": "random",
+        "atMs": 0,
+        "data": {
+          "index": 4,
+          "value": 0.5,
+          "site": "spawn.position_y",
+          "avatar": 2
+        }
+      },
+      {
+        "event": "position",
+        "atMs": 0,
+        "data": {
+          "avatar": 2,
+          "x": 30,
+          "y": 47.5
+        }
+      },
+      {
+        "event": "random",
+        "atMs": 0,
+        "data": {
+          "index": 5,
+          "value": 0.015915494309189534,
+          "site": "spawn.angle_attempt_0",
+          "avatar": 2
+        }
+      },
+      {
+        "event": "angle",
+        "atMs": 0,
+        "data": {
+          "avatar": 2,
+          "angle": 0.1
+        }
+      },
+      {
+        "event": "random",
+        "atMs": 0,
+        "data": {
+          "index": 6,
+          "value": 0.75,
+          "site": "spawn.position_x",
+          "avatar": 1
+        }
+      },
+      {
+        "event": "random",
+        "atMs": 0,
+        "data": {
+          "index": 7,
+          "value": 0.5,
+          "site": "spawn.position_y",
+          "avatar": 1
+        }
+      },
+      {
+        "event": "position",
+        "atMs": 0,
+        "data": {
+          "avatar": 1,
+          "x": 68.575,
+          "y": 47.5
+        }
+      },
+      {
+        "event": "random",
+        "atMs": 0,
+        "data": {
+          "index": 8,
+          "value": 0.5,
+          "site": "spawn.angle_attempt_0",
+          "avatar": 1
+        }
+      },
+      {
+        "event": "angle",
+        "atMs": 0,
+        "data": {
+          "avatar": 1,
+          "angle": 3.141593
+        }
+      },
+      {
+        "event": "game:start",
+        "atMs": 0,
+        "data": {}
+      },
+      {
+        "event": "print_manager:start",
+        "atMs": 3000,
+        "data": {
+          "avatar": 3
+        }
+      },
+      {
+        "event": "point",
+        "atMs": 3000,
+        "data": {
+          "avatar": 3,
+          "x": 74.16928,
+          "y": 52.290407,
+          "important": true
+        }
+      },
+      {
+        "event": "property",
+        "atMs": 3000,
+        "data": {
+          "avatar": 3,
+          "property": "printing",
+          "value": true
+        }
+      },
+      {
+        "event": "random",
+        "atMs": 3000,
+        "data": {
+          "index": 9,
+          "value": 0.5,
+          "site": "print_manager.start_distance",
+          "avatar": 3
+        }
+      },
+      {
+        "event": "print_manager:start",
+        "atMs": 3000,
+        "data": {
+          "avatar": 2
+        }
+      },
+      {
+        "event": "point",
+        "atMs": 3000,
+        "data": {
+          "avatar": 2,
+          "x": 77.74428,
+          "y": 52.290407,
+          "important": true
+        }
+      },
+      {
+        "event": "property",
+        "atMs": 3000,
+        "data": {
+          "avatar": 2,
+          "property": "printing",
+          "value": true
+        }
+      },
+      {
+        "event": "random",
+        "atMs": 3000,
+        "data": {
+          "index": 10,
+          "value": 0.5,
+          "site": "print_manager.start_distance",
+          "avatar": 2
+        }
+      },
+      {
+        "event": "print_manager:start",
+        "atMs": 3000,
+        "data": {
+          "avatar": 1
+        }
+      },
+      {
+        "event": "point",
+        "atMs": 3000,
+        "data": {
+          "avatar": 1,
+          "x": 21.964906,
+          "y": 21.964906,
+          "important": true
+        }
+      },
+      {
+        "event": "property",
+        "atMs": 3000,
+        "data": {
+          "avatar": 1,
+          "property": "printing",
+          "value": true
+        }
+      },
+      {
+        "event": "random",
+        "atMs": 3000,
+        "data": {
+          "index": 11,
+          "value": 0.999,
+          "site": "print_manager.start_distance",
+          "avatar": 1
+        }
+      },
+      {
+        "event": "point",
+        "atMs": 3000,
+        "data": {
+          "avatar": 3,
+          "x": 94.6,
+          "y": 47.5,
+          "important": true
+        }
+      },
+      {
+        "event": "property",
+        "atMs": 3000,
+        "data": {
+          "avatar": 3,
+          "property": "printing",
+          "value": false
+        }
+      },
+      {
+        "event": "random",
+        "atMs": 3000,
+        "data": {
+          "index": 12,
+          "value": 0.5,
+          "site": "print_manager.stop_distance",
+          "avatar": 3
+        }
+      },
+      {
+        "event": "die",
+        "atMs": 3000,
+        "data": {
+          "avatar": 3,
+          "killer": null,
+          "old": null
+        }
+      },
+      {
+        "event": "score:round",
+        "atMs": 3000,
+        "data": {
+          "avatar": 3,
+          "score": 0,
+          "roundScore": 0
+        }
+      },
+      {
+        "event": "point",
+        "atMs": 3000,
+        "data": {
+          "avatar": 2,
+          "x": -0.6,
+          "y": 47.5,
+          "important": true
+        }
+      },
+      {
+        "event": "property",
+        "atMs": 3000,
+        "data": {
+          "avatar": 2,
+          "property": "printing",
+          "value": false
+        }
+      },
+      {
+        "event": "random",
+        "atMs": 3000,
+        "data": {
+          "index": 13,
+          "value": 0.5,
+          "site": "print_manager.stop_distance",
+          "avatar": 2
+        }
+      },
+      {
+        "event": "die",
+        "atMs": 3000,
+        "data": {
+          "avatar": 2,
+          "killer": null,
+          "old": null
+        }
+      },
+      {
+        "event": "score:round",
+        "atMs": 3000,
+        "data": {
+          "avatar": 2,
+          "score": 0,
+          "roundScore": 0
+        }
+      },
+      {
+        "event": "score:round",
+        "atMs": 3000,
+        "data": {
+          "avatar": 1,
+          "score": 0,
+          "roundScore": 2
+        }
+      },
+      {
+        "event": "score",
+        "atMs": 3000,
+        "data": {
+          "avatar": 3,
+          "score": 0,
+          "roundScore": 0
+        }
+      },
+      {
+        "event": "score",
+        "atMs": 3000,
+        "data": {
+          "avatar": 2,
+          "score": 0,
+          "roundScore": 0
+        }
+      },
+      {
+        "event": "score",
+        "atMs": 3000,
+        "data": {
+          "avatar": 1,
+          "score": 2,
+          "roundScore": 2
+        }
+      },
+      {
+        "event": "round:end",
+        "atMs": 3000,
+        "data": {
+          "winner": 1
+        }
+      },
+      {
+        "event": "game:stop",
+        "atMs": 8000,
+        "data": {}
+      },
+      {
+        "event": "end",
+        "atMs": 8000,
+        "data": {}
+      }
+    ]
+  },
+  "comparison": {
+    "kind": "js-lifecycle-oracle-raw-event-order",
+    "trace_schema_version": "environment-lifecycle-trace-v0",
+    "include_events": true,
+    "source_fidelity_required": true,
+    "python_target": null
+  }
+}

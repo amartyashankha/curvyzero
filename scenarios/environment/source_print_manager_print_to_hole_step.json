@@ -1,0 +1,96 @@
+{
+  "schema_version": "environment-scenario-v0",
+  "scenario_id": "source_print_manager_print_to_hole_step",
+  "title": "Source PrintManager print to hole step",
+  "ruleset_id": "curvytron-v1-reference",
+  "provenance": {
+    "labels": [
+      "source-derived",
+      "print-manager",
+      "js-oracle-pinned",
+      "python-runner-verified"
+    ],
+    "source_target": "third_party/curvytron-reference",
+    "source_commit": "8fec14c",
+    "notes": [
+      "One-player JS oracle canary for PrintManager.test toggling from printing true to a hole.",
+      "p0 starts printing with an active PrintManager at distance 1 and moves 1.6 units, so PrintManager.test subtracts 1.6, updates lastX/lastY, and toggles printing off.",
+      "The trail cursor starts at the post-step point to keep Avatar.update from adding a normal trail point before the PrintManager toggle; the only point event is the important toggle point, and the trail is then cleared by setPrinting(false).",
+      "The JS oracle fixes Math.random at 0.5, so the new hole distance is 5.25.",
+      "This fixture is verified through the narrow Python source-print-manager-canary runner and common trace includes avatar.printing, printManager internals, body/trail counters, and property payloads for this slice."
+    ]
+  },
+  "source_setup": {
+    "player_count": 1,
+    "map_size": 80,
+    "random": {
+      "math_random": 0.5
+    },
+    "room": {
+      "name": "source-print-manager-print-to-hole-step",
+      "max_score": 1,
+      "bonuses": [],
+      "bonus_rate": 0
+    },
+    "game": {
+      "started": true,
+      "in_round": true,
+      "borderless": false,
+      "world_active": true
+    }
+  },
+  "player_count": 1,
+  "time_policy": {
+    "kind": "fixed",
+    "step_ms": 100
+  },
+  "players": [
+    {
+      "id": "p0",
+      "client_id": "p0-client",
+      "avatar_id": 1,
+      "name": "p0",
+      "color": "#ff0000",
+      "initial": {
+        "x": 20,
+        "y": 40,
+        "angle_rad": 0,
+        "printing": true,
+        "trail": {
+          "last_x": 21.6,
+          "last_y": 40
+        },
+        "print_manager": {
+          "active": true,
+          "distance": 1,
+          "last_x": 20,
+          "last_y": 40
+        }
+      }
+    }
+  ],
+  "steps": [
+    {
+      "tick": 0,
+      "step_ms": 100,
+      "moves": [
+        {
+          "player_id": "p0",
+          "move": 0
+        }
+      ]
+    }
+  ],
+  "comparison": {
+    "kind": "js-oracle-raw-state-trace",
+    "trace_schema_version": "environment-trace-v0",
+    "include_events": true,
+    "python_target": "source-print-manager-canary",
+    "source_fidelity_required": true,
+    "tolerances": {
+      "position": 0.000001,
+      "angle": 0.000001,
+      "velocity": 0.000001
+    }
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "schema": "curvyzero_fidelity_batch/v1",
+  "description": "Source PrintManager random-tape call-order and multi-step cadence canaries. Kept separate from the stable eight-case PrintManager batch so cadence changes are explicit.",
+  "scenarios": [
+    "scenarios/environment/source_print_manager_random_call_order_step.json",
+    "scenarios/environment/source_print_manager_random_cadence_multistep.json"
+  ]
+}

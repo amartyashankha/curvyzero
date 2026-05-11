@@ -1,0 +1,108 @@
+{
+  "schema_version": "environment-scenario-v0",
+  "scenario_id": "source_print_manager_delayed_start_timer_step",
+  "title": "Source PrintManager delayed start timer step",
+  "ruleset_id": "curvytron-v1-reference",
+  "provenance": {
+    "labels": [
+      "source-derived",
+      "print-manager",
+      "delayed-start",
+      "js-oracle-pinned",
+      "python-runner-verified"
+    ],
+    "source_target": "third_party/curvytron-reference",
+    "source_commit": "8fec14c",
+    "notes": [
+      "One-player JS oracle canary for Game.onStart scheduling PrintManager.start after 3000 ms.",
+      "The scenario runner invokes Game.onStart after forced state, then advances its controlled timer queue by 2999 ms and 1 ms.",
+      "Before 3000 ms, p0 remains printing=false with an inactive PrintManager and no trail/body point.",
+      "At 3000 ms, PrintManager.start sets active=true, copies the current avatar position into lastX/lastY, calls setPrinting(true), emits the important point/property side effects, and sets deterministic print distance 39.",
+      "Both ticks use step_ms=0 so the only promoted state change is the delayed timer start plus the source zero-step position event."
+    ]
+  },
+  "source_setup": {
+    "player_count": 1,
+    "map_size": 80,
+    "random": {
+      "math_random": 0.5
+    },
+    "room": {
+      "name": "source-print-manager-delayed-start-timer-step",
+      "max_score": 1,
+      "bonuses": [],
+      "bonus_rate": 0
+    },
+    "game": {
+      "started": true,
+      "in_round": true,
+      "borderless": false,
+      "world_active": false,
+      "invoke_on_start": true
+    }
+  },
+  "player_count": 1,
+  "time_policy": {
+    "kind": "fixed",
+    "step_ms": 0,
+    "timer_advance_ms_sequence": [
+      2999,
+      1
+    ]
+  },
+  "players": [
+    {
+      "id": "p0",
+      "client_id": "p0-client",
+      "avatar_id": 1,
+      "name": "p0",
+      "color": "#ff0000",
+      "initial": {
+        "x": 20,
+        "y": 40,
+        "angle_rad": 0,
+        "printing": false,
+        "print_manager": {
+          "active": false,
+          "distance": 0,
+          "last_x": 0,
+          "last_y": 0
+        }
+      }
+    }
+  ],
+  "steps": [
+    {
+      "tick": 0,
+      "step_ms": 0,
+      "moves": [
+        {
+          "player_id": "p0",
+          "move": 0
+        }
+      ]
+    },
+    {
+      "tick": 1,
+      "step_ms": 0,
+      "moves": [
+        {
+          "player_id": "p0",
+          "move": 0
+        }
+      ]
+    }
+  ],
+  "comparison": {
+    "kind": "js-oracle-raw-state-trace",
+    "trace_schema_version": "environment-trace-v0",
+    "include_events": true,
+    "python_target": "source-print-manager-canary",
+    "source_fidelity_required": true,
+    "tolerances": {
+      "position": 0.000001,
+      "angle": 0.000001,
+      "velocity": 0.000001
+    }
+  }
+}

@@ -1,0 +1,147 @@
+{
+  "schema_version": "environment-scenario-v0",
+  "scenario_id": "source_collision_death_point_kills_later_player_step",
+  "title": "Source collision order death point kills later player step",
+  "ruleset_id": "curvytron-v1-reference",
+  "provenance": {
+    "labels": [
+      "source-derived",
+      "collision-order",
+      "death-point-side-effect",
+      "js-oracle-pinned",
+      "python-runner-verified"
+    ],
+    "source_target": "third_party/curvytron-reference",
+    "source_commit": "8fec14c",
+    "notes": [
+      "Two-player JS oracle canary for same-frame death point side effects under reverse source avatar update order.",
+      "p1 updates first and dies to a seeded p0 body at the shared endpoint.",
+      "p1's death point is inserted synchronously before p0 updates, so p0 then dies to p1's same-frame death point.",
+      "Both avatars force empty trail runtime state to avoid setup-time print-manager side effects and normal point emission."
+    ]
+  },
+  "source_setup": {
+    "player_count": 2,
+    "map_size": 88,
+    "random": {
+      "math_random": 0.5
+    },
+    "room": {
+      "name": "source-collision-death-point-kills-later-player-step",
+      "max_score": 10,
+      "bonuses": [],
+      "bonus_rate": 0
+    },
+    "game": {
+      "started": true,
+      "in_round": true,
+      "borderless": false,
+      "world_active": true
+    }
+  },
+  "player_count": 2,
+  "initial_state": {
+    "map_size": 88,
+    "world_bodies": [
+      {
+        "player_id": "p0",
+        "x": 44,
+        "y": 44,
+        "radius": 0.6,
+        "num": 0
+      }
+    ]
+  },
+  "time_policy": {
+    "kind": "fixed",
+    "step_ms": 100
+  },
+  "players": [
+    {
+      "id": "p0",
+      "client_id": "p0-client",
+      "avatar_id": 1,
+      "name": "p0",
+      "color": "#ff0000",
+      "initial": {
+        "x": 45.6,
+        "y": 44,
+        "angle_rad": 3.141592653589793,
+        "printing": false,
+        "trail": {
+          "points": []
+        }
+      }
+    },
+    {
+      "id": "p1",
+      "client_id": "p1-client",
+      "avatar_id": 2,
+      "name": "p1",
+      "color": "#00ff00",
+      "initial": {
+        "x": 42.4,
+        "y": 44,
+        "angle_rad": 0,
+        "printing": false,
+        "trail": {
+          "points": []
+        }
+      }
+    }
+  ],
+  "steps": [
+    {
+      "tick": 0,
+      "step_ms": 100,
+      "moves": [
+        {
+          "player_id": "p0",
+          "move": 0
+        },
+        {
+          "player_id": "p1",
+          "move": 0
+        }
+      ]
+    }
+  ],
+  "comparison": {
+    "kind": "js-oracle-raw-state-trace",
+    "trace_schema_version": "environment-trace-v0",
+    "include_events": true,
+    "python_target": "source-body-canary",
+    "source_fidelity_required": true,
+    "tolerances": {
+      "position": 0.000001,
+      "angle": 0.000001,
+      "velocity": 0.000001
+    },
+    "expected": {
+      "oracle_command": "node tools/reference_oracle/scenario_runner.js scenarios/environment/source_collision_death_point_kills_later_player_step.json",
+      "events": [
+        {"event": "position", "player_id": "p1", "x": 44, "y": 44},
+        {"event": "point", "player_id": "p1", "x": 44, "y": 44, "important": false},
+        {"event": "die", "player_id": "p1", "killer_id": "p0", "old": false},
+        {"event": "score:round", "player_id": "p1", "roundScore": 0},
+        {"event": "position", "player_id": "p0", "x": 44, "y": 44},
+        {"event": "point", "player_id": "p0", "x": 44, "y": 44, "important": false},
+        {"event": "die", "player_id": "p0", "killer_id": "p1", "old": false},
+        {"event": "score:round", "player_id": "p0", "roundScore": 0},
+        {"event": "score", "player_id": "p1", "score": 0},
+        {"event": "score", "player_id": "p0", "score": 0},
+        {"event": "round:end", "winner": null}
+      ],
+      "final_state": {
+        "alive": [false, false],
+        "scores": [0, 0],
+        "roundScores": [0, 0],
+        "deathKillers": ["p1", "p0"],
+        "deathCount": 2,
+        "deaths": ["p1", "p0"],
+        "roundWinner": null,
+        "worldBodyCount": 3
+      }
+    }
+  }
+}

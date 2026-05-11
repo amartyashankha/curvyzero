@@ -1,0 +1,9 @@
+{
+  "schema": "curvyzero_fidelity_batch/v1",
+  "description": "Source normal-wall multiplayer canaries for 3P same-tick deaths, 4P ordered scoring, and 4P same-frame terminal draw scoring.",
+  "scenarios": [
+    "scenarios/environment/source_normal_wall_3p_two_die_one_survivor_step.json",
+    "scenarios/environment/source_normal_wall_4p_ordered_deaths_survivor_score.json",
+    "scenarios/environment/source_normal_wall_4p_two_prior_then_same_frame_terminal_draw.json"
+  ]
+}

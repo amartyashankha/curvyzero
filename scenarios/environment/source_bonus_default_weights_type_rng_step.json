@@ -1,0 +1,169 @@
+{
+  "schema_version": "environment-scenario-v0",
+  "scenario_id": "source_bonus_default_weights_type_rng_step",
+  "title": "Source default bonus weights type RNG step",
+  "ruleset_id": "curvytron-v1-reference",
+  "provenance": {
+    "labels": [
+      "source-derived",
+      "bonus",
+      "rng",
+      "js-oracle"
+    ],
+    "source_target": "third_party/curvytron-reference",
+    "source_commit": "8fec14c",
+    "notes": [
+      "Tiny JS oracle proof for natural BonusManager type selection with the full default enabled bonus order.",
+      "bonus_rate=1 makes the first pop delay 1500ms, before the source 3000ms PrintManager starts, so no print-manager random draw contaminates this proof.",
+      "Two of four present avatars are forced dead before the pop, so BonusGameClear's dynamic probability is reduced while the default configured order is preserved.",
+      "The fixture proves the type draw, selected type, x/y position draws, bonus:pop event order, and bonus counts only; it does not claim catch, effects, stack, expiry, cap, or retry behavior."
+    ]
+  },
+  "source_setup": {
+    "player_count": 4,
+    "map_size": 101,
+    "random": {
+      "math_random_sequence": [
+        {
+          "label": "bonus.start_delay",
+          "value": 0
+        },
+        {
+          "label": "bonus.next_delay_after_pop",
+          "value": 0.5
+        },
+        {
+          "label": "bonus.type.BonusAllColor",
+          "value": 0.945
+        },
+        {
+          "label": "bonus.position.x",
+          "value": 0.25
+        },
+        {
+          "label": "bonus.position.y",
+          "value": 0.75
+        }
+      ]
+    },
+    "room": {
+      "name": "source-bonus-default-weights-type-rng-step",
+      "max_score": 10,
+      "bonuses": [
+        "BonusSelfSmall",
+        "BonusSelfSlow",
+        "BonusSelfFast",
+        "BonusSelfMaster",
+        "BonusEnemySlow",
+        "BonusEnemyFast",
+        "BonusEnemyBig",
+        "BonusEnemyInverse",
+        "BonusEnemyStraightAngle",
+        "BonusGameBorderless",
+        "BonusAllColor",
+        "BonusGameClear"
+      ],
+      "bonus_rate": 1
+    },
+    "game": {
+      "started": true,
+      "in_round": true,
+      "borderless": false,
+      "world_active": false,
+      "invoke_on_start": true
+    }
+  },
+  "player_count": 4,
+  "initial_state": {},
+  "players": [
+    {
+      "id": "p0",
+      "client_id": "p0-client",
+      "avatar_id": 1,
+      "name": "p0",
+      "color": "#ff0000",
+      "initial": {
+        "x": 20,
+        "y": 20,
+        "angle_rad": 0,
+        "printing": false,
+        "alive": true
+      }
+    },
+    {
+      "id": "p1",
+      "client_id": "p1-client",
+      "avatar_id": 2,
+      "name": "p1",
+      "color": "#00ff00",
+      "initial": {
+        "x": 80,
+        "y": 80,
+        "angle_rad": 0,
+        "printing": false,
+        "alive": true
+      }
+    },
+    {
+      "id": "p2",
+      "client_id": "p2-client",
+      "avatar_id": 3,
+      "name": "p2",
+      "color": "#0000ff",
+      "initial": {
+        "x": 40,
+        "y": 80,
+        "angle_rad": 0,
+        "printing": false,
+        "alive": false
+      }
+    },
+    {
+      "id": "p3",
+      "client_id": "p3-client",
+      "avatar_id": 4,
+      "name": "p3",
+      "color": "#ffff00",
+      "initial": {
+        "x": 80,
+        "y": 40,
+        "angle_rad": 0,
+        "printing": false,
+        "alive": false
+      }
+    }
+  ],
+  "steps": [
+    {
+      "tick": 0,
+      "step_ms": 0,
+      "advance_timers_ms": 1500,
+      "moves": [
+        {
+          "player_id": "p0",
+          "move": 0
+        },
+        {
+          "player_id": "p1",
+          "move": 0
+        },
+        {
+          "player_id": "p2",
+          "move": 0
+        },
+        {
+          "player_id": "p3",
+          "move": 0
+        }
+      ]
+    }
+  ],
+  "comparison": {
+    "kind": "js-oracle-state-trace",
+    "trace_schema_version": "environment-trace-v0",
+    "include_events": true,
+    "python_target": "source-bonus-js-oracle",
+    "source_fidelity_required": true,
+    "scope": "natural bonus default multi-type weight/type RNG only"
+  }
+}

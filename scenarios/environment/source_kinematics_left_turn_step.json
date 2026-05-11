@@ -1,0 +1,95 @@
+{
+  "schema_version": "environment-scenario-v0",
+  "id": "source_kinematics_left_turn_step",
+  "title": "Source kinematics left turn step",
+  "ruleset_id": "curvytron-v1-reference",
+  "provenance": {
+    "labels": [
+      "source-inspired",
+      "toy-v0",
+      "unresolved"
+    ],
+    "source_target": "third_party/curvytron-reference",
+    "source_commit": "8fec14c",
+    "notes": [
+      "Tiny forced-state source kinematics fixture for a left source move.",
+      "Intended proof: move -1 applies source angular velocity before translating the avatar for the fixed step_ms.",
+      "Player p1 is a straight-move control; no collision, trail, bonus, score, or round outcome behavior is asserted."
+    ]
+  },
+  "source_setup": {
+    "player_count": 2,
+    "map_size": 88,
+    "random": {
+      "math_random": 0.5
+    },
+    "room": {
+      "name": "source-kinematics-left-turn-step",
+      "max_score": 10,
+      "bonuses": [],
+      "bonus_rate": 0
+    },
+    "game": {
+      "started": true,
+      "in_round": true,
+      "borderless": false,
+      "world_active": true
+    }
+  },
+  "players": [
+    {
+      "id": "p0",
+      "client_id": "p0-client",
+      "avatar_id": 1,
+      "name": "p0",
+      "color": "#ff0000",
+      "initial": {
+        "x": 20,
+        "y": 40,
+        "angle_rad": 0,
+        "printing": true
+      }
+    },
+    {
+      "id": "p1",
+      "client_id": "p1-client",
+      "avatar_id": 2,
+      "name": "p1",
+      "color": "#00ff00",
+      "initial": {
+        "x": 60,
+        "y": 40,
+        "angle_rad": 3.141592653589793,
+        "printing": true
+      }
+    }
+  ],
+  "steps": [
+    {
+      "tick": 0,
+      "step_ms_expr": "1000 / 60",
+      "step_ms": 16.666666666666668,
+      "moves": [
+        {
+          "player_id": "p0",
+          "move": -1
+        },
+        {
+          "player_id": "p1",
+          "move": 0
+        }
+      ]
+    }
+  ],
+  "comparison": {
+    "kind": "js-python-state-trace",
+    "trace_schema_version": "environment-trace-v0",
+    "python_target": "curvyzero-v0",
+    "source_fidelity_required": false,
+    "tolerances": {
+      "position": 0.000001,
+      "angle": 0.000001,
+      "velocity": 0.000001
+    }
+  }
+}
