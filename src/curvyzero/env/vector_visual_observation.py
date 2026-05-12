@@ -394,6 +394,98 @@ def render_source_state_gray64(
     return SourceStateGray64Renderer(frame=out).render(state, row=row)
 
 
+def _rgb_luma_uint8(color: Sequence[int] | np.ndarray) -> int:
+    rgb = _rgb_triplet(color).astype(np.float32)
+    value = rgb[0] * np.float32(0.299) + rgb[1] * np.float32(0.587) + rgb[2] * np.float32(0.114)
+    return int(np.clip(np.rint(value), 0.0, 255.0))
+
+
+def render_source_state_gray64_fast_player_perspectives(
+    state: Mapping[str, np.ndarray],
+    *,
+    row: int = 0,
+    player_count: int | None = None,
+    out: np.ndarray | None = None,
+    background_rgb: Sequence[int] = SOURCE_STATE_RGB_CANVAS_LIKE_BACKGROUND_RGB,
+) -> np.ndarray:
+    """Render an approximate player-perspective gray64 frame directly at 64x64.
+
+    This training-oriented path keeps source-state geometry and player-relative RGB
+    luma contrast, but skips the browser-like 704x704 raster and area downsample.
+    It prefers dense ``visual_trail_*`` points when present and active, then falls
+    back to persisted ``body_*`` points.
+    """
+
+    arrays = _trusted_arrays(state)
+    row_index = _row_index(row, arrays["tick"].shape[0])
+    players = int(arrays["pos"].shape[1]) if player_count is None else int(player_count)
+    if players < 1:
+        raise VectorVisualObservationError("player_count must be >= 1")
+    frames = (
+        np.empty((players, *SOURCE_STATE_GRAY64_SHAPE), dtype=np.uint8)
+        if out is None
+        else _validated_player_perspective_frames(out, player_count=players)
+    )
+    base = np.empty(SOURCE_STATE_GRAY64_SHAPE, dtype=np.uint8)
+    bg = np.uint8(_rgb_luma_uint8(background_rgb))
+    base.fill(bg)
+    canvas = base[0]
+    map_size = float(arrays["map_size"][row_index])
+    used_visual_trail = False
+    if _source_state_has_visual_trail_arrays(arrays):
+        trail_limit = _visual_trail_slot_limit(arrays, row_index)
+        active_slots = np.flatnonzero(arrays["visual_trail_active"][row_index, :trail_limit])
+        if active_slots.size:
+            _draw_body_circles(
+                canvas,
+                arrays["visual_trail_pos"][row_index, active_slots],
+                arrays["visual_trail_radius"][row_index, active_slots],
+                arrays["visual_trail_owner"][row_index, active_slots],
+                map_size,
+                mask_cache=None,
+            )
+            used_visual_trail = True
+    if not used_visual_trail:
+        body_limit = _body_slot_limit(arrays, row_index)
+        active_slots = np.flatnonzero(arrays["body_active"][row_index, :body_limit])
+        _draw_body_circles(
+            canvas,
+            arrays["body_pos"][row_index, active_slots],
+            arrays["body_radius"][row_index, active_slots],
+            arrays["body_owner"][row_index, active_slots],
+            map_size,
+            mask_cache=None,
+        )
+
+    if "bonus_active" in arrays:
+        _draw_bonus_type_luma_circles(canvas, arrays, row_index, map_size, mask_cache=None)
+
+    source_player_count = int(arrays["pos"].shape[1])
+    for player in range(source_player_count):
+        if not bool(arrays["present"][row_index, player]):
+            continue
+        if not bool(arrays["alive"][row_index, player]):
+            continue
+        _draw_world_circle(
+            canvas,
+            arrays["pos"][row_index, player, 0],
+            arrays["pos"][row_index, player, 1],
+            arrays["radius"][row_index, player],
+            map_size,
+            value=_head_value(player),
+            mask_cache=None,
+        )
+
+    for controlled in range(players):
+        np.copyto(frames[controlled], base)
+        _remap_source_gray64_to_player_perspective(
+            frames[controlled],
+            controlled_player=controlled,
+            player_count=source_player_count,
+        )
+    return frames
+
+
 def render_source_state_rgb_canvas_like(
     state: Mapping[str, np.ndarray],
     *,
@@ -2954,6 +3046,23 @@ def _validated_player_perspective_frames(
     return array
 
 
+def _remap_source_gray64_to_player_perspective(
+    frame: np.ndarray,
+    *,
+    controlled_player: int,
+    player_count: int,
+) -> None:
+    canvas = _validated_frame(frame, name="frame")[0]
+    source = canvas.copy()
+    controlled = int(controlled_player)
+    for player in range(int(player_count)):
+        body_value = _body_value(player)
+        head_value = _head_value(player)
+        target_body = _SELF_BODY_VALUE if player == controlled else _OTHER_BODY_VALUE
+        canvas[source == body_value] = np.uint8(target_body)
+        canvas[source == head_value] = np.uint8(target_body)
+
+
 def _validated_dirty_block_mask(mask: np.ndarray) -> np.ndarray:
     array = np.asarray(mask)
     expected = (SOURCE_STATE_CANVAS_GRAY64_SHAPE[1], SOURCE_STATE_CANVAS_GRAY64_SHAPE[2])
@@ -3811,6 +3920,29 @@ def _draw_uniform_circles(
         )
 
 
+def _draw_bonus_type_luma_circles(
+    canvas: np.ndarray,
+    arrays: Mapping[str, np.ndarray],
+    row: int,
+    map_size: float,
+    *,
+    mask_cache: dict[int, np.ndarray] | None,
+) -> None:
+    bonus_slots = np.flatnonzero(arrays["bonus_active"][row])
+    bonus_types = arrays.get("bonus_type")
+    for slot in bonus_slots:
+        bonus_type = None if bonus_types is None else int(bonus_types[row, slot])
+        _draw_world_circle(
+            canvas,
+            arrays["bonus_pos"][row, slot, 0],
+            arrays["bonus_pos"][row, slot, 1],
+            arrays["bonus_radius"][row, slot],
+            map_size,
+            value=_rgb_luma_uint8(_bonus_type_rgb(bonus_type)),
+            mask_cache=mask_cache,
+        )
+
+
 def _draw_world_circle_rgb(
     canvas: np.ndarray,
     x_value: Any,
@@ -4472,6 +4604,7 @@ __all__ = [
     "render_source_snapshot_gray64",
     "render_source_snapshot_rgb_canvas_like",
     "render_source_state_gray64",
+    "render_source_state_gray64_fast_player_perspectives",
     "rgb_canvas_like_to_gray64",
     "source_state_bonus64_stack4_player_perspective_v1_schema",
     "source_state_canvas_gray64_schema",

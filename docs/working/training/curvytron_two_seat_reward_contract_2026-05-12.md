@@ -15,13 +15,16 @@ Default formula:
 
 ```text
 dense_survival_helper = 0.01 if the seat is alive after the step else 0.0
+bonus_pickup_helper = 0.05 * bonuses caught by that player on this exact step
 terminal_outcome = env_sparse_outcome * 0.01 * episode_step_count if done else 0.0
-training_reward = dense_survival_helper + terminal_outcome
+training_reward = dense_survival_helper + bonus_pickup_helper + terminal_outcome
 return_target_discount = 1.0
 ```
 
 `env_sparse_outcome` is the env terminal payoff for that player: `+1` for the
 winner, `-1` for the loser, `0` for draw/truncation/nonterminal.
+The bonus pickup helper is immediate. It is not delayed to the end of the game,
+and progress sums are only logs.
 
 ## Why This Shape
 
@@ -34,12 +37,18 @@ scaled by episode length so the helper cannot dominate just because games get
 long. A 100-step loss gives about `99 * 0.01 - 100 * 0.01 = -0.01`; a 100-step
 win gives about `100 * 0.01 + 100 * 0.01 = 2.0`.
 
+Bonus pickup reward is a small exploration reward. It credits the player who
+catches a bonus on that exact policy step, even if the bonus type later turns
+out situationally bad. The default `+0.05` is equal to five alive-helper steps.
+
 ## Logging Rule
 
 Do not collapse the components in reports. Each replay row should keep:
 
 - `reward`: final training reward consumed by replay/learner.
 - `dense_survival_helper_reward`
+- `bonus_pickup_count`
+- `bonus_pickup_reward`
 - `sparse_outcome_reward`
 - `terminal_outcome_reward`
 - `episode_step_count`

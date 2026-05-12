@@ -30,13 +30,13 @@ from curvyzero.env.vector_visual_observation import (
 )
 from curvyzero.env.vector_visual_observation import SOURCE_STATE_CANVAS_GRAY64_SCHEMA_HASH
 from curvyzero.env.vector_visual_observation import SOURCE_STATE_CANVAS_GRAY64_SCHEMA_ID
-from curvyzero.env.vector_visual_observation import TRAIL_RENDER_MODE_DEFAULT
-from curvyzero.env.vector_visual_observation import TRAIL_RENDER_MODE_ORDER
 from curvyzero.env.trainer_contract import stable_contract_hash
 from curvyzero.training.curvytron_current_policy_selfplay_smoke import (
     ACTION_COUNT,
     NOOP_ACTION_ID,
     PLAYER_PERSPECTIVE_SCHEMA_ID,
+    STACK_RENDER_MODE_DEFAULT,
+    STACK_RENDER_MODE_ORDER,
     STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID,
     STACKED_SOURCE_STATE_GRAY64_SHAPE,
     SourceStateGray64Stack4,
@@ -79,10 +79,12 @@ TWO_SEAT_TERMINAL_SHAPED_RETURN_SCHEMA_HASH = stable_contract_hash(
     {
         "schema_id": TWO_SEAT_TERMINAL_SHAPED_RETURN_SCHEMA_ID,
         "trainer_reward": (
-            "dense alive/dead helper + env sparse terminal outcome "
-            "* terminal_outcome_reward_per_step * episode_step_count"
+            "dense alive/dead helper + immediate same-step bonus pickup helper "
+            "+ env sparse terminal outcome * terminal_outcome_reward_per_step "
+            "* episode_step_count"
         ),
         "dense_helper": "alive_reward while alive after step else dead_reward",
+        "bonus_pickup_helper": "bonus_pickup_reward_per_catch on the exact catch step",
         "sparse_outcome": "VectorMultiplayerEnv reward for that player",
         "terminal_outcome_scale": "terminal_outcome_reward_per_step * episode_step_count",
         "return_target": "discounted sum of trainer rewards per player trajectory",
@@ -100,8 +102,9 @@ REPLAY_SCOPE_CHOICES = (REPLAY_SCOPE_CURRENT_ITERATION, REPLAY_SCOPE_ACCUMULATED
 DEFAULT_ALIVE_REWARD = 0.01
 DEFAULT_DEAD_REWARD = 0.0
 DEFAULT_TERMINAL_OUTCOME_REWARD_PER_STEP = DEFAULT_ALIVE_REWARD
+DEFAULT_BONUS_PICKUP_REWARD_PER_CATCH = 0.05
 DEFAULT_RETURN_TARGET_DISCOUNT = 1.0
-DEFAULT_ENV_MAX_TICKS = 2_000
+DEFAULT_ENV_MAX_TICKS = 65_536
 DEFAULT_DEATH_MODE = vector_runtime.DEATH_MODE_NORMAL
 DEFAULT_NATURAL_BONUS_SPAWN = True
 DEFAULT_CHECKPOINT_EVERY_ITERATIONS = 100
@@ -158,6 +161,7 @@ def run_curvytron_two_seat_lightzero_train_smoke(
     terminal_outcome_reward_per_step: float = (
         DEFAULT_TERMINAL_OUTCOME_REWARD_PER_STEP
     ),
+    bonus_pickup_reward_per_catch: float = DEFAULT_BONUS_PICKUP_REWARD_PER_CATCH,
     return_target_discount: float = DEFAULT_RETURN_TARGET_DISCOUNT,
     action_selection_mode: str = ACTION_SELECTION_MODE_COLLECT,
     collect_temperature: float = 1.0,
@@ -173,7 +177,7 @@ def run_curvytron_two_seat_lightzero_train_smoke(
         DEFAULT_POLICY_ACTION_REPEAT_WARMUP_ITERATIONS
     ),
     observation_noise_std: float = DEFAULT_OBSERVATION_NOISE_STD,
-    trail_render_mode: str = TRAIL_RENDER_MODE_DEFAULT,
+    trail_render_mode: str = STACK_RENDER_MODE_DEFAULT,
     use_cuda: bool = False,
     require_installed_lightzero: bool = True,
 ) -> dict[str, Any]:
@@ -260,6 +264,12 @@ def run_curvytron_two_seat_lightzero_train_smoke(
     resolved_terminal_outcome_reward_per_step = float(terminal_outcome_reward_per_step)
     if not np.isfinite(resolved_terminal_outcome_reward_per_step):
         raise ValueError("terminal_outcome_reward_per_step must be finite")
+    resolved_bonus_pickup_reward_per_catch = float(bonus_pickup_reward_per_catch)
+    if (
+        not np.isfinite(resolved_bonus_pickup_reward_per_catch)
+        or resolved_bonus_pickup_reward_per_catch < 0.0
+    ):
+        raise ValueError("bonus_pickup_reward_per_catch must be finite and >= 0")
     resolved_return_target_discount = float(return_target_discount)
     if not 0.0 <= resolved_return_target_discount <= 1.0:
         raise ValueError("return_target_discount must be in [0, 1]")
@@ -316,10 +326,11 @@ def run_curvytron_two_seat_lightzero_train_smoke(
                 replay_row_log_limit=int(replay_row_log_limit),
                 alive_reward=resolved_alive_reward,
                 dead_reward=resolved_dead_reward,
-                terminal_outcome_reward_per_step=(
-                    resolved_terminal_outcome_reward_per_step
-                ),
-                return_target_discount=resolved_return_target_discount,
+            terminal_outcome_reward_per_step=(
+                resolved_terminal_outcome_reward_per_step
+            ),
+            bonus_pickup_reward_per_catch=resolved_bonus_pickup_reward_per_catch,
+            return_target_discount=resolved_return_target_discount,
                 action_selection_mode=action_selection_mode,
                 collect_temperature=resolved_collect_temperature,
                 collect_epsilon=resolved_collect_epsilon,
@@ -399,6 +410,9 @@ def run_curvytron_two_seat_lightzero_train_smoke(
                     "terminal_outcome_reward_per_step": float(
                         resolved_terminal_outcome_reward_per_step
                     ),
+                    "bonus_pickup_reward_per_catch": float(
+                        resolved_bonus_pickup_reward_per_catch
+                    ),
                     "return_target_discount": float(resolved_return_target_discount),
                     "trail_render_mode": resolved_trail_render_mode,
                     "policy_action_repeat_min": int(resolved_policy_action_repeat_min),
@@ -437,6 +451,9 @@ def run_curvytron_two_seat_lightzero_train_smoke(
                 "dead_reward": float(resolved_dead_reward),
                 "terminal_outcome_reward_per_step": float(
                     resolved_terminal_outcome_reward_per_step
+                ),
+                "bonus_pickup_reward_per_catch": float(
+                    resolved_bonus_pickup_reward_per_catch
                 ),
                 "return_target_discount": float(resolved_return_target_discount),
                 "action_selection_mode": action_selection_mode,
@@ -521,6 +538,7 @@ def run_curvytron_two_seat_lightzero_train_smoke(
             terminal_outcome_reward_per_step=(
                 resolved_terminal_outcome_reward_per_step
             ),
+            bonus_pickup_reward_per_catch=resolved_bonus_pickup_reward_per_catch,
             return_target_discount=resolved_return_target_discount,
             action_selection_mode=action_selection_mode,
             collect_temperature=resolved_collect_temperature,
@@ -679,6 +697,9 @@ def run_curvytron_two_seat_lightzero_train_smoke(
                     "terminal_outcome_reward_per_step": float(
                         resolved_terminal_outcome_reward_per_step
                     ),
+                    "bonus_pickup_reward_per_catch": float(
+                        resolved_bonus_pickup_reward_per_catch
+                    ),
                     "return_target_discount": float(resolved_return_target_discount),
                     "action_selection_mode": action_selection_mode,
                     "collect_temperature": float(resolved_collect_temperature),
@@ -742,6 +763,9 @@ def run_curvytron_two_seat_lightzero_train_smoke(
             "control_stochasticity"
         ]
         iteration_summaries[-1]["collect_timing_sec"] = collection["timing_sec"]
+        iteration_summaries[-1]["visual_stack_dirty_render"] = collection[
+            "visual_stack_dirty_render"
+        ]
         iteration_summaries[-1]["policy_batching_counts"] = collection[
             "policy_batching_counts"
         ]
@@ -809,6 +833,9 @@ def run_curvytron_two_seat_lightzero_train_smoke(
             dead_reward=resolved_dead_reward,
             terminal_outcome_reward_per_step=(
                 resolved_terminal_outcome_reward_per_step
+            ),
+            bonus_pickup_reward_per_catch=(
+                resolved_bonus_pickup_reward_per_catch
             ),
             return_target_discount=resolved_return_target_discount,
             action_selection_mode=action_selection_mode,
@@ -893,6 +920,9 @@ def compact_curvytron_two_seat_lightzero_train_smoke_summary(
                 "terminal_outcome_reward_per_step": inputs.get(
                     "terminal_outcome_reward_per_step"
                 ),
+                "bonus_pickup_reward_per_catch": inputs.get(
+                    "bonus_pickup_reward_per_catch"
+                ),
                 "return_target_discount": inputs.get("return_target_discount"),
                 "policy_action_repeat_min": inputs.get("policy_action_repeat_min"),
                 "policy_action_repeat_max": inputs.get("policy_action_repeat_max"),
@@ -976,13 +1006,17 @@ def _compact_iteration_for_summary(iteration: Any) -> dict[str, Any]:
         "max_completed_episode_steps": iteration.get("max_completed_episode_steps"),
         "training_reward_sum": iteration.get("training_reward_sum"),
         "survival_reward_sum": iteration.get("survival_reward_sum"),
+        "bonus_pickup_reward_sum": iteration.get("bonus_pickup_reward_sum"),
+        "bonus_pickup_count": iteration.get("bonus_pickup_count"),
         "sparse_outcome_reward_sum": iteration.get("sparse_outcome_reward_sum"),
         "terminal_outcome_reward_sum": iteration.get("terminal_outcome_reward_sum"),
+        "fresh_policy_action_summary": iteration.get("fresh_policy_action_summary"),
         "control_stochasticity": iteration.get("control_stochasticity"),
         "effective_policy_action_repeat_extra_probability": iteration.get(
             "effective_policy_action_repeat_extra_probability"
         ),
         "collect_timing_sec": iteration.get("collect_timing_sec"),
+        "visual_stack_dirty_render": iteration.get("visual_stack_dirty_render"),
         "policy_batching_counts": iteration.get("policy_batching_counts"),
         "policy_search_call_count": iteration.get("policy_search_call_count"),
         "policy_search_row_count": iteration.get("policy_search_row_count"),
@@ -1035,6 +1069,7 @@ def _result_payload(
     alive_reward: float,
     dead_reward: float,
     terminal_outcome_reward_per_step: float,
+    bonus_pickup_reward_per_catch: float,
     return_target_discount: float,
     action_selection_mode: str,
     collect_temperature: float,
@@ -1119,7 +1154,7 @@ def _result_payload(
             "repeats collect -> replay/sample -> learner update(s) -> checkpoint",
             "maps policy rows back to joint_action [B,P]",
             "steps VectorMultiplayerEnv with external joint actions",
-            "records two-seat replay rows with iteration, env_row_id, player_id, decision_index, observation, action mask, action, action_weights, root_value, and survival reward",
+            "records two-seat replay rows with iteration, env_row_id, player_id, decision_index, observation, action mask, action, action_weights, root_value, and shaped training reward components",
             "can sample learner rows from either the current iteration or accumulated replay rows collected so far",
             "samples two-seat metadata through to the learner adapter for discounted survival value targets",
             (
@@ -1175,10 +1210,12 @@ def _result_payload(
             "terminal_outcome_reward_per_step": float(
                 terminal_outcome_reward_per_step
             ),
+            "bonus_pickup_reward_per_catch": float(bonus_pickup_reward_per_catch),
             "return_target_discount": float(return_target_discount),
             "training_reward_formula": (
-                "dense alive/dead helper plus sparse terminal outcome scaled by "
-                "terminal_outcome_reward_per_step * episode_step_count"
+                "dense alive/dead helper plus same-step bonus pickup helper plus "
+                "sparse terminal outcome scaled by terminal_outcome_reward_per_step "
+                "* episode_step_count"
             ),
             "action_selection_mode": action_selection_mode,
             "action_selection_mode_semantics": _action_selection_mode_semantics(
@@ -1262,11 +1299,14 @@ def _result_payload(
             "row_schema": TWO_SEAT_LIGHTZERO_REPLAY_ROW_SCHEMA_ID,
             "reward": (
                 "training reward per policy decision row: dense survival helper "
-                "plus scaled sparse terminal outcome"
+                "plus same-step bonus pickup helper plus scaled sparse terminal outcome"
             ),
             "reward_values": {
                 "alive_reward": float(alive_reward),
                 "dead_reward": float(dead_reward),
+                "bonus_pickup_reward_per_catch": float(
+                    bonus_pickup_reward_per_catch
+                ),
                 "terminal_outcome_reward_per_step": float(
                     terminal_outcome_reward_per_step
                 ),
@@ -1312,6 +1352,7 @@ def _collect_current_policy_iteration(
     alive_reward: float,
     dead_reward: float,
     terminal_outcome_reward_per_step: float,
+    bonus_pickup_reward_per_catch: float,
     return_target_discount: float,
     action_selection_mode: str,
     collect_temperature: float,
@@ -1626,7 +1667,19 @@ def _collect_current_policy_iteration(
                 episode_step_count=episode_step_count,
                 reward_per_step=terminal_outcome_reward_per_step,
             )
-            training_reward = dense_survival_helper + terminal_outcome_reward
+            bonus_pickup_count = _bonus_pickup_count_for_row(
+                step_batch.info,
+                env_row=env_row,
+                player_id=player,
+            )
+            bonus_pickup_reward = (
+                float(bonus_pickup_count) * float(bonus_pickup_reward_per_catch)
+            )
+            training_reward = (
+                dense_survival_helper
+                + bonus_pickup_reward
+                + terminal_outcome_reward
+            )
             replay_rows.append(
                 {
                     "schema_id": TWO_SEAT_LIGHTZERO_REPLAY_ROW_SCHEMA_ID,
@@ -1671,6 +1724,11 @@ def _collect_current_policy_iteration(
                     "root_value": _root_value(search_record),
                     "reward": float(training_reward),
                     "dense_survival_helper_reward": float(dense_survival_helper),
+                    "bonus_pickup_count": int(bonus_pickup_count),
+                    "bonus_pickup_reward": float(bonus_pickup_reward),
+                    "bonus_pickup_reward_per_catch": float(
+                        bonus_pickup_reward_per_catch
+                    ),
                     "sparse_outcome_reward": float(sparse_outcome_reward),
                     "terminal_outcome_reward": float(terminal_outcome_reward),
                     "terminal_outcome_reward_per_step": float(
@@ -1831,6 +1889,17 @@ def _collect_current_policy_iteration(
                 player: _counter_dict(counts)
                 for player, counts in sorted(physical_per_player_action_counts.items())
             },
+            "physical_action_summary": {
+                **_action_histogram_summary(
+                    physical_action_counts,
+                    physical_per_player_action_counts,
+                    count_field="executed_action_count",
+                ),
+                "count_semantics": (
+                    "physical/executed env actions; policy no-op skips send NOOP "
+                    "here, so this is not the primary training-collapse gate"
+                ),
+            },
         },
         "timing_sec": {
             key: round(float(timing_sec[key]), 6) for key in sorted(timing_sec)
@@ -1838,6 +1907,7 @@ def _collect_current_policy_iteration(
         "policy_batching_counts": _counter_dict(policy_batching_counts),
         "policy_search_call_count": int(policy_search_call_count),
         "policy_search_row_count": int(policy_search_row_count),
+        "visual_stack_dirty_render": visual_stack.dirty_render_stats(),
     }
 
 
@@ -2143,6 +2213,8 @@ def _iteration_progress_line(
         "dense_survival_helper_reward_sum": iteration_summary.get(
             "dense_survival_helper_reward_sum"
         ),
+        "bonus_pickup_reward_sum": iteration_summary.get("bonus_pickup_reward_sum"),
+        "bonus_pickup_count": iteration_summary.get("bonus_pickup_count"),
         "sparse_outcome_reward_sum": iteration_summary.get(
             "sparse_outcome_reward_sum"
         ),
@@ -2151,6 +2223,9 @@ def _iteration_progress_line(
         ),
         "action_counts": iteration_summary.get("action_counts"),
         "action_counts_by_player": iteration_summary.get("action_counts_by_player"),
+        "fresh_policy_action_summary": iteration_summary.get(
+            "fresh_policy_action_summary"
+        ),
         "effective_action_noop_probability": iteration_summary.get(
             "effective_action_noop_probability"
         ),
@@ -2229,6 +2304,14 @@ def _iteration_summary(
         [row.get("terminal_outcome_reward", 0.0) for row in replay_rows],
         dtype=np.float32,
     )
+    bonus_pickups = np.asarray(
+        [row.get("bonus_pickup_reward", 0.0) for row in replay_rows],
+        dtype=np.float32,
+    )
+    bonus_pickup_counts = np.asarray(
+        [row.get("bonus_pickup_count", 0) for row in replay_rows],
+        dtype=np.int32,
+    )
     episode_steps = _completed_episode_steps(records)
     return _to_plain(
         {
@@ -2247,6 +2330,12 @@ def _iteration_summary(
             "dense_survival_helper_reward_sum": float(dense_helpers.sum())
             if dense_helpers.size
             else 0.0,
+            "bonus_pickup_reward_sum": float(bonus_pickups.sum())
+            if bonus_pickups.size
+            else 0.0,
+            "bonus_pickup_count": int(bonus_pickup_counts.sum())
+            if bonus_pickup_counts.size
+            else 0,
             "sparse_outcome_reward_sum": float(sparse_outcomes.sum())
             if sparse_outcomes.size
             else 0.0,
@@ -2271,6 +2360,10 @@ def _iteration_summary(
                 player: _counter_dict(counts)
                 for player, counts in sorted(per_player_action_counts.items())
             },
+            "fresh_policy_action_summary": _action_histogram_summary(
+                action_counts,
+                per_player_action_counts,
+            ),
             "learner_forwards": [
                 {
                     "status": item.get("status"),
@@ -2384,6 +2477,11 @@ def _collect_timing_summary(iteration_summaries: list[dict[str, Any]]) -> dict[s
     search_rows = sum(
         int(item.get("policy_search_row_count") or 0) for item in iteration_summaries
     )
+    dirty_stats = [
+        item.get("visual_stack_dirty_render")
+        for item in iteration_summaries
+        if isinstance(item.get("visual_stack_dirty_render"), Mapping)
+    ]
     total_instrumented = sum(
         float(bucket.get("sum", 0.0)) for bucket in timing_summary.values()
     )
@@ -2405,7 +2503,36 @@ def _collect_timing_summary(iteration_summaries: list[dict[str, Any]]) -> dict[s
             if total_instrumented > 0.0
             else None
         ),
+        "visual_stack_dirty_render": _summarize_dirty_render_stats(dirty_stats),
         "timing_sec": timing_summary,
+    }
+
+
+def _summarize_dirty_render_stats(stats: list[Any]) -> dict[str, Any]:
+    if not stats:
+        return {}
+    attempts = [int(item.get("attempts") or 0) for item in stats if isinstance(item, Mapping)]
+    hits = [int(item.get("hits") or 0) for item in stats if isinstance(item, Mapping)]
+    fallbacks = [int(item.get("fallbacks") or 0) for item in stats if isinstance(item, Mapping)]
+    dirty_blocks = [
+        int(item.get("dirty_blocks_total") or 0)
+        for item in stats
+        if isinstance(item, Mapping)
+    ]
+    total_attempts = int(sum(attempts))
+    total_hits = int(sum(hits))
+    return {
+        "enabled": any(bool(item.get("enabled")) for item in stats if isinstance(item, Mapping)),
+        "attempts": total_attempts,
+        "hits": total_hits,
+        "fallbacks": int(sum(fallbacks)),
+        "dirty_blocks_total": int(sum(dirty_blocks)),
+        "hit_rate": (
+            round(float(total_hits) / float(total_attempts), 6)
+            if total_attempts
+            else None
+        ),
+        "last": stats[-1] if stats else {},
     }
 
 
@@ -2979,6 +3106,23 @@ def _sparse_outcome_reward(
     return float(rewards[int(env_row), int(player_id)])
 
 
+def _bonus_pickup_count_for_row(
+    info: Mapping[str, Any],
+    *,
+    env_row: int,
+    player_id: int,
+) -> int:
+    counts = info.get("bonus_catch_count_step")
+    if counts is None:
+        return 0
+    array = np.asarray(counts, dtype=np.int64)
+    if array.ndim != 2:
+        return 0
+    if array.shape[0] <= int(env_row) or array.shape[1] <= int(player_id):
+        return 0
+    return max(int(array[int(env_row), int(player_id)]), 0)
+
+
 def _episode_step_count_for_row(
     info: Mapping[str, Any],
     *,
@@ -3076,6 +3220,51 @@ def _counter_dict(counter: Counter[int]) -> dict[str, int]:
     return {str(key): int(counter[key]) for key in sorted(counter)}
 
 
+def _action_histogram_summary(
+    action_counts: Counter[int],
+    per_player_action_counts: dict[str, Counter[int]],
+    *,
+    collapse_threshold: float = 0.95,
+    count_field: str = "decision_count",
+) -> dict[str, Any]:
+    threshold = float(collapse_threshold)
+    top_action_fraction_by_player: dict[str, float | None] = {}
+    action_entropy_by_player: dict[str, float | None] = {}
+    action_collapse_players: list[str] = []
+    for player, counts in sorted(per_player_action_counts.items()):
+        player_total = int(sum(counts.values()))
+        if player_total < 1:
+            top_action_fraction_by_player[player] = None
+            action_entropy_by_player[player] = None
+            continue
+        probabilities = np.asarray(
+            [
+                float(count) / float(player_total)
+                for count in counts.values()
+                if int(count) > 0
+            ],
+            dtype=np.float64,
+        )
+        top_fraction = float(probabilities.max()) if probabilities.size else 0.0
+        entropy = float(-(probabilities * np.log2(probabilities)).sum())
+        top_action_fraction_by_player[player] = top_fraction
+        action_entropy_by_player[player] = entropy
+        if top_fraction >= threshold:
+            action_collapse_players.append(player)
+    return {
+        count_field: int(sum(action_counts.values())),
+        "action_counts_by_player": {
+            player: _counter_dict(counts)
+            for player, counts in sorted(per_player_action_counts.items())
+        },
+        "top_action_fraction_by_player": top_action_fraction_by_player,
+        "action_entropy_by_player": action_entropy_by_player,
+        "collapse_threshold": threshold,
+        "action_collapse_warning": bool(action_collapse_players),
+        "action_collapse_players": action_collapse_players,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--seed", type=int, default=0)
@@ -3134,6 +3323,15 @@ def main() -> None:
         default=DEFAULT_TERMINAL_OUTCOME_REWARD_PER_STEP,
         help=(
             "Scale terminal +1/-1 sparse outcome by this value times episode steps."
+        ),
+    )
+    parser.add_argument(
+        "--bonus-pickup-reward-per-catch",
+        type=float,
+        default=DEFAULT_BONUS_PICKUP_REWARD_PER_CATCH,
+        help=(
+            "Immediate reward on the exact policy step where that player catches "
+            "a bonus. Progress reports also sum this for logging."
         ),
     )
     parser.add_argument(
@@ -3205,9 +3403,12 @@ def main() -> None:
     )
     parser.add_argument(
         "--trail-render-mode",
-        choices=TRAIL_RENDER_MODE_ORDER,
-        default=TRAIL_RENDER_MODE_DEFAULT,
-        help="Visual stack renderer. browser_lines is the canonical RGB-to-gray path.",
+        choices=STACK_RENDER_MODE_ORDER,
+        default=STACK_RENDER_MODE_DEFAULT,
+        help=(
+            "Visual stack renderer. browser_lines is the reference RGB-to-gray "
+            "path; fast_gray64_direct is the approximate speed path."
+        ),
     )
     parser.add_argument(
         "--death-mode",
@@ -3280,6 +3481,7 @@ def main() -> None:
         alive_reward=args.alive_reward,
         dead_reward=args.dead_reward,
         terminal_outcome_reward_per_step=args.terminal_outcome_reward_per_step,
+        bonus_pickup_reward_per_catch=args.bonus_pickup_reward_per_catch,
         return_target_discount=args.return_target_discount,
         action_selection_mode=args.action_selection_mode,
         collect_temperature=args.collect_temperature,

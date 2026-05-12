@@ -93,16 +93,37 @@ def test_background_eval_inspection_and_gif_can_be_explicitly_enabled():
             "natural_bonus_spawn": False,
         }
     )
+    capped_config = train_mod._background_eval_config_from_command(
+        {
+            "background_eval_enabled": True,
+            "background_gif_enabled": True,
+            "background_gif_max_steps": 17,
+        }
+    )
 
     assert config["enabled"] is True
     assert config["natural_bonus_spawn"] is True
     assert config["selfplay_gif"]["enabled"] is True
     assert config["selfplay_gif"]["natural_bonus_spawn"] is True
+    assert config["selfplay_gif"]["max_steps"] is None
+    assert config["selfplay_gif"]["step_limit_kind"] == "until_environment_done"
+    assert (
+        train_mod._background_gif_max_steps_arg(config["selfplay_gif"]["max_steps"])
+        == 0
+    )
     assert config["env_variant"] == train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT
     assert config["selfplay_gif"]["training_reward_variant"] == train_mod.DEFAULT_REWARD_VARIANT
     assert custom_config["selfplay_gif"]["frame_size"] == 512
     assert custom_config["natural_bonus_spawn"] is False
     assert custom_config["selfplay_gif"]["natural_bonus_spawn"] is False
+    assert capped_config["selfplay_gif"]["max_steps"] == 17
+    assert capped_config["selfplay_gif"]["step_limit_kind"] == "physical_step_cap"
+    assert (
+        train_mod._background_gif_max_steps_arg(
+            capped_config["selfplay_gif"]["max_steps"]
+        )
+        == 17
+    )
 
 
 def test_modal_training_image_copies_curvytron_bonus_sprite_sheet():

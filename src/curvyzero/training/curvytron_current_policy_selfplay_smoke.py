@@ -46,6 +46,9 @@ from curvyzero.env.vector_visual_observation import render_source_state_canvas_g
 from curvyzero.env.vector_visual_observation import (
     render_source_state_canvas_gray64_player_perspectives,
 )
+from curvyzero.env.vector_visual_observation import (
+    render_source_state_gray64_fast_player_perspectives,
+)
 from curvyzero.training.policy_row_mapping import build_policy_row_mapping
 from curvyzero.training.policy_row_mapping import policy_rows_to_joint_action
 
@@ -67,6 +70,9 @@ STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID = (
 )
 STACKED_SOURCE_STATE_GRAY64_SHAPE = (4, 64, 64)
 PLAYER_PERSPECTIVE_SCHEMA_ID = "curvyzero_player_perspective_source_state_gray64/v0"
+STACK_RENDER_MODE_FAST_GRAY64_DIRECT = "fast_gray64_direct"
+STACK_RENDER_MODE_ORDER = (*TRAIL_RENDER_MODE_ORDER, STACK_RENDER_MODE_FAST_GRAY64_DIRECT)
+STACK_RENDER_MODE_DEFAULT = TRAIL_RENDER_MODE_DEFAULT
 SOURCE_BODY_VALUE_BASE = 96
 SOURCE_BODY_VALUE_STEP = 32
 SOURCE_BODY_VALUE_MAX = 192
@@ -320,7 +326,7 @@ class SourceStateGray64Stack4:
         *,
         batch_size: int,
         player_count: int,
-        trail_render_mode: str = TRAIL_RENDER_MODE_DEFAULT,
+        trail_render_mode: str = STACK_RENDER_MODE_DEFAULT,
     ) -> None:
         self.batch_size = int(batch_size)
         self.player_count = int(player_count)
@@ -359,11 +365,48 @@ class SourceStateGray64Stack4:
     def render_metadata(self) -> dict[str, Any]:
         return source_state_gray64_stack4_render_metadata(self.trail_render_mode)
 
+    def dirty_render_stats(self) -> dict[str, Any]:
+        totals: Counter[str] = Counter()
+        for cache in self._dirty_render_caches:
+            totals.update(cache.stats.as_dict())
+        hits = int(totals.get("hits", 0))
+        attempts = int(totals.get("attempts", 0))
+        return {
+            "enabled": self.player_count == 2
+            and self.trail_render_mode == TRAIL_RENDER_MODE_BROWSER_LINES,
+            "rows": self.batch_size,
+            "attempts": attempts,
+            "hits": hits,
+            "cold_starts": int(totals.get("cold_starts", 0)),
+            "fallbacks": int(totals.get("fallbacks", 0)),
+            "dirty_blocks_total": int(totals.get("dirty_blocks_total", 0)),
+            "hit_rate": (float(hits) / float(attempts)) if attempts else None,
+            "dirty_blocks_per_hit": (
+                float(totals.get("dirty_blocks_total", 0)) / float(hits)
+                if hits
+                else None
+            ),
+        }
+
     def update(self, env: VectorMultiplayerEnv) -> np.ndarray:
         if env.batch_size != self.batch_size or env.player_count != self.player_count:
             raise ValueError("env shape changed after stack creation")
         for env_row in range(self.batch_size):
             self.stack[env_row, :, :-1] = self.stack[env_row, :, 1:]
+            if self.trail_render_mode == STACK_RENDER_MODE_FAST_GRAY64_DIRECT:
+                raw_frames = render_source_state_gray64_fast_player_perspectives(
+                    env.state,
+                    row=env_row,
+                    player_count=self.player_count,
+                    out=self._raw_perspectives,
+                )
+                for player in range(self.player_count):
+                    frame = normalize_source_state_gray64(
+                        raw_frames[player],
+                        out=self._normalized,
+                    )
+                    self.stack[env_row, player, -1] = frame[0]
+                continue
             if self.player_count == 2:
                 raw_frames = render_source_state_canvas_gray64_player_perspectives(
                     env.state,
@@ -417,20 +460,50 @@ class SourceStateGray64Stack4:
 
 def validate_stack_trail_render_mode(value: str) -> str:
     mode = str(value)
-    if mode not in TRAIL_RENDER_MODE_ORDER:
-        supported = ", ".join(TRAIL_RENDER_MODE_ORDER)
+    if mode not in STACK_RENDER_MODE_ORDER:
+        supported = ", ".join(STACK_RENDER_MODE_ORDER)
         raise ValueError(f"trail_render_mode must be one of [{supported}], got {value!r}")
     return mode
 
 
 def source_state_gray64_stack4_render_metadata(
-    trail_render_mode: str = TRAIL_RENDER_MODE_DEFAULT,
+    trail_render_mode: str = STACK_RENDER_MODE_DEFAULT,
 ) -> dict[str, Any]:
     mode = validate_stack_trail_render_mode(trail_render_mode)
+    if mode == STACK_RENDER_MODE_FAST_GRAY64_DIRECT:
+        return {
+            "trail_render_mode": mode,
+            "default_trail_render_mode": STACK_RENDER_MODE_DEFAULT,
+            "supported_trail_render_modes": list(STACK_RENDER_MODE_ORDER),
+            "single_frame_render_api": (
+                "render_source_state_gray64_fast_player_perspectives"
+            ),
+            "render_pipeline": "source_state_direct_gray64_visual_trail_circles",
+            "rgb_source_frame_size": None,
+            "downsample_target_frame_size": 64,
+            "rgb_to_gray64": False,
+            "gray_conversion": "BT.601 luma values from the same RGB palette",
+            "trail_renderer_kind": "circle_per_visual_trail_point",
+            "trail_renderer_is_approximation": True,
+            "bonus_renderer_kind": "bonus_type_luma_circle",
+            "bonus_renderer_is_approximation": True,
+            "player_perspective_palette": {
+                "self_rgb": [SELF_BODY_VALUE] * 3,
+                "other_rgb": [OTHER_BODY_VALUE] * 3,
+                "semantics": (
+                    "direct gray64 maps controlled-player trail/head luma to self "
+                    "and all other visible players to other"
+                ),
+                "policy_reason": (
+                    "single-channel model input still needs seat-relative "
+                    "self/other contrast"
+                ),
+            },
+        }
     return {
         "trail_render_mode": mode,
-        "default_trail_render_mode": TRAIL_RENDER_MODE_DEFAULT,
-        "supported_trail_render_modes": list(TRAIL_RENDER_MODE_ORDER),
+        "default_trail_render_mode": STACK_RENDER_MODE_DEFAULT,
+        "supported_trail_render_modes": list(STACK_RENDER_MODE_ORDER),
         "single_frame_render_api": "render_source_state_canvas_gray64",
         "render_pipeline": "source_state_rgb_canvas_like_raw_canvas_to_gray64",
         "rgb_source_frame_size": SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
@@ -1081,6 +1154,9 @@ __all__ = [
     "SHARED_SEEDED_CURRENT_POLICY_VERSION",
     "SHARED_LINEAR_SURVIVAL_CURRENT_POLICY_ID",
     "SHARED_LINEAR_SURVIVAL_CURRENT_POLICY_VERSION",
+    "STACK_RENDER_MODE_DEFAULT",
+    "STACK_RENDER_MODE_FAST_GRAY64_DIRECT",
+    "STACK_RENDER_MODE_ORDER",
     "STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID",
     "PLAYER_PERSPECTIVE_SCHEMA_ID",
     "SharedLinearSurvivalCurrentPolicy",

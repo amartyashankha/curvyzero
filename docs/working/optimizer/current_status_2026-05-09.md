@@ -158,10 +158,11 @@ exact downsample scratch bucket: 1.36x
 Focused validation after wiring:
 
 ```text
-uv run pytest tests/test_vector_visual_observation.py \
-  tests/test_benchmark_render_lane_microbench.py \
-  tests/test_curvytron_two_seat_render_mode.py -q
-58 passed
+ruff passed
+uv run pytest tests/test_curvytron_two_seat_render_mode.py \
+  tests/test_vector_visual_observation.py \
+  tests/test_benchmark_render_lane_microbench.py -q
+60 passed
 ```
 
 Plain read: this is not a blanket 10x yet, but it is the first production hook
@@ -189,10 +190,31 @@ B16/P2/browser_lines/visual trail full_stack_update, after copy/recolor patch
 Plain read: the cache changes the long-trail slope from explosive to mostly
 fixed per-row composition/downsample cost in this synthetic visual-trail
 benchmark. The follow-up copy/recolor patch helps the fixed cost, especially
-at B16, but it does not change the high-level conclusion. The next real target
-is dirty-block rendering/redownsample on top of the cache: update only the 64x64
-blocks touched by appended trail segments and moving heads/bonuses, with the
-current full renderer as the byte-parity oracle.
+at B16, but it does not change the high-level conclusion.
+
+2026-05-12 dirty-block render landing: the active two-seat path now reuses
+previous RGB/gray frames and recomposes only dirty 11x11 source blocks when the
+cache state is supported. Reset or unsupported cache state falls back to full
+render. Trail-layer append now refreshes only the dirty bbox instead of
+rescanning the full 704 mask. This is exact-pixel intended and does not change
+render semantics.
+
+Prototype B16/P2/L1024 geometry dirty redownsample measured `3.59x` versus full
+downsample with no parity failures. Local CPU dynamic stack profile:
+
+```text
+B16/P2/init1024/bonus0: full 194.773ms, dirty  45.451ms, 4.285x
+B16/P2/init1024/bonus4: full 201.876ms, dirty  74.415ms, 2.713x
+B32/P2/init1024/bonus4: full 396.173ms, dirty 144.196ms, 2.747x
+B32/P2/init4096/bonus4: full 415.198ms, dirty 122.943ms, 3.377x
+static microbench: B16/L1024/b4 56.135ms, B32/L1024/b4 112.522ms,
+                   B32/L4096/b4 140.105ms per update
+```
+
+Short canonical smoke is running:
+`opt-dirty-render-smoke-20260512 / b16-sim8-no-death`, canonical launcher on
+`gpu-l4-t4`, B16, 4 iterations, collect32, updates2, sim8,
+`profile_no_death`, background eval/GIF off, `--wait-for-train`.
 
 Fresh canonical wait-mode matrix, 2026-05-12, `browser_lines`,
 `profile_no_death`, 20 iterations, 8 collect steps per iteration, 4 learner
@@ -207,12 +229,11 @@ opt-render-cache-wait-l4-b128-sim16     128  16   1112.7s  15623        990.8s  
 opt-render-cache-wait-h100-b128-sim16   128  16   978.9s   15611        853.9s   57.8s
 ```
 
-Plain read: larger batches produce more replay rows per iteration, but the wall
-clock is still mostly render. B64/B128 are not magic self-play scaling wins in
-the current renderer. Sim32 barely changes wall time at B64 because render still
-drowns search. H100 helps B128 a little, but the loop remains CPU-render-bound.
-If forced to launch a real Coach run before dirty-block work lands, prefer L4
-with B32/B64 as a modest data-throughput trade-off, not B128/H100 as a default.
+Plain read: this pre-dirty matrix showed larger batches produce more replay
+rows per iteration, but wall clock was still mostly render. B64 is the next
+large self-play test after dirty render; B128 should wait until render is no
+longer dominant. H100 and multi-GPU are not defaults until search/model
+dominates.
 
 Profiling artifact hygiene: default Coach runs still enable background GIFs and
 write the `show_in_gif_browser.flag` marker. Optimizer profiling runs with

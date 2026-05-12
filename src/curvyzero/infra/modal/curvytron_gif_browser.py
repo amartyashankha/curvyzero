@@ -37,6 +37,7 @@ DEFAULT_OK_FILTER = "ok"
 LISTING_CACHE_TTL_SECONDS = 10.0
 VOLUME_RELOAD_TTL_SECONDS = 30.0
 GIF_CACHE_MAX_AGE_SECONDS = 86_400
+DYNAMIC_RESPONSE_HEADERS = {"Cache-Control": "no-store"}
 RUN_PICKER_FLAG_FILENAME = run_mgmt.GIF_BROWSER_RUN_MARKER_FILENAME
 CHECKPOINT_ITERATION_RE = re.compile(r"iteration[_-](\d+)")
 RUN_RECENCY_PATTERNS = (
@@ -68,9 +69,9 @@ class RefValidationError(ValueError):
     """Raised when a requested Volume ref is outside the browser's allowed tree."""
 
 
-_RUNS_CACHE: dict[tuple[Any, ...], tuple[float, list[dict[str, Any]]]] = {}
-_SUMMARY_CACHE: dict[tuple[Any, ...], tuple[float, list[dict[str, Any]]]] = {}
-_VOLUME_RELOAD_LOCK = threading.Lock()
+_RUNS_CACHE: dict[tuple[Any, ...], tuple[float, Any]] = {}
+_SUMMARY_CACHE: dict[tuple[Any, ...], tuple[float, Any]] = {}
+_VOLUME_IO_LOCK = threading.Lock()
 _LAST_VOLUME_RELOAD_AT = 0.0
 
 
@@ -78,30 +79,41 @@ def _clone_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+def _clone_cached_value(value: Any) -> Any:
+    if isinstance(value, list):
+        return _clone_rows(value)
+    if isinstance(value, dict):
+        cloned = dict(value)
+        if isinstance(cloned.get("rows"), list):
+            cloned["rows"] = _clone_rows(cloned["rows"])
+        return cloned
+    return value
+
+
 def _cache_get(
-    cache: dict[tuple[Any, ...], tuple[float, list[dict[str, Any]]]],
+    cache: dict[tuple[Any, ...], tuple[float, Any]],
     key: tuple[Any, ...],
-) -> list[dict[str, Any]] | None:
+) -> Any | None:
     if LISTING_CACHE_TTL_SECONDS <= 0:
         return None
     cached = cache.get(key)
     if cached is None:
         return None
-    expires_at, rows = cached
+    expires_at, value = cached
     if monotonic() >= expires_at:
         cache.pop(key, None)
         return None
-    return _clone_rows(rows)
+    return _clone_cached_value(value)
 
 
 def _cache_set(
-    cache: dict[tuple[Any, ...], tuple[float, list[dict[str, Any]]]],
+    cache: dict[tuple[Any, ...], tuple[float, Any]],
     key: tuple[Any, ...],
-    rows: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
+    value: Any,
+) -> Any:
     if LISTING_CACHE_TTL_SECONDS > 0:
-        cache[key] = (monotonic() + LISTING_CACHE_TTL_SECONDS, _clone_rows(rows))
-    return rows
+        cache[key] = (monotonic() + LISTING_CACHE_TTL_SECONDS, _clone_cached_value(value))
+    return value
 
 
 def _clear_listing_caches() -> None:
@@ -116,7 +128,7 @@ def _maybe_reload_volume(volume: Any, *, force: bool = False) -> str | None:
     now = monotonic()
     if not force and now - _LAST_VOLUME_RELOAD_AT < VOLUME_RELOAD_TTL_SECONDS:
         return None
-    if not _VOLUME_RELOAD_LOCK.acquire(blocking=False):
+    if not _VOLUME_IO_LOCK.acquire(blocking=False):
         return None
     try:
         now = monotonic()
@@ -125,12 +137,15 @@ def _maybe_reload_volume(volume: Any, *, force: bool = False) -> str | None:
         try:
             volume.reload()
         except Exception as exc:  # pragma: no cover - Modal Volume runtime behavior.
+            _LAST_VOLUME_RELOAD_AT = monotonic()
+            if "open files preventing the operation" in str(exc):
+                return None
             return f"{type(exc).__name__}: {exc}"
         _LAST_VOLUME_RELOAD_AT = monotonic()
         _clear_listing_caches()
         return None
     finally:
-        _VOLUME_RELOAD_LOCK.release()
+        _VOLUME_IO_LOCK.release()
 
 
 def _path_for_ref(mount: Path, ref: PurePosixPath) -> Path:
@@ -207,7 +222,8 @@ def _validate_selfplay_gif_ref(ref_text: str) -> PurePosixPath:
 
 def _read_json_object(path: Path) -> tuple[dict[str, Any], str | None]:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        with _VOLUME_IO_LOCK:
+            value = json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:
         return {}, f"{type(exc).__name__}: {exc}"
     if not isinstance(value, dict):
@@ -516,10 +532,12 @@ def _summary_row(mount: Path, summary_path: Path) -> dict[str, Any] | None:
         "gif_exists": gif_exists,
         "gif_bytes": gif_stat.st_size if gif_exists and gif_stat is not None else None,
         "gif_updated_ts": gif_stat.st_mtime if gif_exists and gif_stat is not None else None,
+        "gif_updated_ns": gif_stat.st_mtime_ns if gif_exists and gif_stat is not None else None,
         "updated_at": datetime.fromtimestamp(stat.st_mtime, UTC).isoformat().replace(
             "+00:00", "Z"
         ),
         "updated_ts": stat.st_mtime,
+        "updated_ns": stat.st_mtime_ns,
         "frame_count": _safe_int(summary.get("frame_count")),
         "physical_steps": _safe_int(summary.get("physical_steps")),
         "scalar_steps": _safe_int(summary.get("scalar_steps")),
@@ -620,17 +638,7 @@ def _list_selfplay_summary_page(
         )
         cached = _cache_get(_SUMMARY_CACHE, cache_key)
         if cached is not None:
-            has_older = len(cached) >= limit
-            total_rows = offset + len(cached) + (1 if has_older else 0)
-            return {
-                "rows": cached,
-                "total_rows": total_rows,
-                "total_rows_exact": False,
-                "offset": offset,
-                "limit": limit,
-                "has_newer": offset > 0,
-                "has_older": has_older,
-            }
+            return cached
         run_rank_by_id[clean_run_id] = 0
         summary_paths = sorted(
             _safe_glob(
@@ -664,8 +672,7 @@ def _list_selfplay_summary_page(
                     break
             matched_count += 1
         total_rows = matched_count
-        _cache_set(_SUMMARY_CACHE, cache_key, page_rows)
-        return {
+        page = {
             "rows": page_rows,
             "total_rows": total_rows,
             "total_rows_exact": not has_older,
@@ -674,6 +681,7 @@ def _list_selfplay_summary_page(
             "has_newer": offset > 0,
             "has_older": has_older,
         }
+        return _cache_set(_SUMMARY_CACHE, cache_key, page)
     else:
         summary_paths = []
         listed_runs = _list_runs(mount)
@@ -806,8 +814,8 @@ def _filter_url(
 
 
 def _fast_gif_url(row: dict[str, Any]) -> str:
-    gif_version_ts = int(row.get("gif_updated_ts") or row["updated_ts"])
-    gif_version = f"{gif_version_ts}-{row.get('gif_bytes') or 0}"
+    gif_version_ns = int(row.get("gif_updated_ns") or row.get("updated_ns") or 0)
+    gif_version = f"{gif_version_ns}-{row.get('gif_bytes') or 0}"
     return _link("/gif", row["gif_ref"], v=gif_version)
 
 
@@ -815,14 +823,14 @@ def _head_token(rows: list[dict[str, Any]]) -> str:
     if not rows:
         return ""
     row = rows[0]
-    gif_version_ts = int(row.get("gif_updated_ts") or row.get("updated_ts") or 0)
+    gif_version_ns = int(row.get("gif_updated_ns") or row.get("updated_ns") or 0)
     return ":".join(
         [
             str(row.get("run_id") or ""),
             str(row.get("attempt_id") or ""),
             str(row.get("eval_id") or ""),
             str(row.get("gif_bytes") or 0),
-            str(gif_version_ts),
+            str(gif_version_ns),
         ]
     )
 
@@ -1038,7 +1046,7 @@ def _render_filters(
 
 def _render_rows(rows: list[dict[str, Any]]) -> str:
     if not rows:
-        return '<section id="gallery" class="empty-state">No GIFs yet.</section>'
+        return '<section id="gallery" class="empty-state">No matching GIFs.</section>'
 
     rendered = []
     for index, row in enumerate(rows):
@@ -1055,7 +1063,15 @@ def _render_rows(rows: list[dict[str, Any]]) -> str:
             if row["gif_exists"]
             else '<a class="gif-frame missing-preview" href="' + _html_attr(meta_url) + '">missing GIF</a>'
         )
-        ok_label = "OK" if row["ok"] is True else "failed" if row["ok"] is False else "unknown"
+        ok_label = (
+            "OK"
+            if row["ok"] is True and row["gif_exists"]
+            else "missing"
+            if not row["gif_exists"]
+            else "failed"
+            if row["ok"] is False
+            else "unknown"
+        )
         status_class = "ok" if row["ok"] is True and row["gif_exists"] else "failed"
         steps = row["physical_steps"]
         if row["max_steps"] is not None:
@@ -1327,6 +1343,16 @@ def _render_page(
             opacity: 0.78;
             cursor: wait;
         }}
+        body.action-busy .run-menu-link,
+        body.action-busy .toolbar-actions button,
+        body.action-busy .toolbar-actions .button {{
+            opacity: 0.55;
+            pointer-events: none;
+        }}
+        button:disabled {{
+            cursor: wait;
+            opacity: 0.65;
+        }}
         .spinner {{
             display: none;
             width: 12px;
@@ -1492,21 +1518,58 @@ def _render_page(
         {reload_warning}
         <div class="page-summary">
             <span id="match-count">{_html_attr(shown_label)}</span>
-            <span class="muted">Run: {_html_attr(selected_run_id or "none")}</span>
+            <span class="muted">Run: <span id="selected-run-label">{_html_attr(selected_run_id or "none")}</span></span>
         </div>
         {pager}
         {_render_rows(rows)}
     </main>
     <script>
+        const refreshState = document.getElementById("refresh-state");
+        const matchCount = document.getElementById("match-count");
+        let actionBusy = false;
+        const setRefreshState = (text) => {{
+            if (refreshState) refreshState.textContent = text;
+        }};
+        const setRunActionBusy = (busy) => {{
+            actionBusy = busy;
+            document.body.classList.toggle("action-busy", busy);
+            for (const button of document.querySelectorAll(".hide-run-form button")) {{
+                button.disabled = busy;
+            }}
+        }};
+        const enterNavigationState = (message) => {{
+            if (actionBusy) return false;
+            setRunActionBusy(true);
+            setRefreshState(message);
+            return true;
+        }};
+        const filtersForm = document.getElementById("filters-form");
+        if (filtersForm) {{
+            filtersForm.addEventListener("submit", (event) => {{
+                if (!enterNavigationState("loading...")) event.preventDefault();
+            }});
+        }}
+        for (const link of document.querySelectorAll(".run-menu-link")) {{
+            link.addEventListener("click", (event) => {{
+                if (!enterNavigationState("loading run...")) event.preventDefault();
+            }});
+        }}
+        for (const link of document.querySelectorAll(".toolbar-actions .button")) {{
+            link.addEventListener("click", (event) => {{
+                if (!enterNavigationState("refreshing...")) event.preventDefault();
+            }});
+        }}
         for (const form of document.querySelectorAll(".hide-run-form")) {{
             form.addEventListener("submit", async (event) => {{
                 event.preventDefault();
-                if (form.classList.contains("is-deleting")) return;
+                if (actionBusy || form.classList.contains("is-deleting")) return;
                 form.classList.add("is-deleting");
                 const button = form.querySelector("button");
                 const label = form.querySelector(".button-label");
-                if (button) button.disabled = true;
+                const runName = button?.dataset.deleteRunId || "run";
+                setRunActionBusy(true);
                 if (label) label.textContent = "Deleting";
+                setRefreshState(`deleting ${{runName}}...`);
                 try {{
                     const response = await fetch(form.action, {{
                         method: "POST",
@@ -1518,7 +1581,7 @@ def _render_page(
                     if (!response.ok) throw new Error(`delete failed: ${{response.status}}`);
                     const payload = await response.json();
                     if (!payload.ok) throw new Error("delete failed");
-                    const runId = payload.run_id || button?.dataset.deleteRunId || "";
+                    const runId = payload.run_id || runName || "";
                     const row = form.closest(".run-menu-row");
                     const picker = form.closest(".run-picker");
                     const selectedInput = document.querySelector(
@@ -1534,16 +1597,27 @@ def _render_page(
                         const summary = picker?.querySelector("summary");
                         if (summary) summary.textContent = "Pick a run";
                         renderRows([]);
-                        if (matchCount) matchCount.textContent = "No GIFs";
+                        if (matchCount) matchCount.textContent = "No matching GIFs";
+                        const selectedRunLabel = document.getElementById("selected-run-label");
+                        if (selectedRunLabel) selectedRunLabel.textContent = "none";
                         currentPageToken = "";
+                        headUrl.searchParams.delete("run_id");
+                        summariesUrl.searchParams.delete("run_id");
+                        if (autoRefresh) {{
+                            autoRefresh.checked = false;
+                            autoRefresh.disabled = true;
+                        }}
                         const url = new URL(window.location.href);
                         url.searchParams.delete("run_id");
                         window.history.replaceState(null, "", url.pathname + url.search + url.hash);
                     }}
+                    setRefreshState(`deleted ${{runId}}`);
                 }} catch (error) {{
                     form.classList.remove("is-deleting");
-                    if (button) button.disabled = false;
                     if (label) label.textContent = "Retry";
+                    setRefreshState("delete failed");
+                }} finally {{
+                    setRunActionBusy(false);
                 }}
             }});
         }}
@@ -1559,15 +1633,21 @@ def _render_page(
             return url.pathname + url.search;
         }};
         const rowGifVersion = (row) => {{
-            const ts = Math.floor(Number(row.gif_updated_ts || row.updated_ts || 0));
-            return `${{ts}}-${{row.gif_bytes || 0}}`;
+            const version = Math.floor(Number(row.gif_updated_ns || row.updated_ns || 0));
+            return `${{version}}-${{row.gif_bytes || 0}}`;
         }};
         const rowCard = (row, index) => {{
             const gifUrl = artifactUrl("/gif", row.gif_ref, rowGifVersion(row));
             const metaUrl = artifactUrl("/meta", row.summary_ref);
             const checkpoint = row.checkpoint_label || row.eval_id || "checkpoint";
             const ok = row.ok === true && row.gif_exists === true;
-            const status = row.ok === true ? "OK" : row.ok === false ? "failed" : "unknown";
+            const status = row.ok === true && row.gif_exists === true
+                ? "OK"
+                : row.gif_exists !== true
+                    ? "missing"
+                    : row.ok === false
+                        ? "failed"
+                        : "unknown";
             const statusClass = ok ? "ok" : "failed";
             const steps = row.max_steps != null
                 ? `${{row.physical_steps || 0}}/${{row.max_steps}}`
@@ -1602,7 +1682,7 @@ def _render_page(
             if (!gallery) return;
             if (!rows || rows.length === 0) {{
                 gallery.className = "empty-state";
-                gallery.innerHTML = "No GIFs yet.";
+                gallery.innerHTML = "No matching GIFs.";
                 return;
             }}
             gallery.className = "gallery";
@@ -1616,12 +1696,20 @@ def _render_page(
             }}
         }}
         const autoRefresh = document.getElementById("auto-refresh");
-        const refreshState = document.getElementById("refresh-state");
-        const matchCount = document.getElementById("match-count");
         let currentPageToken = {json.dumps(current_page_token)};
+        const selectedRunId = {json.dumps(selected_run_id)};
+        const autoRefreshAllowed = {json.dumps(offset == 0)};
         const headUrl = new URL("/api/head", window.location.href);
         const summariesUrl = new URL("/api/summaries", window.location.href);
         const currentParams = new URLSearchParams(window.location.search);
+        if (!autoRefreshAllowed && autoRefresh) {{
+            autoRefresh.checked = false;
+            autoRefresh.disabled = true;
+        }}
+        if (!currentParams.get("run_id") && selectedRunId) {{
+            headUrl.searchParams.set("run_id", selectedRunId);
+            summariesUrl.searchParams.set("run_id", selectedRunId);
+        }}
         for (const key of ["run_id", "run", "attempt", "eval", "ok", "limit"]) {{
             const value = currentParams.get(key);
             if (value) {{
@@ -1632,7 +1720,8 @@ def _render_page(
         headUrl.searchParams.set("fresh", "1");
         summariesUrl.searchParams.set("offset", "0");
         const checkForNewGif = async () => {{
-            if (!autoRefresh?.checked) return;
+            if (actionBusy) return;
+            if (!autoRefreshAllowed || !autoRefresh?.checked) return;
             try {{
                 const response = await fetch(headUrl.toString(), {{
                     cache: "no-store",
@@ -1688,8 +1777,9 @@ def _build_fastapi_app(volume: Any) -> Any:
         fresh: bool = False,
     ) -> HTMLResponse:
         started_at = monotonic()
+        reload_error = None
         if fresh:
-            _maybe_reload_volume(volume, force=True)
+            reload_error = _maybe_reload_volume(volume, force=True)
         runs = _list_runs(RUNS_MOUNT)
         selected_run_id = _default_selected_run_id(runs, run_id)
         page = _list_selfplay_summary_page(
@@ -1731,8 +1821,9 @@ def _build_fastapi_app(volume: Any) -> Any:
                 total_rows_exact=bool(page.get("total_rows_exact", True)),
                 page_token=_head_token(head_page["rows"]),
                 server_elapsed_ms=int((monotonic() - started_at) * 1000),
-                reload_error=None,
-            )
+                reload_error=reload_error,
+            ),
+            headers=DYNAMIC_RESPONSE_HEADERS,
         )
 
     @web_app.get("/api/summaries")
@@ -1746,8 +1837,9 @@ def _build_fastapi_app(volume: Any) -> Any:
         offset: int = Query(0, ge=0),
         fresh: bool = False,
     ) -> JSONResponse:
+        reload_error = None
         if fresh:
-            _maybe_reload_volume(volume, force=True)
+            reload_error = _maybe_reload_volume(volume, force=True)
         runs = _list_runs(RUNS_MOUNT)
         selected_run_id = _default_selected_run_id(runs, run_id)
         page = _list_selfplay_summary_page(
@@ -1772,8 +1864,9 @@ def _build_fastapi_app(volume: Any) -> Any:
                 "has_newer": page["has_newer"],
                 "has_older": page["has_older"],
                 "head_token": _head_token(page["rows"]),
-                "reload_error": None,
-            }
+                "reload_error": reload_error,
+            },
+            headers=DYNAMIC_RESPONSE_HEADERS,
         )
 
     @web_app.get("/api/head")
@@ -1785,8 +1878,9 @@ def _build_fastapi_app(volume: Any) -> Any:
         ok: str = DEFAULT_OK_FILTER,
         fresh: bool = False,
     ) -> JSONResponse:
+        reload_error = None
         if fresh:
-            _maybe_reload_volume(volume)
+            reload_error = _maybe_reload_volume(volume)
         runs: list[dict[str, Any]] = []
         if run_id:
             try:
@@ -1817,8 +1911,9 @@ def _build_fastapi_app(volume: Any) -> Any:
                 "selected_run_id": selected_run_id,
                 "total_rows": page["total_rows"],
                 "total_rows_exact": page.get("total_rows_exact", True),
-                "reload_error": None,
-            }
+                "reload_error": reload_error,
+            },
+            headers=DYNAMIC_RESPONSE_HEADERS,
         )
 
     @web_app.post("/api/runs/{run_id}/hide")
@@ -1841,6 +1936,9 @@ def _build_fastapi_app(volume: Any) -> Any:
         ):
             delete_result = curvytron_gif_browser_hide_run.remote(run_id=clean_run_id)
             _clear_listing_caches()
+            local_reload_error = _maybe_reload_volume(volume, force=True)
+            if local_reload_error and not delete_result.get("reload_error"):
+                delete_result["reload_error"] = local_reload_error
         else:
             delete_result = _hide_run_from_picker_on_mount(
                 mount=RUNS_MOUNT,
@@ -1848,7 +1946,10 @@ def _build_fastapi_app(volume: Any) -> Any:
                 volume=volume,
             )
         if x_requested_with == "fetch":
-            return JSONResponse({**delete_result, "next": next_url})
+            return JSONResponse(
+                {**delete_result, "next": next_url},
+                headers=DYNAMIC_RESPONSE_HEADERS,
+            )
         return RedirectResponse(next_url, status_code=303)
 
     @web_app.get("/gif")
@@ -1872,7 +1973,8 @@ def _build_fastapi_app(volume: Any) -> Any:
         if _etag_matches(if_none_match, etag):
             return Response(status_code=304, headers=headers)
         try:
-            gif_bytes = path.read_bytes()
+            with _VOLUME_IO_LOCK:
+                gif_bytes = path.read_bytes()
         except OSError:
             return Response("GIF not found", status_code=404)
         return Response(
@@ -1890,8 +1992,13 @@ def _build_fastapi_app(volume: Any) -> Any:
         path = _path_for_ref(RUNS_MOUNT, safe_ref)
         if not path.is_file():
             return Response("JSON not found", status_code=404)
+        try:
+            with _VOLUME_IO_LOCK:
+                payload = path.read_bytes()
+        except OSError:
+            return Response("JSON not found", status_code=404)
         return Response(
-            path.read_bytes(),
+            payload,
             media_type="application/json",
             headers={"Cache-Control": "no-cache"},
         )

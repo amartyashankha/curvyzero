@@ -2,16 +2,18 @@
 
 Date: 2026-05-12
 
-Copy-paste handoff: Current canonical two-seat profiles are still render-bound.
-Use the canonical path, but do not expect bigger GPUs or B128 to fix speed yet.
-If Coach must start a real run before the next render pass, use L4/T4,
-`browser_lines`, normal death, `batch_size=32` or `64`,
-`collect_steps_per_iteration=64`, `updates_per_iteration=4`,
-`num_simulations=8` or `16`, sparse checkpoints, and checkpoint eval/GIF only at
-checkpoint cadence. B64 gives more replay rows per wall clock than B16, but the
-gain is modest because render dominates. Do not default to B128/H100/multi-GPU
-until dirty-block render work lowers visual time. Future background matrices
-should use `modal run --detach`.
+Copy-paste handoff: For the overnight learning run, use the canonical two-seat
+path with `fast_gray64_direct`, normal death, L4/T4, `batch_size=64`,
+`num_simulations=8`, `collect_steps_per_iteration=64`,
+`updates_per_iteration=4`, accumulated replay, learner sample size `256`,
+sparse checkpoints, and normal CurvyZero checkpoint eval/GIF observability.
+Also run a smaller `browser_lines` control if capacity permits. The fast mode
+is a strong semantic visual approximation, not browser pixel fidelity: it keeps
+trail/head positions, self/other contrast, bonus presence, and bonus type luma,
+but drops connected line rasterization, sprite texture, antialiasing, and exact
+downsample coverage. Use `profile_no_death` only for timing. Do not default to
+B128, H100, or multi-GPU for the overnight run unless the B64 L4 lane is already
+healthy and Coach wants an expensive scale probe.
 
 ## Current Truth
 
@@ -23,9 +25,13 @@ should use `modal run --detach`.
 - Two-seat mode supports `--compute gpu-l4-t4` and `--compute gpu-h100-cpu40`.
   The old `gpu-l4-t4-cpu40` and `gpu-h100x2-cpu40` shapes are for other
   stock/control paths, not this canonical mode.
-- Default training render is `two_seat_trail_render_mode=browser_lines`.
-  `body_circles_fast` is only a speed comparison unless Environment changes the
-  training surface.
+- Default/render-control mode is `two_seat_trail_render_mode=browser_lines`.
+  `fast_gray64_direct` is the optimizer speed lane. It is acceptable for a
+  speed-first overnight canary if labeled as approximation. `body_circles_fast`
+  is only a historical/speed comparison and is not recommended.
+- Dirty-render production path is the default optimizer recommendation. It is
+  exact-pixel intended and falls back to full render on reset or unsupported
+  cache state.
 - `profile_no_death` is optimizer timing only. Real training should use normal
   death/reset semantics.
 
@@ -41,7 +47,20 @@ should use `modal run --detach`.
   and Python/NumPy orchestration, not raw GPU model throughput, as the current
   Amdahl limit.
 - Perspective reuse, a conservative browser-line trail cache, exact downsample
-  scratch, and a copy/recolor fast path have landed and passed focused tests.
+  scratch, copy/recolor, and dirty-block rendering have landed. Latest focused
+  validation: ruff passed; `pytest tests/test_curvytron_two_seat_render_mode.py
+  tests/test_vector_visual_observation.py
+  tests/test_benchmark_render_lane_microbench.py -q` reported `60 passed`.
+- Dirty render reuses previous RGB/gray frames and recomposes only dirty 11x11
+  source blocks. Local CPU dynamic stack profiles show about `2.7x-4.3x` over
+  full render in the tested B16/B32 long-trail cases.
+- Fast direct luma mode passed focused render tests and gives the clearest
+  wall-clock win. B64/L4 no-death full loop dropped from roughly `768s` with
+  `browser_lines` to about `203s` with `fast_gray64_direct`; the visual stack
+  bucket dropped from about `40s/iteration` to about `2s/iteration`.
+- Fast mode keeps the main semantic visual facts, but it is not an Environment
+  fidelity claim. Treat it as a speed-first training surface until Coach and
+  Environment accept it.
 - The first non-wait `opt-render-cache-*` launch printed function-call IDs but
   did not produce attempt/progress files after the local app exited. Treat that
   as a bad profile launch pattern, not speed evidence.
@@ -56,11 +75,10 @@ opt-render-cache-wait-l4-b128-sim16     128  16   1112.7s  990.8s   61.0s   1562
 opt-render-cache-wait-h100-b128-sim16   128  16   978.9s   853.9s   57.8s   15611
 ```
 
-- Plain read: B64 and B128 produce more replay rows per iteration, but render
-  grows enough that replay-row throughput only improves modestly. Sim32 at B64
-  is not much slower than sim16 because render is already dominating; it is not
-  proof that search is cheap in general. H100 helps B128 a bit, but the loop is
-  still CPU-render-bound.
+- Plain read: this pre-dirty matrix says to scale B upward only while replay
+  rows/sec improves and learner/search are not starved. B64 is next; B128 waits
+  until render is no longer dominant. Sim32 at B64 was not proof that search is
+  cheap in general.
 
 ## Run First
 
@@ -69,24 +87,44 @@ opt-render-cache-wait-h100-b128-sim16   128  16   978.9s   853.9s   57.8s   1561
    initial checkpoint, enough iterations for trails to get long. Compare
    `visual_stack_update_sec`, `policy_search_sec`, `env_step_sec`, learner time,
    elapsed wall time, action batching, and replay rows.
-2. If the gate still shows render above about `70%` of hot-loop time, keep the
-   first real run conservative: `batch_size=32`, `num_simulations=8`,
-   `collect_steps_per_iteration=64`, `updates_per_iteration=4`.
-3. Use `batch_size=64`, `num_simulations=16` only if Coach wants a data-volume
-   trade-off and accepts slower iterations for a modest replay-row throughput
-   gain.
-4. Do not use `batch_size=128`, H100, or multi-GPU as the first real training
-   default. Revisit after dirty-block render work lowers visual time.
+2. Overnight speed-first run:
+   L4/T4, `fast_gray64_direct`, normal death, B64, sim8, collect64, updates4,
+   accumulated replay, learner sample 256, sparse checkpoints.
+3. Browser-lines control:
+   L4/T4, `browser_lines`, normal death, B16 or B32, sim8, collect64, updates4,
+   accumulated replay, learner sample 128 or 256. This is the closest current
+   visual control, not the fastest lane.
+4. Do not use B128, H100, or multi-GPU as the default overnight lane. B128 on
+   L4 was worse per replay row in the fast profile; B128 on H100 is only a
+   scale probe if there is spare budget and B64 looks healthy.
 
 ## Training Shape
 
-Recommended first real run after the profiling gate:
+Recommended overnight speed-first run:
 
 ```text
 --mode two-seat-selfplay
 --compute gpu-l4-t4
---batch-size 32
+--batch-size 64
 --max-train-iter long enough for several checkpoints
+--num-simulations 8
+--two-seat-collect-steps-per-iteration 64
+--two-seat-updates-per-iteration 4
+--two-seat-replay-scope accumulated
+--two-seat-learner-sample-size 256
+--two-seat-max-replay-rows 65536
+--two-seat-death-mode normal
+--two-seat-trail-render-mode fast_gray64_direct
+--save-ckpt-after-iter 100 to 250
+```
+
+Recommended browser-lines control:
+
+```text
+--mode two-seat-selfplay
+--compute gpu-l4-t4
+--batch-size 16 or 32
+--max-train-iter long enough for at least one checkpoint
 --num-simulations 8
 --two-seat-collect-steps-per-iteration 64
 --two-seat-updates-per-iteration 4
@@ -116,13 +154,14 @@ eval/inspection/GIF.
 ## Scaling Read
 
 - Larger batches increase self-play volume and search batching opportunities,
-  but they also multiply visual stack updates. In the current matrix B64 is a
-  modest throughput trade-off, B128 is too render-heavy for a default.
+  but they are not automatically better. In the measured fast profiles, B64/L4
+  was the clean default. B128/L4 was slower per replay row; B128/H100 was closer
+  but not enough to make H100 the default.
 - More simulations increase search cost. While render dominates, sim16 is
-  affordable at B64, but the next real run can start at sim8 unless Coach wants
-  stronger search immediately.
-- H100 is useful for quick sweeps if search/model becomes a larger share. It is
-  not required for the first real run while render remains CPU-bound.
+  affordable in some profiles, but the overnight speed-first run should start
+  at sim8 unless Coach explicitly wants stronger search.
+- H100 is useful for quick scale sweeps after B64 is healthy. It is not required
+  for the first overnight run.
 - Multi-GPU is not a current two-seat recommendation. The canonical launcher
   does not expose H100x2 for two-seat mode, and the measured bottleneck is not
   yet a multi-GPU model throughput problem.
@@ -131,6 +170,9 @@ eval/inspection/GIF.
 
 - Optimizer is making speed/setup recommendations only. Do not read these as
   claims about reward quality, learning progress, or policy strength.
+- `fast_gray64_direct` is a strong semantic approximation, not exact browser
+  fidelity. Keep the browser-lines control around so we can catch approximation
+  damage.
 - `profile_no_death` deliberately exaggerates long-trail render cost and hides
   normal reset/episode dynamics. Use it to expose Amdahl bottlenecks, then train
   with normal death.

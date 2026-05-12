@@ -61,6 +61,29 @@ The production cache has a minimum active-trail threshold because the prototype
 was slower on tiny trails and faster once trail history is long enough to make
 redraw avoidance matter.
 
+2026-05-12 dirty-block production landing: the active two-seat path now uses
+stateful source-state dirty gray64 rendering for supported cache state. This is
+exact-pixel intended and does not change render semantics. It cold-starts or
+falls back to the full renderer on reset or unsupported cache state, then reuses
+previous RGB/gray frames and recomposes only dirty 11x11 source blocks. Trail
+layer cache append now refreshes only the dirty bbox instead of rescanning the
+full 704 mask.
+
+2026-05-12 fast direct luma landing: `fast_gray64_direct` is now an explicit
+approximation mode on the same canonical two-seat stack. It does not pretend to
+be browser pixel parity. It renders directly at 64x64, uses the same BT.601
+RGB-to-gray luma rule as the full RGB path, preserves self/other contrast for
+trails and heads, and preserves bonus type as luma instead of collapsing every
+bonus to one gray value. It also falls back to `body_*` trails when
+`visual_trail_*` arrays exist but have no active slots. Focused tests include
+semantic pixel checks and a loose mask-level comparison against `browser_lines`.
+
+Current recommendation: use `browser_lines` for fidelity/control runs. Use
+`fast_gray64_direct` for speed-first training canaries only if Coach accepts the
+declared approximation: isolated 64x64 trail circles instead of connected
+browser lines, bonus type luma circles instead of sprites, and no edge
+antialias/downsample coverage.
+
 ## Responsibility Boundary
 
 Optimizer can optimize render speed only when the emitted tensor remains
@@ -79,6 +102,8 @@ Needs Environment signoff:
 
 - changing the default product mode away from `browser_lines`;
 - using `body_circles_fast` as anything except an explicit approximation;
+- promoting `fast_gray64_direct` from speed-first approximation to default
+  training surface;
 - changing trail continuity, gap, clear, wrap, radius, draw order, luma, or
   player perspective semantics;
 - deriving one player's rendered view from another if sprites/HUD/effects or
@@ -465,10 +490,12 @@ clear fallback behavior.
      `visual_trail_*` rows.
    - Keep per-owner trail layers, draw only appended trail segments, compose in
      browser owner draw order, then draw moving heads/bonuses fresh.
-   - Current implementation is conservative and exact in the covered smoke
-     cases, but still scans/composes full 704 layers. Next cache work should
-     reduce fixed composition overhead and add more reset/clear/wrap parity
-     coverage.
+   - Dirty-block production rendering now reuses previous RGB/gray frames and
+     recomposes only dirty 11x11 source blocks when cache state is supported.
+   - Trail layer append now refreshes only the dirty bbox instead of rescanning
+     the full 704 mask.
+   - Keep expanding reset, clear, wrap, palette, active-bonus, and unsupported
+     state parity coverage around the exact full-render fallback.
 
 Fresh benchmark correction, 2026-05-12: `scripts/benchmark_render_lane_microbench.py`
 now has `--trail-source visual` so it can synthesize the current
@@ -498,23 +525,24 @@ to all historical trail slots in this synthetic visual-trail path. The
 remaining target is fixed per-row work: layer composition, remap, head/bonus
 draw, downsample, normalization, and stack copy.
 
-The low-risk copy/recolor patch is landed and validated. It lets cached player
-1 recolor fill from background and mask-composite owner layers instead of doing
-a full-frame palette scan, and it draws player 0 heads/bonuses directly on the
-base frame after player 1 is finished. Focused validation:
+Dirty-block rendering is landed and validated. It keeps the full renderer as
+the exact fallback path, reuses previous RGB/gray frames for supported cache
+state, and refreshes trail-layer appends by dirty bbox. Focused validation:
 
 ```text
-uv run pytest tests/test_vector_visual_observation.py \
-  tests/test_benchmark_render_lane_microbench.py \
-  tests/test_curvytron_two_seat_render_mode.py -q
-58 passed
+ruff passed
+uv run pytest tests/test_curvytron_two_seat_render_mode.py \
+  tests/test_vector_visual_observation.py \
+  tests/test_benchmark_render_lane_microbench.py -q
+60 passed
+```
 
-uv run ruff check scripts/summarize_curvytron_lightzero_profiles.py \
-  src/curvyzero/training/curvytron_two_seat_lightzero_train_smoke.py \
-  src/curvyzero/env/vector_visual_observation.py \
-  tests/test_curvytron_two_seat_render_mode.py \
-  scripts/benchmark_render_lane_microbench.py
-All checks passed
+Code files touched by the production landing:
+
+```text
+  src/curvyzero/env/vector_visual_observation.py
+  src/curvyzero/training/curvytron_current_policy_selfplay_smoke.py
+  tests/test_curvytron_two_seat_render_mode.py
 ```
 
 Modal profile launch correction: use `modal run --detach` for background
@@ -549,21 +577,32 @@ physical env-step throughput gets worse. H100 at B128 is faster than L4 at B128
 but still render-bound. Sim32 at B64 costs little extra wall time only because
 render is already dominating; it is not evidence that search is free.
 
-The current bigger-swing render priority is dirty-block composition and
-redownsample on top of the cache. Expected useful shape:
+Dirty-block render landed after the matrix above. It reuses previous RGB/gray
+frames, refreshes only dirty source bboxes, and redownsamples only touched
+11x11 source blocks. Prototype B16/P2/L1024 geometry dirty redownsample measured
+`3.59x` versus full downsample with no parity failures.
 
-1. track dirty 64x64 blocks from newly appended trail segments, old/new head
-   bounds, and bonus/sprite bounds;
-2. reuse cached trail/background gray64 for clean blocks;
-3. recompose and downsample only dirty 11x11 source blocks;
-4. fall back to the current full renderer on reset, cursor regression, prefix
-   mutation, map-size change, unsafe palette, or unsupported sprite/effect
-   cases.
+Local CPU dynamic stack profile, `browser_lines`, active production path:
 
-Acceptance bar: byte-identical frames against the full current renderer on
-append, overlap, reset, clear/wrap, palette changes, head movement, and active
-bonus cases that the fast path claims to cover. Until then, it stays a
-prototype lane.
+```text
+B16/P2/init_trails1024/bonus0: full 194.773ms, dirty  45.451ms, 4.285x
+B16/P2/init_trails1024/bonus4: full 201.876ms, dirty  74.415ms, 2.713x
+B32/P2/init_trails1024/bonus4: full 396.173ms, dirty 144.196ms, 2.747x
+B32/P2/init_trails4096/bonus4: full 415.198ms, dirty 122.943ms, 3.377x
+```
+
+Static microbench after patch:
+
+```text
+B16/P2/L1024/bonus4 stack  56.135ms/update
+B32/P2/L1024/bonus4 stack 112.522ms/update
+B32/P2/L4096/bonus4 stack 140.105ms/update
+```
+
+Short canonical smoke in flight:
+`opt-dirty-render-smoke-20260512 / b16-sim8-no-death`, canonical launcher,
+`gpu-l4-t4`, B16, 4 iterations, collect32, updates2, sim8,
+`profile_no_death`, background eval/GIF off, `--wait-for-train`.
 
 3. Vectorized CPU renderer.
    - Batch rows and players; avoid Python loops over env rows and body slots
@@ -626,11 +665,13 @@ Focused test:
 uv run pytest tests/test_benchmark_render_lane_microbench.py -q
 ```
 
-Current focused result: `11 passed` on 2026-05-12:
+Latest focused render validation:
 
 ```text
 uv run pytest tests/test_benchmark_render_lane_microbench.py \
-  tests/test_curvytron_two_seat_render_mode.py -q
+  tests/test_curvytron_two_seat_render_mode.py \
+  tests/test_vector_visual_observation.py -q
+60 passed
 ```
 
 The script controls:
@@ -671,8 +712,9 @@ It is a synthetic render benchmark, not an Environment fidelity test.
 It is not a full LightZero training-loop profile.
 It now splits raw RGB draw, RGB-to-gray64, independent gray64 render, guarded
 perspective reuse, full stack update, and stack-copy-only buckets.
-It does not yet benchmark incremental trail buffers, direct-luma render,
-Numba/Cython/OpenCV kernels, or GPU kernels.
+It benchmarks the production trail cache/dirty path through stack updates, but
+does not yet isolate direct-luma render, Numba/Cython/OpenCV kernels, or GPU
+kernels.
 ```
 
 The script should avoid LightZero/DI-engine entirely and benchmark direct
@@ -704,12 +746,13 @@ so the benchmark can isolate render cost from physics/search.
 ## Current Recommendation
 
 For now, keep Coach training on `browser_lines` unless Environment explicitly
-chooses a cheaper training surface. Use `profile_no_death` for optimizer timing,
-but do not use no-death runs for learning claims.
+chooses a cheaper training surface. Use the dirty-render production path by
+default. Use `profile_no_death` for optimizer timing, but train with normal
+death and do not use no-death runs for learning claims.
 
-Do not scale batch size aggressively until render cost is under control.
-Larger batches increase self-play rows and search rows, but today they also
-multiply long-trail redraw cost.
+Scale batch size upward only while replay rows/sec improves and learner/search
+are not starved. B64 is the next larger self-play test; B128 should wait until
+render is no longer the dominant cost.
 
 For bonus visuals: product gray64 should expose bonus type with stable per-type
 grayscale circles if `bonus_type` is available. Generic bonus circles hide

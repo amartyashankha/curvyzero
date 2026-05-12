@@ -11,8 +11,9 @@ Next reward gate: first CurvyTron runs should keep trainer reward and eval
 metrics separate. The active two-seat default is now:
 
 - `scaled_tiny_survival_plus_outcome`: `+0.01` while a seat is alive after a
-  policy decision, plus sparse terminal outcome `(+1/-1/0) * 0.01 *
-  episode_step_count`.
+  policy decision, plus immediate same-step bonus pickup helper `+0.05` per
+  bonus caught by that player, plus sparse terminal outcome `(+1/-1/0) *
+  0.01 * episode_step_count`.
 
 Survival length is always eval/telemetry, not the trainer reward by itself.
 Promotion needs heldout eval and telemetry that separate trainer reward, sparse
@@ -33,7 +34,31 @@ support/model shape; that is not the eval score.
 
 ## Current State
 
-Updated 2026-05-12 00:05 EDT.
+Updated 2026-05-12 after the pre-overnight cleanup pass.
+
+- Launch hold: do not start new overnight CurvyTron jobs until the user gives
+  the exact launch recipe. The code is launch-ready, but no new overnight run
+  should be started from this board alone.
+- Pre-overnight cleanup passed local compile/ruff and Modal smoke coverage for
+  the corrected two-seat path. Current reward/no-op meaning:
+  skipped policy chances send NOOP and stay out of replay/reward targets;
+  bonus pickup reward is immediate on the exact pickup step.
+- Default two-seat training horizon and background survival-eval cap are both
+  `65,536` steps. GIF max steps stay short by default because GIFs are visual
+  samples, not the survival metric.
+- First overnight shape should be B32/sample128 on `gpu-l4-t4` with sim8,
+  collect64, updates4, accumulated replay, normal death, `browser_lines`,
+  checkpoint every 100 iterations, and CurvyZero background eval/GIF on. Latest
+  wait-mode timing makes B64/sample256 slightly worse on rows/sec and much worse
+  on time-to-checkpoint; use B64 later only if early checkpoint health justifies
+  slower feedback. Timing canaries: B32 finished 4 iterations in `626s` with
+  `6,734` fresh rows (`~10.8` rows/s, checkpoint 100 around `4.3h`); B64
+  finished 4 iterations in `1,183s` with `12,590` fresh rows (`~10.6` rows/s,
+  checkpoint 100 around `8.2h`).
+- Action-collapse rule: a deterministic greedy GIF choosing one action is a
+  warning, not proof of training collapse. The overnight blocker is collapse in
+  fresh policy-decision histograms from trainer progress. Physical action
+  histograms are secondary because no-op skips intentionally execute NOOP.
 
 - Canonical CurvyTron Coach launcher is now:
   `src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py`
@@ -54,9 +79,12 @@ Updated 2026-05-12 00:05 EDT.
   Skipped no-op ticks do not create replay rows or reward targets. Add visual
   Gaussian noise `0.10`, keep random no-op/drop off, and use no warmup schedule.
 - Default two-seat trainer reward is shaped but explicit: the reward float that
-  replay/learner consume is tiny survival helper plus scaled sparse terminal
-  outcome. The row also logs dense helper, raw sparse outcome, terminal outcome,
-  episode step count, and return-target discount.
+  replay/learner consume is tiny survival helper plus immediate same-step bonus
+  pickup helper plus scaled sparse terminal outcome. The bonus reward is not an
+  end-of-game sum; it is only attached to the player row for the step where that
+  player catches the bonus. The row also logs dense helper, bonus pickup count,
+  raw sparse outcome, terminal outcome, episode step count, and return-target
+  discount.
 - The older `lightzero_curvytron_two_seat_train_smoke.py` Modal wrapper has
   been deleted. Historical commands must be translated to the canonical
   launcher before use.
@@ -94,12 +122,15 @@ Updated 2026-05-12 00:05 EDT.
   survival. Treat this as a reward-credit risk.
 - The old separate two-seat Modal wrapper has been deleted. The canonical
   launcher above owns the two-seat self-play entrypoint.
-- Two-seat repeat/dropout plumbing smoke passed on Modal:
+- Historical two-seat repeat/dropout plumbing smoke passed on Modal before the
+  no-op-skip fix:
   `curvytron-two-seat-repeat-smoke-s6101-20260511` /
   `repeat-smoke-s6101`. It ran on GPU, used one live LightZero policy for both
   seats, changed model weights, saved `iteration_0` and `iteration_1`, and
-  logged per-seat repeat behavior (`16` active seat rows, `8` fresh decisions,
-  `8` reused actions).
+  logged the old per-seat repeat behavior (`16` active seat rows, `8` fresh
+  decisions, `8` reused actions). Do not use this as current behavior evidence:
+  the active implementation now sends NOOP on skipped policy chances and keeps
+  skipped ticks out of replay/reward targets.
 - Four detached long two-seat CurvyTron runs were launched after that smoke:
   `clean-detached-s6301`, `repeat-mild-detached-s6302`,
   `repeat-strong-detached-s6303`, and `obsnoise002-detached-s6304`. All use
@@ -293,7 +324,8 @@ current meaning is policy no-op skipping. Skipped no-op ticks are not learner
 rows. Robustness variants may set these knobs, but learning claims should say
 whether the run used them.
 
-Current launched two-seat run refs:
+Historical launched two-seat run refs before the latest no-op-skip and bonus
+pickup reward cleanup:
 
 | run | attempt | function call | variant |
 | --- | --- | --- | --- |
@@ -302,7 +334,8 @@ Current launched two-seat run refs:
 | `curvytron-two-seat-selfplay-live14-repeat-observable-20260511` | `live14-repeat-progress1` | `fc-01KRCM72SP02E32QNTQK033B4A` | repeat max `3`, extra probability ramps to `0.10` over `1000` iterations |
 | `curvytron-two-seat-selfplay-live14-strong-sim8-20260511` | `live14-strong-sim8-progress1` | `fc-01KRCMQDT933KQXQ7RB1XCFFVZ` | stronger search/update run, temp `1.5`, epsilon `0.25`, sims `8`, updates `8` |
 
-Historical live14 shared knobs for `clean`/`explore`/`repeat`: GPU L4/T4,
+These are not current launch guidance. Historical live14 shared knobs for
+`clean`/`explore`/`repeat`: GPU L4/T4,
 `batch_size=16`, `collect_steps_per_iteration=64`,
 `updates_per_iteration=4`, `num_simulations=4`, accumulated replay,
 `learner_sample_size=128`, `max_ticks=16384`,

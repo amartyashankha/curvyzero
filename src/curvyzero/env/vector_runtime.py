@@ -2604,6 +2604,8 @@ def _catch_bonus_batched(
 
         catch_counts[effect.catch_counter] = catch_counts.get(effect.catch_counter, 0) + 1
         caught_id = int(bonus_id[row_int, hit_slot])
+        if "bonus_catch_count_step" in state:
+            state["bonus_catch_count_step"][row_int, player] += 1
         active[row_int, hit_slot] = False
         bonus_count[row_int] = int(active[row_int].sum())
         if events_enabled:

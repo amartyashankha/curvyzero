@@ -21,6 +21,7 @@ from curvyzero.env.vector_visual_observation import render_source_state_rgb_canv
 from curvyzero.env.vector_visual_observation import rgb_canvas_like_to_gray64
 from curvyzero.training import curvytron_two_seat_lightzero_train_smoke as train_smoke
 from curvyzero.training.curvytron_current_policy_selfplay_smoke import (
+    STACK_RENDER_MODE_FAST_GRAY64_DIRECT,
     SourceStateGray64Stack4,
     player_perspective_rgb_palette,
 )
@@ -97,6 +98,112 @@ def test_two_seat_stack_defaults_to_browser_lines_rgb_to_gray_player_perspective
     assert np.array_equal(observation[0, 0, -1], expected_player_0)
     assert np.array_equal(observation[0, 1, -1], expected_player_1)
     assert float(np.max(np.abs(observation[0, 0] - observation[0, 1]))) > 0.0
+
+
+def test_two_seat_fast_gray64_direct_uses_visual_trail_and_player_perspective():
+    state = _small_source_state()
+    state["visual_trail_active"] = np.asarray([[True, True]], dtype=bool)
+    state["visual_trail_write_cursor"] = np.asarray([2], dtype=np.int32)
+    state["visual_trail_pos"] = np.asarray([[[48.0, 8.0], [48.0, 24.0]]], dtype=np.float64)
+    state["visual_trail_radius"] = np.asarray([[1.0, 1.0]], dtype=np.float64)
+    state["visual_trail_owner"] = np.asarray([[0, 0]], dtype=np.int16)
+    state["visual_trail_break_before"] = np.asarray([[True, False]], dtype=bool)
+    state["bonus_active"] = np.asarray([[True, True]], dtype=bool)
+    state["bonus_pos"] = np.asarray([[[24.0, 24.0], [30.0, 30.0]]], dtype=np.float64)
+    state["bonus_radius"] = np.asarray([[1.0, 1.0]], dtype=np.float64)
+    state["bonus_type"] = np.asarray([[3, 11]], dtype=np.int16)
+    env = SimpleNamespace(batch_size=1, player_count=2, state=state)
+    stack = SourceStateGray64Stack4(
+        batch_size=1,
+        player_count=2,
+        trail_render_mode=STACK_RENDER_MODE_FAST_GRAY64_DIRECT,
+    )
+
+    observation = stack.update(env)
+
+    def cell(x: float, y: float) -> tuple[int, int]:
+        return (
+            int(np.clip(np.rint((y / 64.0) * 63.0), 0, 63)),
+            int(np.clip(np.rint((x / 64.0) * 63.0), 0, 63)),
+        )
+
+    trail_y, trail_x = cell(48.0, 8.0)
+    self_head_y, self_head_x = cell(10.0, 10.0)
+    other_head_y, other_head_x = cell(42.0, 18.0)
+    bonus_a_y, bonus_a_x = cell(24.0, 24.0)
+    bonus_b_y, bonus_b_x = cell(30.0, 30.0)
+
+    assert stack.render_metadata()["trail_render_mode"] == STACK_RENDER_MODE_FAST_GRAY64_DIRECT
+    assert stack.render_metadata()["rgb_to_gray64"] is False
+    assert stack.render_metadata()["trail_renderer_is_approximation"] is True
+    assert stack.render_metadata()["bonus_renderer_kind"] == "bonus_type_luma_circle"
+    assert observation.shape == (1, 2, 4, 64, 64)
+    assert observation[0, 0, -1, trail_y, trail_x] == pytest.approx(96.0 / 255.0)
+    assert observation[0, 1, -1, trail_y, trail_x] == pytest.approx(128.0 / 255.0)
+    assert observation[0, 0, -1, self_head_y, self_head_x] == pytest.approx(96.0 / 255.0)
+    assert observation[0, 1, -1, self_head_y, self_head_x] == pytest.approx(128.0 / 255.0)
+    assert observation[0, 0, -1, other_head_y, other_head_x] == pytest.approx(128.0 / 255.0)
+    assert observation[0, 1, -1, other_head_y, other_head_x] == pytest.approx(96.0 / 255.0)
+    assert observation[0, 0, -1, bonus_a_y, bonus_a_x] == pytest.approx(106.0 / 255.0)
+    assert observation[0, 1, -1, bonus_a_y, bonus_a_x] == pytest.approx(106.0 / 255.0)
+    assert observation[0, 0, -1, bonus_b_y, bonus_b_x] == pytest.approx(218.0 / 255.0)
+    assert observation[0, 1, -1, bonus_b_y, bonus_b_x] == pytest.approx(218.0 / 255.0)
+    assert float(np.max(np.abs(observation[0, 0] - observation[0, 1]))) > 0.0
+
+
+def test_two_seat_fast_gray64_direct_semantic_mask_approximates_browser_reference():
+    state = _small_source_state()
+    state["visual_trail_active"] = np.asarray([[True, True, True, True, True, True]], dtype=bool)
+    state["visual_trail_write_cursor"] = np.asarray([6], dtype=np.int32)
+    state["visual_trail_pos"] = np.asarray(
+        [[[8.0, 10.0], [12.0, 10.0], [16.0, 10.0], [40.0, 18.0], [44.0, 18.0], [48.0, 18.0]]],
+        dtype=np.float64,
+    )
+    state["visual_trail_radius"] = np.asarray([[1.0, 1.0, 1.0, 1.0, 1.0, 1.0]], dtype=np.float64)
+    state["visual_trail_owner"] = np.asarray([[0, 0, 0, 1, 1, 1]], dtype=np.int16)
+    state["visual_trail_break_before"] = np.asarray(
+        [[True, False, False, True, False, False]],
+        dtype=bool,
+    )
+    state["bonus_active"] = np.asarray([[True]], dtype=bool)
+    state["bonus_pos"] = np.asarray([[[24.0, 24.0]]], dtype=np.float64)
+    state["bonus_radius"] = np.asarray([[1.0]], dtype=np.float64)
+    state["bonus_type"] = np.asarray([[7]], dtype=np.int16)
+    env = SimpleNamespace(batch_size=1, player_count=2, state=state)
+
+    browser = SourceStateGray64Stack4(
+        batch_size=1,
+        player_count=2,
+        trail_render_mode=TRAIL_RENDER_MODE_BROWSER_LINES,
+    ).update(env)
+    fast = SourceStateGray64Stack4(
+        batch_size=1,
+        player_count=2,
+        trail_render_mode=STACK_RENDER_MODE_FAST_GRAY64_DIRECT,
+    ).update(env)
+
+    threshold = 40.0 / 255.0
+    browser_mask = browser[0, 0, -1] > threshold
+    fast_mask = fast[0, 0, -1] > threshold
+    assert int(browser_mask.sum()) > 0
+    assert int(fast_mask.sum()) > 0
+
+    def dilate(mask: np.ndarray) -> np.ndarray:
+        padded = np.pad(mask, 1, mode="constant", constant_values=False)
+        result = np.zeros_like(mask, dtype=bool)
+        for y_offset in range(3):
+            for x_offset in range(3):
+                result |= padded[y_offset : y_offset + 64, x_offset : x_offset + 64]
+        return result
+
+    fast_near = dilate(fast_mask)
+    browser_near = dilate(browser_mask)
+    browser_recall = float((browser_mask & fast_near).sum()) / float(browser_mask.sum())
+    fast_recall = float((fast_mask & browser_near).sum()) / float(fast_mask.sum())
+    foreground_ratio = float(fast_mask.sum()) / float(browser_mask.sum())
+    assert browser_recall > 0.35
+    assert fast_recall > 0.35
+    assert 0.25 < foreground_ratio < 2.5
 
 
 @pytest.mark.parametrize(
@@ -443,6 +550,7 @@ def test_two_seat_policy_skip_ticks_send_noop_and_do_not_emit_replay(monkeypatch
         alive_reward=1.0,
         dead_reward=0.0,
         terminal_outcome_reward_per_step=1.0,
+        bonus_pickup_reward_per_catch=0.0,
         return_target_discount=1.0,
         action_selection_mode=train_smoke.ACTION_SELECTION_MODE_COLLECT,
         collect_temperature=1.0,

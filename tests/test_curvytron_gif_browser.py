@@ -332,6 +332,42 @@ def test_list_selfplay_summaries_reuses_short_ttl_cache_for_same_run_state(
     assert cached_rows == rows
 
 
+def test_selected_run_page_cache_preserves_exact_pagination_metadata(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(browser, "LISTING_CACHE_TTL_SECONDS", 60.0)
+    _write_picker_flag(tmp_path, run_id="run-a")
+    for iteration, mtime in ((2, 200), (1, 100)):
+        _write_summary(
+            tmp_path,
+            run_id="run-a",
+            attempt_id="attempt-a",
+            eval_id=f"live_checkpoint_iteration_{iteration}",
+            ok=True,
+            frame_count=5,
+            mtime=mtime,
+            checkpoint_label=f"iteration_{iteration}",
+        )
+
+    first_page = browser._list_selfplay_summary_page(
+        tmp_path,
+        run_id="run-a",
+        limit=2,
+    )
+    second_page = browser._list_selfplay_summary_page(
+        tmp_path,
+        run_id="run-a",
+        limit=2,
+    )
+
+    assert first_page["total_rows"] == 2
+    assert first_page["total_rows_exact"] is True
+    assert first_page["has_older"] is False
+    assert second_page["total_rows"] == 2
+    assert second_page["total_rows_exact"] is True
+    assert second_page["has_older"] is False
+
+
 def test_list_runs_sorts_by_recent_run_level_artifacts(tmp_path) -> None:
     _write_picker_flag(tmp_path, run_id="run-summary-newer")
     _write_picker_flag(tmp_path, run_id="run-checkpoint-newest")
@@ -591,7 +627,7 @@ def test_render_rows_includes_terminal_reason_and_versioned_gif_url(tmp_path) ->
     html = browser._render_rows(rows)
 
     assert "own_trail" in html
-    assert "&amp;v=100-6" in html
+    assert "&amp;v=100000000000-6" in html
 
 
 def test_fastapi_routes_serve_only_selfplay_artifacts(tmp_path, monkeypatch) -> None:
@@ -681,9 +717,16 @@ def test_fastapi_routes_reload_only_on_explicit_fresh(tmp_path, monkeypatch) -> 
     app = browser._build_fastapi_app(volume)
     client = TestClient(app)
 
-    assert client.get("/").status_code == 200
-    assert client.get("/api/summaries").status_code == 200
-    assert client.get("/api/head").status_code == 200
+    index_response = client.get("/")
+    summaries_response = client.get("/api/summaries")
+    head_response = client.get("/api/head")
+
+    assert index_response.status_code == 200
+    assert summaries_response.status_code == 200
+    assert head_response.status_code == 200
+    assert index_response.headers["cache-control"] == "no-store"
+    assert summaries_response.headers["cache-control"] == "no-store"
+    assert head_response.headers["cache-control"] == "no-store"
     assert volume.reload_count == 0
 
     assert client.get("/", params={"fresh": "1"}).status_code == 200
@@ -733,6 +776,14 @@ def test_fastapi_index_and_api_accept_run_id_picker_selection(
     assert "<summary>run-old</summary>" in page_response.text
     assert "confirm(" not in page_response.text
     assert "Deleting" in page_response.text
+    assert "actionBusy" in page_response.text
+    assert "setRunActionBusy" in page_response.text
+    assert "loading run..." in page_response.text
+    assert "refreshing..." in page_response.text
+    assert "deleting ${runName}" in page_response.text
+    assert 'body.action-busy .run-menu-link' in page_response.text
+    assert 'headUrl.searchParams.delete("run_id")' in page_response.text
+    assert "autoRefresh.disabled = true" in page_response.text
     assert "X-Requested-With" in page_response.text
     assert "row.remove()" in page_response.text
     assert "window.history.replaceState" in page_response.text
@@ -751,8 +802,8 @@ def test_fastapi_index_and_api_accept_run_id_picker_selection(
     )
     assert "Run text" not in page_response.text
     assert "/api/runs/run-old/hide" in page_response.text
-    assert page_response.text.index("run-new (") < page_response.text.index(
-        "run-old ("
+    assert page_response.text.index(">run-new</span>") < page_response.text.index(
+        ">run-old</span>"
     )
     assert api_response.status_code == 200
     assert [row["run_id"] for row in api_response.json()["rows"]] == ["run-old"]
@@ -812,7 +863,7 @@ def test_fastapi_defaults_to_newest_run_and_successful_gifs(
 
     assert page_response.status_code == 200
     assert "<summary>run-new</summary>" in page_response.text
-    assert "missing GIF" not in page_response.text
+    assert "live_checkpoint_iteration_15" not in page_response.text
     assert api_response.status_code == 200
     assert api_response.json()["selected_run_id"] == "run-new"
     assert [row["eval_id"] for row in api_response.json()["rows"]] == [
@@ -959,3 +1010,44 @@ def test_fastapi_routes_keep_serving_when_volume_reload_fails(tmp_path, monkeypa
     assert page_response.status_code == 200
     assert api_response.status_code == 200
     assert api_response.json()["reload_error"] is None
+
+
+def test_fastapi_hides_transient_open_file_reload_error(tmp_path, monkeypatch) -> None:
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+
+    class OpenFileVolume:
+        def __init__(self) -> None:
+            self.reload_count = 0
+
+        def reload(self) -> None:
+            self.reload_count += 1
+            raise RuntimeError(
+                "there are open files preventing the operation: "
+                "path training/example/summary.json is open"
+            )
+
+    volume = OpenFileVolume()
+    monkeypatch.setattr(browser, "RUNS_MOUNT", tmp_path)
+    _write_picker_flag(tmp_path, run_id="run-a")
+    _write_summary(
+        tmp_path,
+        run_id="run-a",
+        attempt_id="attempt-a",
+        eval_id="eval-a",
+        ok=True,
+        frame_count=5,
+        mtime=100,
+    )
+    app = browser._build_fastapi_app(volume)
+    client = TestClient(app)
+
+    page_response = client.get("/", params={"fresh": "1"})
+    api_response = client.get("/api/head", params={"fresh": "1"})
+
+    assert page_response.status_code == 200
+    assert "Volume refresh failed" not in page_response.text
+    assert api_response.status_code == 200
+    assert api_response.json()["reload_error"] is None
+    assert volume.reload_count == 1

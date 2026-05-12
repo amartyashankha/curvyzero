@@ -1013,6 +1013,7 @@ class VectorMultiplayerEnv:
         pre_alive = self.state["alive"][:, : self.player_count].copy()
         pre_death_count = self.state["death_count"].copy()
         pre_active = ~self.state["done"].copy()
+        self.state["bonus_catch_count_step"][:, : self.player_count] = 0
         source_moves, action_sidecar = self._source_moves_and_action_sidecar(
             actions,
             pre_alive=pre_alive,
@@ -2917,6 +2918,7 @@ class VectorMultiplayerEnv:
         template["event_value_f"][mask, ...] = 0.0
         template["event_overflow"][mask] = False
         template["event_overflow_attempts"][mask] = 0
+        template["bonus_catch_count_step"][mask, ...] = 0
         if "bonus_active" in template:
             template["bonus_world_active"][mask] = False
             template["bonus_active"][mask, ...] = False
@@ -3102,6 +3104,10 @@ class VectorMultiplayerEnv:
             "natural_bonus_timer_remaining_ms": (self._natural_bonus_timer_remaining_ms.copy()),
             "natural_bonus_next_due_elapsed_ms": (self._natural_bonus_next_due_elapsed_ms.copy()),
             "natural_bonus_pop_count": self._natural_bonus_pop_count.copy(),
+            "bonus_catch_count_step": self.state["bonus_catch_count_step"][
+                :,
+                : self.player_count,
+            ].copy(),
             "rng_impl_id": self._rng_impl_id.copy(),
             "rng_history_ref": self._rng_impl_id.copy(),
             "random_tape_history_ref": self._rng_impl_id.copy(),
@@ -3584,6 +3590,10 @@ def _make_state_arrays(
         "timer_overflow": np.zeros(batch_size, dtype=bool),
         "score": np.zeros((batch_size, player_count), dtype=np.int32),
         "round_score": np.zeros((batch_size, player_count), dtype=np.int32),
+        "bonus_catch_count_step": np.zeros(
+            (batch_size, player_count),
+            dtype=np.int16,
+        ),
         "printing": np.zeros((batch_size, player_count), dtype=bool),
         "print_manager_active": np.zeros((batch_size, player_count), dtype=bool),
         "print_manager_distance": np.zeros((batch_size, player_count), dtype=np.float64),
