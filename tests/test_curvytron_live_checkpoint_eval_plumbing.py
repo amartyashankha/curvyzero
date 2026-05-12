@@ -90,14 +90,19 @@ def test_background_eval_inspection_and_gif_can_be_explicitly_enabled():
             "background_eval_enabled": True,
             "background_gif_enabled": True,
             "background_gif_frame_size": 512,
+            "natural_bonus_spawn": False,
         }
     )
 
     assert config["enabled"] is True
+    assert config["natural_bonus_spawn"] is True
     assert config["selfplay_gif"]["enabled"] is True
+    assert config["selfplay_gif"]["natural_bonus_spawn"] is True
     assert config["env_variant"] == train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT
     assert config["selfplay_gif"]["training_reward_variant"] == train_mod.DEFAULT_REWARD_VARIANT
     assert custom_config["selfplay_gif"]["frame_size"] == 512
+    assert custom_config["natural_bonus_spawn"] is False
+    assert custom_config["selfplay_gif"]["natural_bonus_spawn"] is False
 
 
 def test_modal_training_image_copies_curvytron_bonus_sprite_sheet():
@@ -752,6 +757,7 @@ def test_live_checkpoint_trigger_spawns_eval_and_selfplay_gif_without_volume_com
         "opponent_checkpoint_ref": None,
         "opponent_snapshot_ref": None,
         "opponent_checkpoint_state_key": None,
+        "natural_bonus_spawn": False,
         "selfplay_gif": {
             "enabled": True,
             "seed": 10_007,
@@ -765,6 +771,7 @@ def test_live_checkpoint_trigger_spawns_eval_and_selfplay_gif_without_volume_com
             "frame_size": 320,
             "training_env_variant": train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT,
             "training_reward_variant": train_mod.REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME,
+            "natural_bonus_spawn": False,
         },
     }
 
@@ -783,6 +790,7 @@ def test_live_checkpoint_trigger_spawns_eval_and_selfplay_gif_without_volume_com
     assert gif_call["checkpoint_ref"].endswith("iteration_1.pth.tar")
     assert eval_call["env_variant"] == train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT
     assert eval_call["eval_seed_count"] == 2
+    assert eval_call["natural_bonus_spawn"] is False
     assert gif_call["seed"] == 10_007
     assert gif_call["max_steps"] == 16
     assert gif_call["frame_stride"] == 2
@@ -794,6 +802,7 @@ def test_live_checkpoint_trigger_spawns_eval_and_selfplay_gif_without_volume_com
         gif_call["training_reward_variant"]
         == train_mod.REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME
     )
+    assert gif_call["natural_bonus_spawn"] is False
     assert fake_volume.commit_count == 0
     assert not (attempt_train_root / "background_eval_requests").exists()
     request = result["requests"][0]
@@ -807,7 +816,9 @@ def test_live_checkpoint_trigger_spawns_eval_and_selfplay_gif_without_volume_com
         request["selfplay_gif"]["config"]["training_reward_variant"]
         == train_mod.REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME
     )
+    assert request["selfplay_gif"]["config"]["natural_bonus_spawn"] is False
     assert request["config"]["env_variant"] == train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT
+    assert request["config"]["natural_bonus_spawn"] is False
 
 
 def test_save_raw_frames_gif_preserves_rgb_dimensions_without_gray64_scaling(tmp_path):
@@ -1105,6 +1116,7 @@ def test_checkpoint_eval_poller_completes_eval_inspection_and_selfplay_gif_jobs(
         opponent_checkpoint_ref=None,
         opponent_snapshot_ref=None,
         opponent_checkpoint_state_key=None,
+        natural_bonus_spawn=False,
         background_eval_enabled=True,
         background_eval_compute="cpu",
         background_eval_id_prefix="live_checkpoint",
@@ -1160,6 +1172,7 @@ def test_checkpoint_eval_poller_completes_eval_inspection_and_selfplay_gif_jobs(
     assert gif_call["frame_stride"] == 2
     assert gif_call["fps"] == 12.0
     assert gif_call["scale"] == 3
+    assert gif_call["natural_bonus_spawn"] is False
     assert (
         gif_call["training_reward_variant"]
         == train_mod.REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME
@@ -1319,8 +1332,10 @@ def test_local_two_seat_launcher_defaults_gif_browser_marker_enabled(
     printed = json.loads(capsys.readouterr().out)
 
     assert payload["gif_browser_run_marker_enabled"] is True
+    assert payload["natural_bonus_spawn"] is True
     assert printed["command"]["gif_browser_run_marker_enabled"] is True
     assert printed["background_eval"]["selfplay_gif"]["enabled"] is True
+    assert printed["background_eval"]["selfplay_gif"]["natural_bonus_spawn"] is True
 
 
 def test_local_two_seat_launcher_rejects_unknown_trail_render_mode(monkeypatch):

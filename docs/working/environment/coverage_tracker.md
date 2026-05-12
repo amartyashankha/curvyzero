@@ -82,8 +82,10 @@ draw warmdown into the next round, unique-leader max-score match end, and the
 2P metadata replay bridge. Public hardening also includes the source-state
 LightZero wrapper fixed-opponent sidecar proof. These are focused proof slices,
 not a full 2P claim. Also keep visual dimensions plain: the source 2P arena is
-88 units from `CurvyTronReferenceDefaults.arena_size_for_players(2)`. The
-64x64 value is the learned raw observation raster, not the original game size.
+88 units from `CurvyTronReferenceDefaults.arena_size_for_players(2)`. The raw
+product visual frame is the full-size canvas-like RGB render, currently 704x704
+pixels for 2P. The 64x64 value is only the derived gray64 model tensor, not the
+original game size.
 Latest validation reported on 2026-05-11: focused environment validation
 reported `282 passed`, source bonus validation reported `33 passed`, ruff
 passed, and the environment doc guard passed.
@@ -252,11 +254,11 @@ broader source refs are not done;
 trainer-ready public 3P/4P observation/env support is still missing even though
 the scalar projection and scalar replay-shaped artifact exist; CurvyTron visual
 stacked-frame input from our own renderer, raw uint8 source-state observation
-access and source-vs-vector raw 64x64 raster parity, broad public
-reset/warmdown/replay parity, broader world/island boundaries, and moving more
-source semantics into the fast runtime remain open. The raw 64x64 raster work
-proves model-observation parity from source state; it does not prove
-browser/canvas pixels.
+access, source-vs-vector full-size RGB render parity plus gray64 parity, broad
+public reset/warmdown/replay parity, broader world/island boundaries, and moving
+more source semantics into the fast runtime remain open. The source-state visual
+work proves native-render model-observation parity from source state; it does
+not prove browser/canvas pixels.
 Multiplayer makes visual replay stricter: visual stacks need frame provenance
 plus player ids, present/alive masks, death order, score vectors, opponent
 policy ids, full wrapper action logs, and reset/RNG metadata.
@@ -344,7 +346,7 @@ priority.
 | --- | --- |
 | Print-manager cadence | `source_print_manager_random_call_order_step` is promoted through Python/common trace and pins same-frame PrintManager random call order. `source_print_manager_random_cadence_multistep` now adds one four-tick print-to-hole-to-print cadence case that starts from a real taped print distance, spends it over multiple ticks, then spends a real taped hole distance. Keep this separate from normal trail cadence, delayed start, and broader round lifecycle. |
 | Natural trail-gap speed promotion | Source has one separate natural multi-step taped gap crossing, and scalar vector comparison now owns that exact full trace. It is not in speed defaults because B>1 promotion still needs an intentional batch-row path and broader reset/RNG policy. |
-| Visual gaps versus collision bodies | First prove server state with counters and events. Raw 64x64 observation checks are learned-raster checks from source state, not original arena-size or browser-canvas checks. `scripts/compare_2p_raw_visual_observation.py --suite core2p --format plain` now passes 26 core 2P source-vs-vector gray64 scenarios with `max_abs_diff=0` and `mismatch_pixels=0`; this includes the long wall rollout through terminal plus movement, normal-wall/draw, collision-order, borderless, narrow bonus frames, and the four natural bonus spawn/retry/cap fixtures. There are 26 total 2P step fixtures; `core2p` covers 25 of them plus the long wall rollout. `source_print_manager_random_call_order_step` stays outside gray64 because it proves RNG/event order, not a distinct rendered state. The renderer skips circles fully outside the source arena, matching source-world visibility for wall-death points. Current gray64 distinguishes 2P player trails/heads but collapses all active map bonus types to value `208`, so it is not full visual policy sufficiency for natural bonuses. Browser/canvas pixel checks are optional later human/debug evidence, not P0. Use exact short source-state checks and long-rollout divergence reporting. Do not claim frame-for-frame visual parity after trajectories diverge; record `first_divergent_tick` and compare from source-state resync checkpoints when needed. Future metrics: `max_abs_diff`, `mismatch_pixels`, tolerant pixel threshold, centroid/body/state drift, resync cadence, and saved source/frame/diff/metrics artifacts. |
+| Visual gaps versus collision bodies | First prove server state with counters and events. The current product visual path is full-size source-state RGB raw frame -> deterministic gray64 -> frame stack. `scripts/compare_2p_raw_visual_observation.py --suite full2p --format plain` now passes 35 full 2P source-vs-vector gray64 scenarios with `max_abs_diff=0` and `mismatch_pixels=0`, plus typed bonus diagnostics for all 12 source-default bonus types, final-observation checks, and two intentional mismatch canaries. This includes the long wall rollout through terminal plus movement, normal-wall/draw, collision-order, borderless, narrow bonus frames, the four natural bonus spawn/retry/cap fixtures, and programmatic source-snapshot stress cases. `source_print_manager_random_call_order_step` stays outside gray64 because it proves RNG/event order, not a distinct rendered state. The renderer skips shapes fully outside the source arena, matching source-world visibility for wall-death points. Current gray64 distinguishes 2P player trails/heads and uses browser-like trail lines by default; bonus identity proof lives in the separate bonus64 diagnostic gate, not the product tensor. Browser/canvas pixel checks are optional later human/debug evidence, not P0. Use exact short source-state checks and long-rollout divergence reporting. Do not claim frame-for-frame visual parity after trajectories diverge; record `first_divergent_tick` and compare from source-state resync checkpoints when needed. Future metrics: `max_abs_diff`, `mismatch_pixels`, tolerant pixel threshold, centroid/body/state drift, resync cadence, and saved source/frame/diff/metrics artifacts. |
 | Broader opponent/self trails | Source-env point-time body insertion now exists for focused tests. Add broader fixtures where bodies come from emitted points across longer traces, gaps, and more players. Check body owner, point number, killer, and state counters. |
 | Death-frame point side effects | Focused same-frame reverse-order insertion is covered in the source env. Add broader event-order cases before making a general claim. Compare event order, alive state, killer, score, and body counters. |
 | Head-head and reverse-order collisions | The 2P death-point and head-head-looking same-endpoint fixtures are promoted. Add 3P scripted setups only when they isolate a new source rule. |

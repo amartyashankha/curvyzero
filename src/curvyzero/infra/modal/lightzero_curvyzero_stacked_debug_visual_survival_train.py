@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import hashlib
 import io
 import importlib
 import inspect
@@ -73,7 +74,6 @@ from curvyzero.env.vector_visual_observation import SOURCE_STATE_RGB_CANVAS_LIKE
 from curvyzero.env.vector_visual_observation import (
     SOURCE_STATE_RGB_CANVAS_LIKE_TRUTH_LEVEL,
 )
-from curvyzero.env.vector_visual_observation import TRAIL_RENDER_MODE_BODY_CIRCLES_FAST
 from curvyzero.env.vector_visual_observation import TRAIL_RENDER_MODE_DEFAULT
 from curvyzero.env.vector_visual_observation import TRAIL_RENDER_MODE_ORDER
 from curvyzero.infra.modal import run_management as runs
@@ -209,7 +209,10 @@ from curvyzero.training.curvytron_two_seat_lightzero_train_smoke import (
     DEFAULT_ACTION_NOOP_WARMUP_ITERATIONS as TWO_SEAT_DEFAULT_ACTION_NOOP_WARMUP_ITERATIONS,
 )
 from curvyzero.training.curvytron_two_seat_lightzero_train_smoke import (
-    DEFAULT_CHECKPOINT_EVERY_ITERATIONS as TWO_SEAT_DEFAULT_CHECKPOINT_EVERY_ITERATIONS,
+    DEFAULT_ALIVE_REWARD as TWO_SEAT_DEFAULT_ALIVE_REWARD,
+)
+from curvyzero.training.curvytron_two_seat_lightzero_train_smoke import (
+    DEFAULT_DEAD_REWARD as TWO_SEAT_DEFAULT_DEAD_REWARD,
 )
 from curvyzero.training.curvytron_two_seat_lightzero_train_smoke import (
     DEFAULT_DEATH_MODE as TWO_SEAT_DEFAULT_DEATH_MODE,
@@ -233,10 +236,10 @@ from curvyzero.training.curvytron_two_seat_lightzero_train_smoke import (
     DEFAULT_POLICY_ACTION_REPEAT_WARMUP_ITERATIONS as TWO_SEAT_DEFAULT_POLICY_ACTION_REPEAT_WARMUP_ITERATIONS,
 )
 from curvyzero.training.curvytron_two_seat_lightzero_train_smoke import (
-    DEFAULT_PROGRESS_COMMIT_EVERY_ITERATIONS as TWO_SEAT_DEFAULT_PROGRESS_COMMIT_EVERY_ITERATIONS,
+    DEFAULT_RETURN_TARGET_DISCOUNT as TWO_SEAT_DEFAULT_RETURN_TARGET_DISCOUNT,
 )
 from curvyzero.training.curvytron_two_seat_lightzero_train_smoke import (
-    DEFAULT_PROGRESS_EVERY_ITERATIONS as TWO_SEAT_DEFAULT_PROGRESS_EVERY_ITERATIONS,
+    DEFAULT_TERMINAL_OUTCOME_REWARD_PER_STEP as TWO_SEAT_DEFAULT_TERMINAL_OUTCOME_REWARD_PER_STEP,
 )
 from curvyzero.training.curvytron_two_seat_lightzero_train_smoke import (
     compact_curvytron_two_seat_lightzero_train_smoke_summary,
@@ -324,6 +327,7 @@ DEFAULT_BACKGROUND_EVAL_NUM_SIMULATIONS = DEFAULT_NUM_SIMULATIONS
 DEFAULT_BACKGROUND_EVAL_BATCH_SIZE = 64
 DEFAULT_BACKGROUND_GIF_ENABLED = True
 DEFAULT_BACKGROUND_GIF_SEED_OFFSET = 10_000
+DEFAULT_BACKGROUND_GIF_CHECKPOINT_SEED_MIXING_ENABLED = True
 DEFAULT_BACKGROUND_GIF_MAX_STEPS = 256
 DEFAULT_BACKGROUND_GIF_FRAME_STRIDE = 1
 DEFAULT_BACKGROUND_GIF_FPS = 8.0
@@ -2662,6 +2666,9 @@ def _run_visual_survival_train(
     background_gif_fps: float,
     background_gif_scale: int,
     background_gif_frame_size: int = DEFAULT_BACKGROUND_GIF_FRAME_SIZE,
+    background_gif_checkpoint_seed_mixing_enabled: bool = (
+        DEFAULT_BACKGROUND_GIF_CHECKPOINT_SEED_MIXING_ENABLED
+    ),
 ) -> dict[str, Any]:
     started = time.perf_counter()
     if mode not in MODE_CHOICES:
@@ -2904,6 +2911,9 @@ def _run_visual_survival_train(
         "background_eval_batch_size": int(background_eval_batch_size),
         "background_gif_enabled": bool(background_gif_enabled),
         "background_gif_seed_offset": int(background_gif_seed_offset),
+        "background_gif_checkpoint_seed_mixing_enabled": bool(
+            background_gif_checkpoint_seed_mixing_enabled
+        ),
         "background_gif_max_steps": int(background_gif_max_steps),
         "background_gif_frame_stride": int(background_gif_frame_stride),
         "background_gif_fps": float(background_gif_fps),
@@ -3258,6 +3268,10 @@ def _run_visual_survival_train(
                 "frame_schema_id": SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID,
                 "browser_pixel_fidelity": False,
                 "seed_offset": command["background_gif_seed_offset"],
+                "checkpoint_seed_mixing_enabled": command.get(
+                    "background_gif_checkpoint_seed_mixing_enabled",
+                    DEFAULT_BACKGROUND_GIF_CHECKPOINT_SEED_MIXING_ENABLED,
+                ),
                 "max_steps": command["background_gif_max_steps"],
                 "frame_stride": command["background_gif_frame_stride"],
                 "fps": command["background_gif_fps"],
@@ -3819,6 +3833,7 @@ def _build_visual_survival_configs(
     opponent_checkpoint: dict[str, Any] | None,
     opponent_snapshot_ref: str | None,
     opponent_checkpoint_state_key: str | None,
+    natural_bonus_spawn: bool = TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN,
 ) -> dict[str, Any]:
     from easydict import EasyDict
 
@@ -3943,6 +3958,7 @@ def _build_visual_survival_configs(
             ),
             "control_noise_profile_id": str(control_noise_profile_id),
             "disable_death_for_profile": bool(disable_death_for_profile),
+            "natural_bonus_spawn": bool(natural_bonus_spawn),
             "death_mode": (
                 "profile_no_death" if disable_death_for_profile else "normal"
             ),
@@ -4832,6 +4848,9 @@ def _background_eval_config_from_command(command: dict[str, Any]) -> dict[str, A
             DEFAULT_BACKGROUND_EVAL_STEP_DETAIL_LIMIT,
         ),
         "source_max_steps": int(command.get("source_max_steps", DEFAULT_SOURCE_MAX_STEPS)),
+        "natural_bonus_spawn": bool(
+            command.get("natural_bonus_spawn", TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN)
+        ),
         "num_simulations": int(
             command.get(
                 "background_eval_num_simulations",
@@ -4873,6 +4892,12 @@ def _background_gif_config_from_command(command: dict[str, Any]) -> dict[str, An
         "enabled": bool(command.get("background_gif_enabled", DEFAULT_BACKGROUND_GIF_ENABLED)),
         "seed": int(command.get("seed", DEFAULT_SEED))
         + int(command.get("background_gif_seed_offset", DEFAULT_BACKGROUND_GIF_SEED_OFFSET)),
+        "checkpoint_seed_mixing_enabled": bool(
+            command.get(
+                "background_gif_checkpoint_seed_mixing_enabled",
+                DEFAULT_BACKGROUND_GIF_CHECKPOINT_SEED_MIXING_ENABLED,
+            )
+        ),
         "max_steps": int(command.get("background_gif_max_steps", DEFAULT_BACKGROUND_GIF_MAX_STEPS)),
         "frame_stride": int(
             command.get("background_gif_frame_stride", DEFAULT_BACKGROUND_GIF_FRAME_STRIDE)
@@ -4881,6 +4906,9 @@ def _background_gif_config_from_command(command: dict[str, Any]) -> dict[str, An
         "scale": int(command.get("background_gif_scale", DEFAULT_BACKGROUND_GIF_SCALE)),
         "frame_size": int(
             command.get("background_gif_frame_size", DEFAULT_BACKGROUND_GIF_FRAME_SIZE)
+        ),
+        "natural_bonus_spawn": bool(
+            command.get("natural_bonus_spawn", TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN)
         ),
         "source_max_steps": int(command.get("source_max_steps", DEFAULT_SOURCE_MAX_STEPS)),
         "num_simulations": int(
@@ -4900,6 +4928,16 @@ def _background_gif_config_from_command(command: dict[str, Any]) -> dict[str, An
             )
         ),
     }
+
+
+def _stable_seed_mix(*parts: object) -> int:
+    text = "|".join(str(part) for part in parts)
+    digest = hashlib.blake2s(text.encode("utf-8"), digest_size=4).digest()
+    return int.from_bytes(digest, byteorder="big", signed=False)
+
+
+def _mix_seed(base_seed: int, seed_mix: int) -> int:
+    return int((int(base_seed) + int(seed_mix)) % (2**31 - 1))
 
 
 def _spawn_checkpoint_eval_triggers(
@@ -5097,6 +5135,9 @@ def _spawn_one_checkpoint_background_eval(
             opponent_checkpoint_ref=config.get("opponent_checkpoint_ref"),
             opponent_snapshot_ref=config.get("opponent_snapshot_ref"),
             opponent_checkpoint_state_key=config.get("opponent_checkpoint_state_key"),
+            natural_bonus_spawn=bool(
+                config.get("natural_bonus_spawn", TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN)
+            ),
         )
         request["scheduled"] = True
         request["eval_inspection_scheduled"] = True
@@ -5159,6 +5200,30 @@ def _spawn_one_checkpoint_background_gif(
             "reason": "background_gif_unsupported_for_source_state_joint_action",
             "training_env_variant": training_env_variant,
         }, None
+    natural_bonus_spawn = bool(
+        gif_config.get(
+            "natural_bonus_spawn",
+            config.get("natural_bonus_spawn", TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN),
+        )
+    )
+    gif_config["natural_bonus_spawn"] = natural_bonus_spawn
+    base_seed = int(gif_config.get("seed", DEFAULT_SEED + DEFAULT_BACKGROUND_GIF_SEED_OFFSET))
+    checkpoint_seed_mix = _stable_seed_mix(checkpoint_ref, checkpoint_label, eval_id)
+    checkpoint_seed_mixing_enabled = bool(
+        gif_config.get(
+            "checkpoint_seed_mixing_enabled",
+            DEFAULT_BACKGROUND_GIF_CHECKPOINT_SEED_MIXING_ENABLED,
+        )
+    )
+    effective_seed = (
+        _mix_seed(base_seed, checkpoint_seed_mix)
+        if checkpoint_seed_mixing_enabled
+        else base_seed
+    )
+    gif_config["base_seed"] = base_seed
+    gif_config["checkpoint_seed_mix"] = checkpoint_seed_mix
+    gif_config["checkpoint_seed_mixing_enabled"] = checkpoint_seed_mixing_enabled
+    gif_config["effective_seed"] = effective_seed
     request: dict[str, Any] = {
         "schema_id": "curvyzero_lightzero_curvytron_selfplay_gif_spawn/v0",
         "scheduled": False,
@@ -5179,7 +5244,7 @@ def _spawn_one_checkpoint_background_gif(
             eval_id=eval_id,
             run_id=str(publish.get("run_id")),
             attempt_id=str(publish.get("attempt_id")),
-            seed=int(gif_config.get("seed", DEFAULT_SEED + DEFAULT_BACKGROUND_GIF_SEED_OFFSET)),
+            seed=effective_seed,
             max_steps=int(gif_config.get("max_steps", DEFAULT_BACKGROUND_GIF_MAX_STEPS)),
             source_max_steps=int(gif_config.get("source_max_steps", DEFAULT_SOURCE_MAX_STEPS)),
             num_simulations=int(
@@ -5197,6 +5262,7 @@ def _spawn_one_checkpoint_background_gif(
             training_reward_variant=str(
                 gif_config.get("training_reward_variant", DEFAULT_REWARD_VARIANT)
             ),
+            natural_bonus_spawn=natural_bonus_spawn,
         )
         request["scheduled"] = True
         request["status"] = "spawned"
@@ -5287,6 +5353,10 @@ def _checkpoint_eval_poller_command(
     background_gif_fps: float,
     background_gif_scale: int,
     background_gif_frame_size: int = DEFAULT_BACKGROUND_GIF_FRAME_SIZE,
+    background_gif_checkpoint_seed_mixing_enabled: bool = (
+        DEFAULT_BACKGROUND_GIF_CHECKPOINT_SEED_MIXING_ENABLED
+    ),
+    natural_bonus_spawn: bool = TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN,
 ) -> dict[str, Any]:
     return {
         "seed": seed,
@@ -5300,6 +5370,7 @@ def _checkpoint_eval_poller_command(
         "opponent_checkpoint_ref": opponent_checkpoint_ref,
         "opponent_snapshot_ref": opponent_snapshot_ref,
         "opponent_checkpoint_state_key": opponent_checkpoint_state_key,
+        "natural_bonus_spawn": bool(natural_bonus_spawn),
         "background_eval_enabled": background_eval_enabled,
         "background_eval_compute": background_eval_compute,
         "background_eval_id_prefix": background_eval_id_prefix,
@@ -5311,6 +5382,9 @@ def _checkpoint_eval_poller_command(
         "background_eval_batch_size": background_eval_batch_size,
         "background_gif_enabled": background_gif_enabled,
         "background_gif_seed_offset": background_gif_seed_offset,
+        "background_gif_checkpoint_seed_mixing_enabled": bool(
+            background_gif_checkpoint_seed_mixing_enabled
+        ),
         "background_gif_max_steps": background_gif_max_steps,
         "background_gif_frame_stride": background_gif_frame_stride,
         "background_gif_fps": background_gif_fps,
@@ -5620,6 +5694,7 @@ def _run_checkpoint_eval_and_inspect(
     opponent_checkpoint_ref: str | None,
     opponent_snapshot_ref: str | None,
     opponent_checkpoint_state_key: str | None,
+    natural_bonus_spawn: bool = TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN,
 ) -> dict[str, Any]:
     if compute not in BACKGROUND_EVAL_COMPUTE_CHOICES:
         raise ValueError(
@@ -5694,6 +5769,7 @@ def _run_checkpoint_eval_and_inspect(
             opponent_checkpoint_ref=opponent_checkpoint_ref,
             opponent_snapshot_ref=opponent_snapshot_ref,
             opponent_checkpoint_state_key=opponent_checkpoint_state_key,
+            natural_bonus_spawn=bool(natural_bonus_spawn),
         )
         jobs.append(job)
         results.append(result)
@@ -5738,6 +5814,7 @@ def _run_checkpoint_eval_and_inspect(
             "opponent_checkpoint_ref": opponent_checkpoint_ref,
             "opponent_snapshot_ref": opponent_snapshot_ref,
             "opponent_checkpoint_state_key": opponent_checkpoint_state_key,
+            "natural_bonus_spawn": bool(natural_bonus_spawn),
             "jobs": jobs,
         },
         "config": {
@@ -5767,6 +5844,7 @@ def _run_checkpoint_eval_and_inspect(
             "opponent_checkpoint_ref": opponent_checkpoint_ref,
             "opponent_snapshot_ref": opponent_snapshot_ref,
             "opponent_checkpoint_state_key": opponent_checkpoint_state_key,
+            "natural_bonus_spawn": bool(natural_bonus_spawn),
         },
         "table": table,
         "survival_aggregate_table": survival_aggregate_table,
@@ -5819,6 +5897,7 @@ def _run_checkpoint_eval_and_inspect(
         "eval_reward_variant": reward_variant,
         "model_reward_variant": model_reward_variant,
         "model_reward_variant_role": "checkpoint_model_reconstruction_only_not_scoring",
+        "natural_bonus_spawn": bool(natural_bonus_spawn),
         "manifest_ref": manifest_ref,
         "manifest": runs.file_summary(manifest_path, mount=RUNS_MOUNT),
         "inspection_report_ref": runs.file_ref(report_json_path, mount=RUNS_MOUNT),
@@ -6160,6 +6239,7 @@ def _run_checkpoint_selfplay_gif(
     frame_size: int,
     training_env_variant: str,
     training_reward_variant: str,
+    natural_bonus_spawn: bool = TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN,
 ) -> dict[str, Any]:
     import numpy as np
 
@@ -6222,6 +6302,7 @@ def _run_checkpoint_selfplay_gif(
             opponent_checkpoint=None,
             opponent_snapshot_ref=None,
             opponent_checkpoint_state_key=None,
+            natural_bonus_spawn=bool(natural_bonus_spawn),
         )
 
         observation = env.reset(seed=int(seed))
@@ -6304,6 +6385,7 @@ def _run_checkpoint_selfplay_gif(
             "frame_count": int(raw_frames.shape[0]),
             "frame_stride_physical_steps": int(frame_stride),
             "seed": int(seed),
+            "natural_bonus_spawn": bool(natural_bonus_spawn),
             "checkpoint_ref": checkpoint_ref,
             "checkpoint_label": clean_checkpoint_label,
         }
@@ -6331,6 +6413,7 @@ def _run_checkpoint_selfplay_gif(
             "checkpoint_state_key": found_key,
             "training_env_variant": training_env_variant,
             "training_reward_variant": training_reward_variant,
+            "natural_bonus_spawn": bool(natural_bonus_spawn),
             "capture_env_variant": ENV_VARIANT_SOURCE_STATE_TURN_COMMIT,
             "capture_env_reason": (
                 "one checkpoint controls player_0 and player_1 through the source-state "
@@ -6397,6 +6480,7 @@ def _run_checkpoint_selfplay_gif(
             "checkpoint_label": clean_checkpoint_label,
             "training_env_variant": training_env_variant,
             "training_reward_variant": training_reward_variant,
+            "natural_bonus_spawn": bool(natural_bonus_spawn),
             "capture_env_variant": ENV_VARIANT_SOURCE_STATE_TURN_COMMIT,
             "frame_source": "source_state_rgb_canvas_like",
             "frame_schema_id": SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID,
@@ -6818,6 +6902,9 @@ def _two_seat_background_eval_config(
         "step_detail_limit": background_eval_step_detail_limit,
         "num_simulations": int(background_eval_num_simulations),
         "batch_size": int(background_eval_batch_size),
+        "natural_bonus_spawn": bool(
+            payload.get("natural_bonus_spawn", TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN)
+        ),
         "poll_interval_sec": float(background_eval_poll_interval_sec),
         "stable_polls": int(background_eval_poll_stable_polls),
         "max_runtime_sec": float(background_eval_poller_max_runtime_sec),
@@ -6825,11 +6912,15 @@ def _two_seat_background_eval_config(
         "selfplay_gif": {
             "enabled": bool(background_gif_enabled),
             "seed_offset": int(background_gif_seed_offset),
+            "checkpoint_seed_mixing_enabled": DEFAULT_BACKGROUND_GIF_CHECKPOINT_SEED_MIXING_ENABLED,
             "max_steps": int(background_gif_max_steps),
             "frame_stride": int(background_gif_frame_stride),
             "fps": float(background_gif_fps),
             "scale": int(background_gif_scale),
             "frame_size": int(background_gif_frame_size),
+            "natural_bonus_spawn": bool(
+                payload.get("natural_bonus_spawn", TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN)
+            ),
         },
         "eval_env_variant": ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT,
         "eval_reward_variant": REWARD_VARIANT_SPARSE_OUTCOME,
@@ -6885,6 +6976,12 @@ def _spawn_two_seat_checkpoint_poller(
         background_gif_fps=float(background["selfplay_gif"]["fps"]),
         background_gif_scale=int(background["selfplay_gif"]["scale"]),
         background_gif_frame_size=int(background["selfplay_gif"]["frame_size"]),
+        background_gif_natural_bonus_spawn=bool(
+            background["selfplay_gif"].get(
+                "natural_bonus_spawn",
+                background.get("natural_bonus_spawn", TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN),
+            )
+        ),
         poll_interval_sec=float(background["poll_interval_sec"]),
         stable_polls=int(background["stable_polls"]),
         max_runtime_sec=float(background["max_runtime_sec"]),
@@ -6921,6 +7018,9 @@ def _run_two_seat_selfplay_payload(
     gif_browser_run_marker_enabled = bool(
         payload.get("gif_browser_run_marker_enabled", DEFAULT_BACKGROUND_GIF_ENABLED)
     )
+    natural_bonus_spawn = bool(
+        payload.get("natural_bonus_spawn", TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN)
+    )
     command = {
         "schema_id": "curvyzero_canonical_two_seat_selfplay_command/v0",
         "mode": TWO_SEAT_SELFPLAY_MODE,
@@ -6931,6 +7031,7 @@ def _run_two_seat_selfplay_payload(
         "compute": compute_label,
         "use_cuda": bool(use_cuda),
         **payload,
+        "natural_bonus_spawn": natural_bonus_spawn,
         "gif_browser_run_marker_enabled": gif_browser_run_marker_enabled,
         "gif_browser_run_marker_ref": (
             runs.gif_browser_run_marker_ref(TASK_ID, run_id).as_posix()
@@ -6982,10 +7083,14 @@ def _run_two_seat_selfplay_payload(
         replay_row_log_limit=int(payload["replay_row_log_limit"]),
         max_ticks=payload["max_ticks"],
         death_mode=str(payload["death_mode"]),
-        natural_bonus_spawn=bool(payload["natural_bonus_spawn"]),
+        natural_bonus_spawn=natural_bonus_spawn,
         decision_ms=float(payload["decision_ms"]),
         alive_reward=float(payload["alive_reward"]),
         dead_reward=float(payload["dead_reward"]),
+        terminal_outcome_reward_per_step=float(
+            payload["terminal_outcome_reward_per_step"]
+        ),
+        return_target_discount=float(payload["return_target_discount"]),
         action_selection_mode=str(payload["action_selection_mode"]),
         collect_temperature=float(payload["collect_temperature"]),
         collect_epsilon=float(payload["collect_epsilon"]),
@@ -7021,7 +7126,13 @@ def _run_two_seat_selfplay_payload(
             "two_seat_current_policy_selfplay": True,
             "trail_render_mode": payload["trail_render_mode"],
             "death_mode": payload["death_mode"],
-            "natural_bonus_spawn": payload["natural_bonus_spawn"],
+            "natural_bonus_spawn": natural_bonus_spawn,
+            "alive_reward": payload["alive_reward"],
+            "dead_reward": payload["dead_reward"],
+            "terminal_outcome_reward_per_step": payload[
+                "terminal_outcome_reward_per_step"
+            ],
+            "return_target_discount": payload["return_target_discount"],
         },
         require_installed_lightzero=True,
     )
@@ -7148,6 +7259,7 @@ def lightzero_curvytron_visual_survival_checkpoint_eval_and_inspect(
     opponent_checkpoint_ref: str | None = None,
     opponent_snapshot_ref: str | None = None,
     opponent_checkpoint_state_key: str | None = None,
+    natural_bonus_spawn: bool = TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN,
 ) -> dict[str, Any]:
     return _run_checkpoint_eval_and_inspect(
         checkpoint_ref=checkpoint_ref,
@@ -7171,6 +7283,7 @@ def lightzero_curvytron_visual_survival_checkpoint_eval_and_inspect(
         opponent_checkpoint_ref=opponent_checkpoint_ref,
         opponent_snapshot_ref=opponent_snapshot_ref,
         opponent_checkpoint_state_key=opponent_checkpoint_state_key,
+        natural_bonus_spawn=bool(natural_bonus_spawn),
     )
 
 
@@ -7192,6 +7305,7 @@ def lightzero_curvytron_visual_survival_checkpoint_selfplay_gif(
     frame_size: int = DEFAULT_BACKGROUND_GIF_FRAME_SIZE,
     training_env_variant: str = DEFAULT_ENV_VARIANT,
     training_reward_variant: str = DEFAULT_REWARD_VARIANT,
+    natural_bonus_spawn: bool = TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN,
 ) -> dict[str, Any]:
     return _run_checkpoint_selfplay_gif(
         checkpoint_ref=checkpoint_ref,
@@ -7210,6 +7324,7 @@ def lightzero_curvytron_visual_survival_checkpoint_selfplay_gif(
         frame_size=frame_size,
         training_env_variant=training_env_variant,
         training_reward_variant=training_reward_variant,
+        natural_bonus_spawn=bool(natural_bonus_spawn),
     )
 
 
@@ -7241,6 +7356,7 @@ def lightzero_curvytron_visual_survival_checkpoint_eval_poller(
     background_gif_fps: float = DEFAULT_BACKGROUND_GIF_FPS,
     background_gif_scale: int = DEFAULT_BACKGROUND_GIF_SCALE,
     background_gif_frame_size: int = DEFAULT_BACKGROUND_GIF_FRAME_SIZE,
+    background_gif_natural_bonus_spawn: bool = TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN,
     poll_interval_sec: float = DEFAULT_BACKGROUND_EVAL_POLL_INTERVAL_SEC,
     stable_polls: int = DEFAULT_BACKGROUND_EVAL_POLL_STABLE_POLLS,
     max_runtime_sec: float = DEFAULT_BACKGROUND_EVAL_POLLER_MAX_RUNTIME_SEC,
@@ -7274,6 +7390,7 @@ def lightzero_curvytron_visual_survival_checkpoint_eval_poller(
         background_gif_fps=background_gif_fps,
         background_gif_scale=background_gif_scale,
         background_gif_frame_size=background_gif_frame_size,
+        natural_bonus_spawn=bool(background_gif_natural_bonus_spawn),
     )
     return _run_checkpoint_eval_poller(
         run_id=run_id,
@@ -7774,8 +7891,12 @@ def main(
     two_seat_max_ticks: int | None = DEFAULT_TWO_SEAT_MAX_TICKS,
     two_seat_death_mode: str = TWO_SEAT_DEFAULT_DEATH_MODE,
     two_seat_natural_bonus_spawn: bool = TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN,
-    two_seat_alive_reward: float = 1.0,
-    two_seat_dead_reward: float = 0.0,
+    two_seat_alive_reward: float = TWO_SEAT_DEFAULT_ALIVE_REWARD,
+    two_seat_dead_reward: float = TWO_SEAT_DEFAULT_DEAD_REWARD,
+    two_seat_terminal_outcome_reward_per_step: float = (
+        TWO_SEAT_DEFAULT_TERMINAL_OUTCOME_REWARD_PER_STEP
+    ),
+    two_seat_return_target_discount: float = TWO_SEAT_DEFAULT_RETURN_TARGET_DISCOUNT,
     two_seat_action_selection_mode: str = "collect",
     two_seat_collect_temperature: float = 1.0,
     two_seat_collect_epsilon: float = 0.25,
@@ -7892,6 +8013,10 @@ def main(
             "decision_ms": decision_ms,
             "alive_reward": two_seat_alive_reward,
             "dead_reward": two_seat_dead_reward,
+            "terminal_outcome_reward_per_step": (
+                two_seat_terminal_outcome_reward_per_step
+            ),
+            "return_target_discount": two_seat_return_target_discount,
             "action_selection_mode": two_seat_action_selection_mode,
             "collect_temperature": two_seat_collect_temperature,
             "collect_epsilon": two_seat_collect_epsilon,

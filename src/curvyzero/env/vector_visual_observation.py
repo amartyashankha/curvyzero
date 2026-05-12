@@ -480,6 +480,7 @@ def render_source_state_canvas_gray64(
     row: int = 0,
     out: np.ndarray | None = None,
     rgb_out: np.ndarray | None = None,
+    downsample_scratch: "SourceStateGray64DownsampleScratch | None" = None,
     player_rgb: Sequence[Sequence[int]] | None = None,
     background_rgb: Sequence[int] = SOURCE_STATE_RGB_CANVAS_LIKE_BACKGROUND_RGB,
     trail_render_mode: str = TRAIL_RENDER_MODE_DEFAULT,
@@ -506,7 +507,7 @@ def render_source_state_canvas_gray64(
         trail_render_mode=mode,
         bonus_render_mode=bonus_mode,
     )
-    return rgb_canvas_like_to_gray64(rgb, out=out)
+    return rgb_canvas_like_to_gray64(rgb, out=out, scratch=downsample_scratch)
 
 
 def render_source_state_canvas_gray64_player_perspectives(
@@ -517,6 +518,8 @@ def render_source_state_canvas_gray64_player_perspectives(
     out: np.ndarray | None = None,
     rgb_base_out: np.ndarray | None = None,
     rgb_work_out: np.ndarray | None = None,
+    trail_cache: "SourceStateBrowserLineTrailLayerCache | None" = None,
+    downsample_scratch: "SourceStateGray64DownsampleScratch | None" = None,
     background_rgb: Sequence[int] = SOURCE_STATE_RGB_CANVAS_LIKE_BACKGROUND_RGB,
     trail_render_mode: str = TRAIL_RENDER_MODE_DEFAULT,
     bonus_render_mode: str = BONUS_RENDER_MODE_DEFAULT,
@@ -556,6 +559,7 @@ def render_source_state_canvas_gray64_player_perspectives(
                 background_rgb=background_rgb,
                 trail_render_mode=mode,
                 bonus_render_mode=bonus_mode,
+                downsample_scratch=downsample_scratch,
             )
         return frames
 
@@ -590,16 +594,28 @@ def render_source_state_canvas_gray64_player_perspectives(
                 background_rgb=background_rgb,
                 trail_render_mode=mode,
                 bonus_render_mode=bonus_mode,
-            )
-        return frames
-    if mode == TRAIL_RENDER_MODE_BROWSER_LINES:
-        _render_source_state_rgb_browser_lines(
-            base,
-            arrays,
-            row_index,
-            map_size,
-            colors=base_colors,
+                downsample_scratch=downsample_scratch,
         )
+        return frames
+    used_cache = False
+    if mode == TRAIL_RENDER_MODE_BROWSER_LINES:
+        if trail_cache is not None:
+            used_cache = trail_cache.render_trails_rgb(
+                base,
+                arrays,
+                row_index,
+                map_size,
+                colors=base_colors,
+                background_rgb=background_rgb,
+            )
+        if not used_cache:
+            _render_source_state_rgb_browser_lines(
+                base,
+                arrays,
+                row_index,
+                map_size,
+                colors=base_colors,
+            )
     else:
         _render_source_state_rgb_body_circles_fast(
             base,
@@ -609,10 +625,18 @@ def render_source_state_canvas_gray64_player_perspectives(
             colors=base_colors,
         )
 
-    for player, palette in enumerate(palettes):
+    for player, palette in enumerate(palettes[1:], start=1):
         colors = _player_rgb_values(arrays, row_index, player_rgb=palette)
-        work[:] = base
-        if player != 0:
+        if not (
+            used_cache
+            and trail_cache is not None
+            and trail_cache.recolor_trails_rgb(
+                work,
+                colors=colors,
+                background_rgb=background_rgb,
+            )
+        ):
+            work[:] = base
             _remap_rgb_palette_pixels(
                 work,
                 source=base,
@@ -633,7 +657,31 @@ def render_source_state_canvas_gray64_player_perspectives(
             map_size,
             colors=colors,
         )
-        rgb_canvas_like_to_gray64(work, out=frames[player])
+        rgb_canvas_like_to_gray64(
+            work,
+            out=frames[player],
+            scratch=downsample_scratch,
+        )
+
+    _draw_source_state_rgb_bonuses(
+        base,
+        arrays,
+        row_index,
+        map_size,
+        bonus_render_mode=bonus_mode,
+    )
+    _draw_source_state_rgb_heads(
+        base,
+        arrays,
+        row_index,
+        map_size,
+        colors=base_colors,
+    )
+    rgb_canvas_like_to_gray64(
+        base,
+        out=frames[0],
+        scratch=downsample_scratch,
+    )
     return frames
 
 
@@ -771,10 +819,27 @@ def render_source_snapshot_canvas_gray64(
     return rgb_canvas_like_to_gray64(rgb, out=out)
 
 
+class SourceStateGray64DownsampleScratch:
+    """Reusable scratch buffers for exact 704-to-64 RGB luma downsampling."""
+
+    def __init__(self, source_frame_size: int = SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE):
+        source_size = _rgb_frame_size(source_frame_size)
+        target_size = SOURCE_STATE_CANVAS_GRAY64_SHAPE[1]
+        if source_size % target_size != 0:
+            raise VectorVisualObservationError(
+                "source_frame_size must be 64 or an integer multiple of 64"
+            )
+        self.source_frame_size = source_size
+        self.gray = np.empty((source_size, source_size), dtype=np.float32)
+        self.temp = np.empty_like(self.gray)
+        self.downsampled = np.empty((target_size, target_size), dtype=np.float32)
+
+
 def rgb_canvas_like_to_gray64(
     rgb: np.ndarray,
     *,
     out: np.ndarray | None = None,
+    scratch: SourceStateGray64DownsampleScratch | None = None,
 ) -> np.ndarray:
     """Convert an RGB canvas-like frame to CHW uint8 gray64."""
 
@@ -794,7 +859,7 @@ def rgb_canvas_like_to_gray64(
         if out is None
         else _validated_frame(out, name="out")
     )
-    frame[0] = _rgb_canvas_like_luma_downsample64(rgb_array)
+    _rgb_canvas_like_luma_downsample64(rgb_array, out=frame[0], scratch=scratch)
     return frame
 
 
@@ -1590,7 +1655,12 @@ def _compatible_rgb_out(out: np.ndarray | None, *, frame_size: int) -> np.ndarra
     return _validated_rgb_frame(array, frame_size=frame_size)
 
 
-def _rgb_canvas_like_luma_downsample64(rgb_array: np.ndarray) -> np.ndarray:
+def _rgb_canvas_like_luma_downsample64(
+    rgb_array: np.ndarray,
+    *,
+    out: np.ndarray | None = None,
+    scratch: SourceStateGray64DownsampleScratch | None = None,
+) -> np.ndarray:
     target_size = SOURCE_STATE_CANVAS_GRAY64_SHAPE[1]
     source_size = int(rgb_array.shape[0])
     if source_size % target_size != 0:
@@ -1598,6 +1668,33 @@ def _rgb_canvas_like_luma_downsample64(rgb_array: np.ndarray) -> np.ndarray:
             "rgb frame size must be 64 or an integer multiple of 64 for gray64 conversion"
         )
     ratio = source_size // target_size
+    if out is not None:
+        out_array = np.asarray(out)
+        expected = (target_size, target_size)
+        if out_array.shape != expected:
+            raise VectorVisualObservationError(f"out must have shape {expected}, got {out_array.shape}")
+        if out_array.dtype != np.uint8:
+            raise VectorVisualObservationError(f"out dtype must be uint8, got {out_array.dtype}")
+    else:
+        out_array = None
+    if scratch is not None:
+        if scratch.source_frame_size != source_size:
+            raise VectorVisualObservationError(
+                "downsample scratch source_frame_size does not match RGB frame"
+            )
+        np.multiply(rgb_array[:, :, 0], np.float32(0.299), out=scratch.gray)
+        np.multiply(rgb_array[:, :, 1], np.float32(0.587), out=scratch.temp)
+        np.add(scratch.gray, scratch.temp, out=scratch.gray)
+        np.multiply(rgb_array[:, :, 2], np.float32(0.114), out=scratch.temp)
+        np.add(scratch.gray, scratch.temp, out=scratch.gray)
+        blocks = scratch.gray.reshape(target_size, ratio, target_size, ratio)
+        np.mean(blocks, axis=(1, 3), dtype=np.float32, out=scratch.downsampled)
+        np.rint(scratch.downsampled, out=scratch.downsampled)
+        np.clip(scratch.downsampled, 0.0, 255.0, out=scratch.downsampled)
+        if out_array is None:
+            return scratch.downsampled.astype(np.uint8)
+        np.copyto(out_array, scratch.downsampled, casting="unsafe")
+        return out_array
     gray = (
         rgb_array[:, :, 0].astype(np.float32) * np.float32(0.299)
         + rgb_array[:, :, 1].astype(np.float32) * np.float32(0.587)
@@ -1609,7 +1706,10 @@ def _rgb_canvas_like_luma_downsample64(rgb_array: np.ndarray) -> np.ndarray:
     )
     np.rint(downsampled, out=downsampled)
     np.clip(downsampled, 0.0, 255.0, out=downsampled)
-    return downsampled.astype(np.uint8)
+    if out_array is None:
+        return downsampled.astype(np.uint8)
+    np.copyto(out_array, downsampled, casting="unsafe")
+    return out_array
 
 
 def _rgb_triplet(value: Sequence[int]) -> np.ndarray:
@@ -1641,6 +1741,453 @@ def _player_rgb_values(
     for player, color_index in enumerate(color_indices):
         colors[player] = _rgb_triplet(raw_colors[int(color_index) % len(raw_colors)])
     return colors
+
+
+@dataclass(slots=True)
+class SourceStateBrowserLineTrailLayerCacheStats:
+    render_calls: int = 0
+    cache_hits: int = 0
+    rebuilds: int = 0
+    incremental_updates: int = 0
+    fallback_full_renders: int = 0
+    cursor_regression_rebuilds: int = 0
+    prefix_mutation_rebuilds: int = 0
+    unsupported_full_renders: int = 0
+    mask_recolors: int = 0
+
+    def as_dict(self) -> dict[str, int]:
+        return {
+            "render_calls": self.render_calls,
+            "cache_hits": self.cache_hits,
+            "rebuilds": self.rebuilds,
+            "incremental_updates": self.incremental_updates,
+            "fallback_full_renders": self.fallback_full_renders,
+            "cursor_regression_rebuilds": self.cursor_regression_rebuilds,
+            "prefix_mutation_rebuilds": self.prefix_mutation_rebuilds,
+            "unsupported_full_renders": self.unsupported_full_renders,
+            "mask_recolors": self.mask_recolors,
+        }
+
+
+@dataclass(slots=True)
+class _SourceStateTrailRecords:
+    slots: np.ndarray
+    positions: np.ndarray
+    radii: np.ndarray
+    owners: np.ndarray
+    break_before: np.ndarray
+
+
+@dataclass(slots=True)
+class _SourceStateOwnerTrailLayer:
+    owner: int
+    rgb: np.ndarray
+    mask: np.ndarray
+    slots: np.ndarray
+    positions: np.ndarray
+    radii: np.ndarray
+    break_before: np.ndarray
+
+    @classmethod
+    def empty(
+        cls,
+        *,
+        owner: int,
+        frame_size: int,
+        sentinel: np.ndarray,
+    ) -> "_SourceStateOwnerTrailLayer":
+        rgb = np.empty((frame_size, frame_size, 3), dtype=np.uint8)
+        rgb[:, :] = sentinel
+        return cls(
+            owner=int(owner),
+            rgb=rgb,
+            mask=np.zeros((frame_size, frame_size), dtype=bool),
+            slots=np.empty(0, dtype=np.int64),
+            positions=np.empty((0, 2), dtype=np.float64),
+            radii=np.empty(0, dtype=np.float64),
+            break_before=np.empty(0, dtype=bool),
+        )
+
+
+class SourceStateBrowserLineTrailLayerCache:
+    """Append-only visual-trail cache for exact browser-line trail layers."""
+
+    _sentinel_rgb = (1, 2, 3)
+
+    def __init__(
+        self,
+        *,
+        frame_size: int = SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
+        min_active_slots: int = 256,
+    ) -> None:
+        self.frame_size = _rgb_frame_size(frame_size)
+        self.min_active_slots = max(0, int(min_active_slots))
+        self.sentinel = _rgb_triplet(self._sentinel_rgb)
+        self.layers: dict[int, _SourceStateOwnerTrailLayer] = {}
+        self.last_cursor: int | None = None
+        self.last_prefix: _SourceStateTrailRecords | None = None
+        self.last_map_size: float | None = None
+        self.last_colors_key: tuple[tuple[int, int, int], ...] | None = None
+        self.stats = SourceStateBrowserLineTrailLayerCacheStats()
+
+    def reset(self) -> None:
+        self.layers.clear()
+        self.last_cursor = None
+        self.last_prefix = None
+        self.last_map_size = None
+        self.last_colors_key = None
+
+    def render_trails_rgb(
+        self,
+        frame: np.ndarray,
+        arrays: Mapping[str, np.ndarray],
+        row: int,
+        map_size: float,
+        *,
+        colors: np.ndarray,
+        background_rgb: Sequence[int] = SOURCE_STATE_RGB_CANVAS_LIKE_BACKGROUND_RGB,
+    ) -> bool:
+        """Render only browser-line trails into ``frame`` if the cache can handle the row."""
+
+        self.stats.render_calls += 1
+        output = _validated_rgb_frame(frame, frame_size=self.frame_size)
+        row_index = _row_index(row, arrays["tick"].shape[0])
+        if not self._is_supported_visual_state(arrays, row_index, colors=colors):
+            self.stats.unsupported_full_renders += 1
+            self.stats.fallback_full_renders += 1
+            self.reset()
+            return False
+
+        records = _source_state_visual_trail_records(arrays, row_index)
+        cursor = int(arrays["visual_trail_write_cursor"][row_index])
+        colors_key = _source_state_colors_key(colors)
+        rebuild_reason = self._rebuild_reason(
+            records=records,
+            cursor=cursor,
+            map_size=map_size,
+            colors_key=colors_key,
+        )
+        if rebuild_reason is not None:
+            if rebuild_reason == "cursor_regression":
+                self.stats.cursor_regression_rebuilds += 1
+            elif rebuild_reason == "prefix_mutation":
+                self.stats.prefix_mutation_rebuilds += 1
+            self._rebuild(records, map_size=map_size, colors=colors)
+            self.stats.rebuilds += 1
+        else:
+            changed = self._append(records, map_size=map_size, colors=colors)
+            if changed:
+                self.stats.incremental_updates += 1
+            else:
+                self.stats.cache_hits += 1
+
+        self.last_cursor = cursor
+        self.last_prefix = _source_state_copy_trail_records(records)
+        self.last_map_size = float(map_size)
+        self.last_colors_key = colors_key
+
+        output[:, :] = _rgb_triplet(background_rgb)
+        self._composite_layers(output)
+        return True
+
+    def _is_supported_visual_state(
+        self,
+        arrays: Mapping[str, np.ndarray],
+        row: int,
+        *,
+        colors: np.ndarray,
+    ) -> bool:
+        required = (
+            "visual_trail_active",
+            "visual_trail_write_cursor",
+            "visual_trail_pos",
+            "visual_trail_radius",
+            "visual_trail_owner",
+            "visual_trail_break_before",
+        )
+        if any(name not in arrays for name in required):
+            return False
+        active = arrays["visual_trail_active"]
+        cursor = int(arrays["visual_trail_write_cursor"][row])
+        if active.ndim != 2 or cursor < 0 or cursor > active.shape[1]:
+            return False
+        active_slots = int(np.count_nonzero(active[row, :cursor]))
+        if active_slots <= 0 or active_slots < self.min_active_slots:
+            return False
+        reserved = tuple(int(value) for value in self.sentinel)
+        owner_colors = [tuple(int(value) for value in _body_owner_rgb(-1, colors))]
+        owner_colors.extend(tuple(int(value) for value in color) for color in colors)
+        return reserved not in owner_colors
+
+    def _rebuild_reason(
+        self,
+        *,
+        records: _SourceStateTrailRecords,
+        cursor: int,
+        map_size: float,
+        colors_key: tuple[tuple[int, int, int], ...],
+    ) -> str | None:
+        if self.last_cursor is None or self.last_prefix is None:
+            return "cold_start"
+        if cursor < self.last_cursor:
+            return "cursor_regression"
+        if self.last_map_size is None or not np.isclose(
+            map_size,
+            self.last_map_size,
+            rtol=0.0,
+            atol=0.0,
+        ):
+            return "map_size_or_geometry_change"
+        if colors_key != self.last_colors_key:
+            return "palette_change"
+        old = self.last_prefix
+        old_count = int(old.slots.size)
+        if records.slots.size < old_count:
+            return "prefix_mutation"
+        if not (
+            np.array_equal(records.slots[:old_count], old.slots)
+            and np.array_equal(records.positions[:old_count], old.positions)
+            and np.array_equal(records.radii[:old_count], old.radii)
+            and np.array_equal(records.owners[:old_count], old.owners)
+            and np.array_equal(records.break_before[:old_count], old.break_before)
+        ):
+            return "prefix_mutation"
+        return None
+
+    def _rebuild(
+        self,
+        records: _SourceStateTrailRecords,
+        *,
+        map_size: float,
+        colors: np.ndarray,
+    ) -> None:
+        self.layers.clear()
+        for owner in _browser_line_owner_draw_order(records.owners):
+            owner_records = _source_state_owner_trail_records(records, owner)
+            layer = _SourceStateOwnerTrailLayer.empty(
+                owner=owner,
+                frame_size=self.frame_size,
+                sentinel=self.sentinel,
+            )
+            if owner_records.slots.size:
+                _draw_ordered_browser_line_path_rgb(
+                    layer.rgb,
+                    owner_records.positions,
+                    owner_records.radii,
+                    map_size,
+                    color=_body_owner_rgb(owner, colors),
+                    break_before=owner_records.break_before,
+                )
+                _source_state_refresh_layer_mask(layer, sentinel=self.sentinel)
+            _source_state_replace_layer_records(layer, owner_records)
+            self.layers[int(owner)] = layer
+
+    def _append(
+        self,
+        records: _SourceStateTrailRecords,
+        *,
+        map_size: float,
+        colors: np.ndarray,
+    ) -> bool:
+        changed = False
+        current_owners = set(int(owner) for owner in np.unique(records.owners))
+        for owner in current_owners:
+            owner_records = _source_state_owner_trail_records(records, owner)
+            layer = self.layers.get(owner)
+            if layer is None:
+                layer = _SourceStateOwnerTrailLayer.empty(
+                    owner=owner,
+                    frame_size=self.frame_size,
+                    sentinel=self.sentinel,
+                )
+                self.layers[owner] = layer
+            old_count = int(layer.slots.size)
+            if owner_records.slots.size == old_count:
+                continue
+            if owner_records.slots.size < old_count:
+                self._rebuild(records, map_size=map_size, colors=colors)
+                self.stats.rebuilds += 1
+                return True
+            if not _source_state_owner_prefix_matches(layer, owner_records, old_count):
+                self._rebuild(records, map_size=map_size, colors=colors)
+                self.stats.prefix_mutation_rebuilds += 1
+                self.stats.rebuilds += 1
+                return True
+            draw_start = _source_state_incremental_draw_start(owner_records, old_count)
+            _draw_ordered_browser_line_path_rgb(
+                layer.rgb,
+                owner_records.positions[draw_start:],
+                owner_records.radii[draw_start:],
+                map_size,
+                color=_body_owner_rgb(owner, colors),
+                break_before=owner_records.break_before[draw_start:],
+            )
+            _source_state_refresh_layer_mask(layer, sentinel=self.sentinel)
+            _source_state_replace_layer_records(layer, owner_records)
+            changed = True
+
+        stale_owners = set(self.layers) - current_owners
+        if stale_owners:
+            self._rebuild(records, map_size=map_size, colors=colors)
+            self.stats.prefix_mutation_rebuilds += 1
+            self.stats.rebuilds += 1
+            return True
+        return changed
+
+    def _composite_layers(self, frame: np.ndarray) -> None:
+        if not self.layers:
+            return
+        owners = np.asarray(tuple(self.layers), dtype=np.int64)
+        for owner in _browser_line_owner_draw_order(owners):
+            layer = self.layers[int(owner)]
+            if bool(layer.mask.any()):
+                frame[layer.mask] = layer.rgb[layer.mask]
+
+    def recolor_trails_rgb(
+        self,
+        frame: np.ndarray,
+        *,
+        colors: np.ndarray,
+        background_rgb: Sequence[int] | None = None,
+    ) -> bool:
+        """Recolor cached flat trail layers in draw order without scanning RGB pixels."""
+
+        output = _validated_rgb_frame(frame, frame_size=self.frame_size)
+        if not self.layers:
+            return False
+        if background_rgb is not None:
+            output[:, :] = _rgb_triplet(background_rgb)
+        owners = np.asarray(tuple(self.layers), dtype=np.int64)
+        for owner in _browser_line_owner_draw_order(owners):
+            layer = self.layers[int(owner)]
+            if bool(layer.mask.any()):
+                output[layer.mask] = _body_owner_rgb(owner, colors)
+        self.stats.mask_recolors += 1
+        return True
+
+
+def _source_state_visual_trail_records(
+    arrays: Mapping[str, np.ndarray],
+    row: int,
+) -> _SourceStateTrailRecords:
+    capacity = arrays["visual_trail_active"].shape[1]
+    cursor = int(np.clip(int(arrays["visual_trail_write_cursor"][row]), 0, capacity))
+    slots = np.flatnonzero(arrays["visual_trail_active"][row, :cursor]).astype(np.int64)
+    if slots.size == 0:
+        return _source_state_empty_trail_records()
+    positions = arrays["visual_trail_pos"][row, slots].astype(np.float64, copy=False)
+    radii = arrays["visual_trail_radius"][row, slots].astype(np.float64, copy=False)
+    owners = arrays["visual_trail_owner"][row, slots].astype(np.int64, copy=False)
+    breaks = arrays["visual_trail_break_before"][row, slots].astype(bool, copy=False)
+    finite = (
+        np.isfinite(positions[:, 0])
+        & np.isfinite(positions[:, 1])
+        & np.isfinite(radii)
+        & (radii >= 0.0)
+    )
+    if not bool(finite.any()):
+        return _source_state_empty_trail_records()
+    return _SourceStateTrailRecords(
+        slots=slots[finite].astype(np.int64, copy=True),
+        positions=positions[finite].astype(np.float64, copy=True),
+        radii=radii[finite].astype(np.float64, copy=True),
+        owners=owners[finite].astype(np.int64, copy=True),
+        break_before=breaks[finite].astype(bool, copy=True),
+    )
+
+
+def _source_state_empty_trail_records() -> _SourceStateTrailRecords:
+    return _SourceStateTrailRecords(
+        slots=np.empty(0, dtype=np.int64),
+        positions=np.empty((0, 2), dtype=np.float64),
+        radii=np.empty(0, dtype=np.float64),
+        owners=np.empty(0, dtype=np.int64),
+        break_before=np.empty(0, dtype=bool),
+    )
+
+
+def _source_state_owner_trail_records(
+    records: _SourceStateTrailRecords,
+    owner: int,
+) -> _SourceStateTrailRecords:
+    owner_mask = records.owners == int(owner)
+    slots = records.slots[owner_mask]
+    order = _browser_line_body_order(slots, body_nums=None)
+    return _SourceStateTrailRecords(
+        slots=slots[order].astype(np.int64, copy=True),
+        positions=records.positions[owner_mask][order].astype(np.float64, copy=True),
+        radii=records.radii[owner_mask][order].astype(np.float64, copy=True),
+        owners=records.owners[owner_mask][order].astype(np.int64, copy=True),
+        break_before=records.break_before[owner_mask][order].astype(bool, copy=True),
+    )
+
+
+def _source_state_copy_trail_records(
+    records: _SourceStateTrailRecords,
+) -> _SourceStateTrailRecords:
+    return _SourceStateTrailRecords(
+        slots=records.slots.copy(),
+        positions=records.positions.copy(),
+        radii=records.radii.copy(),
+        owners=records.owners.copy(),
+        break_before=records.break_before.copy(),
+    )
+
+
+def _source_state_replace_layer_records(
+    layer: _SourceStateOwnerTrailLayer,
+    records: _SourceStateTrailRecords,
+) -> None:
+    layer.slots = records.slots.copy()
+    layer.positions = records.positions.copy()
+    layer.radii = records.radii.copy()
+    layer.break_before = records.break_before.copy()
+
+
+def _source_state_owner_prefix_matches(
+    layer: _SourceStateOwnerTrailLayer,
+    records: _SourceStateTrailRecords,
+    old_count: int,
+) -> bool:
+    return bool(
+        np.array_equal(records.slots[:old_count], layer.slots)
+        and np.array_equal(records.positions[:old_count], layer.positions)
+        and np.array_equal(records.radii[:old_count], layer.radii)
+        and np.array_equal(records.break_before[:old_count], layer.break_before)
+    )
+
+
+def _source_state_incremental_draw_start(
+    records: _SourceStateTrailRecords,
+    old_count: int,
+) -> int:
+    if old_count <= 0:
+        return 0
+    if old_count >= records.slots.size:
+        return old_count
+    first_new = old_count
+    connects_to_previous = (
+        not bool(records.break_before[first_new])
+        and np.isclose(
+            records.radii[first_new],
+            records.radii[first_new - 1],
+            rtol=0.0,
+            atol=1e-9,
+        )
+    )
+    return first_new - 1 if connects_to_previous else first_new
+
+
+def _source_state_refresh_layer_mask(
+    layer: _SourceStateOwnerTrailLayer,
+    *,
+    sentinel: np.ndarray,
+) -> None:
+    layer.mask[:, :] = np.any(layer.rgb != sentinel, axis=2)
+
+
+def _source_state_colors_key(colors: np.ndarray) -> tuple[tuple[int, int, int], ...]:
+    return tuple(tuple(int(channel) for channel in color) for color in colors)
 
 
 def _validated_player_perspective_frames(
@@ -3143,6 +3690,9 @@ __all__ = [
     "SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_SPRITE_NAMES",
     "SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_SPRITE_SHEET_RELATIVE_PATH",
     "SOURCE_STATE_RGB_CANVAS_LIKE_RENDERER_IMPL_ID",
+    "SourceStateBrowserLineTrailLayerCache",
+    "SourceStateBrowserLineTrailLayerCacheStats",
+    "SourceStateGray64DownsampleScratch",
     "TRAIL_RENDER_MODE_BODY_CIRCLES_FAST",
     "TRAIL_RENDER_MODE_BROWSER_LINES",
     "TRAIL_RENDER_MODE_DEFAULT",

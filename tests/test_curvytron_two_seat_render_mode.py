@@ -7,6 +7,8 @@ from curvyzero.env.vector_visual_observation import SOURCE_STATE_CANVAS_GRAY64_S
 from curvyzero.env.vector_visual_observation import (
     SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
 )
+from curvyzero.env.vector_visual_observation import SourceStateBrowserLineTrailLayerCache
+from curvyzero.env.vector_visual_observation import SourceStateGray64DownsampleScratch
 from curvyzero.env.vector_visual_observation import TRAIL_RENDER_MODE_BODY_CIRCLES_FAST
 from curvyzero.env.vector_visual_observation import TRAIL_RENDER_MODE_BROWSER_LINES
 from curvyzero.env.vector_visual_observation import normalize_source_state_gray64
@@ -14,7 +16,9 @@ from curvyzero.env.vector_visual_observation import render_source_state_canvas_g
 from curvyzero.env.vector_visual_observation import (
     render_source_state_canvas_gray64_player_perspectives,
 )
-from curvyzero.training import curvytron_two_seat_lightzero_train as train_smoke
+from curvyzero.env.vector_visual_observation import render_source_state_rgb_canvas_like
+from curvyzero.env.vector_visual_observation import rgb_canvas_like_to_gray64
+from curvyzero.training import curvytron_two_seat_lightzero_train_smoke as train_smoke
 from curvyzero.training.curvytron_current_policy_selfplay_smoke import (
     SourceStateGray64Stack4,
     player_perspective_rgb_palette,
@@ -172,6 +176,80 @@ def test_two_seat_perspective_reuse_falls_back_for_ambiguous_base_palette():
     )
 
     assert np.array_equal(reused, independent)
+
+
+def test_two_seat_perspective_reuse_accepts_trail_layer_cache_on_visual_trails():
+    state = _small_source_state()
+    state["visual_trail_active"] = np.asarray([[True, True, True, True, True]], dtype=bool)
+    state["visual_trail_write_cursor"] = np.asarray([2], dtype=np.int32)
+    state["visual_trail_pos"] = np.asarray(
+        [[[8.0, 8.0], [20.0, 12.0], [32.0, 16.0], [44.0, 20.0], [56.0, 24.0]]],
+        dtype=np.float64,
+    )
+    state["visual_trail_radius"] = np.asarray([[0.8, 0.8, 1.2, 1.2, 1.2]], dtype=np.float64)
+    state["visual_trail_owner"] = np.asarray([[0, 0, 0, 1, 1]], dtype=np.int16)
+    state["visual_trail_break_before"] = np.asarray(
+        [[False, False, False, True, False]],
+        dtype=bool,
+    )
+    palettes = [
+        player_perspective_rgb_palette(
+            state,
+            row=0,
+            controlled_player=player,
+            player_count=2,
+        )
+        for player in range(2)
+    ]
+    cache = SourceStateBrowserLineTrailLayerCache(min_active_slots=1)
+    scratch = SourceStateGray64DownsampleScratch()
+
+    for cursor in (2, 3, 4, 5):
+        state["visual_trail_write_cursor"][0] = cursor
+        cached = render_source_state_canvas_gray64_player_perspectives(
+            state,
+            row=0,
+            player_rgbs=palettes,
+            trail_cache=cache,
+            downsample_scratch=scratch,
+            trail_render_mode=TRAIL_RENDER_MODE_BROWSER_LINES,
+        ).copy()
+        independent = np.stack(
+            [
+                render_source_state_canvas_gray64(
+                    state,
+                    row=0,
+                    player_rgb=palettes[player],
+                    trail_render_mode=TRAIL_RENDER_MODE_BROWSER_LINES,
+                )
+                for player in range(2)
+            ],
+            axis=0,
+        )
+        assert np.array_equal(cached, independent)
+
+    assert cache.stats.rebuilds == 1
+    assert cache.stats.incremental_updates >= 1
+    assert cache.stats.fallback_full_renders == 0
+    assert cache.stats.mask_recolors >= 1
+
+
+def test_rgb_canvas_like_to_gray64_downsample_scratch_matches_baseline():
+    state = _small_source_state()
+    rgb = render_source_state_rgb_canvas_like(
+        state,
+        trail_render_mode=TRAIL_RENDER_MODE_BROWSER_LINES,
+    )
+    scratch = SourceStateGray64DownsampleScratch()
+
+    baseline = rgb_canvas_like_to_gray64(rgb)
+    optimized = rgb_canvas_like_to_gray64(
+        rgb,
+        out=np.empty_like(baseline),
+        scratch=scratch,
+    )
+
+    assert np.array_equal(optimized, baseline)
 
 
 def test_two_seat_stack_accepts_fast_render_mode_and_rejects_unknown_mode():

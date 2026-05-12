@@ -237,6 +237,7 @@ class CurvyZeroSourceStateVisualTurnCommitLightZeroLocalEnv:
         "runtime_env_impl_id": NATURAL_BONUS_ENV_IMPL_ID,
         "public_env_contract_id": PUBLIC_NATURAL_BONUS_ENV_CONTRACT_ID,
         "ruleset_id": NATURAL_BONUS_RULESET_ID,
+        "natural_bonus_spawn": True,
         "death_mode": vector_runtime.DEATH_MODE_NORMAL,
         "uses_ale": False,
     }
@@ -267,6 +268,7 @@ class CurvyZeroSourceStateVisualTurnCommitLightZeroLocalEnv:
         if configured_death_mode not in vector_runtime.DEATH_MODES:
             raise ValueError("death_mode must be 'normal' or 'profile_no_death'")
         self._death_mode = configured_death_mode
+        self._natural_bonus_spawn = bool(_cfg_get(cfg, "natural_bonus_spawn", True))
         self._disable_death_for_profile = (
             self._death_mode == vector_runtime.DEATH_MODE_PROFILE_NO_DEATH
         )
@@ -409,7 +411,7 @@ class CurvyZeroSourceStateVisualTurnCommitLightZeroLocalEnv:
             source_physics_step_ms=self._source_physics_step_ms,
             max_ticks=self._max_source_ticks,
             death_mode=self._death_mode,
-            natural_bonus_spawn=True,
+            natural_bonus_spawn=self._natural_bonus_spawn,
         )
 
     def _record_pending_turn_action(

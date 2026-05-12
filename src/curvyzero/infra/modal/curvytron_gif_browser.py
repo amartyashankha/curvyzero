@@ -30,29 +30,27 @@ TASK_ID = "lightzero-curvytron-visual-survival"
 VOLUME_NAME = "curvyzero-runs"
 RUNS_MOUNT = Path("/runs")
 BASE_REF = PurePosixPath("training") / TASK_ID
-DEFAULT_LIMIT = 50
+DEFAULT_LIMIT = 20
 MAX_LIMIT = 500
 DEFAULT_OK_FILTER = "ok"
-LISTING_CACHE_TTL_SECONDS = 2.0
+LISTING_CACHE_TTL_SECONDS = 5.0
 VOLUME_RELOAD_TTL_SECONDS = 1.0
 GIF_CACHE_MAX_AGE_SECONDS = 86_400
 RUN_PICKER_FLAG_FILENAME = run_mgmt.GIF_BROWSER_RUN_MARKER_FILENAME
 CHECKPOINT_ITERATION_RE = re.compile(r"iteration[_-](\d+)")
 RUN_RECENCY_PATTERNS = (
-    "attempts/*/eval/*/selfplay/summary.json",
-    "attempts/*/eval/*/selfplay/raw.gif",
+    RUN_PICKER_FLAG_FILENAME,
+    "run.json",
+    "latest_attempt.json",
+    "attempts/*/attempt.json",
+    "attempts/*/command.json",
     "attempts/*/train/summary.json",
     "attempts/*/train/status.json",
+    "attempts/*/train/progress_latest.json",
     "attempts/*/train/progress/latest.json",
     "attempts/*/train/checkpoint_eval_poller.json",
-    "attempts/*/train/checkpoint.*",
-    "attempts/*/train/checkpoints/*",
-    "attempts/*/train/checkpoints/*/*",
-    "attempts/*/train/lightzero_exp/ckpt/*",
     "checkpoints/latest.json",
     "checkpoints/best.json",
-    "checkpoints/lightzero/*",
-    "checkpoints/lightzero/*/*",
 )
 
 if modal is not None:
@@ -267,14 +265,14 @@ def _stat_token(path: Path) -> tuple[int, int] | None:
 
 def _runs_cache_state_token(mount: Path) -> tuple[Any, ...]:
     base_path = _path_for_ref(mount, BASE_REF)
-    run_tokens: list[tuple[str, tuple[int, int] | None, tuple[int, int] | None]] = []
+    run_tokens: list[tuple[str, tuple[int, int] | None]] = []
     for run_path in _safe_iterdir(base_path):
         if not _safe_is_dir(run_path):
             continue
         marker_token = _stat_token(run_path / RUN_PICKER_FLAG_FILENAME)
         if marker_token is None:
             continue
-        run_tokens.append((run_path.name, marker_token, _stat_token(run_path)))
+        run_tokens.append((run_path.name, marker_token))
     return (mount.as_posix(), _stat_token(base_path), tuple(sorted(run_tokens)))
 
 
@@ -289,7 +287,6 @@ def _run_summary_cache_state_token(mount: Path, run_id: str) -> tuple[Any, ...]:
         )
     return (
         run_id,
-        _stat_token(run_path),
         _stat_token(run_path / RUN_PICKER_FLAG_FILENAME),
         tuple(sorted(eval_dir_tokens)),
     )
@@ -379,7 +376,8 @@ def _list_runs(mount: Path) -> list[dict[str, Any]]:
                 if not _safe_is_file(artifact_path):
                     continue
                 seen_artifacts.add(artifact_path)
-                artifact_count += 1
+                if artifact_path.name != RUN_PICKER_FLAG_FILENAME:
+                    artifact_count += 1
                 updated_ts = (
                     artifact_stat.st_mtime
                     if updated_ts is None
@@ -432,12 +430,22 @@ def _summary_sort_key(
     )
 
 
+def _summary_path_sort_key(path: Path) -> tuple[int, int, str]:
+    ref_text = path.as_posix()
+    match = CHECKPOINT_ITERATION_RE.search(ref_text)
+    iteration_key = -int(match.group(1)) if match is not None else 1
+    return (iteration_key, 0 if match is not None else 1, ref_text)
+
+
 def _default_selected_run_id(runs: list[dict[str, Any]], requested_run_id: str) -> str:
     if requested_run_id:
         try:
-            return run_mgmt.clean_id(requested_run_id, label="run_id")
+            clean_run_id = run_mgmt.clean_id(requested_run_id, label="run_id")
         except ValueError:
             return ""
+        visible_run_ids = {str(run["run_id"]) for run in runs}
+        if clean_run_id in visible_run_ids:
+            return clean_run_id
     if not runs:
         return ""
     return str(runs[0]["run_id"])
@@ -539,6 +547,7 @@ def _list_selfplay_summary_page(
         return {
             "rows": [],
             "total_rows": 0,
+            "total_rows_exact": True,
             "offset": offset,
             "limit": limit,
             "has_newer": False,
@@ -554,6 +563,17 @@ def _list_selfplay_summary_page(
             return {
                 "rows": [],
                 "total_rows": 0,
+                "total_rows_exact": True,
+                "offset": offset,
+                "limit": limit,
+                "has_newer": False,
+                "has_older": False,
+            }
+        if run_filter and not _matches_text(clean_run_id, run_filter):
+            return {
+                "rows": [],
+                "total_rows": 0,
+                "total_rows_exact": True,
                 "offset": offset,
                 "limit": limit,
                 "has_newer": False,
@@ -569,23 +589,65 @@ def _list_selfplay_summary_page(
             attempt_filter,
             eval_filter,
             ok_filter.lower(),
+            limit,
+            offset,
         )
         cached = _cache_get(_SUMMARY_CACHE, cache_key)
         if cached is not None:
-            total_rows = len(cached)
+            has_older = len(cached) >= limit
+            total_rows = offset + len(cached) + (1 if has_older else 0)
             return {
-                "rows": cached[offset : offset + limit],
+                "rows": cached,
                 "total_rows": total_rows,
+                "total_rows_exact": False,
                 "offset": offset,
                 "limit": limit,
                 "has_newer": offset > 0,
-                "has_older": offset + limit < total_rows,
+                "has_older": has_older,
             }
         run_rank_by_id[clean_run_id] = 0
-        summary_paths = _safe_glob(
-            base_path / clean_run_id,
-            "attempts/*/eval/*/selfplay/summary.json",
+        summary_paths = sorted(
+            _safe_glob(
+                base_path / clean_run_id,
+                "attempts/*/eval/*/selfplay/summary.json",
+            ),
+            key=_summary_path_sort_key,
         )
+        page_rows: list[dict[str, Any]] = []
+        matched_count = 0
+        has_older = False
+        for summary_path in summary_paths:
+            summary_ref = _ref_from_path(mount, summary_path)
+            ids = _extract_artifact_ids(summary_ref)
+            if ids is not None:
+                if not _matches_text(ids["attempt_id"], attempt_filter):
+                    continue
+                if not _matches_text(ids["eval_id"], eval_filter):
+                    continue
+            row = _summary_row(mount, summary_path)
+            if row is None:
+                continue
+            if not _matches_ok(row, ok_filter):
+                continue
+            if matched_count >= offset:
+                if len(page_rows) < limit:
+                    page_rows.append(row)
+                else:
+                    has_older = True
+                    matched_count += 1
+                    break
+            matched_count += 1
+        total_rows = matched_count
+        _cache_set(_SUMMARY_CACHE, cache_key, page_rows)
+        return {
+            "rows": page_rows,
+            "total_rows": total_rows,
+            "total_rows_exact": not has_older,
+            "offset": offset,
+            "limit": limit,
+            "has_newer": offset > 0,
+            "has_older": has_older,
+        }
     else:
         summary_paths = []
         listed_runs = _list_runs(mount)
@@ -608,6 +670,7 @@ def _list_selfplay_summary_page(
             return {
                 "rows": cached[offset : offset + limit],
                 "total_rows": total_rows,
+                "total_rows_exact": True,
                 "offset": offset,
                 "limit": limit,
                 "has_newer": offset > 0,
@@ -646,6 +709,7 @@ def _list_selfplay_summary_page(
     return {
         "rows": rows[offset : offset + limit],
         "total_rows": total_rows,
+        "total_rows_exact": True,
         "offset": offset,
         "limit": limit,
         "has_newer": offset > 0,
@@ -721,10 +785,114 @@ def _fast_gif_url(row: dict[str, Any]) -> str:
     return _link("/gif", row["gif_ref"], v=gif_version)
 
 
+def _head_token(rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        return ""
+    row = rows[0]
+    gif_version_ts = int(row.get("gif_updated_ts") or row.get("updated_ts") or 0)
+    return ":".join(
+        [
+            str(row.get("run_id") or ""),
+            str(row.get("attempt_id") or ""),
+            str(row.get("eval_id") or ""),
+            str(row.get("gif_bytes") or 0),
+            str(gif_version_ts),
+        ]
+    )
+
+
+def _runs_token(runs: list[dict[str, Any]]) -> str:
+    return "|".join(
+        f"{run.get('run_id')}:{int(float(run.get('updated_ts') or 0))}:{run.get('artifact_count')}"
+        for run in runs[:100]
+    )
+
+
+def _page_token(*, runs: list[dict[str, Any]], rows: list[dict[str, Any]]) -> str:
+    return f"runs={_runs_token(runs)};head={_head_token(rows)}"
+
+
+def _safe_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _format_seconds(value: float | None) -> str:
+    if value is None:
+        return "unknown"
+    if value < 1.0:
+        return f"{value * 1000:.0f} ms"
+    if value < 60.0:
+        return f"{value:.2f} s"
+    minutes = int(value // 60)
+    seconds = int(value % 60)
+    return f"{minutes}m {seconds:02d}s"
+
+
+def _latest_training_progress(mount: Path, run_id: str) -> dict[str, Any] | None:
+    if not run_id:
+        return None
+    try:
+        clean_run_id = run_mgmt.clean_id(run_id, label="run_id")
+    except ValueError:
+        return None
+    run_path = _path_for_ref(mount, BASE_REF / clean_run_id)
+    best: tuple[float, dict[str, Any]] | None = None
+    for progress_path in _safe_glob(run_path, "attempts/*/train/progress_latest.json"):
+        stat = _safe_stat(progress_path)
+        if stat is None or not _safe_is_file(progress_path):
+            continue
+        progress, load_error = _read_json_object(progress_path)
+        if load_error is not None:
+            continue
+        iteration = _safe_int(progress.get("iteration"))
+        elapsed_sec = _safe_float(progress.get("elapsed_sec"))
+        iteration_count = (iteration + 1) if iteration is not None and iteration >= 0 else None
+        sec_per_iteration = (
+            elapsed_sec / iteration_count
+            if elapsed_sec is not None and iteration_count
+            else None
+        )
+        attempt_id = progress_path.parts[-3] if len(progress_path.parts) >= 3 else ""
+        summary = {
+            "attempt_id": attempt_id,
+            "iteration": iteration,
+            "elapsed_sec": elapsed_sec,
+            "sec_per_iteration": sec_per_iteration,
+            "timestamp": progress.get("timestamp"),
+            "updated_at": datetime.fromtimestamp(stat.st_mtime, UTC)
+            .isoformat()
+            .replace("+00:00", "Z"),
+        }
+        if best is None or stat.st_mtime > best[0]:
+            best = (stat.st_mtime, summary)
+    return None if best is None else best[1]
+
+
+def _render_training_progress(progress: dict[str, Any] | None) -> str:
+    if not progress:
+        return '<div class="run-speed">training speed unavailable</div>'
+    iteration = progress.get("iteration")
+    sec_per_iteration = _format_seconds(_safe_float(progress.get("sec_per_iteration")))
+    elapsed = _format_seconds(_safe_float(progress.get("elapsed_sec")))
+    attempt = progress.get("attempt_id") or "unknown attempt"
+    return (
+        '<div class="run-speed">'
+        f'iter {_html_attr(iteration)} · {_html_attr(sec_per_iteration)}/iter · '
+        f'elapsed {_html_attr(elapsed)} · {_html_attr(attempt)}'
+        '</div>'
+    )
+
+
 def _render_filters(
     *,
     runs: list[dict[str, Any]],
     selected_run_id: str,
+    training_progress: dict[str, Any] | None,
     run_filter: str,
     attempt_filter: str,
     eval_filter: str,
@@ -796,6 +964,7 @@ def _render_filters(
                     <summary>{_html_attr(selected_label)}</summary>
                     <div class="run-menu">{''.join(run_menu_rows)}</div>
                 </details>
+                {_render_training_progress(training_progress)}
             </div>
             <label>Run text <input name="run" form="filters-form" value="{_html_attr(run_filter)}"></label>
             <label>Attempt <input name="attempt" form="filters-form" value="{_html_attr(attempt_filter)}"></label>
@@ -902,6 +1071,7 @@ def _render_pager(
     *,
     row_count: int,
     total_rows: int,
+    total_rows_exact: bool,
     offset: int,
     limit: int,
     selected_run_id: str,
@@ -914,6 +1084,7 @@ def _render_pager(
         return ""
     start = offset + 1
     end = min(offset + row_count, total_rows)
+    total_label = f"{total_rows}" if total_rows_exact else f"{total_rows}+"
     links: list[str] = []
     if offset > 0:
         newer_url = _filter_url(
@@ -952,7 +1123,7 @@ def _render_pager(
     if links_html:
         links_html = f'<span class="pager-links">{links_html}</span>'
     return (
-        f'<div class="pager">Showing {start}-{end} of {total_rows} matching GIFs. '
+        f'<div class="pager">Showing {start}-{end} of {total_label} matching GIFs. '
         f"{links_html}</div>"
     )
 
@@ -969,13 +1140,20 @@ def _render_page(
     limit: int,
     offset: int,
     total_rows: int,
+    total_rows_exact: bool = True,
+    page_token: str = "",
     server_elapsed_ms: int | None = None,
     reload_error: str | None = None,
 ) -> str:
     generated_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+    training_progress = _latest_training_progress(
+        RUNS_MOUNT,
+        selected_run_id,
+    )
     filters = _render_filters(
         runs=runs,
         selected_run_id=selected_run_id,
+        training_progress=training_progress,
         run_filter=run_filter,
         attempt_filter=attempt_filter,
         eval_filter=eval_filter,
@@ -986,6 +1164,7 @@ def _render_page(
     pager = _render_pager(
         row_count=len(rows),
         total_rows=total_rows,
+        total_rows_exact=total_rows_exact,
         offset=offset,
         limit=limit,
         selected_run_id=selected_run_id,
@@ -1005,6 +1184,7 @@ def _render_page(
         if server_elapsed_ms is not None
         else "server timing unavailable"
     )
+    current_page_token = page_token or _page_token(runs=runs, rows=rows)
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -1060,6 +1240,11 @@ def _render_page(
             min-width: 320px;
         }}
         .field-label {{ display: block; }}
+        .run-speed {{
+            color: #5f6368;
+            font-size: 12px;
+            line-height: 1.35;
+        }}
         .run-picker {{ position: relative; color: #202124; }}
         .run-picker summary {{
             display: flex;
@@ -1207,7 +1392,6 @@ def _render_page(
     {filters}
     {reload_warning}
     {pager}
-    {_render_strip(rows)}
     {_render_rows(rows)}
     <script>
         for (const form of document.querySelectorAll(".hide-run-form")) {{
@@ -1264,11 +1448,33 @@ def _render_page(
             }}
         }}
         const autoRefresh = document.getElementById("auto-refresh");
-        const scheduleAutoRefresh = () => {{
+        let currentPageToken = {json.dumps(current_page_token)};
+        const headUrl = new URL("/api/head", window.location.href);
+        const currentParams = new URLSearchParams(window.location.search);
+        for (const key of ["run_id", "run", "attempt", "eval", "ok"]) {{
+            const value = currentParams.get(key);
+            if (value) headUrl.searchParams.set(key, value);
+        }}
+        const checkForNewGif = async () => {{
             if (!autoRefresh?.checked) return;
-            window.location.reload();
+            try {{
+                const response = await fetch(headUrl.toString(), {{
+                    cache: "no-store",
+                    headers: {{ "Accept": "application/json" }}
+                }});
+                if (!response.ok) return;
+                const payload = await response.json();
+                const nextToken = payload.page_token || "";
+                if (nextToken && currentPageToken && nextToken !== currentPageToken) {{
+                    window.location.replace(window.location.href);
+                }} else if (nextToken && !currentPageToken) {{
+                    window.location.replace(window.location.href);
+                }}
+            }} catch (error) {{
+                // Keep the page quiet if a transient poll fails.
+            }}
         }};
-        window.setInterval(scheduleAutoRefresh, 10000);
+        window.setInterval(checkForNewGif, 10000);
     </script>
 </body>
 </html>
@@ -1277,30 +1483,15 @@ def _render_page(
 
 def _build_fastapi_app(volume: Any) -> Any:
     from fastapi import FastAPI, Header, Query
-    from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+    from fastapi.responses import (
+        FileResponse,
+        HTMLResponse,
+        JSONResponse,
+        RedirectResponse,
+        Response,
+    )
 
     web_app = FastAPI(title="CurvyTron Self-Play GIF Browser")
-    last_reload_at = 0.0
-    last_reload_error: str | None = None
-
-    def reload_volume(*, force: bool = False) -> str | None:
-        nonlocal last_reload_at, last_reload_error
-        if volume is not None and hasattr(volume, "reload"):
-            now = monotonic()
-            if (
-                not force
-                and VOLUME_RELOAD_TTL_SECONDS > 0
-                and now < last_reload_at + VOLUME_RELOAD_TTL_SECONDS
-            ):
-                return last_reload_error
-            try:
-                volume.reload()
-                last_reload_error = None
-            except Exception as exc:  # pragma: no cover - remote Volume resilience.
-                last_reload_error = f"{type(exc).__name__}: {exc}"
-            last_reload_at = now
-            return last_reload_error
-        return None
 
     @web_app.get("/", response_class=HTMLResponse)
     def index(
@@ -1312,7 +1503,7 @@ def _build_fastapi_app(volume: Any) -> Any:
         limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
         offset: int = Query(0, ge=0),
     ) -> HTMLResponse:
-        reload_error = reload_volume()
+        started_at = monotonic()
         runs = _list_runs(RUNS_MOUNT)
         selected_run_id = _default_selected_run_id(runs, run_id)
         page = _list_selfplay_summary_page(
@@ -1324,6 +1515,20 @@ def _build_fastapi_app(volume: Any) -> Any:
             ok_filter=ok,
             limit=limit,
             offset=offset,
+        )
+        head_page = (
+            page
+            if page["offset"] == 0
+            else _list_selfplay_summary_page(
+                RUNS_MOUNT,
+                run_id=selected_run_id,
+                run_filter=run,
+                attempt_filter=attempt,
+                eval_filter=eval,
+                ok_filter=ok,
+                limit=1,
+                offset=0,
+            )
         )
         return HTMLResponse(
             _render_page(
@@ -1337,7 +1542,10 @@ def _build_fastapi_app(volume: Any) -> Any:
                 limit=page["limit"],
                 offset=page["offset"],
                 total_rows=page["total_rows"],
-                reload_error=reload_error,
+                total_rows_exact=bool(page.get("total_rows_exact", True)),
+                page_token=_page_token(runs=runs, rows=head_page["rows"]),
+                server_elapsed_ms=int((monotonic() - started_at) * 1000),
+                reload_error=None,
             )
         )
 
@@ -1351,7 +1559,6 @@ def _build_fastapi_app(volume: Any) -> Any:
         limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
         offset: int = Query(0, ge=0),
     ) -> JSONResponse:
-        reload_error = reload_volume()
         runs = _list_runs(RUNS_MOUNT)
         selected_run_id = _default_selected_run_id(runs, run_id)
         page = _list_selfplay_summary_page(
@@ -1370,11 +1577,46 @@ def _build_fastapi_app(volume: Any) -> Any:
                 "runs": runs,
                 "selected_run_id": selected_run_id,
                 "total_rows": page["total_rows"],
+                "total_rows_exact": page.get("total_rows_exact", True),
                 "offset": page["offset"],
                 "limit": page["limit"],
                 "has_newer": page["has_newer"],
                 "has_older": page["has_older"],
-                "reload_error": reload_error,
+                "reload_error": None,
+            }
+        )
+
+    @web_app.get("/api/head")
+    def head(
+        run_id: str = "",
+        run: str = "",
+        attempt: str = "",
+        eval: str = "",
+        ok: str = DEFAULT_OK_FILTER,
+    ) -> JSONResponse:
+        runs = _list_runs(RUNS_MOUNT)
+        selected_run_id = _default_selected_run_id(runs, run_id)
+        page = _list_selfplay_summary_page(
+            RUNS_MOUNT,
+            run_id=selected_run_id,
+            run_filter=run,
+            attempt_filter=attempt,
+            eval_filter=eval,
+            ok_filter=ok,
+            limit=1,
+            offset=0,
+        )
+        rows = page["rows"]
+        return JSONResponse(
+            {
+                "page_token": _page_token(runs=runs, rows=rows),
+                "head_token": _head_token(rows),
+                "head": rows[0] if rows else None,
+                "runs": runs,
+                "selected_run_id": selected_run_id,
+                "total_rows": page["total_rows"],
+                "total_rows_exact": page.get("total_rows_exact", True),
+                "reload_error": None,
             }
         )
 
@@ -1397,7 +1639,6 @@ def _build_fastapi_app(volume: Any) -> Any:
             and "curvytron_gif_browser_hide_run" in globals()
         ):
             delete_result = curvytron_gif_browser_hide_run.remote(run_id=clean_run_id)
-            reload_volume(force=True)
             _clear_listing_caches()
         else:
             delete_result = _hide_run_from_picker_on_mount(
@@ -1415,7 +1656,6 @@ def _build_fastapi_app(volume: Any) -> Any:
             safe_ref = _validate_selfplay_gif_ref(ref)
         except RefValidationError as exc:
             return Response(str(exc), status_code=400)
-        reload_volume()
         path = _path_for_ref(RUNS_MOUNT, safe_ref)
         gif_stat = _safe_stat(path)
         if gif_stat is None or not _safe_is_file(path):
@@ -1430,12 +1670,8 @@ def _build_fastapi_app(volume: Any) -> Any:
         }
         if _etag_matches(if_none_match, etag):
             return Response(status_code=304, headers=headers)
-        try:
-            gif_bytes = path.read_bytes()
-        except OSError:
-            return Response("GIF not found", status_code=404)
-        return Response(
-            gif_bytes,
+        return FileResponse(
+            path,
             media_type="image/gif",
             headers=headers,
         )
@@ -1446,7 +1682,6 @@ def _build_fastapi_app(volume: Any) -> Any:
             safe_ref = _validate_selfplay_summary_ref(ref)
         except RefValidationError as exc:
             return Response(str(exc), status_code=400)
-        reload_volume()
         path = _path_for_ref(RUNS_MOUNT, safe_ref)
         if not path.is_file():
             return Response("JSON not found", status_code=404)
@@ -1489,8 +1724,8 @@ if modal is not None:
         image=image,
         volumes={RUNS_MOUNT.as_posix(): runs_volume},
         timeout=300,
-        cpu=1,
-        memory=512,
+        cpu=4,
+        memory=4096,
         max_containers=2,
     )
     @modal.concurrent(max_inputs=50)

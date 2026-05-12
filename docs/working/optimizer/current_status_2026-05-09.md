@@ -138,6 +138,59 @@ Amdahl bottleneck is still long trail-history rendering. The next useful
 optimizer target is an incremental/static trail layer or direct-luma renderer,
 not stack FIFO/copy cleanup.
 
+2026-05-12 follow-up render landing: the active two-seat stack now passes a
+`SourceStateBrowserLineTrailLayerCache` into the `P=2` perspective renderer and
+uses `SourceStateGray64DownsampleScratch` for exact luma/downsample. The cache
+is conservative: only `browser_lines` rows with active `visual_trail_*` use it;
+unsupported rows and unsafe changes fall back to the existing full renderer.
+Production uses a minimum active-trail threshold so short early episodes do not
+pay the cache overhead before it is likely to help.
+Prototype timing with byte parity:
+
+```text
+visual_trail_append_L64:   0.33x, cached slower than full redraw
+visual_trail_append_L1024: 1.26x
+visual_trail_append_L4096: 3.90x
+
+exact downsample scratch bucket: 1.36x
+```
+
+Focused validation after wiring:
+
+```text
+uv run pytest tests/test_vector_visual_observation.py \
+  tests/test_benchmark_render_lane_microbench.py \
+  tests/test_curvytron_two_seat_render_mode.py -q
+58 passed
+```
+
+Plain read: this is not a blanket 10x yet, but it is the first production hook
+that improves the long-survival render shape instead of polishing tiny buckets.
+Next cache work should cut the fixed layer-composition overhead and expand
+parity tests around reset, clear, wrap, palette changes, and active bonuses.
+
+Fresh visual-trail microbench after fixing the benchmark to use current
+`visual_trail_*` fields and the production cache/scratch path:
+
+```text
+B8/P2/browser_lines/visual trail full_stack_update
+  L64:   112.42ms/update, 142.3 policy rows/s
+  L256:  139.09ms/update, 115.0 policy rows/s
+  L1024: 156.51ms/update, 102.2 policy rows/s
+  L4096: 156.75ms/update, 102.1 policy rows/s
+
+B16/P2/browser_lines/visual trail full_stack_update
+  L64:   230.60ms/update, 138.7 policy rows/s
+  L256:  277.25ms/update, 115.4 policy rows/s
+  L1024: 300.17ms/update, 106.6 policy rows/s
+  L4096: 286.18ms/update, 111.8 policy rows/s
+```
+
+Plain read: the cache changes the long-trail slope from explosive to mostly
+fixed per-row composition/downsample cost in this synthetic visual-trail
+benchmark. It still is not cheap enough, but it is the right bottleneck shape
+to optimize next.
+
 Profiling artifact hygiene: default Coach runs still enable background GIFs and
 write the `show_in_gif_browser.flag` marker. Optimizer profiling runs with
 `--no-background-gif-enabled` now suppress that marker too, so profile runs do

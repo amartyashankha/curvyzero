@@ -73,16 +73,20 @@ TWO_SEAT_LIGHTZERO_REPLAY_ROW_SCHEMA_ID = (
     "curvyzero_two_seat_lightzero_replay_row/v0"
 )
 TWO_SEAT_TERMINAL_SHAPED_RETURN_SCHEMA_ID = (
-    "terminal_winner_keeps_survival_loser_zero/v0"
+    "curvyzero_two_seat_dense_survival_plus_sparse_outcome/v0"
 )
 TWO_SEAT_TERMINAL_SHAPED_RETURN_SCHEMA_HASH = stable_contract_hash(
     {
         "schema_id": TWO_SEAT_TERMINAL_SHAPED_RETURN_SCHEMA_ID,
-        "base_step_reward": "alive_reward while alive after step else dead_reward",
-        "terminal_survivor_win_return": "accumulated shaped survival return",
-        "terminal_loser_return": 0.0,
-        "draw_or_truncation_return": "unmodified shaped survival return",
-        "scope": "per_player_two_seat_return_targets",
+        "trainer_reward": (
+            "dense alive/dead helper + env sparse terminal outcome "
+            "* terminal_outcome_reward_per_step * episode_step_count"
+        ),
+        "dense_helper": "alive_reward while alive after step else dead_reward",
+        "sparse_outcome": "VectorMultiplayerEnv reward for that player",
+        "terminal_outcome_scale": "terminal_outcome_reward_per_step * episode_step_count",
+        "return_target": "discounted sum of trainer rewards per player trajectory",
+        "scope": "per_player_two_seat_training_reward_targets",
     }
 )
 LEARN_BATCH_BLOCKER = (
@@ -93,8 +97,10 @@ LEARN_BATCH_BLOCKER = (
 REPLAY_SCOPE_CURRENT_ITERATION = "current_iteration"
 REPLAY_SCOPE_ACCUMULATED = "accumulated"
 REPLAY_SCOPE_CHOICES = (REPLAY_SCOPE_CURRENT_ITERATION, REPLAY_SCOPE_ACCUMULATED)
-DEFAULT_ALIVE_REWARD = 1.0
+DEFAULT_ALIVE_REWARD = 0.01
 DEFAULT_DEAD_REWARD = 0.0
+DEFAULT_TERMINAL_OUTCOME_REWARD_PER_STEP = DEFAULT_ALIVE_REWARD
+DEFAULT_RETURN_TARGET_DISCOUNT = 1.0
 DEFAULT_ENV_MAX_TICKS = 2_000
 DEFAULT_DEATH_MODE = vector_runtime.DEATH_MODE_NORMAL
 DEFAULT_NATURAL_BONUS_SPAWN = True
@@ -149,6 +155,10 @@ def run_curvytron_two_seat_lightzero_train_smoke(
     replay_row_log_limit: int = 256,
     alive_reward: float = DEFAULT_ALIVE_REWARD,
     dead_reward: float = DEFAULT_DEAD_REWARD,
+    terminal_outcome_reward_per_step: float = (
+        DEFAULT_TERMINAL_OUTCOME_REWARD_PER_STEP
+    ),
+    return_target_discount: float = DEFAULT_RETURN_TARGET_DISCOUNT,
     action_selection_mode: str = ACTION_SELECTION_MODE_COLLECT,
     collect_temperature: float = 1.0,
     collect_epsilon: float = 0.25,
@@ -247,6 +257,12 @@ def run_curvytron_two_seat_lightzero_train_smoke(
     resolved_trail_render_mode = validate_stack_trail_render_mode(trail_render_mode)
     resolved_alive_reward = float(alive_reward)
     resolved_dead_reward = float(dead_reward)
+    resolved_terminal_outcome_reward_per_step = float(terminal_outcome_reward_per_step)
+    if not np.isfinite(resolved_terminal_outcome_reward_per_step):
+        raise ValueError("terminal_outcome_reward_per_step must be finite")
+    resolved_return_target_discount = float(return_target_discount)
+    if not 0.0 <= resolved_return_target_discount <= 1.0:
+        raise ValueError("return_target_discount must be in [0, 1]")
     if action_selection_mode not in ACTION_SELECTION_MODE_CHOICES:
         choices = ", ".join(ACTION_SELECTION_MODE_CHOICES)
         raise ValueError(f"action_selection_mode must be one of: {choices}")
@@ -300,6 +316,10 @@ def run_curvytron_two_seat_lightzero_train_smoke(
                 replay_row_log_limit=int(replay_row_log_limit),
                 alive_reward=resolved_alive_reward,
                 dead_reward=resolved_dead_reward,
+                terminal_outcome_reward_per_step=(
+                    resolved_terminal_outcome_reward_per_step
+                ),
+                return_target_discount=resolved_return_target_discount,
                 action_selection_mode=action_selection_mode,
                 collect_temperature=resolved_collect_temperature,
                 collect_epsilon=resolved_collect_epsilon,
@@ -373,6 +393,12 @@ def run_curvytron_two_seat_lightzero_train_smoke(
                     "collect_epsilon": float(resolved_collect_epsilon),
                     "death_mode": resolved_death_mode,
                     "natural_bonus_spawn": bool(resolved_natural_bonus_spawn),
+                    "alive_reward": float(resolved_alive_reward),
+                    "dead_reward": float(resolved_dead_reward),
+                    "terminal_outcome_reward_per_step": float(
+                        resolved_terminal_outcome_reward_per_step
+                    ),
+                    "return_target_discount": float(resolved_return_target_discount),
                     "trail_render_mode": resolved_trail_render_mode,
                     "policy_action_repeat_min": int(resolved_policy_action_repeat_min),
                     "policy_action_repeat_max": int(resolved_policy_action_repeat_max),
@@ -406,6 +432,12 @@ def run_curvytron_two_seat_lightzero_train_smoke(
                 "env_max_ticks": int(resolved_max_ticks),
                 "death_mode": resolved_death_mode,
                 "natural_bonus_spawn": bool(resolved_natural_bonus_spawn),
+                "alive_reward": float(resolved_alive_reward),
+                "dead_reward": float(resolved_dead_reward),
+                "terminal_outcome_reward_per_step": float(
+                    resolved_terminal_outcome_reward_per_step
+                ),
+                "return_target_discount": float(resolved_return_target_discount),
                 "action_selection_mode": action_selection_mode,
                 "collect_temperature": float(resolved_collect_temperature),
                 "collect_epsilon": float(resolved_collect_epsilon),
@@ -484,6 +516,10 @@ def run_curvytron_two_seat_lightzero_train_smoke(
             collect_steps=resolved_collect_steps,
             alive_reward=resolved_alive_reward,
             dead_reward=resolved_dead_reward,
+            terminal_outcome_reward_per_step=(
+                resolved_terminal_outcome_reward_per_step
+            ),
+            return_target_discount=resolved_return_target_discount,
             action_selection_mode=action_selection_mode,
             collect_temperature=resolved_collect_temperature,
             collect_epsilon=resolved_collect_epsilon,
@@ -638,6 +674,10 @@ def run_curvytron_two_seat_lightzero_train_smoke(
                     "learner_sample_size": resolved_learner_sample_size,
                     "alive_reward": resolved_alive_reward,
                     "dead_reward": resolved_dead_reward,
+                    "terminal_outcome_reward_per_step": float(
+                        resolved_terminal_outcome_reward_per_step
+                    ),
+                    "return_target_discount": float(resolved_return_target_discount),
                     "action_selection_mode": action_selection_mode,
                     "collect_temperature": float(resolved_collect_temperature),
                     "collect_epsilon": float(resolved_collect_epsilon),
@@ -764,6 +804,10 @@ def run_curvytron_two_seat_lightzero_train_smoke(
             replay_row_log_limit=int(replay_row_log_limit),
             alive_reward=resolved_alive_reward,
             dead_reward=resolved_dead_reward,
+            terminal_outcome_reward_per_step=(
+                resolved_terminal_outcome_reward_per_step
+            ),
+            return_target_discount=resolved_return_target_discount,
             action_selection_mode=action_selection_mode,
             collect_temperature=resolved_collect_temperature,
             collect_epsilon=resolved_collect_epsilon,
@@ -841,6 +885,12 @@ def compact_curvytron_two_seat_lightzero_train_smoke_summary(
                 "action_noop_warmup_iterations": inputs.get(
                     "action_noop_warmup_iterations"
                 ),
+                "alive_reward": inputs.get("alive_reward"),
+                "dead_reward": inputs.get("dead_reward"),
+                "terminal_outcome_reward_per_step": inputs.get(
+                    "terminal_outcome_reward_per_step"
+                ),
+                "return_target_discount": inputs.get("return_target_discount"),
                 "policy_action_repeat_min": inputs.get("policy_action_repeat_min"),
                 "policy_action_repeat_max": inputs.get("policy_action_repeat_max"),
                 "policy_action_repeat_extra_probability": inputs.get(
@@ -921,7 +971,10 @@ def _compact_iteration_for_summary(iteration: Any) -> dict[str, Any]:
         "completed_episode_count": iteration.get("completed_episode_count"),
         "mean_completed_episode_steps": iteration.get("mean_completed_episode_steps"),
         "max_completed_episode_steps": iteration.get("max_completed_episode_steps"),
+        "training_reward_sum": iteration.get("training_reward_sum"),
         "survival_reward_sum": iteration.get("survival_reward_sum"),
+        "sparse_outcome_reward_sum": iteration.get("sparse_outcome_reward_sum"),
+        "terminal_outcome_reward_sum": iteration.get("terminal_outcome_reward_sum"),
         "control_stochasticity": iteration.get("control_stochasticity"),
         "effective_policy_action_repeat_extra_probability": iteration.get(
             "effective_policy_action_repeat_extra_probability"
@@ -952,6 +1005,8 @@ def _result_payload(
     replay_row_log_limit: int,
     alive_reward: float,
     dead_reward: float,
+    terminal_outcome_reward_per_step: float,
+    return_target_discount: float,
     action_selection_mode: str,
     collect_temperature: float,
     collect_epsilon: float,
@@ -1086,6 +1141,14 @@ def _result_payload(
             ),
             "alive_reward": float(alive_reward),
             "dead_reward": float(dead_reward),
+            "terminal_outcome_reward_per_step": float(
+                terminal_outcome_reward_per_step
+            ),
+            "return_target_discount": float(return_target_discount),
+            "training_reward_formula": (
+                "dense alive/dead helper plus sparse terminal outcome scaled by "
+                "terminal_outcome_reward_per_step * episode_step_count"
+            ),
             "action_selection_mode": action_selection_mode,
             "action_selection_mode_semantics": _action_selection_mode_semantics(
                 action_selection_mode
@@ -1165,19 +1228,24 @@ def _result_payload(
             "learner_batch_size": int(learner_batch_size),
             "sample_semantics": "final learner-visible replay rows",
             "row_schema": TWO_SEAT_LIGHTZERO_REPLAY_ROW_SCHEMA_ID,
-            "reward": "steps_survived_per_player; 1.0 while alive after step else 0.0",
+            "reward": (
+                "training reward per policy decision row: dense survival helper "
+                "plus scaled sparse terminal outcome"
+            ),
             "reward_values": {
                 "alive_reward": float(alive_reward),
                 "dead_reward": float(dead_reward),
+                "terminal_outcome_reward_per_step": float(
+                    terminal_outcome_reward_per_step
+                ),
+                "return_target_discount": float(return_target_discount),
             },
             "return_schema_id": TWO_SEAT_TERMINAL_SHAPED_RETURN_SCHEMA_ID,
             "return_schema_hash": TWO_SEAT_TERMINAL_SHAPED_RETURN_SCHEMA_HASH,
             "value_target": (
-                "discounted survival return grouped by "
+                "discounted shaped training return grouped by "
                 "episode_id/env_row_id/player_id/decision_index when episode "
-                "metadata is present, with terminal survivor-win returns "
-                "rewritten so the winner keeps its shaped survival return "
-                "and the loser receives 0"
+                "metadata is present"
             ),
             "sample": sample,
             "rows": [_strip_large_arrays(row) for row in replay_rows],
@@ -1211,6 +1279,8 @@ def _collect_current_policy_iteration(
     collect_steps: int,
     alive_reward: float,
     dead_reward: float,
+    terminal_outcome_reward_per_step: float,
+    return_target_discount: float,
     action_selection_mode: str,
     collect_temperature: float,
     collect_epsilon: float,
@@ -1518,6 +1588,30 @@ def _collect_current_policy_iteration(
             player = int(active_player_id[policy_row])
             action = int(selected[policy_row])
             policy_action = int(policy_selected[policy_row])
+            sparse_outcome_reward = _sparse_outcome_reward(
+                step_batch.reward,
+                env_row=env_row,
+                player_id=player,
+            )
+            episode_step_count = _episode_step_count_for_row(
+                step_batch.info,
+                env_row=env_row,
+                fallback=decision_index + 1,
+            )
+            dense_survival_helper = _survival_reward(
+                alive_after,
+                env_row=env_row,
+                player_id=player,
+                alive_reward=alive_reward,
+                dead_reward=dead_reward,
+            )
+            terminal_outcome_reward = _terminal_outcome_reward(
+                sparse_outcome_reward,
+                done=bool(done_by_row[env_row]),
+                episode_step_count=episode_step_count,
+                reward_per_step=terminal_outcome_reward_per_step,
+            )
+            training_reward = dense_survival_helper + terminal_outcome_reward
             replay_rows.append(
                 {
                     "schema_id": TWO_SEAT_LIGHTZERO_REPLAY_ROW_SCHEMA_ID,
@@ -1553,13 +1647,15 @@ def _collect_current_policy_iteration(
                     "observation_noise_std": float(observation_noise_std),
                     "action_weights": _action_weights(search_record, policy_action),
                     "root_value": _root_value(search_record),
-                    "reward": _survival_reward(
-                        alive_after,
-                        env_row=env_row,
-                        player_id=player,
-                        alive_reward=alive_reward,
-                        dead_reward=dead_reward,
+                    "reward": float(training_reward),
+                    "dense_survival_helper_reward": float(dense_survival_helper),
+                    "sparse_outcome_reward": float(sparse_outcome_reward),
+                    "terminal_outcome_reward": float(terminal_outcome_reward),
+                    "terminal_outcome_reward_per_step": float(
+                        terminal_outcome_reward_per_step
                     ),
+                    "episode_step_count": int(episode_step_count),
+                    "return_target_discount": float(return_target_discount),
                     "done": bool(done_by_row[env_row]),
                     "terminal_winner": _terminal_winner_for_row(
                         winner_by_row,
@@ -2012,7 +2108,17 @@ def _iteration_progress_line(
         "max_completed_episode_steps": iteration_summary.get(
             "max_completed_episode_steps"
         ),
+        "training_reward_sum": iteration_summary.get("training_reward_sum"),
         "survival_reward_sum": iteration_summary.get("survival_reward_sum"),
+        "dense_survival_helper_reward_sum": iteration_summary.get(
+            "dense_survival_helper_reward_sum"
+        ),
+        "sparse_outcome_reward_sum": iteration_summary.get(
+            "sparse_outcome_reward_sum"
+        ),
+        "terminal_outcome_reward_sum": iteration_summary.get(
+            "terminal_outcome_reward_sum"
+        ),
         "action_counts": iteration_summary.get("action_counts"),
         "action_counts_by_player": iteration_summary.get("action_counts_by_player"),
         "effective_action_noop_probability": iteration_summary.get(
@@ -2081,6 +2187,18 @@ def _iteration_summary(
     learner_batch_size: int,
 ) -> dict[str, Any]:
     rewards = np.asarray([row["reward"] for row in replay_rows], dtype=np.float32)
+    dense_helpers = np.asarray(
+        [row.get("dense_survival_helper_reward", row["reward"]) for row in replay_rows],
+        dtype=np.float32,
+    )
+    sparse_outcomes = np.asarray(
+        [row.get("sparse_outcome_reward", 0.0) for row in replay_rows],
+        dtype=np.float32,
+    )
+    terminal_outcomes = np.asarray(
+        [row.get("terminal_outcome_reward", 0.0) for row in replay_rows],
+        dtype=np.float32,
+    )
     episode_steps = _completed_episode_steps(records)
     return _to_plain(
         {
@@ -2092,7 +2210,19 @@ def _iteration_summary(
                 float(np.mean(episode_steps)) if episode_steps else None
             ),
             "max_completed_episode_steps": int(max(episode_steps)) if episode_steps else None,
-            "survival_reward_sum": float(rewards.sum()) if rewards.size else 0.0,
+            "training_reward_sum": float(rewards.sum()) if rewards.size else 0.0,
+            "survival_reward_sum": float(dense_helpers.sum())
+            if dense_helpers.size
+            else 0.0,
+            "dense_survival_helper_reward_sum": float(dense_helpers.sum())
+            if dense_helpers.size
+            else 0.0,
+            "sparse_outcome_reward_sum": float(sparse_outcomes.sum())
+            if sparse_outcomes.size
+            else 0.0,
+            "terminal_outcome_reward_sum": float(terminal_outcomes.sum())
+            if terminal_outcomes.size
+            else 0.0,
             "replay": {
                 "status": "ok" if replay_rows else "empty",
                 "row_count": int(len(replay_rows)),
@@ -2369,6 +2499,11 @@ def _sample_replay_batch(
         "replay_scope": replay_scope,
         "replay_rows_available": len(rows),
         "learner_sample_size": learner_sample_size,
+        "return_target_discount": _common_row_float(
+            rows,
+            key="return_target_discount",
+            default=DEFAULT_RETURN_TARGET_DISCOUNT,
+        ),
         "sampled_without_replacement": bool(sampled_without_replacement),
         "sample_indices": sample_indices,
         "players": sorted({int(row["player_id"]) for row in selected_rows}),
@@ -2483,6 +2618,7 @@ def _summarize_replay_sample(
         "replay_scope": sample["replay_scope"],
         "replay_rows_available": int(sample["replay_rows_available"]),
         "learner_sample_size": sample["learner_sample_size"],
+        "return_target_discount": float(sample["return_target_discount"]),
         "sampled_without_replacement": bool(sample["sampled_without_replacement"]),
         "sample_indices": _indices_summary(sample["sample_indices"]),
         "players": sample["players"],
@@ -2520,6 +2656,22 @@ def _indices_summary(indices: Any, *, edge_count: int = 8) -> dict[str, Any]:
         "head": values[:edge],
         "tail": values[-edge:] if len(values) > edge else [],
     }
+
+
+def _common_row_float(
+    rows: list[dict[str, Any]],
+    *,
+    key: str,
+    default: float,
+) -> float:
+    for row in rows:
+        if key not in row:
+            continue
+        try:
+            return float(row[key])
+        except (TypeError, ValueError):
+            break
+    return float(default)
 
 
 def _select_replay_rows(
@@ -2708,6 +2860,7 @@ def _sample_replay_metadata(sample: Mapping[str, Any]) -> dict[str, Any]:
         "replay_scope": sample.get("replay_scope"),
         "replay_rows_available": sample.get("replay_rows_available"),
         "learner_sample_size": sample.get("learner_sample_size"),
+        "return_target_discount": sample.get("return_target_discount"),
         "sampled_without_replacement": sample.get("sampled_without_replacement"),
         "sample_indices": _indices_summary(sample.get("sample_indices")),
     }
@@ -2782,6 +2935,49 @@ def _survival_reward(
     if alive.ndim != 2:
         raise ValueError("step info alive must have shape [B,P] for survival reward")
     return float(alive_reward) if bool(alive[int(env_row), int(player_id)]) else float(dead_reward)
+
+
+def _sparse_outcome_reward(
+    reward: Any,
+    *,
+    env_row: int,
+    player_id: int,
+) -> float:
+    rewards = np.asarray(reward, dtype=np.float32)
+    if rewards.ndim != 2:
+        raise ValueError("step reward must have shape [B,P]")
+    return float(rewards[int(env_row), int(player_id)])
+
+
+def _episode_step_count_for_row(
+    info: Mapping[str, Any],
+    *,
+    env_row: int,
+    fallback: int,
+) -> int:
+    step_index = info.get("step_index")
+    if step_index is None:
+        return max(int(fallback), 1)
+    values = np.asarray(step_index, dtype=np.int64)
+    if values.ndim != 1 or values.shape[0] <= int(env_row):
+        return max(int(fallback), 1)
+    return max(int(values[int(env_row)]) + 1, 1)
+
+
+def _terminal_outcome_reward(
+    sparse_outcome_reward: float,
+    *,
+    done: bool,
+    episode_step_count: int,
+    reward_per_step: float,
+) -> float:
+    if not bool(done):
+        return 0.0
+    return (
+        float(sparse_outcome_reward)
+        * float(reward_per_step)
+        * float(max(int(episode_step_count), 1))
+    )
 
 
 def _winner_by_row(info: Mapping[str, Any]) -> np.ndarray | None:
@@ -2882,6 +3078,20 @@ def main() -> None:
     parser.add_argument("--decision-ms", type=float, default=300.0)
     parser.add_argument("--alive-reward", type=float, default=DEFAULT_ALIVE_REWARD)
     parser.add_argument("--dead-reward", type=float, default=DEFAULT_DEAD_REWARD)
+    parser.add_argument(
+        "--terminal-outcome-reward-per-step",
+        type=float,
+        default=DEFAULT_TERMINAL_OUTCOME_REWARD_PER_STEP,
+        help=(
+            "Scale terminal +1/-1 sparse outcome by this value times episode steps."
+        ),
+    )
+    parser.add_argument(
+        "--return-target-discount",
+        type=float,
+        default=DEFAULT_RETURN_TARGET_DISCOUNT,
+        help="Discount used for shaped return targets built from replay rows.",
+    )
     parser.add_argument(
         "--action-selection-mode",
         choices=ACTION_SELECTION_MODE_CHOICES,
@@ -3007,6 +3217,8 @@ def main() -> None:
         learner_sample_size=args.learner_sample_size,
         alive_reward=args.alive_reward,
         dead_reward=args.dead_reward,
+        terminal_outcome_reward_per_step=args.terminal_outcome_reward_per_step,
+        return_target_discount=args.return_target_discount,
         action_selection_mode=args.action_selection_mode,
         collect_temperature=args.collect_temperature,
         collect_epsilon=args.collect_epsilon,
@@ -3055,8 +3267,12 @@ __all__ = [
     "ACTION_SELECTION_MODE_EVAL",
     "DEFAULT_ACTION_NOOP_PROBABILITY",
     "DEFAULT_ACTION_NOOP_WARMUP_ITERATIONS",
+    "DEFAULT_ALIVE_REWARD",
+    "DEFAULT_DEAD_REWARD",
     "DEFAULT_NATURAL_BONUS_SPAWN",
     "DEFAULT_OBSERVATION_NOISE_STD",
+    "DEFAULT_RETURN_TARGET_DISCOUNT",
+    "DEFAULT_TERMINAL_OUTCOME_REWARD_PER_STEP",
     "LEARN_BATCH_BLOCKER",
     "REPLAY_SCOPE_ACCUMULATED",
     "REPLAY_SCOPE_CHOICES",

@@ -51,6 +51,16 @@ the base palette is ambiguous, duplicated, or collides with background or the
 invalid-owner gray. This is an optimizer equivalence optimization, not a new
 Environment fidelity claim.
 
+2026-05-12 follow-up landing: the active two-seat stack now also passes a
+stateful browser-line trail cache into that helper. The cache is deliberately
+narrow: it only handles non-empty `visual_trail_*` rows in `browser_lines`
+mode, rebuilds on cursor regression, prefix mutation, map-size change, or
+palette change, and otherwise falls back to the existing full renderer. It also
+uses a reusable exact downsample scratch buffer for the 704-to-64 luma path.
+The production cache has a minimum active-trail threshold because the prototype
+was slower on tiny trails and faster once trail history is long enough to make
+redraw avoidance matter.
+
 ## Responsibility Boundary
 
 Optimizer can optimize render speed only when the emitted tensor remains
@@ -297,6 +307,37 @@ one millisecond per frame in this probe and stack movement is noise. The next
 high-value target is a persistent/incremental trail layer or direct luma path,
 not more FIFO-stack cleanup.
 
+Prototype matrix after the cache/downsample/remap/library probes, 2026-05-12:
+
+```text
+incremental visual-trail cache, browser_lines, append step 16:
+  L64:   parity true, full 5.03ms/frame, cached 15.29ms/frame, 0.33x
+  L1024: parity true, full 22.38ms/frame, cached 17.83ms/frame, 1.26x
+  L4096: parity true, full 80.62ms/frame, cached 20.69ms/frame, 3.90x
+
+exact downsample scratch:
+  baseline 1089.7us/call
+  exact scratch 803.2us/call
+  speedup 1.36x for the downsample bucket
+
+safe P=2 remap/luma variants:
+  best no-active-bonus exact variant:
+    L0    3.20x
+    L1024 1.23x
+    L4096 1.04x
+
+dependency/library feasibility:
+  project uv runtime had no cv2/numba/skia/Pillow/scipy/cupy/triton/torch.
+  system Pillow/SciPy probes were not production-exact or not faster.
+```
+
+Plain read: the cache is now the main promising production direction. It is
+bad for very short trails because layer composition overhead is fixed, but it
+improves the long-survival case we actually care about. The downsample scratch
+is safe and small. The remap/luma variants are useful only as a later
+low-risk short-frame optimization. Optional Modal packages should be treated as
+a deliberate benchmark/deployment lane, not as a local blocker.
+
 Tiny canonical Modal smoke on active path, 2026-05-12:
 
 ```text
@@ -420,10 +461,57 @@ clear fallback behavior.
      signoff if they change training-visible semantics.
 
 2. Incremental frame buffers.
-   - Keep per-env/player frame buffers and draw only new trail segments plus
-     moving heads/bonuses.
-   - Likely the best CPU-side fix for long games because it avoids redrawing
-     the whole trail history every step.
+   - First guarded cache has landed for `browser_lines` + non-empty
+     `visual_trail_*` rows.
+   - Keep per-owner trail layers, draw only appended trail segments, compose in
+     browser owner draw order, then draw moving heads/bonuses fresh.
+   - Current implementation is conservative and exact in the covered smoke
+     cases, but still scans/composes full 704 layers. Next cache work should
+     reduce fixed composition overhead and add more reset/clear/wrap parity
+     coverage.
+
+Fresh benchmark correction, 2026-05-12: `scripts/benchmark_render_lane_microbench.py`
+now has `--trail-source visual` so it can synthesize the current
+`visual_trail_*` fields instead of only the older `body_*` fallback. The helper
+cells also pass the production trail cache and exact downsample scratch. Current
+local visual-trail grid:
+
+```text
+full_stack_update, B8/P2/browser_lines/visual
+  L64   112.42ms/update
+  L256  139.09ms/update
+  L1024 156.51ms/update
+  L4096 156.75ms/update
+
+full_stack_update, B16/P2/browser_lines/visual
+  L64   230.60ms/update
+  L256  277.25ms/update
+  L1024 300.17ms/update
+  L4096 286.18ms/update
+
+isolated rgb_to_gray64 with exact scratch: about 0.80ms per call
+isolated perspective reuse with cache: about 7-9ms per policy row after warmup
+```
+
+Plain read: once the cache is warm, long-trail cost is no longer proportional
+to all historical trail slots in this synthetic visual-trail path. The
+remaining target is fixed per-row work: layer composition, remap, head/bonus
+draw, downsample, normalization, and stack copy.
+
+Modal profile launch correction: use `modal run --detach` for background
+matrices, or `--wait-for-train` when the local session should stream the
+summary. The first non-wait `.spawn` matrix printed function-call IDs but did
+not produce attempt/progress files after the local app exited.
+
+Current attached wait-mode matrix:
+
+```text
+opt-render-cache-wait-l4-b16-sim16-20260512a
+opt-render-cache-wait-l4-b64-sim16-20260512a
+opt-render-cache-wait-l4-b128-sim16-20260512a
+opt-render-cache-wait-h100-b128-sim16-20260512a
+opt-render-cache-wait-l4-b64-sim32-20260512a
+```
 
 3. Vectorized CPU renderer.
    - Batch rows and players; avoid Python loops over env rows and body slots
@@ -455,6 +543,15 @@ clear fallback behavior.
      rows.
    - Use pinned CPU batches and non-blocking transfer if observations stay CPU
      before LightZero policy/search.
+
+8. Dependency-enabled / Modal renderer lane.
+   - Local package absence is not a blocker; Modal can install benchmark images.
+   - Treat OpenCV/Pillow/Skia/Numba/Triton as experiments with parity gates.
+   - Web/literature read supports persistent offscreen/layer rendering first:
+     MDN Canvas optimization recommends pre-rendering repeated primitives and
+     layered canvases, and Pygame `LayeredDirty` is the same dirty-surface idea.
+     GPU env systems such as CuLE and Isaac Gym matter if we move the whole
+     sim/render/obs path onto GPU, not just downsample.
 
 7. Static trail plus dynamic overlays.
    - Split persistent trail buffers from moving heads/bonuses.

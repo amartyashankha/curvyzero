@@ -710,6 +710,14 @@ def _target_return_discount(policy: Any, sample: Mapping[str, Any]) -> tuple[flo
         TERMINAL_WINNER_KEEPS_SURVIVAL_LOSER_ZERO_SCHEMA_ID,
     ):
         return 1.0, "return_schema_forces_raw_survival_count"
+    raw = sample.get("return_target_discount")
+    if raw is not None:
+        try:
+            discount = float(raw)
+        except (TypeError, ValueError):
+            discount = np.nan
+        if np.isfinite(discount) and 0.0 <= discount <= 1.0:
+            return discount, "sample_return_target_discount"
     return _policy_discount(policy), "policy_config"
 
 
@@ -871,7 +879,10 @@ def _return_context_lookup(
         value = float(rewards[index]) + float(discount) * running.get(key, 0.0)
         returns[index] = np.float32(value)
         running[key] = value
-    if terminal_winners is not None:
+    if terminal_winners is not None and _sample_uses_return_schema(
+        sample,
+        TERMINAL_WINNER_KEEPS_SURVIVAL_LOSER_ZERO_SCHEMA_ID,
+    ):
         _apply_terminal_winner_keeps_survival_loser_zero(
             returns,
             iterations=iterations,

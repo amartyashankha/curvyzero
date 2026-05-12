@@ -34,6 +34,8 @@ from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_SHAPE
 from curvyzero.env.vector_visual_observation import (
     SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
 )
+from curvyzero.env.vector_visual_observation import SourceStateBrowserLineTrailLayerCache
+from curvyzero.env.vector_visual_observation import SourceStateGray64DownsampleScratch
 from curvyzero.env.vector_visual_observation import TRAIL_RENDER_MODE_BODY_CIRCLES_FAST
 from curvyzero.env.vector_visual_observation import TRAIL_RENDER_MODE_BROWSER_LINES
 from curvyzero.env.vector_visual_observation import TRAIL_RENDER_MODE_DEFAULT
@@ -341,6 +343,13 @@ class SourceStateGray64Stack4:
             dtype=np.uint8,
         )
         self._normalized = np.zeros(SOURCE_STATE_GRAY64_SHAPE, dtype=np.float32)
+        self._downsample_scratch = SourceStateGray64DownsampleScratch(
+            SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
+        )
+        self._trail_layer_caches = [
+            SourceStateBrowserLineTrailLayerCache()
+            for _ in range(self.batch_size)
+        ]
 
     def render_metadata(self) -> dict[str, Any]:
         return source_state_gray64_stack4_render_metadata(self.trail_render_mode)
@@ -357,6 +366,8 @@ class SourceStateGray64Stack4:
                     out=self._raw_perspectives,
                     rgb_base_out=self._rgb_base,
                     rgb_work_out=self._rgb,
+                    trail_cache=self._trail_layer_caches[env_row],
+                    downsample_scratch=self._downsample_scratch,
                     player_rgbs=[
                         player_perspective_rgb_palette(
                             env.state,
@@ -388,6 +399,7 @@ class SourceStateGray64Stack4:
                         player_count=self.player_count,
                     ),
                     trail_render_mode=self.trail_render_mode,
+                    downsample_scratch=self._downsample_scratch,
                 )
                 frame = normalize_source_state_gray64(
                     raw,

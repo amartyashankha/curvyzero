@@ -29,6 +29,8 @@ from curvyzero.env.vector_visual_observation import (  # noqa: E402
     SOURCE_STATE_CANVAS_GRAY64_SCHEMA_ID,
     SOURCE_STATE_CANVAS_GRAY64_SHAPE,
     SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
+    SourceStateBrowserLineTrailLayerCache,
+    SourceStateGray64DownsampleScratch,
     TRAIL_RENDER_MODE_BODY_CIRCLES_FAST,
     TRAIL_RENDER_MODE_BROWSER_LINES,
     TRAIL_RENDER_MODE_ORDER,
@@ -103,6 +105,7 @@ CELL_KIND_ALIASES = {
 
 AllocationMode = Literal["reuse", "allocate"]
 GpuTransferMode = Literal["on", "off", "auto"]
+TrailSource = Literal["body", "visual"]
 
 
 def default_probe_cells() -> list[dict[str, Any]]:
@@ -230,6 +233,7 @@ def make_synthetic_source_state(
     player_count: int,
     trail_length: int,
     bonus_count: int,
+    trail_source: TrailSource = "body",
     seed: int,
 ) -> dict[str, np.ndarray]:
     """Build vector-runtime-shaped source-state arrays without an env/runtime."""
@@ -238,6 +242,7 @@ def make_synthetic_source_state(
     players = _positive_value(player_count, name="player_count")
     trail = _nonnegative_value(trail_length, name="trail_length")
     bonuses = _nonnegative_value(bonus_count, name="bonus_count")
+    source = _trail_source(trail_source)
     rng = np.random.default_rng(int(seed))
 
     state: dict[str, np.ndarray] = {
@@ -321,6 +326,23 @@ def make_synthetic_source_state(
             }
         )
 
+    if source == "visual":
+        state["visual_trail_active"] = state["body_active"].copy()
+        state["visual_trail_write_cursor"] = state["body_write_cursor"].copy()
+        state["visual_trail_pos"] = state["body_pos"].copy()
+        state["visual_trail_radius"] = state["body_radius"].copy()
+        state["visual_trail_owner"] = state["body_owner"].copy()
+        break_before = np.zeros((batch, trail), dtype=bool)
+        if trail:
+            for row in range(batch):
+                active_slots = np.flatnonzero(state["body_active"][row])
+                if active_slots.size:
+                    break_before[row, active_slots[0]] = True
+                    previous_owner = state["body_owner"][row, active_slots[:-1]]
+                    current_owner = state["body_owner"][row, active_slots[1:]]
+                    break_before[row, active_slots[1:]] = current_owner != previous_owner
+        state["visual_trail_break_before"] = break_before
+
     return state
 
 
@@ -370,6 +392,7 @@ def run_probe_cells(
             player_count=workload["player_count"],
             trail_length=workload["trail_length"],
             bonus_count=workload["bonus_count"],
+            trail_source=workload["trail_source"],
             seed=int(seed) + index,
         )
         results.append(
@@ -412,6 +435,7 @@ def run_probe_cells(
         "synthetic_state": {
             "required_fields": list(REQUIRED_SYNTHETIC_STATE_FIELDS),
             "optional_bonus_fields": list(OPTIONAL_BONUS_FIELDS),
+            "trail_source": "body uses body_* fallback; visual adds visual_trail_* fields",
         },
         "config": {
             "iterations": checked_iterations,
@@ -437,6 +461,7 @@ def run_grid_probe(
     bonus_counts: Sequence[int],
     trail_render_modes: Sequence[str],
     kinds: Sequence[str],
+    trail_source: TrailSource = "body",
     iterations: int,
     warmup_iterations: int,
     allocation_mode: AllocationMode,
@@ -459,10 +484,12 @@ def run_grid_probe(
                                     player_count=int(player_count),
                                     trail_length=int(trail_length),
                                     bonus_count=int(bonus_count),
+                                    trail_source=_trail_source(trail_source),
                                     trail_render_mode=_trail_render_mode(trail_render_mode),
                                     label=(
                                         f"{kind}_B{batch_size}_P{player_count}_"
-                                        f"L{trail_length}_bonus{bonus_count}_{trail_render_mode}"
+                                        f"L{trail_length}_bonus{bonus_count}_{trail_render_mode}_"
+                                        f"{trail_source}"
                                     ),
                                 )
                             )
@@ -506,7 +533,11 @@ def run_benchmark_cell(
         )
     env = SimpleNamespace(batch_size=batch_size, player_count=player_count, state=state)
     palettes = _palettes(state, batch_size=batch_size, player_count=player_count)
-    scratch = _DirectScratch(player_count=player_count) if allocation_mode == "reuse" else None
+    scratch = (
+        _DirectScratch(batch_size=batch_size, player_count=player_count)
+        if allocation_mode == "reuse"
+        else None
+    )
 
     stack = (
         SourceStateGray64Stack4(
@@ -632,6 +663,7 @@ def run_benchmark_cell(
             "player_count": player_count,
             "trail_length": int(cell["trail_length"]),
             "bonus_count": int(cell["bonus_count"]),
+            "trail_source": _trail_source(str(cell["trail_source"])),
             "trail_render_mode": trail_render_mode,
             "iterations": int(iterations),
             "warmup_iterations": int(warmup_iterations),
@@ -696,6 +728,7 @@ def _unsupported_cell_report(
             "player_count": player_count,
             "trail_length": int(cell["trail_length"]),
             "bonus_count": int(cell["bonus_count"]),
+            "trail_source": _trail_source(str(cell.get("trail_source", "body"))),
             "trail_render_mode": _trail_render_mode(str(cell["trail_render_mode"])),
             "iterations": int(iterations),
             "warmup_iterations": int(warmup_iterations),
@@ -1022,7 +1055,11 @@ def _run_rgb_to_gray64_pass(
         if allocation_mode == "reuse":
             if scratch is None:
                 raise ValueError("scratch is required in reuse allocation mode")
-            raw = rgb_canvas_like_to_gray64(rgb, out=scratch.raw)
+            raw = rgb_canvas_like_to_gray64(
+                rgb,
+                out=scratch.raw,
+                scratch=scratch.downsample,
+            )
         else:
             raw = rgb_canvas_like_to_gray64(rgb)
         convert_duration = time.perf_counter() - convert_started
@@ -1078,6 +1115,8 @@ def _run_perspective_reuse_gray64_pass(
                 out=scratch.raw_perspectives,
                 rgb_base_out=scratch.rgb_base,
                 rgb_work_out=scratch.rgb,
+                trail_cache=scratch.trail_caches[row],
+                downsample_scratch=scratch.downsample,
                 trail_render_mode=trail_render_mode,
             )
         else:
@@ -1129,6 +1168,7 @@ def _render_one(
             rgb_out=scratch.rgb,
             player_rgb=palette,
             trail_render_mode=trail_render_mode,
+            downsample_scratch=scratch.downsample,
         )
     return render_source_state_canvas_gray64(
         state,
@@ -1223,7 +1263,7 @@ def _update_stack_with_frame_only(
 
 
 class _DirectScratch:
-    def __init__(self, *, player_count: int) -> None:
+    def __init__(self, *, batch_size: int, player_count: int) -> None:
         self.raw = np.empty(SOURCE_STATE_CANVAS_GRAY64_SHAPE, dtype=np.uint8)
         self.raw_perspectives = np.empty(
             (int(player_count), *SOURCE_STATE_CANVAS_GRAY64_SHAPE),
@@ -1239,6 +1279,13 @@ class _DirectScratch:
         )
         self.rgb_base = np.empty_like(self.rgb)
         self.normalized = np.empty(SOURCE_STATE_CANVAS_GRAY64_SHAPE, dtype=np.float32)
+        self.downsample = SourceStateGray64DownsampleScratch(
+            SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
+        )
+        self.trail_caches = [
+            SourceStateBrowserLineTrailLayerCache()
+            for _ in range(int(batch_size))
+        ]
 
 
 def _cell(
@@ -1248,6 +1295,7 @@ def _cell(
     player_count: int,
     trail_length: int,
     bonus_count: int,
+    trail_source: TrailSource = "body",
     trail_render_mode: str,
     label: str,
 ) -> dict[str, Any]:
@@ -1257,6 +1305,7 @@ def _cell(
         "player_count": _positive_value(player_count, name="player_count"),
         "trail_length": _nonnegative_value(trail_length, name="trail_length"),
         "bonus_count": _nonnegative_value(bonus_count, name="bonus_count"),
+        "trail_source": _trail_source(trail_source),
         "trail_render_mode": _trail_render_mode(trail_render_mode),
         "label": label,
     }
@@ -1269,6 +1318,7 @@ def _validated_cell(cell: dict[str, Any]) -> dict[str, Any]:
         player_count=int(cell["player_count"]),
         trail_length=int(cell["trail_length"]),
         bonus_count=int(cell["bonus_count"]),
+        trail_source=_trail_source(str(cell.get("trail_source", "body"))),
         trail_render_mode=str(cell["trail_render_mode"]),
         label=str(cell.get("label") or cell["kind"]),
     )
@@ -1470,6 +1520,11 @@ def _throughput_report(
 def _density_report(state: dict[str, np.ndarray]) -> dict[str, float | int]:
     env_rows = int(state["body_active"].shape[0])
     active_bodies = int(np.count_nonzero(state["body_active"]))
+    active_visual_trails = (
+        int(np.count_nonzero(state["visual_trail_active"]))
+        if "visual_trail_active" in state
+        else 0
+    )
     active_bonuses = (
         int(np.count_nonzero(state["bonus_active"]))
         if "bonus_active" in state
@@ -1478,6 +1533,14 @@ def _density_report(state: dict[str, np.ndarray]) -> dict[str, float | int]:
     return {
         "active_bodies_per_row": active_bodies / env_rows if env_rows else 0.0,
         "body_capacity": int(state["body_active"].shape[1]),
+        "active_visual_trails_per_row": (
+            active_visual_trails / env_rows if env_rows else 0.0
+        ),
+        "visual_trail_capacity": (
+            int(state["visual_trail_active"].shape[1])
+            if "visual_trail_active" in state
+            else 0
+        ),
         "bonus_count": int(state["bonus_active"].shape[1]) if "bonus_active" in state else 0,
         "active_bonuses_per_row": active_bonuses / env_rows if env_rows else 0.0,
     }
@@ -1606,6 +1669,12 @@ def _trail_render_mode(value: str) -> str:
     return value
 
 
+def _trail_source(value: str) -> TrailSource:
+    if value not in ("body", "visual"):
+        raise ValueError(f"trail_source must be 'body' or 'visual', got {value!r}")
+    return value  # type: ignore[return-value]
+
+
 def _cell_kind(value: str) -> str:
     value = CELL_KIND_ALIASES.get(value, value)
     if value not in CELL_KINDS:
@@ -1636,6 +1705,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=[FULL_STACK],
         help=f"Comma-separated grid cell kinds: {', '.join(CELL_KINDS)}",
     )
+    parser.add_argument(
+        "--trail-source",
+        choices=("body", "visual"),
+        default="body",
+        help="Synthetic trail source: body_* fallback or current visual_trail_* fields.",
+    )
     parser.add_argument("--iterations", type=_positive_arg, default=1)
     parser.add_argument("--warmup-iterations", type=_nonnegative_arg, default=0)
     parser.add_argument("--allocation-mode", choices=("reuse", "allocate"), default="reuse")
@@ -1663,6 +1738,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             bonus_counts=args.bonus_counts,
             trail_render_modes=args.trail_render_modes,
             kinds=args.cell_kinds,
+            trail_source=args.trail_source,
             iterations=int(args.iterations),
             warmup_iterations=int(args.warmup_iterations),
             allocation_mode=args.allocation_mode,
@@ -1689,6 +1765,7 @@ def _print_plain(report: dict[str, Any]) -> None:
                         f"B={workload['batch_size']}",
                         f"P={workload['player_count']}",
                         f"L={workload['trail_length']}",
+                        f"trail_source={workload.get('trail_source', 'body')}",
                         "status=unsupported",
                         f"reason={cell.get('unsupported_reason', 'unsupported')}",
                     )
@@ -1712,6 +1789,7 @@ def _print_plain(report: dict[str, Any]) -> None:
                     f"P={workload['player_count']}",
                     f"L={workload['trail_length']}",
                     f"bonus={workload['bonus_count']}",
+                    f"trail_source={workload.get('trail_source', 'body')}",
                     f"mode={workload['trail_render_mode']}",
                     "rgb_us="
                     f"{_format_optional_us(throughput['rgb_render_us_per_call'], denominators['rgb_render_calls'])}",
@@ -1730,6 +1808,7 @@ def _print_plain(report: dict[str, Any]) -> None:
                     f"measured_total_ms={timing['measured_elapsed'] * 1000.0:.3f}",
                     f"policy_rows_per_sec={throughput['measured_policy_rows_per_sec']:.1f}",
                     f"active_bodies={density['active_bodies_per_row']:.1f}",
+                    f"active_visual={density.get('active_visual_trails_per_row', 0.0):.1f}",
                     f"nonzero={visible_nonzero}",
                 )
             )

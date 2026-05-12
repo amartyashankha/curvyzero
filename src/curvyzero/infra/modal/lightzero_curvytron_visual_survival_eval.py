@@ -56,6 +56,7 @@ from curvyzero.infra.modal.lightzero_curvyzero_stacked_debug_visual_survival_tra
     REMOTE_ROOT,
     RUNS_MOUNT,
     TASK_ID,
+    TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN,
     VOLUME_NAME,
     _build_visual_survival_configs,
     _normalize_opponent_policy_kind_for_env,
@@ -633,6 +634,7 @@ def _make_policy_and_env(
     opponent_checkpoint: dict[str, Any] | None,
     opponent_snapshot_ref: str | None,
     opponent_checkpoint_state_key: str | None,
+    natural_bonus_spawn: bool = TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN,
 ) -> tuple[Any, Any, dict[str, Any]]:
     from ding.config import compile_config
     from ding.envs import get_vec_env_setting
@@ -667,6 +669,7 @@ def _make_policy_and_env(
         opponent_checkpoint=opponent_checkpoint,
         opponent_snapshot_ref=opponent_snapshot_ref,
         opponent_checkpoint_state_key=opponent_checkpoint_state_key,
+        natural_bonus_spawn=bool(natural_bonus_spawn),
     )
     model_env_variant = model_env_variant or env_variant
     # Only used to rebuild the checkpoint model shape; survival scoring stays steps-based.
@@ -876,6 +879,7 @@ def _eval_checkpoint(
     opponent_checkpoint: dict[str, Any] | None,
     opponent_snapshot_ref: str | None,
     opponent_checkpoint_state_key: str | None,
+    natural_bonus_spawn: bool = TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN,
 ) -> dict[str, Any]:
     checkpoint = _torch_load(checkpoint_path)
     state_candidate = _find_state_dict(checkpoint)
@@ -897,6 +901,7 @@ def _eval_checkpoint(
         opponent_checkpoint=opponent_checkpoint,
         opponent_snapshot_ref=opponent_snapshot_ref,
         opponent_checkpoint_state_key=opponent_checkpoint_state_key,
+        natural_bonus_spawn=bool(natural_bonus_spawn),
     )
     episode = _run_survival_episode(
         policy=policy,
@@ -1096,6 +1101,7 @@ def _run_eval(
     opponent_checkpoint_ref: str | None,
     opponent_snapshot_ref: str | None,
     opponent_checkpoint_state_key: str | None,
+    natural_bonus_spawn: bool = TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN,
 ) -> dict[str, Any]:
     if compute not in COMPUTE_CHOICES:
         raise ValueError(f"unknown compute {compute!r}; expected one of {COMPUTE_CHOICES!r}")
@@ -1170,6 +1176,7 @@ def _run_eval(
         "opponent_checkpoint_ref": opponent_checkpoint_ref,
         "opponent_snapshot_ref": opponent_snapshot_ref,
         "opponent_checkpoint_state_key": opponent_checkpoint_state_key,
+        "natural_bonus_spawn": bool(natural_bonus_spawn),
     }
     try:
         with _QuietFrameworkOutput(quiet_framework_logs):
@@ -1190,6 +1197,7 @@ def _run_eval(
                 opponent_checkpoint=opponent_checkpoint,
                 opponent_snapshot_ref=opponent_snapshot_ref,
                 opponent_checkpoint_state_key=opponent_checkpoint_state_key,
+                natural_bonus_spawn=bool(natural_bonus_spawn),
             )
         episode = eval_result["episode"]
         load_state = eval_result["surface"]["load_state_dict"]

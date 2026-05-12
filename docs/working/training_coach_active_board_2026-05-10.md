@@ -7,12 +7,12 @@ in linked docs.
 
 North Star: [coach_north_star_2026-05-10.md](coach_north_star_2026-05-10.md).
 
-Next reward gate: first CurvyTron runs should compare two trainer reward
-variants, without treating either as settled:
+Next reward gate: first CurvyTron runs should keep trainer reward and eval
+metrics separate. The active two-seat default is now:
 
-- `sparse_outcome`: game outcome reward only.
-- `dense_survival_plus_outcome`: sparse outcome plus a dense survival helper
-  for longer horizons.
+- `scaled_tiny_survival_plus_outcome`: `+0.01` while a seat is alive after a
+  policy decision, plus sparse terminal outcome `(+1/-1/0) * 0.01 *
+  episode_step_count`.
 
 Survival length is always eval/telemetry, not the trainer reward by itself.
 Promotion needs heldout eval and telemetry that separate trainer reward, sparse
@@ -48,6 +48,10 @@ Updated 2026-05-12 00:05 EDT.
   `extra_probability=0.20`, which is about `80%` normal, `16%` held one extra
   step, and `4%` held two extra steps. Add visual Gaussian noise `0.10`, keep
   random no-op/drop off, and use no warmup schedule.
+- Default two-seat trainer reward is shaped but explicit: the reward float that
+  replay/learner consume is tiny survival helper plus scaled sparse terminal
+  outcome. The row also logs dense helper, raw sparse outcome, terminal outcome,
+  episode step count, and return-target discount.
 - The older `lightzero_curvytron_two_seat_train_smoke.py` Modal wrapper has
   been deleted. Historical commands must be translated to the canonical
   launcher before use.
@@ -258,17 +262,14 @@ Current launcher ref:
 Older cleanup notes that predate the canonical launcher were moved to
 `training/archive_2026-05-12_two_seat_purge/`.
 
-Reward-shaping note: run the next comparison as explicit trainer reward
-variants, not as a single blended claim. Test both `sparse_outcome` and
-`dense_survival_plus_outcome`, each with its own reward schema id and scorecard.
-Survival length is always eval/telemetry. In
-`dense_survival_plus_outcome`, the dense survival term is a labeled training
-helper for longer horizons, not a promotion metric by itself. Use eval and
-telemetry to decide: trainer reward, sparse outcome, survival length,
-timeout/truncation, action behavior, and terminal causes must stay separate.
-The unbounded `+1 per step + T winner / -T loser` idea is recorded as rejected
-for default training because it changes the objective and ties value scale to
-horizon length.
+Reward-shaping note: the current two-seat reward keeps the LightZero contract
+simple. The collector writes one reward float per replay row; the row metadata
+stores the pieces. This is close to standard LightZero env behavior and avoids
+a new replay API. Use eval and telemetry to decide: trainer reward, sparse
+outcome, survival length, timeout/truncation, action behavior, and terminal
+causes must stay separate. The old full-scale `+1 per step + T winner / -T
+loser` idea is too large for default training; the current version uses the
+same shape but scales it down to `0.01`.
 
 Target/support note: any value/reward support or discount tuning is a separate
 training-config ablation. Do not hide it inside reward shaping. If support size

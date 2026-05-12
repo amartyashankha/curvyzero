@@ -94,6 +94,32 @@ def _write_checkpoint(tmp_path, *, run_id: str, name: str, mtime: int) -> None:
     os.utime(checkpoint_path, (mtime, mtime))
 
 
+def _write_progress_latest(
+    tmp_path,
+    *,
+    run_id: str,
+    attempt_id: str = "attempt-a",
+    iteration: int = 1,
+    mtime: int,
+) -> None:
+    progress_path = (
+        tmp_path
+        / "training"
+        / browser.TASK_ID
+        / run_id
+        / "attempts"
+        / attempt_id
+        / "train"
+        / "progress_latest.json"
+    )
+    progress_path.parent.mkdir(parents=True)
+    progress_path.write_text(
+        json.dumps({"iteration": iteration, "elapsed_sec": float(iteration)}),
+        encoding="utf-8",
+    )
+    os.utime(progress_path, (mtime, mtime))
+
+
 def _write_picker_flag(tmp_path, *, run_id: str, mtime: int = 1) -> None:
     flag_path = (
         tmp_path
@@ -177,8 +203,8 @@ def test_strict_selfplay_refs_reject_other_task_files(ref, validator) -> None:
 
 
 def test_list_selfplay_summaries_filters_and_sorts_by_run_recency(tmp_path) -> None:
-    _write_picker_flag(tmp_path, run_id="run-old")
-    _write_picker_flag(tmp_path, run_id="run-new")
+    _write_picker_flag(tmp_path, run_id="run-old", mtime=100)
+    _write_picker_flag(tmp_path, run_id="run-new", mtime=200)
     _write_summary(
         tmp_path,
         run_id="run-old",
@@ -304,7 +330,7 @@ def test_list_selfplay_summaries_reuses_short_ttl_cache_for_same_run_state(
     assert cached_rows == rows
 
 
-def test_list_runs_sorts_by_recent_gif_summary_and_checkpoint_artifacts(tmp_path) -> None:
+def test_list_runs_sorts_by_recent_run_level_artifacts(tmp_path) -> None:
     _write_picker_flag(tmp_path, run_id="run-summary-newer")
     _write_picker_flag(tmp_path, run_id="run-checkpoint-newest")
     _write_summary(
@@ -325,10 +351,10 @@ def test_list_runs_sorts_by_recent_gif_summary_and_checkpoint_artifacts(tmp_path
         frame_count=5,
         mtime=100,
     )
-    _write_checkpoint(
+    _write_progress_latest(
         tmp_path,
         run_id="run-checkpoint-newest",
-        name="iteration_000003.pt",
+        iteration=3,
         mtime=300,
     )
 
@@ -338,7 +364,7 @@ def test_list_runs_sorts_by_recent_gif_summary_and_checkpoint_artifacts(tmp_path
         "run-checkpoint-newest",
         "run-summary-newer",
     ]
-    assert runs[0]["artifact_count"] == 3
+    assert runs[0]["artifact_count"] == 1
     assert runs[0]["updated_at"] == "1970-01-01T00:05:00Z"
 
 
@@ -377,8 +403,8 @@ def test_default_browser_lists_only_runs_with_picker_flag(tmp_path) -> None:
 
 
 def test_list_runs_uses_known_paths_without_recursive_rglob(tmp_path, monkeypatch) -> None:
-    _write_picker_flag(tmp_path, run_id="run-known-old")
-    _write_picker_flag(tmp_path, run_id="run-known-new")
+    _write_picker_flag(tmp_path, run_id="run-known-old", mtime=100)
+    _write_picker_flag(tmp_path, run_id="run-known-new", mtime=200)
     _write_summary(
         tmp_path,
         run_id="run-known-old",
@@ -420,24 +446,20 @@ def test_list_runs_uses_known_paths_without_recursive_rglob(tmp_path, monkeypatc
     assert [run["run_id"] for run in runs[:2]] == ["run-known-new", "run-known-old"]
 
 
-def test_list_runs_skips_artifacts_that_disappear_during_volume_scan(
+def test_list_runs_skips_run_level_artifacts_that_disappear_during_volume_scan(
     tmp_path, monkeypatch
 ) -> None:
     _write_picker_flag(tmp_path, run_id="run-racy")
-    _write_summary(
+    _write_progress_latest(
         tmp_path,
         run_id="run-racy",
-        attempt_id="attempt-a",
-        eval_id="eval-a",
-        ok=True,
-        frame_count=5,
         mtime=100,
     )
-    raw_gif_suffix = ("selfplay", "raw.gif")
+    progress_suffix = ("train", "progress_latest.json")
     real_safe_stat = browser._safe_stat
 
     def racy_safe_stat(path):  # noqa: ANN001
-        if path.parts[-2:] == raw_gif_suffix:
+        if path.parts[-2:] == progress_suffix:
             return None
         return real_safe_stat(path)
 
@@ -446,7 +468,7 @@ def test_list_runs_skips_artifacts_that_disappear_during_volume_scan(
     runs = browser._list_runs(tmp_path)
 
     assert runs[0]["run_id"] == "run-racy"
-    assert runs[0]["artifact_count"] == 1
+    assert runs[0]["artifact_count"] == 0
 
 
 def test_summary_row_treats_disappearing_gif_as_missing(tmp_path, monkeypatch) -> None:
@@ -619,7 +641,7 @@ def test_fastapi_routes_serve_only_selfplay_artifacts(tmp_path, monkeypatch) -> 
     assert gif_response.content == b"GIF89a"
     assert meta_response.status_code == 200
     assert rejected_response.status_code == 400
-    assert volume.reload_count >= 1
+    assert volume.reload_count == 0
 
     cached_gif_response = client.get(
         "/gif",
@@ -638,8 +660,8 @@ def test_fastapi_index_and_api_accept_run_id_picker_selection(
     from fastapi.testclient import TestClient
 
     monkeypatch.setattr(browser, "RUNS_MOUNT", tmp_path)
-    _write_picker_flag(tmp_path, run_id="run-old")
-    _write_picker_flag(tmp_path, run_id="run-new")
+    _write_picker_flag(tmp_path, run_id="run-old", mtime=100)
+    _write_picker_flag(tmp_path, run_id="run-new", mtime=200)
     _write_summary(
         tmp_path,
         run_id="run-old",
@@ -706,8 +728,8 @@ def test_fastapi_defaults_to_newest_run_and_successful_gifs(
     from fastapi.testclient import TestClient
 
     monkeypatch.setattr(browser, "RUNS_MOUNT", tmp_path)
-    _write_picker_flag(tmp_path, run_id="run-old")
-    _write_picker_flag(tmp_path, run_id="run-new")
+    _write_picker_flag(tmp_path, run_id="run-old", mtime=100)
+    _write_picker_flag(tmp_path, run_id="run-new", mtime=200)
     _write_summary(
         tmp_path,
         run_id="run-old",
@@ -893,6 +915,5 @@ def test_fastapi_routes_keep_serving_when_volume_reload_fails(tmp_path, monkeypa
     api_response = client.get("/api/summaries")
 
     assert page_response.status_code == 200
-    assert "Volume refresh failed" in page_response.text
     assert api_response.status_code == 200
-    assert "temporary volume outage" in api_response.json()["reload_error"]
+    assert api_response.json()["reload_error"] is None

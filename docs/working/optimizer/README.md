@@ -34,6 +34,13 @@ microbench says stack copy and downsample are small compared with long trail
 redraw; next renderer work should target incremental/static trail rendering or
 direct-luma drawing.
 
+Fresh render cache landing, 2026-05-12: the active two-seat stack now uses a
+conservative `browser_lines` visual-trail cache and exact downsample scratch.
+The cache is gated behind a minimum active-trail threshold because it is slower
+for short trails but shows parity-preserving speedups in long synthetic append
+profiles: about `1.26x` at L1024 and `3.90x` at L4096. Keep optimizing this
+cache before chasing stack-copy or local-package trivia.
+
 Profiling artifact hygiene, 2026-05-12: default Coach runs still create the GIF
 browser marker and background GIF artifacts. Optimizer profiling commands should
 use `--no-background-gif-enabled`; that now also suppresses the

@@ -127,19 +127,17 @@ These should stay as regression guards, not as distractions:
   for this path is `browser_lines`; `body_circles_fast` remains an explicit
   approximation.
 - Latest 2P source-state visual gate:
-  `scripts/compare_2p_raw_visual_observation.py --suite core2p --format plain`
-  passes 34 core source-vs-vector gray64 scenarios with exact
+  `scripts/compare_2p_raw_visual_observation.py --suite full2p --format plain`
+  passes 35 full source-vs-vector gray64 scenarios with exact
   `max_abs_diff=0` and `mismatch_pixels=0`. The covered set includes long wall
   terminal, movement traces, normal wall/draw cases, collision-order cases,
   borderless cases, `BonusSelfSmall` catch/no-catch/expiry/wall-death cases,
   `BonusGameClear`, `BonusGameBorderless`, the four natural bonus
-  spawn/retry/cap fixtures, and eight programmatic source-snapshot visual stress
-  cases for printing trail-point emission, explicit 2P survivor warmdown-frame
-  movement/death, opponent tangent/overlap, own-body latency delta 3/4,
-  PrintManager trail-gap boundary emission, SelfMaster body/wall, Borderless
-  expiry/wall, and GameClear clear/collision. Two intentional mismatch canaries
-  prove the harness fails when a visible world body or visible map bonus is
-  missing. This is model-observation raster evidence only.
+  spawn/retry/cap fixtures, programmatic source-snapshot visual stress cases,
+  typed bonus diagnostics for all 12 source-default bonus types, and
+  final-observation checks. Two intentional mismatch canaries prove the harness
+  fails when a visible world body or visible map bonus is missing. This is
+  native source-state render evidence only: full-size RGB raw frame -> gray64.
 - Renderer-status caveat: this latest gate is under the native source-state
   renderer. It is not evidence that real browser canvas pixels are matched.
 - Use `scripts/compare_2p_raw_visual_observation.py --suite full2p --format plain`

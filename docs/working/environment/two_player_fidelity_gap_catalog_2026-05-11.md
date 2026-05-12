@@ -24,42 +24,45 @@ canvas pixels.
   catch and expiry.
 - Natural bonus generation has seed/generated tape extension, fixture strictness, generated-row position retry, and no artificial callback cap in the public environment path.
 - Current multiplayer replay packaging can carry metadata-only public rows and seeded bonus audit metadata. It explicitly is not a full trainer replay or full replay array surface.
-- Source-state raw 64x64 visual observations exist and are backed by vector
-  source state. The original 2P source arena is 88 units from
-  `CurvyTronReferenceDefaults.arena_size_for_players(2)`; 64x64 is the learned
-  observation raster, not the game size. These observations explicitly are not
-  original browser/canvas pixel parity.
+- Source-state visual observations exist and are backed by vector source state.
+  The raw product frame is the full-size canvas-like RGB render, currently
+  704x704 pixels for the 2P arena. The model input is the derived 64x64 gray64
+  tensor. The original 2P source arena is 88 world units from
+  `CurvyTronReferenceDefaults.arena_size_for_players(2)`. These observations
+  explicitly are not original browser/canvas pixel parity.
 - `scripts/compare_2p_raw_visual_observation.py` now compares a 2P
-  source-env snapshot raster against the `VectorMultiplayerEnv` raw gray64
-  raster. On 2026-05-11, the core 2P source-state gray64 suite passed across
-  34 scenarios: long wall terminal, movement traces, normal wall/draw cases,
-  collision-order cases, borderless wrap cases, `BonusSelfSmall`
-  catch/no-catch/expiry/wall-death cases, `BonusGameClear`, and
-  `BonusGameBorderless`, plus the four natural bonus spawn/retry/cap fixtures
-  and eight programmatic source-snapshot stress cases:
+  source-env snapshot visual render against the `VectorMultiplayerEnv`
+  full-size RGB raw frame and derived gray64 tensor. On 2026-05-12, the full 2P
+  source-state gray64 suite passed across 35 scenarios: long wall terminal,
+  movement traces, normal wall/draw cases, collision-order cases, borderless
+  wrap cases, `BonusSelfSmall` catch/no-catch/expiry/wall-death cases,
+  `BonusGameClear`, and `BonusGameBorderless`, plus the four natural bonus
+  spawn/retry/cap fixtures and programmatic source-snapshot stress cases:
   printing trail-point emission, explicit 2P survivor warmdown-frame movement
   and death, opponent tangent/overlap body collision, own-body latency delta
   3/4,
   PrintManager trail-gap boundary emission,
   `BonusSelfMaster` blocks a body collision before later wall death,
-  `BonusGameBorderless` expires before later wall death, and `BonusGameClear`
-  clears a body before a later collision probe.
+  `BonusGameBorderless` expires before later wall death, `BonusGameClear`
+  clears a body before a later collision probe, typed bonus diagnostics for all
+  12 source-default bonus types, and final-observation checks.
   The long no-bonus wall scenario matched exactly for 112 frames through
   terminal (`max_abs_diff=0`, `mismatch_pixels=0`), and the suite-level result
   is exact (`max_abs_diff=0`, `mismatch_pixels=0`). This is the current raw
   visual gate.
-- Fixture accounting: 26 total 2P step fixtures exist. The `core2p` visual
+- Fixture accounting: 26 total 2P step fixtures exist. The `full2p` visual
   suite covers 25 of those step fixtures plus the long no-bonus wall rollout,
-  plus 8 programmatic source-snapshot stress cases, for 34 visual scenarios
-  total. `source_print_manager_random_call_order_step` is intentionally outside
-  gray64 because it proves RNG/event order, not a distinct rendered state.
+  plus programmatic source-snapshot stress cases, final-observation checks, and
+  typed bonus diagnostics. `source_print_manager_random_call_order_step` is
+  intentionally outside gray64 because it proves RNG/event order, not a
+  distinct rendered state.
 - The visual harness now has two intentional mismatch canaries:
   one removes a visible world body from the vector state, and one removes a
   visible map bonus. Both are expected to fail and prove the harness really
   catches visible missing geometry.
-- The current product visual path is source-state browser-like RGB64 raw frame
-  -> deterministic gray64 -> frame stack. Its intended trail renderer default is
-  `browser_lines`, with `body_circles_fast` kept only as an explicit
+- The current product visual path is source-state browser-like full-size RGB
+  raw frame -> deterministic gray64 -> frame stack. Its intended trail renderer
+  default is `browser_lines`, with `body_circles_fast` kept only as an explicit
   approximation.
   The separate bonus64 v1 gate checks active map bonus mask/type planes for all
   12 source-default bonus types and post-catch self/other/game status planes
@@ -75,10 +78,11 @@ canvas pixels.
 
 ## Next-Work Checklist
 
-The current source-state visual gate is internal: 34/34 `core2p` gray64
-scenarios matched exactly through the native source-state renderer. The
-PrintManager RNG canary is intentionally not a visual case; it proves
-random/event ordering, not a distinct rendered state.
+The current source-state visual gate is internal: 35/35 `full2p` gray64
+scenarios matched exactly through the native source-state renderer, alongside
+typed bonus diagnostics and final-observation checks. The PrintManager RNG
+canary is intentionally not a visual case; it proves random/event ordering, not
+a distinct rendered state.
 The one-line visual command is now:
 
 ```bash
@@ -86,7 +90,7 @@ uv run python scripts/compare_2p_raw_visual_observation.py --suite full2p --form
 ```
 
 Latest result:
-`PASS full_2p_source_state_visual_gate canvas_gray64=35/35 typed_bonus=12/12 final_obs=pass canaries=2/2 mismatch_pixels=0 max_abs_diff=0.0 expected_canary_mismatch_pixels=78`.
+`PASS full_2p_source_state_visual_gate canvas_gray64=35/35 typed_bonus=12/12 final_obs=pass canaries=2/2 mismatch_pixels=0 max_abs_diff=0.0 expected_canary_mismatch_pixels=26`.
 This remains useful as source-vs-vector native-render regression evidence plus
 diagnostic bonus64 evidence. It is not browser canvas pixel parity and not
 trainer wrapper/replay propagation proof.
@@ -109,8 +113,8 @@ trainer wrapper/replay propagation proof.
 Status: closed for the narrow 2P source-default bonus identity/status diagnostic
 gate. This is not product observation sufficiency.
 
-Source-state raw 64x64 comparison is real, but its current 34/34 `core2p`
-gray64 pass is native/source-state renderer evidence only. The only
+Source-state visual comparison is real, but its current 35/35 `full2p` gray64
+pass is native/source-state renderer evidence only. The only
 intentionally excluded 2P step fixture is
 `source_print_manager_random_call_order_step`, because gray64 does not encode
 PrintManager random-call order or event order.
@@ -169,18 +173,20 @@ Future comparison metrics checklist:
 
 Current source-state gate:
 
-- Command: `uv run python scripts/compare_2p_raw_visual_observation.py --suite core2p --format plain`
-- Latest result: exact source-vs-vector gray64 match across 34 core 2P
+- Command: `uv run --extra dev python scripts/compare_2p_raw_visual_observation.py --suite full2p --format plain`
+- Latest result: exact source-vs-vector gray64 match across 35 full 2P
   scenarios under the current renderer, including the long no-bonus wall rollout
-  through terminal, the four natural bonus spawn/retry/cap fixtures, and the
-  eight programmatic source-snapshot stress cases.
+  through terminal, the four natural bonus spawn/retry/cap fixtures, typed bonus
+  diagnostics for all 12 source-default bonus types, final-observation checks,
+  and the programmatic source-snapshot stress cases.
 - Step-fixture coverage: 25 of 26 total 2P step fixtures are in `core2p`,
   alongside 8 programmatic source-snapshot stress cases. The remaining fixture
   is `source_print_manager_random_call_order_step`, which is verified by
   source/event-order tests rather than gray64.
-- What this proves: the learned raw source-state raster can be regenerated from
-  both source-shaped state and fast vector state for these covered fixtures
-  under the native source-state renderer implementation.
+- What this proves: the full-size source-state RGB render and derived gray64
+  tensor can be regenerated from both source-shaped state and fast vector state
+  for these covered fixtures under the native source-state renderer
+  implementation.
 - What this does not prove: original browser/canvas pixels, antialiasing,
   sprite colors, viewport scaling, connected-trail shape fidelity, or hidden
   bonus-status proof.
@@ -191,15 +197,16 @@ Current source-state gate:
 Natural-bonus diagnostic coverage boundary:
 
 - Gray64 v0 is the current clean visual observation path: source-state
-  browser-like RGB64 raw frame reduced to deterministic gray64. The intended
-  default trail renderer for this path is `browser_lines`, while
+  browser-like full-size RGB raw frame reduced to deterministic gray64. The
+  intended default trail renderer for this path is `browser_lines`, while
   `body_circles_fast` is an explicit approximation. Current passes prove
   source-shaped and vector rasters agree for covered body/head/trail/bonus
   occupancy states under the native source-state renderer. They do not prove
   browser canvas pixels.
-- Gray64 v0 remains the geometry gate: 34/34 `core2p` gray64 scenarios, exact
-  match, one intentionally excluded PrintManager RNG canary. Do not replace
-  this product image path with a rich tensor.
+- Gray64 v0 remains the geometry gate: 35/35 `full2p` gray64 scenarios, exact
+  match, two intentional mismatch canaries, and one intentionally excluded
+  PrintManager RNG canary. Do not replace this product image path with a rich
+  tensor.
 - Bonus64 v1 is the separate bonus-aware diagnostic gate, not a mutation of
   v0 gray64 and not a trainer default. It is `float32[22,64,64]`, CHW,
   source-state backed, normalized to `[0,1]`, and explicitly not
@@ -215,9 +222,9 @@ Likely code area:
 
 Hole: `VectorMultiplayerEnv` still has incomplete trainer/replay propagation for
 the source-state image path. The fixed-opponent source-state visual LightZero
-wrapper is not two-seat self-play, and source-state raw 64x64 is not browser
-pixel parity. Final observation semantics are proven for public metadata rows,
-not for a promoted trainer/replay visual observation surface.
+wrapper is not two-seat self-play, and source-state visual comparison is not
+browser pixel parity. Final observation semantics are proven for public metadata
+rows, not for a promoted trainer/replay visual observation surface.
 
 How to test against source/original:
 
@@ -225,8 +232,9 @@ How to test against source/original:
 - Compare source-state observation fields to trusted source state before testing
   raster output.
 - Assert terminal rows carry final observation before autoreset, with schema, player/ego mapping, mask/reward metadata, and replay identifiers.
-- For visual final observations, compare source-state raw 64x64 before
-  autoreset; browser/canvas pixels are only a later optional debug check.
+- For visual final observations, compare the full-size source-state RGB raw
+  frame and derived gray64 tensor before autoreset; browser/canvas pixels are
+  only a later optional debug check.
 
 Likely code area:
 

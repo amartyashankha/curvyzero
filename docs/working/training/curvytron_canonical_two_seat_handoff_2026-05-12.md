@@ -15,7 +15,11 @@ uses source-default natural bonus spawning; no-bonus is now only an explicit
 ablation. Default robustness noise is mild: policy actions use repeat `min=1`,
 `max=3`, `extra_probability=0.20`, which is about `80%` normal, `16%` held one
 extra step, and `4%` held two extra steps. Visual input gets Gaussian noise
-`0.10`, and random no-op/drop is off.
+`0.10`, and random no-op/drop is off. The default trainer reward is now shaped
+but labeled: each per-seat replay row gets a tiny alive helper `+0.01`, plus
+the sparse terminal outcome scaled by `0.01 * episode_step_count`. Components
+are logged separately as training reward, dense helper, sparse outcome, and
+terminal outcome.
 Next real work is to launch and monitor clean long CurvyTron self-play runs from
 this canonical path, with survival curves and collapse checks.
 
@@ -52,6 +56,12 @@ been deleted. Historical commands must be translated to the canonical launcher.
 - Default stochasticity is mild and simple: `policy_action_repeat_max=3`,
   `policy_action_repeat_extra_probability=0.20`, `observation_noise_std=0.10`,
   `action_noop_probability=0.0`, and no warmup schedule.
+- Default trainer reward is the single reward float LightZero consumes from
+  replay rows: dense alive helper `+0.01`/step while alive, plus env sparse
+  terminal outcome `(+1/-1/0) * 0.01 * episode_step_count`. This keeps terminal
+  outcome on the same scale as the accumulated survival helper. Eval survival
+  length remains separate telemetry. Reward contract:
+  [curvytron_two_seat_reward_contract_2026-05-12.md](curvytron_two_seat_reward_contract_2026-05-12.md).
 - Checkpoints write to:
   `training/lightzero-curvytron-visual-survival/<run_id>/checkpoints/lightzero`.
 - Progress writes to:

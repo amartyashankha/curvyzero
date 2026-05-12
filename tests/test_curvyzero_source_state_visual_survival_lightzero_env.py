@@ -168,6 +168,18 @@ def test_source_state_visual_survival_reset_shape_and_metadata():
         NATURAL_BONUS_EFFECT_TYPE_NAMES
     )
     assert "BonusSelfMaster" in env.last_reset_info["supported_natural_bonus_effect_types"]
+
+
+def test_source_state_visual_survival_bonus_spawn_can_be_disabled_from_cfg():
+    env = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
+        {"seed": 13, "source_max_steps": 8, "natural_bonus_spawn": False}
+    )
+
+    observation = env.reset(seed=13)
+
+    assert env.config["natural_bonus_spawn"] is True
+    assert env.last_reset_info is not None
+    assert env.last_reset_info["natural_bonus_spawn"] is False
     assert "BonusAllColor" in env.last_reset_info["supported_natural_bonus_effect_types"]
     assert "BonusSelfMaster" not in env.last_reset_info[
         "unsupported_natural_bonus_effects"
