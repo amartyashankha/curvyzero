@@ -10,12 +10,18 @@ launcher. Stock LightZero eval is off by default; use CurvyZero checkpoint eval,
 inspection, and GIF jobs for observability. Default checkpoint cadence is sparse,
 about every `100` iterations. Keep the path close to LightZero: only the
 environment and the small simultaneous-action/self-play bridge should be custom.
-Default starts are already varied by generated reset seeds. The default ruleset
-uses source-default natural bonus spawning; no-bonus is now only an explicit
-ablation. Default robustness noise is mild: policy actions use repeat `min=1`,
-`max=3`, `extra_probability=0.20`, which is about `80%` normal, `16%` held one
-extra step, and `4%` held two extra steps. Visual input gets Gaussian noise
-`0.10`, and random no-op/drop is off. The default trainer reward is now shaped
+Default starts are varied by generated reset seeds. The run may keep one fixed
+top-level seed for reproducibility, but training reset/restart seeds must be
+fresh deterministic derivatives, never the same explicit reset seed replayed
+for every episode. Replay rows and step records keep `reset_seed` so this can be
+audited. The default ruleset uses source-default natural bonus
+spawning; no-bonus is now only an explicit ablation. Default robustness noise is
+mild: the legacy `policy_action_repeat_*` flags now mean policy no-op skips, not
+held actions. With `min=1`, `max=3`, `extra_probability=0.20`, a seat takes one
+real policy action, then may skip the next one or two policy chances by sending
+NOOP. Skipped no-op ticks do not create replay rows or reward targets. Visual
+input gets Gaussian noise `0.10`, and random no-op/drop is off.
+The default trainer reward is now shaped
 but labeled: each per-seat replay row gets a tiny alive helper `+0.01`, plus
 the sparse terminal outcome scaled by `0.01 * episode_step_count`. Components
 are logged separately as training reward, dense helper, sparse outcome, and
@@ -50,11 +56,17 @@ been deleted. Historical commands must be translated to the canonical launcher.
 - The learner updates that same policy before later collection.
 - Modal GPU L4/T4 works; smoke saw model parameters on `cuda:0`.
 - Reset starts are varied: the trainer seeds the vector env, then calls
-  `reset(seed=None)`, so each row gets a generated reset seed.
+  `reset(seed=None)` and `autoreset_done_rows(seed=None)`, so each row/reset
+  gets a generated reset seed. Replay rows and step records carry `reset_seed`.
+  The native LightZero env wrapper also preserves config-level `dynamic_seed`
+  when an env manager calls `env.seed(...)`, so the trainer cannot accidentally
+  force fixed repeated starts.
 - Source-default natural bonus spawning is on by default. Do not use no-bonus as
   the main Coach ruleset; disable natural bonuses only for controlled ablations.
-- Default stochasticity is mild and simple: `policy_action_repeat_max=3`,
-  `policy_action_repeat_extra_probability=0.20`, `observation_noise_std=0.10`,
+- Default stochasticity is mild and simple: legacy
+  `policy_action_repeat_max=3` / `policy_action_repeat_extra_probability=0.20`
+  means policy no-op skipping, not action holding. Skipped ticks send NOOP and
+  stay out of replay/reward targets. `observation_noise_std=0.10`,
   `action_noop_probability=0.0`, and no warmup schedule.
 - Default trainer reward is the single reward float LightZero consumes from
   replay rows: dense alive helper `+0.01`/step while alive, plus env sparse

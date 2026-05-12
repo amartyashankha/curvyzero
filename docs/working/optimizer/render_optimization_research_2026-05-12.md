@@ -477,26 +477,45 @@ cells also pass the production trail cache and exact downsample scratch. Current
 local visual-trail grid:
 
 ```text
-full_stack_update, B8/P2/browser_lines/visual
-  L64   112.42ms/update
-  L256  139.09ms/update
-  L1024 156.51ms/update
-  L4096 156.75ms/update
+full_stack_update, B8/P2/browser_lines/visual, after copy/recolor patch
+  L64   110.71ms/update
+  L256  162.52ms/update
+  L1024 109.38ms/update
+  L4096  99.25ms/update
 
-full_stack_update, B16/P2/browser_lines/visual
-  L64   230.60ms/update
-  L256  277.25ms/update
-  L1024 300.17ms/update
-  L4096 286.18ms/update
+full_stack_update, B16/P2/browser_lines/visual, after copy/recolor patch
+  L64   220.26ms/update
+  L256  195.29ms/update
+  L1024 195.28ms/update
+  L4096 199.80ms/update
 
 isolated rgb_to_gray64 with exact scratch: about 0.80ms per call
-isolated perspective reuse with cache: about 7-9ms per policy row after warmup
+isolated perspective reuse with cache: about 6-7ms per policy row after warmup
 ```
 
 Plain read: once the cache is warm, long-trail cost is no longer proportional
 to all historical trail slots in this synthetic visual-trail path. The
 remaining target is fixed per-row work: layer composition, remap, head/bonus
 draw, downsample, normalization, and stack copy.
+
+The low-risk copy/recolor patch is landed and validated. It lets cached player
+1 recolor fill from background and mask-composite owner layers instead of doing
+a full-frame palette scan, and it draws player 0 heads/bonuses directly on the
+base frame after player 1 is finished. Focused validation:
+
+```text
+uv run pytest tests/test_vector_visual_observation.py \
+  tests/test_benchmark_render_lane_microbench.py \
+  tests/test_curvytron_two_seat_render_mode.py -q
+58 passed
+
+uv run ruff check scripts/summarize_curvytron_lightzero_profiles.py \
+  src/curvyzero/training/curvytron_two_seat_lightzero_train_smoke.py \
+  src/curvyzero/env/vector_visual_observation.py \
+  tests/test_curvytron_two_seat_render_mode.py \
+  scripts/benchmark_render_lane_microbench.py
+All checks passed
+```
 
 Modal profile launch correction: use `modal run --detach` for background
 matrices, or `--wait-for-train` when the local session should stream the
@@ -512,6 +531,39 @@ opt-render-cache-wait-l4-b128-sim16-20260512a
 opt-render-cache-wait-h100-b128-sim16-20260512a
 opt-render-cache-wait-l4-b64-sim32-20260512a
 ```
+
+Completed matrix summary:
+
+```text
+run                                      B    sim  wall     visual   search  replay_rows
+opt-render-cache-wait-l4-b16-sim16      16   16   198.6s   136.2s   14.0s   2356
+opt-render-cache-wait-l4-b64-sim16      64   16   559.4s   494.9s   21.2s   7957
+opt-render-cache-wait-l4-b64-sim32      64   32   562.1s   493.5s   28.4s   7922
+opt-render-cache-wait-l4-b128-sim16     128  16   1112.7s  990.8s   61.0s   15623
+opt-render-cache-wait-h100-b128-sim16   128  16   978.9s   853.9s   57.8s   15611
+```
+
+Plain read: batch width improves replay rows per iteration, but render grows
+enough that wall-clock replay-row throughput only improves slightly, and
+physical env-step throughput gets worse. H100 at B128 is faster than L4 at B128
+but still render-bound. Sim32 at B64 costs little extra wall time only because
+render is already dominating; it is not evidence that search is free.
+
+The current bigger-swing render priority is dirty-block composition and
+redownsample on top of the cache. Expected useful shape:
+
+1. track dirty 64x64 blocks from newly appended trail segments, old/new head
+   bounds, and bonus/sprite bounds;
+2. reuse cached trail/background gray64 for clean blocks;
+3. recompose and downsample only dirty 11x11 source blocks;
+4. fall back to the current full renderer on reset, cursor regression, prefix
+   mutation, map-size change, unsafe palette, or unsupported sprite/effect
+   cases.
+
+Acceptance bar: byte-identical frames against the full current renderer on
+append, overlap, reset, clear/wrap, palette changes, head movement, and active
+bonus cases that the fast path claims to cover. Until then, it stays a
+prototype lane.
 
 3. Vectorized CPU renderer.
    - Batch rows and players; avoid Python loops over env rows and body slots

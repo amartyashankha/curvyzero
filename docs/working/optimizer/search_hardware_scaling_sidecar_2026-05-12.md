@@ -16,11 +16,32 @@ B16/L4/sim16:
   visual_stack_update_sec sum 136.2s
   policy_search_sec       sum  14.0s
   elapsed                 198.6s
+
+B64/L4/sim16:
+  visual_stack_update_sec sum 494.9s
+  policy_search_sec       sum  21.2s
+  elapsed                 559.4s
+
+B64/L4/sim32:
+  visual_stack_update_sec sum 493.5s
+  policy_search_sec       sum  28.4s
+  elapsed                 562.1s
+
+B128/L4/sim16:
+  visual_stack_update_sec sum 990.8s
+  policy_search_sec       sum  61.0s
+  elapsed                1112.7s
+
+B128/H100/sim16:
+  visual_stack_update_sec sum 853.9s
+  policy_search_sec       sum  57.8s
+  elapsed                 978.9s
 ```
 
-That puts visual stack update at roughly `10x` policy/search in the named
-collect buckets. The pending `B64/H100/B128` wait-mode results should be read
-as scaling evidence only after their render/search split is available.
+That puts visual stack update between about `9x` and `23x` policy/search in
+the named collect buckets. The wider batches collect more replay rows per
+iteration, but they do not produce a clean wall-clock win while render is this
+large.
 
 Practical consequence: do not spend the next optimizer cycle on MCTS internals
 unless render drops enough that policy/search becomes a first-order bucket.
@@ -36,21 +57,22 @@ routes `cpu`, `gpu-l4-t4`, and `gpu-h100-cpu40`. The stock path exposes
 `gpu-h100x2-cpu40`, but `--mode two-seat-selfplay` rejects it today. So
 multi-GPU is not a meaningful next two-seat knob without code changes.
 
-Even single H100 should be treated as an accelerator test, not a default. If
-render remains CPU-side and dominant, H100 mostly helps the smaller model/search
-slice and may leave most of the wall clock untouched. H100 starts making sense
-when the L4 profile shows either high `policy_search_sec`, high model inference
-time, or underfilled-but-growing batched search where bigger root batches can
-actually feed the GPU.
+Even single H100 should be treated as an accelerator test, not a default. In
+the current B128 profile H100 cut wall time versus L4 at the same width, but the
+run still spent about `87%` of wall time in visual stack update. H100 starts
+making sense when the L4 profile shows either high `policy_search_sec`, high
+model inference time, or underfilled-but-growing batched search where bigger
+root batches can actually feed the GPU.
 
 ## Matrix Knobs
 
 Keep the next matrix small and denominator-clean:
 
 - `compute`: `gpu-l4-t4` first, `gpu-h100-cpu40` as a paired accelerator check.
-- `--batch-size`: `16`, `32`, `64`, then `128` only if render/search fractions
-  still improve. In two-seat mode, this is env row width; fresh policy rows are
-  up to `B * 2`, reduced by action-repeat reuse and dead rows. It is not an
+- `--batch-size`: `16` or `32` for render-sensitive profiling, `64` as the
+  first real self-play width trade-off, and `128` only as a stress/accelerator
+  cell. In two-seat mode, this is env row width; fresh policy rows are up to
+  `B * 2`, reduced by action-repeat reuse and dead rows. It is not an
   independent learner minibatch control in this sidecar.
 - `num_simulations`: `16` for control, `32` as the first stronger-search check,
   `50` only after render is no longer drowning the readout.

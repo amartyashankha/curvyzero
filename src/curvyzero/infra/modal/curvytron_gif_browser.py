@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from datetime import UTC, datetime
 from html import escape
 from pathlib import Path, PurePosixPath
@@ -30,11 +31,11 @@ TASK_ID = "lightzero-curvytron-visual-survival"
 VOLUME_NAME = "curvyzero-runs"
 RUNS_MOUNT = Path("/runs")
 BASE_REF = PurePosixPath("training") / TASK_ID
-DEFAULT_LIMIT = 20
+DEFAULT_LIMIT = 8
 MAX_LIMIT = 500
 DEFAULT_OK_FILTER = "ok"
-LISTING_CACHE_TTL_SECONDS = 5.0
-VOLUME_RELOAD_TTL_SECONDS = 1.0
+LISTING_CACHE_TTL_SECONDS = 10.0
+VOLUME_RELOAD_TTL_SECONDS = 30.0
 GIF_CACHE_MAX_AGE_SECONDS = 86_400
 RUN_PICKER_FLAG_FILENAME = run_mgmt.GIF_BROWSER_RUN_MARKER_FILENAME
 CHECKPOINT_ITERATION_RE = re.compile(r"iteration[_-](\d+)")
@@ -69,6 +70,8 @@ class RefValidationError(ValueError):
 
 _RUNS_CACHE: dict[tuple[Any, ...], tuple[float, list[dict[str, Any]]]] = {}
 _SUMMARY_CACHE: dict[tuple[Any, ...], tuple[float, list[dict[str, Any]]]] = {}
+_VOLUME_RELOAD_LOCK = threading.Lock()
+_LAST_VOLUME_RELOAD_AT = 0.0
 
 
 def _clone_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -104,6 +107,30 @@ def _cache_set(
 def _clear_listing_caches() -> None:
     _RUNS_CACHE.clear()
     _SUMMARY_CACHE.clear()
+
+
+def _maybe_reload_volume(volume: Any, *, force: bool = False) -> str | None:
+    global _LAST_VOLUME_RELOAD_AT
+    if volume is None or not hasattr(volume, "reload"):
+        return None
+    now = monotonic()
+    if not force and now - _LAST_VOLUME_RELOAD_AT < VOLUME_RELOAD_TTL_SECONDS:
+        return None
+    if not _VOLUME_RELOAD_LOCK.acquire(blocking=False):
+        return None
+    try:
+        now = monotonic()
+        if not force and now - _LAST_VOLUME_RELOAD_AT < VOLUME_RELOAD_TTL_SECONDS:
+            return None
+        try:
+            volume.reload()
+        except Exception as exc:  # pragma: no cover - Modal Volume runtime behavior.
+            return f"{type(exc).__name__}: {exc}"
+        _LAST_VOLUME_RELOAD_AT = monotonic()
+        _clear_listing_caches()
+        return None
+    finally:
+        _VOLUME_RELOAD_LOCK.release()
 
 
 def _path_for_ref(mount: Path, ref: PurePosixPath) -> Path:
@@ -354,7 +381,7 @@ def _list_runs(mount: Path) -> list[dict[str, Any]]:
     if not _safe_is_dir(base_path):
         return []
 
-    cache_key = ("runs", _runs_cache_state_token(mount))
+    cache_key = ("runs", mount.as_posix())
     cached = _cache_get(_RUNS_CACHE, cache_key)
     if cached is not None:
         return cached
@@ -584,7 +611,6 @@ def _list_selfplay_summary_page(
             mount.as_posix(),
             "run",
             clean_run_id,
-            _run_summary_cache_state_token(mount, clean_run_id),
             run_filter,
             attempt_filter,
             eval_filter,
@@ -656,7 +682,7 @@ def _list_selfplay_summary_page(
             mount.as_posix(),
             "all",
             tuple(
-                _run_summary_cache_state_token(mount, str(run["run_id"]))
+                str(run["run_id"])
                 for run in listed_runs
             ),
             run_filter,
@@ -875,15 +901,17 @@ def _latest_training_progress(mount: Path, run_id: str) -> dict[str, Any] | None
 
 def _render_training_progress(progress: dict[str, Any] | None) -> str:
     if not progress:
-        return '<div class="run-speed">training speed unavailable</div>'
+        return '<div class="run-metrics"><span class="muted">speed unknown</span></div>'
     iteration = progress.get("iteration")
     sec_per_iteration = _format_seconds(_safe_float(progress.get("sec_per_iteration")))
     elapsed = _format_seconds(_safe_float(progress.get("elapsed_sec")))
     attempt = progress.get("attempt_id") or "unknown attempt"
     return (
-        '<div class="run-speed">'
-        f'iter {_html_attr(iteration)} · {_html_attr(sec_per_iteration)}/iter · '
-        f'elapsed {_html_attr(elapsed)} · {_html_attr(attempt)}'
+        '<div class="run-metrics">'
+        f'<span>iter {_html_attr(iteration)}</span>'
+        f'<span>{_html_attr(sec_per_iteration)}/iter</span>'
+        f'<span>elapsed {_html_attr(elapsed)}</span>'
+        f'<span>{_html_attr(attempt)}</span>'
         '</div>'
     )
 
@@ -901,9 +929,26 @@ def _render_filters(
     offset: int,
 ) -> str:
     status_options = []
-    for value, label in (("all", "All"), ("ok", "OK"), ("failed", "Failed")):
+    for value, label in (("ok", "OK"), ("all", "All"), ("failed", "Failed")):
         selected = " selected" if ok_filter.lower() == value else ""
         status_options.append(f'<option value="{value}"{selected}>{label}</option>')
+
+    limit_options = []
+    for value in (5, 8, 12, 24, 50):
+        selected = " selected" if int(limit) == value else ""
+        limit_options.append(f'<option value="{value}"{selected}>{value}</option>')
+
+    preserved_filters = []
+    for name, value in (
+        ("run", run_filter),
+        ("attempt", attempt_filter),
+        ("eval", eval_filter),
+    ):
+        if value:
+            preserved_filters.append(
+                f'<input type="hidden" name="{name}" form="filters-form" '
+                f'value="{_html_attr(value)}">'
+            )
 
     run_menu_rows: list[str] = []
     selected_label = "No runs"
@@ -944,9 +989,12 @@ def _render_filters(
         run_menu_rows.append(
             f"""
             <div class="run-menu-row{selected_class}">
-                <a class="run-menu-link" href="{_html_attr(select_url)}">{_html_attr(run_label)}</a>
+                <a class="run-menu-link" href="{_html_attr(select_url)}">
+                    <span class="run-menu-name">{_html_attr(run_id)}</span>
+                    <span class="run-menu-time">{_html_attr(run["updated_at"])}</span>
+                </a>
                 <form method="post" action="{_html_attr(delete_action)}" class="hide-run-form">
-                    <button type="submit" class="danger" data-delete-run-id="{_html_attr(run_id)}">
+                    <button type="submit" class="danger compact" data-delete-run-id="{_html_attr(run_id)}">
                         <span class="spinner" aria-hidden="true"></span>
                         <span class="button-label">Delete</span>
                     </button>
@@ -954,11 +1002,23 @@ def _render_filters(
             </div>
             """
         )
+    refresh_url = _filter_url(
+        run_id=selected_run_id,
+        run_filter=run_filter,
+        attempt_filter=attempt_filter,
+        eval_filter=eval_filter,
+        ok_filter=ok_filter,
+        limit=limit,
+        offset=0,
+    )
+    refresh_url = f"{refresh_url}&fresh=1"
     return f"""
         <form id="filters-form" method="get"></form>
-        <div class="filters">
+        <div class="toolbar">
             {hidden_selected_run}
-            <div class="run-control">
+            {''.join(preserved_filters)}
+            <input type="hidden" name="offset" form="filters-form" value="0">
+            <div class="run-panel">
                 <span class="field-label">Run</span>
                 <details class="run-picker">
                     <summary>{_html_attr(selected_label)}</summary>
@@ -966,105 +1026,63 @@ def _render_filters(
                 </details>
                 {_render_training_progress(training_progress)}
             </div>
-            <label>Run text <input name="run" form="filters-form" value="{_html_attr(run_filter)}"></label>
-            <label>Attempt <input name="attempt" form="filters-form" value="{_html_attr(attempt_filter)}"></label>
-            <label>Eval <input name="eval" form="filters-form" value="{_html_attr(eval_filter)}"></label>
-            <label>Status <select name="ok" form="filters-form">{''.join(status_options)}</select></label>
-            <label>Limit <input name="limit" type="number" min="1" max="{MAX_LIMIT}"
-                form="filters-form" value="{_html_attr(limit)}"></label>
-            <input type="hidden" name="offset" form="filters-form" value="0">
-            <button type="submit" form="filters-form">Apply</button>
+            <div class="toolbar-actions">
+                <label>Status <select name="ok" form="filters-form">{''.join(status_options)}</select></label>
+                <label>Show <select name="limit" form="filters-form">{''.join(limit_options)}</select></label>
+                <button type="submit" form="filters-form">Apply</button>
+                <a class="button secondary" href="{_html_attr(refresh_url)}">Refresh</a>
+            </div>
         </div>
     """
 
 
-def _render_strip(rows: list[dict[str, Any]]) -> str:
-    if not rows:
-        return ""
-    tiles: list[str] = []
-    for row in rows:
-        checkpoint = row.get("checkpoint_label") or row.get("eval_id")
-        if row.get("gif_exists"):
-            gif_url = _fast_gif_url(row)
-            preview = (
-                f'<img class="strip-preview" loading="lazy" decoding="async" '
-                f'fetchpriority="low" src="{_html_attr(gif_url)}" '
-                f'width="96" height="96" alt="">'
-            )
-            href = gif_url
-        else:
-            preview = '<span class="strip-missing">missing</span>'
-            href = _link("/meta", row["summary_ref"])
-        tiles.append(
-            f"""
-            <a class="strip-tile" href="{_html_attr(href)}">
-                {preview}
-                <span>{_html_attr(checkpoint)}</span>
-            </a>
-            """
-        )
-    return f'<div class="strip">{"".join(tiles)}</div>'
-
-
 def _render_rows(rows: list[dict[str, Any]]) -> str:
     if not rows:
-        return '<p class="empty">No self-play GIF summaries found.</p>'
+        return '<section id="gallery" class="empty-state">No GIFs yet.</section>'
 
     rendered = []
-    for row in rows:
+    for index, row in enumerate(rows):
         gif_url = _fast_gif_url(row)
         meta_url = _link("/meta", row["summary_ref"])
+        checkpoint = row.get("checkpoint_label") or row.get("eval_id") or "checkpoint"
+        loading = "eager" if index == 0 else "lazy"
+        priority = "high" if index == 0 else "low"
         preview = (
-            f'<a href="{_html_attr(gif_url)}"><img class="preview" loading="lazy" '
-            f'decoding="async" fetchpriority="low" src="{_html_attr(gif_url)}" '
-            f'width="128" height="128" alt=""></a>'
+            f'<a class="gif-frame" href="{_html_attr(gif_url)}">'
+            f'<img class="preview" loading="{loading}" decoding="async" '
+            f'fetchpriority="{priority}" src="{_html_attr(gif_url)}" '
+            f'width="224" height="224" alt=""></a>'
             if row["gif_exists"]
-            else '<span class="missing">missing raw.gif</span>'
+            else '<a class="gif-frame missing-preview" href="' + _html_attr(meta_url) + '">missing GIF</a>'
         )
         ok_label = "OK" if row["ok"] is True else "failed" if row["ok"] is False else "unknown"
+        status_class = "ok" if row["ok"] is True and row["gif_exists"] else "failed"
         steps = row["physical_steps"]
         if row["max_steps"] is not None:
             steps = f"{steps or 0}/{row['max_steps']}"
         rendered.append(
             f"""
-            <tr data-run-id="{_html_attr(row["run_id"])}">
-                <td>{preview}</td>
-                <td><span class="status">{_html_attr(ok_label)}</span></td>
-                <td>{_html_attr(row["updated_at"])}</td>
-                <td><code>{_html_attr(row["run_id"])}</code></td>
-                <td><code>{_html_attr(row["attempt_id"])}</code></td>
-                <td><code>{_html_attr(row["eval_id"])}</code></td>
-                <td>{_html_attr(row["frame_count"])}</td>
-                <td>{_html_attr(steps)}</td>
-                <td>{_html_attr(row["terminal_reason"])}</td>
-                <td>{_html_attr(row["checkpoint_label"])}</td>
-                <td>
-                    <a href="{_html_attr(gif_url)}">gif</a>
-                    <a href="{_html_attr(meta_url)}">json</a>
-                </td>
-            </tr>
+            <article class="gif-card" data-run-id="{_html_attr(row["run_id"])}">
+                {preview}
+                <div class="gif-card-body">
+                    <div class="gif-card-topline">
+                        <strong>{_html_attr(checkpoint)}</strong>
+                        <span class="status-pill {status_class}">{_html_attr(ok_label)}</span>
+                    </div>
+                    <div class="facts">
+                        <span>{_html_attr(row["frame_count"])} frames</span>
+                        <span>{_html_attr(steps)} steps</span>
+                    </div>
+                    <div class="reason">{_html_attr(row["terminal_reason"])}</div>
+                    <div class="links">
+                        <a href="{_html_attr(gif_url)}">GIF</a>
+                        <a href="{_html_attr(meta_url)}">JSON</a>
+                    </div>
+                </div>
+            </article>
             """
         )
-    return f"""
-        <table>
-            <thead>
-                <tr>
-                    <th>Preview</th>
-                    <th>Status</th>
-                    <th>Updated</th>
-                    <th>Run</th>
-                    <th>Attempt</th>
-                    <th>Eval</th>
-                    <th>Frames</th>
-                    <th>Steps</th>
-                    <th>Reason</th>
-                    <th>Checkpoint</th>
-                    <th>Links</th>
-                </tr>
-            </thead>
-            <tbody>{''.join(rendered)}</tbody>
-        </table>
-    """
+    return f'<section id="gallery" class="gallery">{"".join(rendered)}</section>'
 
 
 def _render_pager(
@@ -1108,24 +1126,10 @@ def _render_pager(
             offset=offset + limit,
         )
         links.append(f'<a href="{_html_attr(older_url)}">Older</a>')
-    if limit < MAX_LIMIT:
-        show_more_url = _filter_url(
-            run_id=selected_run_id,
-            run_filter=run_filter,
-            attempt_filter=attempt_filter,
-            eval_filter=eval_filter,
-            ok_filter=ok_filter,
-            limit=min(MAX_LIMIT, max(200, limit)),
-            offset=0,
-        )
-        links.append(f'<a href="{_html_attr(show_more_url)}">Show more</a>')
     links_html = " ".join(links)
     if links_html:
         links_html = f'<span class="pager-links">{links_html}</span>'
-    return (
-        f'<div class="pager">Showing {start}-{end} of {total_label} matching GIFs. '
-        f"{links_html}</div>"
-    )
+    return f'<nav class="pager"><span>{start}-{end} of {total_label}</span>{links_html}</nav>'
 
 
 def _render_page(
@@ -1185,6 +1189,11 @@ def _render_page(
         else "server timing unavailable"
     )
     current_page_token = page_token or _page_token(runs=runs, rows=rows)
+    shown_label = (
+        "No GIFs"
+        if total_rows <= 0
+        else f"{len(rows)} shown / {total_rows}{'' if total_rows_exact else '+'} total"
+    )
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -1193,68 +1202,87 @@ def _render_page(
     <title>CurvyTron Self-Play GIFs</title>
     <style>
         body {{
-            margin: 24px;
+            margin: 0;
             color: #202124;
-            background: #ffffff;
+            background: #f6f7f9;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         }}
-        header {{
+        .shell {{
+            max-width: 1440px;
+            margin: 0 auto;
+            padding: 18px;
+        }}
+        .topbar {{
             display: flex;
-            align-items: baseline;
+            align-items: center;
             justify-content: space-between;
             gap: 16px;
-            margin-bottom: 16px;
+            margin-bottom: 14px;
         }}
-        .header-meta {{
+        h1 {{ margin: 0; font-size: 22px; line-height: 1.15; }}
+        .subtitle {{ margin: 4px 0 0; color: #5f6368; font-size: 13px; }}
+        .top-meta {{
             display: flex;
             flex-wrap: wrap;
-            gap: 10px;
-            align-items: baseline;
-            justify-content: flex-end;
+            gap: 8px;
+            align-items: center;
             color: #5f6368;
             font-size: 13px;
         }}
-        h1 {{ margin: 0; font-size: 24px; }}
-        .generated {{ color: #5f6368; font-size: 13px; white-space: nowrap; }}
         .auto-refresh {{
             display: inline-flex;
-            gap: 4px;
+            gap: 6px;
             align-items: center;
             white-space: nowrap;
         }}
         .auto-refresh input {{ height: auto; padding: 0; }}
-        .filters {{
+        .toolbar {{
             display: flex;
             flex-wrap: wrap;
-            align-items: end;
-            gap: 10px;
-            padding: 12px 0 18px;
-            border-top: 1px solid #dadce0;
+            align-items: stretch;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 12px;
+            background: #ffffff;
+            border: 1px solid #dadce0;
+            border-radius: 8px;
+            box-shadow: 0 1px 2px rgba(60, 64, 67, 0.08);
         }}
         label {{ display: grid; gap: 4px; color: #5f6368; font-size: 12px; }}
-        .run-control {{
+        .run-panel {{
             display: grid;
-            gap: 4px;
+            gap: 6px;
             color: #5f6368;
             font-size: 12px;
-            min-width: 320px;
+            min-width: min(620px, 100%);
+            flex: 1 1 520px;
         }}
         .field-label {{ display: block; }}
-        .run-speed {{
+        .run-metrics {{ display: flex; flex-wrap: wrap; gap: 6px; }}
+        .run-metrics span, .metric {{
+            display: inline-flex;
+            align-items: center;
+            min-height: 24px;
+            padding: 0 8px;
+            border-radius: 999px;
+            background: #eef3f8;
             color: #5f6368;
             font-size: 12px;
-            line-height: 1.35;
         }}
+        .muted {{ color: #80868b; }}
         .run-picker {{ position: relative; color: #202124; }}
         .run-picker summary {{
             display: flex;
             align-items: center;
-            min-height: 30px;
+            min-height: 36px;
             border: 1px solid #dadce0;
-            border-radius: 4px;
-            padding: 0 8px;
+            border-radius: 6px;
+            padding: 0 10px;
             cursor: pointer;
             user-select: none;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }}
         .run-picker[open] summary {{ border-color: #1a73e8; }}
         .run-menu {{
@@ -1266,7 +1294,7 @@ def _render_page(
             max-height: 420px;
             overflow: auto;
             border: 1px solid #dadce0;
-            border-radius: 4px;
+            border-radius: 8px;
             background: #ffffff;
             box-shadow: 0 8px 24px rgba(60, 64, 67, 0.18);
         }}
@@ -1279,14 +1307,20 @@ def _render_page(
         }}
         .run-menu-row.selected {{ background: #f1f5ff; }}
         .run-menu-link {{
-            display: block;
+            display: grid;
+            gap: 2px;
             margin: 0;
             padding: 8px;
             overflow: hidden;
-            color: #202124;
+            color: inherit;
+            text-decoration: none;
+        }}
+        .run-menu-name {{
+            overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
         }}
+        .run-menu-time {{ color: #80868b; font-size: 11px; }}
         .hide-run-form {{ margin: 0; }}
         .hide-run-form button {{ margin-right: 6px; }}
         .hide-run-form.is-deleting button {{
@@ -1306,93 +1340,163 @@ def _render_page(
         }}
         .hide-run-form.is-deleting .spinner {{ display: inline-block; }}
         @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
-        input, select, button {{
-            height: 32px;
+        input, select, button, .button {{
+            box-sizing: border-box;
+            height: 36px;
             border: 1px solid #dadce0;
-            border-radius: 4px;
+            border-radius: 6px;
             padding: 0 8px;
             font: inherit;
         }}
-        button {{ background: #1a73e8; border-color: #1a73e8; color: white; }}
-        button.danger {{ background: #b3261e; border-color: #b3261e; }}
-        table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
-        th, td {{ padding: 8px; border-top: 1px solid #e8eaed; vertical-align: top; }}
-        th {{ text-align: left; color: #5f6368; font-weight: 600; }}
-        code {{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }}
-        a {{ color: #1a73e8; margin-right: 8px; }}
-        .preview {{
-            width: 128px;
-            height: 128px;
-            image-rendering: pixelated;
-            object-fit: contain;
-            border: 1px solid #dadce0;
-            background: #f8fafd;
-        }}
-        .strip {{
-            display: flex;
-            gap: 10px;
-            overflow-x: auto;
-            padding: 0 0 14px;
-        }}
-        .strip-tile {{
-            display: grid;
-            gap: 4px;
-            min-width: 96px;
-            color: #202124;
-            font-size: 12px;
-            text-align: center;
+        button, .button {{
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            background: #1a73e8;
+            border-color: #1a73e8;
+            color: white;
             text-decoration: none;
         }}
-        .strip-preview, .strip-missing {{
-            width: 96px;
-            height: 96px;
-            border: 1px solid #dadce0;
-            background: #f8fafd;
-            object-fit: contain;
-            image-rendering: pixelated;
-        }}
-        .strip-missing {{
-            display: grid;
-            place-items: center;
-            color: #9aa0a6;
-        }}
-        .status {{ white-space: nowrap; }}
-        .pager {{
+        .button.secondary {{ background: #ffffff; color: #1a73e8; }}
+        button.danger {{ background: #b3261e; border-color: #b3261e; }}
+        button.compact {{ height: 28px; padding: 0 8px; font-size: 12px; }}
+        .toolbar-actions {{
             display: flex;
             flex-wrap: wrap;
-            gap: 12px;
+            align-items: end;
+            gap: 8px;
+        }}
+        code {{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }}
+        a {{ color: #1a73e8; }}
+        .page-summary {{
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: space-between;
+            gap: 10px;
             align-items: center;
-            padding: 0 0 12px;
+            margin: 14px 0 10px;
             color: #5f6368;
             font-size: 13px;
         }}
-        .pager-links a {{ margin-right: 10px; }}
+        .gallery {{
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+            gap: 12px;
+        }}
+        .gif-card {{
+            overflow: hidden;
+            background: #ffffff;
+            border: 1px solid #dadce0;
+            border-radius: 8px;
+            box-shadow: 0 1px 2px rgba(60, 64, 67, 0.08);
+        }}
+        .gif-frame {{
+            display: grid;
+            place-items: center;
+            aspect-ratio: 1;
+            background: #111827;
+            text-decoration: none;
+        }}
+        .preview {{
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }}
+        .missing-preview {{ color: #f8fafd; font-size: 13px; }}
+        .gif-card-body {{
+            display: grid;
+            gap: 8px;
+            padding: 10px;
+            font-size: 13px;
+        }}
+        .gif-card-topline {{
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+        }}
+        .gif-card-topline strong {{
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }}
+        .status-pill {{
+            flex: 0 0 auto;
+            padding: 2px 7px;
+            border-radius: 999px;
+            background: #edf0f3;
+            color: #5f6368;
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+        }}
+        .status-pill.ok {{ background: #e6f4ea; color: #137333; }}
+        .status-pill.failed {{ background: #fce8e6; color: #b3261e; }}
+        .facts {{ display: flex; flex-wrap: wrap; gap: 6px; color: #5f6368; font-size: 12px; }}
+        .facts span {{ padding: 2px 6px; border-radius: 999px; background: #f1f3f4; }}
+        .reason {{
+            min-height: 18px;
+            color: #3c4043;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }}
+        .links {{ display: flex; gap: 10px; font-size: 12px; }}
+        .pager {{
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: space-between;
+            gap: 10px;
+            align-items: center;
+            margin: 0 0 12px;
+            color: #5f6368;
+            font-size: 13px;
+        }}
+        .pager-links {{ display: flex; gap: 10px; }}
         .warning {{ color: #b06000; }}
-        .missing, .empty {{ color: #9aa0a6; }}
+        .empty-state {{
+            display: grid;
+            min-height: 220px;
+            place-items: center;
+            color: #80868b;
+            background: #ffffff;
+            border: 1px dashed #dadce0;
+            border-radius: 8px;
+        }}
         @media (max-width: 900px) {{
-            body {{ margin: 12px; }}
-            header {{ display: block; }}
-            table {{ display: block; overflow-x: auto; white-space: nowrap; }}
-            .preview {{ width: 96px; height: 96px; }}
+            .shell {{ padding: 12px; }}
+            .topbar {{ display: block; }}
+            .top-meta {{ margin-top: 10px; }}
+            .toolbar-actions {{ width: 100%; }}
+            .toolbar-actions label, .toolbar-actions button, .toolbar-actions .button {{ flex: 1 1 120px; }}
         }}
     </style>
 </head>
 <body>
-    <header>
-        <h1>CurvyTron Self-Play GIFs</h1>
-        <div class="header-meta">
-            <span class="generated">{_html_attr(generated_at)}</span>
-            <span id="load-time">{_html_attr(load_label)}</span>
-            <label class="auto-refresh">
-                <input id="auto-refresh" type="checkbox" checked>
-                Auto 10s
-            </label>
+    <main class="shell">
+        <header class="topbar">
+            <div>
+                <h1>CurvyTron GIFs</h1>
+                <p class="subtitle">Latest checkpoint self-play clips. Visual check only.</p>
+            </div>
+            <div class="top-meta">
+                <span id="load-time">{_html_attr(load_label)}</span>
+                <span id="refresh-state">updated {_html_attr(generated_at)}</span>
+                <label class="auto-refresh">
+                    <input id="auto-refresh" type="checkbox" checked>
+                    Live 15s
+                </label>
+            </div>
+        </header>
+        {filters}
+        {reload_warning}
+        <div class="page-summary">
+            <span id="match-count">{_html_attr(shown_label)}</span>
+            <span class="muted">Run: {_html_attr(selected_run_id or "none")}</span>
         </div>
-    </header>
-    {filters}
-    {reload_warning}
-    {pager}
-    {_render_rows(rows)}
+        {pager}
+        {_render_rows(rows)}
+    </main>
     <script>
         for (const form of document.querySelectorAll(".hide-run-form")) {{
             form.addEventListener("submit", async (event) => {{
@@ -1422,13 +1526,16 @@ def _render_page(
                     );
                     const deletedSelectedRun = selectedInput && selectedInput.value === runId;
                     if (row) row.remove();
-                    for (const resultRow of document.querySelectorAll("tr[data-run-id]")) {{
+                    for (const resultRow of document.querySelectorAll(".gif-card[data-run-id]")) {{
                         if (resultRow.dataset.runId === runId) resultRow.remove();
                     }}
                     if (deletedSelectedRun) {{
                         selectedInput.remove();
                         const summary = picker?.querySelector("summary");
                         if (summary) summary.textContent = "Pick a run";
+                        renderRows([]);
+                        if (matchCount) matchCount.textContent = "No GIFs";
+                        currentPageToken = "";
                         const url = new URL(window.location.href);
                         url.searchParams.delete("run_id");
                         window.history.replaceState(null, "", url.pathname + url.search + url.hash);
@@ -1440,6 +1547,67 @@ def _render_page(
                 }}
             }});
         }}
+        const escapeHtml = (value) => {{
+            const element = document.createElement("span");
+            element.textContent = value ?? "";
+            return element.innerHTML;
+        }};
+        const artifactUrl = (path, ref, version = "") => {{
+            const url = new URL(path, window.location.href);
+            url.searchParams.set("ref", ref || "");
+            if (version) url.searchParams.set("v", version);
+            return url.pathname + url.search;
+        }};
+        const rowGifVersion = (row) => {{
+            const ts = Math.floor(Number(row.gif_updated_ts || row.updated_ts || 0));
+            return `${{ts}}-${{row.gif_bytes || 0}}`;
+        }};
+        const rowCard = (row, index) => {{
+            const gifUrl = artifactUrl("/gif", row.gif_ref, rowGifVersion(row));
+            const metaUrl = artifactUrl("/meta", row.summary_ref);
+            const checkpoint = row.checkpoint_label || row.eval_id || "checkpoint";
+            const ok = row.ok === true && row.gif_exists === true;
+            const status = row.ok === true ? "OK" : row.ok === false ? "failed" : "unknown";
+            const statusClass = ok ? "ok" : "failed";
+            const steps = row.max_steps != null
+                ? `${{row.physical_steps || 0}}/${{row.max_steps}}`
+                : String(row.physical_steps ?? "unknown");
+            const loading = index === 0 ? "eager" : "lazy";
+            const priority = index === 0 ? "high" : "low";
+            const preview = row.gif_exists === true
+                ? `<a class="gif-frame" href="${{gifUrl}}"><img class="preview" loading="${{loading}}" decoding="async" fetchpriority="${{priority}}" src="${{gifUrl}}" width="224" height="224" alt=""></a>`
+                : `<a class="gif-frame missing-preview" href="${{metaUrl}}">missing GIF</a>`;
+            return `
+                <article class="gif-card" data-run-id="${{escapeHtml(row.run_id)}}">
+                    ${{preview}}
+                    <div class="gif-card-body">
+                        <div class="gif-card-topline">
+                            <strong>${{escapeHtml(checkpoint)}}</strong>
+                            <span class="status-pill ${{statusClass}}">${{escapeHtml(status)}}</span>
+                        </div>
+                        <div class="facts">
+                            <span>${{escapeHtml(row.frame_count)}} frames</span>
+                            <span>${{escapeHtml(steps)}} steps</span>
+                        </div>
+                        <div class="reason">${{escapeHtml(row.terminal_reason || "")}}</div>
+                        <div class="links">
+                            <a href="${{gifUrl}}">GIF</a>
+                            <a href="${{metaUrl}}">JSON</a>
+                        </div>
+                    </div>
+                </article>`;
+        }};
+        const renderRows = (rows) => {{
+            const gallery = document.getElementById("gallery");
+            if (!gallery) return;
+            if (!rows || rows.length === 0) {{
+                gallery.className = "empty-state";
+                gallery.innerHTML = "No GIFs yet.";
+                return;
+            }}
+            gallery.className = "gallery";
+            gallery.innerHTML = rows.map(rowCard).join("");
+        }};
         const loadTime = document.getElementById("load-time");
         if (loadTime && performance?.timing) {{
             const elapsed = Date.now() - performance.timing.navigationStart;
@@ -1448,13 +1616,21 @@ def _render_page(
             }}
         }}
         const autoRefresh = document.getElementById("auto-refresh");
+        const refreshState = document.getElementById("refresh-state");
+        const matchCount = document.getElementById("match-count");
         let currentPageToken = {json.dumps(current_page_token)};
         const headUrl = new URL("/api/head", window.location.href);
+        const summariesUrl = new URL("/api/summaries", window.location.href);
         const currentParams = new URLSearchParams(window.location.search);
-        for (const key of ["run_id", "run", "attempt", "eval", "ok"]) {{
+        for (const key of ["run_id", "run", "attempt", "eval", "ok", "limit"]) {{
             const value = currentParams.get(key);
-            if (value) headUrl.searchParams.set(key, value);
+            if (value) {{
+                headUrl.searchParams.set(key, value);
+                summariesUrl.searchParams.set(key, value);
+            }}
         }}
+        headUrl.searchParams.set("fresh", "1");
+        summariesUrl.searchParams.set("offset", "0");
         const checkForNewGif = async () => {{
             if (!autoRefresh?.checked) return;
             try {{
@@ -1465,16 +1641,29 @@ def _render_page(
                 if (!response.ok) return;
                 const payload = await response.json();
                 const nextToken = payload.page_token || "";
-                if (nextToken && currentPageToken && nextToken !== currentPageToken) {{
-                    window.location.replace(window.location.href);
-                }} else if (nextToken && !currentPageToken) {{
-                    window.location.replace(window.location.href);
+                if (nextToken && nextToken !== currentPageToken) {{
+                    const summaries = await fetch(summariesUrl.toString(), {{
+                        cache: "no-store",
+                        headers: {{ "Accept": "application/json" }}
+                    }});
+                    if (!summaries.ok) return;
+                    const summaryPayload = await summaries.json();
+                    renderRows(summaryPayload.rows || []);
+                    if (matchCount) {{
+                        const total = summaryPayload.total_rows ?? 0;
+                        const suffix = summaryPayload.total_rows_exact === false ? "+" : "";
+                        matchCount.textContent = `${{(summaryPayload.rows || []).length}} shown / ${{total}}${{suffix}} total`;
+                    }}
+                    currentPageToken = nextToken;
+                    if (refreshState) {{
+                        refreshState.textContent = `updated ${{new Date().toLocaleTimeString()}}`;
+                    }}
                 }}
             }} catch (error) {{
                 // Keep the page quiet if a transient poll fails.
             }}
         }};
-        window.setInterval(checkForNewGif, 10000);
+        window.setInterval(checkForNewGif, 15000);
     </script>
 </body>
 </html>
@@ -1483,13 +1672,7 @@ def _render_page(
 
 def _build_fastapi_app(volume: Any) -> Any:
     from fastapi import FastAPI, Header, Query
-    from fastapi.responses import (
-        FileResponse,
-        HTMLResponse,
-        JSONResponse,
-        RedirectResponse,
-        Response,
-    )
+    from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
     web_app = FastAPI(title="CurvyTron Self-Play GIF Browser")
 
@@ -1502,8 +1685,11 @@ def _build_fastapi_app(volume: Any) -> Any:
         ok: str = DEFAULT_OK_FILTER,
         limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
         offset: int = Query(0, ge=0),
+        fresh: bool = False,
     ) -> HTMLResponse:
         started_at = monotonic()
+        if fresh:
+            _maybe_reload_volume(volume, force=True)
         runs = _list_runs(RUNS_MOUNT)
         selected_run_id = _default_selected_run_id(runs, run_id)
         page = _list_selfplay_summary_page(
@@ -1543,7 +1729,7 @@ def _build_fastapi_app(volume: Any) -> Any:
                 offset=page["offset"],
                 total_rows=page["total_rows"],
                 total_rows_exact=bool(page.get("total_rows_exact", True)),
-                page_token=_page_token(runs=runs, rows=head_page["rows"]),
+                page_token=_head_token(head_page["rows"]),
                 server_elapsed_ms=int((monotonic() - started_at) * 1000),
                 reload_error=None,
             )
@@ -1558,7 +1744,10 @@ def _build_fastapi_app(volume: Any) -> Any:
         ok: str = DEFAULT_OK_FILTER,
         limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
         offset: int = Query(0, ge=0),
+        fresh: bool = False,
     ) -> JSONResponse:
+        if fresh:
+            _maybe_reload_volume(volume, force=True)
         runs = _list_runs(RUNS_MOUNT)
         selected_run_id = _default_selected_run_id(runs, run_id)
         page = _list_selfplay_summary_page(
@@ -1582,6 +1771,7 @@ def _build_fastapi_app(volume: Any) -> Any:
                 "limit": page["limit"],
                 "has_newer": page["has_newer"],
                 "has_older": page["has_older"],
+                "head_token": _head_token(page["rows"]),
                 "reload_error": None,
             }
         )
@@ -1593,9 +1783,19 @@ def _build_fastapi_app(volume: Any) -> Any:
         attempt: str = "",
         eval: str = "",
         ok: str = DEFAULT_OK_FILTER,
+        fresh: bool = False,
     ) -> JSONResponse:
-        runs = _list_runs(RUNS_MOUNT)
-        selected_run_id = _default_selected_run_id(runs, run_id)
+        if fresh:
+            _maybe_reload_volume(volume)
+        runs: list[dict[str, Any]] = []
+        if run_id:
+            try:
+                selected_run_id = run_mgmt.clean_id(run_id, label="run_id")
+            except ValueError:
+                selected_run_id = ""
+        else:
+            runs = _list_runs(RUNS_MOUNT)
+            selected_run_id = _default_selected_run_id(runs, run_id)
         page = _list_selfplay_summary_page(
             RUNS_MOUNT,
             run_id=selected_run_id,
@@ -1607,10 +1807,11 @@ def _build_fastapi_app(volume: Any) -> Any:
             offset=0,
         )
         rows = page["rows"]
+        head_token = _head_token(rows)
         return JSONResponse(
             {
-                "page_token": _page_token(runs=runs, rows=rows),
-                "head_token": _head_token(rows),
+                "page_token": head_token,
+                "head_token": head_token,
                 "head": rows[0] if rows else None,
                 "runs": runs,
                 "selected_run_id": selected_run_id,
@@ -1670,8 +1871,12 @@ def _build_fastapi_app(volume: Any) -> Any:
         }
         if _etag_matches(if_none_match, etag):
             return Response(status_code=304, headers=headers)
-        return FileResponse(
-            path,
+        try:
+            gif_bytes = path.read_bytes()
+        except OSError:
+            return Response("GIF not found", status_code=404)
+        return Response(
+            gif_bytes,
             media_type="image/gif",
             headers=headers,
         )

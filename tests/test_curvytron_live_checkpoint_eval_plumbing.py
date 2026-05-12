@@ -791,7 +791,7 @@ def test_live_checkpoint_trigger_spawns_eval_and_selfplay_gif_without_volume_com
     assert eval_call["env_variant"] == train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT
     assert eval_call["eval_seed_count"] == 2
     assert eval_call["natural_bonus_spawn"] is False
-    assert gif_call["seed"] == 10_007
+    assert gif_call["seed"] != 10_007
     assert gif_call["max_steps"] == 16
     assert gif_call["frame_stride"] == 2
     assert gif_call["fps"] == 12.0
@@ -812,6 +812,9 @@ def test_live_checkpoint_trigger_spawns_eval_and_selfplay_gif_without_volume_com
     assert request["selfplay_gif"]["scheduled"] is True
     assert request["selfplay_gif"]["function_call_id"] == "fc-live-gif-test"
     assert request["selfplay_gif"]["config"]["frame_size"] == 320
+    assert request["selfplay_gif"]["config"]["base_seed"] == 10_007
+    assert request["selfplay_gif"]["config"]["effective_seed"] == gif_call["seed"]
+    assert request["selfplay_gif"]["config"]["checkpoint_seed_mixing_enabled"] is True
     assert (
         request["selfplay_gif"]["config"]["training_reward_variant"]
         == train_mod.REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME
@@ -1158,6 +1161,7 @@ def test_checkpoint_eval_poller_completes_eval_inspection_and_selfplay_gif_jobs(
     assert completed_by_kind["selfplay_gif"]["result"]["frame_count"] == 5
     assert len(fake_eval_function.calls) == 1
     assert len(fake_gif_function.calls) == 1
+    scheduled = result["scheduled"][0]
     eval_call = fake_eval_function.calls[0]
     gif_call = fake_gif_function.calls[0]
     assert eval_call["checkpoint_ref"].endswith(
@@ -1167,7 +1171,9 @@ def test_checkpoint_eval_poller_completes_eval_inspection_and_selfplay_gif_jobs(
     assert gif_call["frame_size"] == 320
     assert eval_call["eval_id"] == "live_checkpoint_iteration_1"
     assert gif_call["eval_id"] == "live_checkpoint_iteration_1"
-    assert gif_call["seed"] == 10_003
+    assert gif_call["seed"] != 10_003
+    assert scheduled["selfplay_gif"]["config"]["base_seed"] == 10_003
+    assert scheduled["selfplay_gif"]["config"]["effective_seed"] == gif_call["seed"]
     assert gif_call["max_steps"] == 24
     assert gif_call["frame_stride"] == 2
     assert gif_call["fps"] == 12.0

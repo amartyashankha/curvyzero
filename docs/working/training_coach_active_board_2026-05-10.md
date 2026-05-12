@@ -42,12 +42,17 @@ Updated 2026-05-12 00:05 EDT.
   live LightZero MuZero policy chooses both players' actions from the same
   pre-step state; the CurvyTron env advances once with the joint action; learner
   updates mutate that same policy for later collection.
-- Reset starts are already varied by generated reset seeds. Source-default
-  natural bonus spawning is on by default; no-bonus is only a controlled
-  ablation. Default stochasticity is mild: action repeat `min=1`, `max=3`,
-  `extra_probability=0.20`, which is about `80%` normal, `16%` held one extra
-  step, and `4%` held two extra steps. Add visual Gaussian noise `0.10`, keep
-  random no-op/drop off, and use no warmup schedule.
+- Reset starts are varied by generated reset seeds. A run can keep one top-level
+  seed for reproducibility, but training calls `reset(seed=None)` /
+  `autoreset_done_rows(seed=None)` so every env restart gets a fresh per-row
+  derived seed. Replay rows and step records log `reset_seed` for audit.
+  Source-default natural bonus spawning is on by default; no-bonus is only a
+  controlled ablation. Default stochasticity is mild: the legacy
+  `policy_action_repeat_*` flags now mean policy no-op skips, not held actions.
+  With `min=1`, `max=3`, `extra_probability=0.20`, a seat takes one real policy
+  action, then may skip the next one or two policy chances by sending NOOP.
+  Skipped no-op ticks do not create replay rows or reward targets. Add visual
+  Gaussian noise `0.10`, keep random no-op/drop off, and use no warmup schedule.
 - Default two-seat trainer reward is shaped but explicit: the reward float that
   replay/learner consume is tiny survival helper plus scaled sparse terminal
   outcome. The row also logs dense helper, raw sparse outcome, terminal outcome,
@@ -283,9 +288,10 @@ uses raw finite survival count with `gamma=1.0`; the decisive winner keeps its
 episode survival return and the loser trajectory is zeroed. This is a debug
 target path, not the current stock LightZero joint-action scalar reward.
 
-The active two-seat path now exposes policy-action-repeat/dropout knobs. The
-default is no repeat. Robustness variants may set these knobs, but learning
-claims should say whether the run used them.
+The active two-seat path exposes legacy `policy_action_repeat_*` knobs whose
+current meaning is policy no-op skipping. Skipped no-op ticks are not learner
+rows. Robustness variants may set these knobs, but learning claims should say
+whether the run used them.
 
 Current launched two-seat run refs:
 

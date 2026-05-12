@@ -11,8 +11,10 @@ from curvyzero.infra.modal import curvytron_gif_browser as browser
 @pytest.fixture(autouse=True)
 def _clear_browser_listing_caches():
     browser._clear_listing_caches()
+    browser._LAST_VOLUME_RELOAD_AT = 0.0
     yield
     browser._clear_listing_caches()
+    browser._LAST_VOLUME_RELOAD_AT = 0.0
 
 
 def _selfplay_dir(tmp_path, *, run_id: str, attempt_id: str, eval_id: str):
@@ -652,6 +654,42 @@ def test_fastapi_routes_serve_only_selfplay_artifacts(tmp_path, monkeypatch) -> 
     assert cached_gif_response.status_code == 304
 
 
+def test_fastapi_routes_reload_only_on_explicit_fresh(tmp_path, monkeypatch) -> None:
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+
+    class FakeVolume:
+        def __init__(self) -> None:
+            self.reload_count = 0
+
+        def reload(self) -> None:
+            self.reload_count += 1
+
+    volume = FakeVolume()
+    monkeypatch.setattr(browser, "RUNS_MOUNT", tmp_path)
+    _write_picker_flag(tmp_path, run_id="run-a")
+    _write_summary(
+        tmp_path,
+        run_id="run-a",
+        attempt_id="attempt-a",
+        eval_id="eval-a",
+        ok=True,
+        frame_count=5,
+        mtime=100,
+    )
+    app = browser._build_fastapi_app(volume)
+    client = TestClient(app)
+
+    assert client.get("/").status_code == 200
+    assert client.get("/api/summaries").status_code == 200
+    assert client.get("/api/head").status_code == 200
+    assert volume.reload_count == 0
+
+    assert client.get("/", params={"fresh": "1"}).status_code == 200
+    assert volume.reload_count == 1
+
+
 def test_fastapi_index_and_api_accept_run_id_picker_selection(
     tmp_path, monkeypatch
 ) -> None:
@@ -700,14 +738,18 @@ def test_fastapi_index_and_api_accept_run_id_picker_selection(
     assert "window.history.replaceState" in page_response.text
     assert "window.location.reload" not in page_response.text
     assert "window.location.assign" not in page_response.text
+    assert "window.location.replace" not in page_response.text
     assert 'class="hide-run-form"' in page_response.text
     assert 'class="spinner" aria-hidden="true"' in page_response.text
+    assert 'class="gif-card"' in page_response.text
+    assert 'id="gallery"' in page_response.text
     assert page_response.text.index('<details class="run-picker">') < page_response.text.index(
         'class="hide-run-form"'
     )
     assert page_response.text.index('class="hide-run-form"') < page_response.text.index(
-        "Run text"
+        "Status"
     )
+    assert "Run text" not in page_response.text
     assert "/api/runs/run-old/hide" in page_response.text
     assert page_response.text.index("run-new (") < page_response.text.index(
         "run-old ("
@@ -770,7 +812,7 @@ def test_fastapi_defaults_to_newest_run_and_successful_gifs(
 
     assert page_response.status_code == 200
     assert "<summary>run-new</summary>" in page_response.text
-    assert "missing raw.gif" not in page_response.text
+    assert "missing GIF" not in page_response.text
     assert api_response.status_code == 200
     assert api_response.json()["selected_run_id"] == "run-new"
     assert [row["eval_id"] for row in api_response.json()["rows"]] == [

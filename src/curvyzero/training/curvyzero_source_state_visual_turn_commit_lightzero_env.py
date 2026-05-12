@@ -249,7 +249,10 @@ class CurvyZeroSourceStateVisualTurnCommitLightZeroLocalEnv:
         )
         self._seed = int(_cfg_get(cfg, "seed", 0))
         self._episode_seed = self._seed
-        self._dynamic_seed = bool(_cfg_get(cfg, "dynamic_seed", False))
+        self._configured_dynamic_seed = bool(_cfg_get(cfg, "dynamic_seed", False))
+        self._dynamic_seed = self._configured_dynamic_seed
+        self._last_seed_call_dynamic_seed_arg: bool | None = None
+        self._reset_index = 0
         (
             self._decision_source_frames,
             self._source_physics_step_ms,
@@ -358,10 +361,16 @@ class CurvyZeroSourceStateVisualTurnCommitLightZeroLocalEnv:
     def close(self) -> None:
         return None
 
-    def seed(self, seed: int, dynamic_seed: bool = True) -> None:
+    def seed(self, seed: int, dynamic_seed: bool | None = None) -> None:
+        previous_seed = self._seed
         self._seed = int(seed)
         self._episode_seed = self._seed
-        self._dynamic_seed = bool(dynamic_seed)
+        self._last_seed_call_dynamic_seed_arg = (
+            bool(dynamic_seed) if dynamic_seed is not None else None
+        )
+        self._dynamic_seed = self._configured_dynamic_seed
+        if self._seed != previous_seed:
+            self._reset_index = 0
 
     def random_action(self) -> int:
         return 1
@@ -751,6 +760,16 @@ class CurvyZeroSourceStateVisualTurnCommitLightZeroLocalEnv:
             "two_seat_self_play_status": TURN_COMMIT_TRAINING_STATUS,
             "fixed_opponent_is_two_seat_self_play": False,
             "episode_seed": self._episode_seed,
+            "reset_seed_strategy": (
+                "dynamic_seed_sequence_from_run_seed_and_reset_index/v0"
+                if self._dynamic_seed
+                else "fixed_seed"
+            ),
+            "configured_dynamic_seed": bool(self._configured_dynamic_seed),
+            "effective_dynamic_seed": bool(self._dynamic_seed),
+            "seed_call_dynamic_seed_arg": self._last_seed_call_dynamic_seed_arg,
+            "run_seed": self._seed,
+            "reset_index": int(max(0, self._reset_index - 1)),
             "source_tick_index": int(self._source_tick_index),
             "adapter_timestep": int(self._scalar_step_index),
             "public_env_info": {
@@ -847,11 +866,30 @@ class CurvyZeroSourceStateVisualTurnCommitLightZeroLocalEnv:
 
     def _next_seed(self, seed: int | None) -> int:
         if seed is not None:
-            return int(seed)
+            self._seed = int(seed)
+            if not self._dynamic_seed:
+                self._episode_seed = self._seed
+                return self._seed
         if not self._dynamic_seed:
+            self._episode_seed = self._seed
             return self._seed
-        self._seed += 1
-        return self._seed
+        reset_seed = self._derived_reset_seed(self._seed, self._reset_index)
+        self._reset_index += 1
+        self._episode_seed = reset_seed
+        return reset_seed
+
+    @staticmethod
+    def _derived_reset_seed(run_seed: int, reset_index: int) -> int:
+        seed_sequence = np.random.SeedSequence(
+            [
+                int(run_seed) & 0xFFFFFFFF,
+                (int(run_seed) >> 32) & 0xFFFFFFFF,
+                int(reset_index) & 0xFFFFFFFF,
+                (int(reset_index) >> 32) & 0xFFFFFFFF,
+            ]
+        )
+        rng = np.random.default_rng(seed_sequence)
+        return int(rng.integers(0, np.iinfo(np.int64).max, dtype=np.int64))
 
     def __repr__(self) -> str:
         return (

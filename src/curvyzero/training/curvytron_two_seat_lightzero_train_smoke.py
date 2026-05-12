@@ -115,7 +115,7 @@ DEFAULT_POLICY_ACTION_REPEAT_EXTRA_PROBABILITY = 0.20
 DEFAULT_POLICY_ACTION_REPEAT_WARMUP_ITERATIONS = 0
 DEFAULT_OBSERVATION_NOISE_STD = 0.10
 POLICY_ACTION_REPEAT_RNG_SALT = 0xC0A7A11
-CONTROL_STOCHASTICITY_SCHEMA_ID = "curvyzero_two_seat_policy_action_repeat/v0"
+CONTROL_STOCHASTICITY_SCHEMA_ID = "curvyzero_two_seat_policy_noop_skip/v0"
 ACTION_SELECTION_MODE_COLLECT = "collect"
 ACTION_SELECTION_MODE_EVAL = "eval"
 ACTION_SELECTION_MODE_CHOICES = (
@@ -350,6 +350,7 @@ def run_curvytron_two_seat_lightzero_train_smoke(
                 replay_rows=[],
                 total_steps_collected=0,
                 total_replay_rows_collected=0,
+                initial_reset_seed_sample=[],
                 iteration_summaries=[],
                 learner_forwards=[],
                 learner_forward={
@@ -466,6 +467,7 @@ def run_curvytron_two_seat_lightzero_train_smoke(
     # The run seed initializes the RNG, but each row reset gets its own generated
     # reset seed. This keeps training starts varied while remaining reproducible.
     batch = env.reset(seed=None)
+    initial_reset_seed_sample = _reset_seed_sample(batch.info)
     observation = visual_stack.update(env)
     problems.extend(_validate_visual_batch(observation, batch.action_mask, label="reset"))
 
@@ -802,6 +804,7 @@ def run_curvytron_two_seat_lightzero_train_smoke(
             max_replay_rows=resolved_max_replay_rows,
             record_log_limit=int(record_log_limit),
             replay_row_log_limit=int(replay_row_log_limit),
+            initial_reset_seed_sample=initial_reset_seed_sample,
             alive_reward=resolved_alive_reward,
             dead_reward=resolved_dead_reward,
             terminal_outcome_reward_per_step=(
@@ -986,6 +989,31 @@ def _compact_iteration_for_summary(iteration: Any) -> dict[str, Any]:
     }
 
 
+def _reset_seed_sample(
+    info: Mapping[str, Any],
+    *,
+    row_mask: np.ndarray | None = None,
+    limit: int = 8,
+) -> list[dict[str, int]]:
+    reset_seed = info.get("reset_seed")
+    if reset_seed is None:
+        return []
+    array = np.asarray(reset_seed)
+    if array.ndim != 1:
+        return []
+    if row_mask is None:
+        rows = np.arange(array.shape[0], dtype=np.int64)
+    else:
+        mask = np.asarray(row_mask, dtype=bool)
+        if mask.shape != (array.shape[0],):
+            return []
+        rows = np.flatnonzero(mask)
+    return [
+        {"env_row_id": int(row), "reset_seed": int(array[int(row)])}
+        for row in rows[: max(0, int(limit))]
+    ]
+
+
 def _result_payload(
     *,
     ok: bool,
@@ -1003,6 +1031,7 @@ def _result_payload(
     max_replay_rows: int | None,
     record_log_limit: int,
     replay_row_log_limit: int,
+    initial_reset_seed_sample: list[dict[str, int]],
     alive_reward: float,
     dead_reward: float,
     terminal_outcome_reward_per_step: float,
@@ -1118,6 +1147,8 @@ def _result_payload(
             "replay_row_log_limit": int(replay_row_log_limit),
             "initial_reset_seed_policy": "generated_from_env_rng",
             "autoreset_seed_policy": "generated_from_env_rng",
+            "reset_seed_strategy": "run_seed_initializes_env_rng_then_per_reset_row_draws/v0",
+            "initial_reset_seed_sample": list(initial_reset_seed_sample),
             "env_max_ticks": None if env_max_ticks is None else int(env_max_ticks),
             "death_mode": death_mode,
             "natural_bonus_spawn": bool(natural_bonus_spawn),
@@ -1166,9 +1197,10 @@ def _result_payload(
                 policy_action_repeat_warmup_iterations
             ),
             "policy_action_repeat_semantics": (
-                "per-env-row/per-seat action hold in the collector; when enabled, "
-                "a seat can reuse its last executed action without a fresh policy "
-                "search on that physical env step"
+                "legacy flag names; semantics are per-env-row/per-seat no-op "
+                "policy skips. After a fresh policy action, a seat can skip later "
+                "policy chances by sending NOOP to the env. Skipped no-op ticks do "
+                "not create replay rows or reward targets."
             ),
             "observation_noise_std": float(observation_noise_std),
             "trail_render_mode": render_metadata["trail_render_mode"],
@@ -1311,13 +1343,7 @@ def _collect_current_policy_iteration(
         "player_1": Counter(),
     }
     stochasticity_counts: Counter[str] = Counter()
-    repeat_count_histogram: Counter[int] = Counter()
-    last_executed_action = np.full(
-        (env.batch_size, env.player_count),
-        NOOP_ACTION_ID,
-        dtype=np.int16,
-    )
-    last_action_valid = np.zeros((env.batch_size, env.player_count), dtype=bool)
+    noop_skip_interval_histogram: Counter[int] = Counter()
     repeat_remaining = np.zeros((env.batch_size, env.player_count), dtype=np.int16)
 
     def add_elapsed(name: str, started: float) -> None:
@@ -1326,8 +1352,6 @@ def _collect_current_policy_iteration(
     def clear_control_state(row_mask: np.ndarray) -> None:
         if not bool(np.asarray(row_mask, dtype=bool).any()):
             return
-        last_executed_action[row_mask, :] = NOOP_ACTION_ID
-        last_action_valid[row_mask, :] = False
         repeat_remaining[row_mask, :] = 0
 
     needs_reset = np.asarray(batch.info.get("needs_reset", batch.done), dtype=bool)
@@ -1380,19 +1404,15 @@ def _collect_current_policy_iteration(
             active_env_row_id,
             active_player_id,
         ].astype(np.int16, copy=True)
-        last_valid_for_active = last_action_valid[
-            active_env_row_id,
-            active_player_id,
-        ]
-        needs_policy_decision = (repeat_remaining_before <= 0) | (~last_valid_for_active)
+        needs_policy_decision = repeat_remaining_before <= 0
         fresh_active_indices = np.flatnonzero(needs_policy_decision)
-        repeated_active_indices = np.flatnonzero(~needs_policy_decision)
+        skipped_active_indices = np.flatnonzero(~needs_policy_decision)
         stochasticity_counts["active_policy_rows"] += active_count
         stochasticity_counts["fresh_policy_decision_rows"] += int(
             fresh_active_indices.size
         )
-        stochasticity_counts["reused_action_rows"] += int(
-            repeated_active_indices.size
+        stochasticity_counts["policy_noop_skip_rows"] += int(
+            skipped_active_indices.size
         )
 
         selected_actions: list[int] = []
@@ -1402,7 +1422,7 @@ def _collect_current_policy_iteration(
             "records": [],
             "reason": None,
         }
-        policy_batching_label = "reused_previous_actions"
+        policy_batching_label = "skipped_policy_noop_rows"
         started = time.perf_counter()
         if fresh_active_indices.size:
             fresh_observations = active_observations[fresh_active_indices]
@@ -1495,10 +1515,7 @@ def _collect_current_policy_iteration(
 
         started = time.perf_counter()
         policy_selected = np.full(active_count, -1, dtype=np.int16)
-        selected = last_executed_action[
-            active_env_row_id,
-            active_player_id,
-        ].astype(np.int16, copy=True)
+        selected = np.full(active_count, NOOP_ACTION_ID, dtype=np.int16)
         if fresh_active_indices.size:
             policy_selected[fresh_active_indices] = np.asarray(
                 selected_actions,
@@ -1513,10 +1530,10 @@ def _collect_current_policy_iteration(
             )
             action_noise_mask[fresh_active_indices] = fresh_noise_mask
             selected[fresh_active_indices[fresh_noise_mask]] = NOOP_ACTION_ID
-        action_repeat_started = np.zeros(active_count, dtype=bool)
-        action_repeat_count = np.zeros(active_count, dtype=np.int16)
+        policy_noop_skip_started = np.zeros(active_count, dtype=bool)
+        policy_noop_skip_interval = np.zeros(active_count, dtype=np.int16)
         if fresh_active_indices.size:
-            fresh_repeat_counts = _sample_policy_action_repeats(
+            fresh_policy_intervals = _sample_policy_action_repeats(
                 count=int(fresh_active_indices.size),
                 min_repeat=policy_action_repeat_min,
                 max_repeat=policy_action_repeat_max,
@@ -1526,13 +1543,11 @@ def _collect_current_policy_iteration(
             for fresh_row, active_row in enumerate(fresh_active_indices):
                 env_row = int(active_env_row_id[active_row])
                 player = int(active_player_id[active_row])
-                repeat_count = int(fresh_repeat_counts[fresh_row])
-                last_executed_action[env_row, player] = int(selected[active_row])
-                last_action_valid[env_row, player] = True
-                repeat_remaining[env_row, player] = repeat_count
-                action_repeat_started[active_row] = True
-                action_repeat_count[active_row] = repeat_count
-                repeat_count_histogram[repeat_count] += 1
+                interval_steps = int(fresh_policy_intervals[fresh_row])
+                repeat_remaining[env_row, player] = interval_steps
+                policy_noop_skip_started[active_row] = True
+                policy_noop_skip_interval[active_row] = interval_steps
+                noop_skip_interval_histogram[interval_steps] += 1
         for active_row, action in enumerate(selected):
             env_row = int(active_env_row_id[active_row])
             player = int(active_player_id[active_row])
@@ -1618,6 +1633,7 @@ def _collect_current_policy_iteration(
                     "iteration": int(iteration),
                     "iteration_step": int(iteration_step),
                     "episode_id": _episode_id_for_row(batch.info, env_row),
+                    "reset_seed": _reset_seed_for_row(batch.info, env_row),
                     "decision_index": int(decision_index),
                     "env_row_id": env_row,
                     "player_id": player,
@@ -1636,14 +1652,20 @@ def _collect_current_policy_iteration(
                     "policy_action_repeat_extra_probability": float(
                         policy_action_repeat_extra_probability
                     ),
-                    "policy_action_repeat_started": bool(
-                        action_repeat_started[policy_row]
+                    "policy_noop_skip_started": bool(
+                        policy_noop_skip_started[policy_row]
                     ),
-                    "policy_action_repeat_count": int(action_repeat_count[policy_row]),
-                    "policy_action_repeat_remaining_after_step": int(
+                    "policy_noop_skip_interval_steps": int(
+                        policy_noop_skip_interval[policy_row]
+                    ),
+                    "policy_noop_skip_count_after_action": int(
+                        max(int(policy_noop_skip_interval[policy_row]) - 1, 0)
+                    ),
+                    "policy_noop_skip_remaining_after_step": int(
                         repeat_remaining_after[policy_row]
                     ),
                     "replay_row_for_fresh_policy_decision": True,
+                    "policy_noop_skip_ticks_create_replay_rows": False,
                     "observation_noise_std": float(observation_noise_std),
                     "action_weights": _action_weights(search_record, policy_action),
                     "root_value": _root_value(search_record),
@@ -1689,7 +1711,7 @@ def _collect_current_policy_iteration(
                 active_observations[fresh_active_indices].shape
             ),
             "fresh_policy_input_rows": int(fresh_active_indices.size),
-            "reused_action_rows": int(repeated_active_indices.size),
+            "policy_noop_skip_rows": int(skipped_active_indices.size),
             "policy_input_shape": list(active_observations.shape),
             "policy_input_rows": int(fresh_active_indices.size),
             "policy_api": (
@@ -1706,6 +1728,7 @@ def _collect_current_policy_iteration(
             "joint_action": joint_action.copy(),
             "policy_selected_actions": policy_selected.copy(),
             "executed_actions": selected.copy(),
+            "policy_noop_skip_actions_are_noop": True,
             "action_noise_noop_probability": float(action_noop_probability),
             "action_noise_noop_count": int(action_noise_mask.sum()),
             "control_stochasticity_schema_id": CONTROL_STOCHASTICITY_SCHEMA_ID,
@@ -1714,10 +1737,10 @@ def _collect_current_policy_iteration(
             "policy_action_repeat_extra_probability": float(
                 policy_action_repeat_extra_probability
             ),
-            "policy_action_repeat_remaining_before": repeat_remaining_before.copy(),
-            "policy_action_repeat_remaining_after": repeat_remaining_after.copy(),
-            "policy_action_repeat_started_mask": action_repeat_started.copy(),
-            "policy_action_repeat_counts": action_repeat_count.copy(),
+            "policy_noop_skip_remaining_before": repeat_remaining_before.copy(),
+            "policy_noop_skip_remaining_after": repeat_remaining_after.copy(),
+            "policy_noop_skip_started_mask": policy_noop_skip_started.copy(),
+            "policy_noop_skip_interval_steps": policy_noop_skip_interval.copy(),
             "observation_noise_std": float(observation_noise_std),
             "reward": step_batch.reward.copy(),
             "done": step_batch.done.copy(),
@@ -1725,6 +1748,7 @@ def _collect_current_policy_iteration(
                 step_batch.info.get("needs_reset", step_batch.done),
                 dtype=bool,
             ).copy(),
+            "reset_seed": _reset_seed_array_from_info(step_batch.info),
             "alive_before": None
             if before_alive is None
             else np.asarray(before_alive).copy(),
@@ -1760,6 +1784,10 @@ def _collect_current_policy_iteration(
             add_elapsed("loop_autoreset_sec", started)
             batch = reset_batch
             record["autoreset_rows"] = reset_batch.info["reset_rows"].copy()
+            record["autoreset_reset_seed_sample"] = _reset_seed_sample(
+                reset_batch.info,
+                row_mask=needs_reset,
+            )
             problems.extend(
                 _validate_visual_batch(
                     observation,
@@ -1790,12 +1818,14 @@ def _collect_current_policy_iteration(
             "policy_action_repeat_extra_probability": float(
                 policy_action_repeat_extra_probability
             ),
-            "policy_action_repeat_schedule": (
-                "per-env-row/per-seat draws; repeated seats reuse the last "
-                "executed action without a fresh policy search"
+            "policy_noop_skip_schedule": (
+                "per-env-row/per-seat draws; skipped seats send NOOP without "
+                "fresh policy search, replay row, or reward target"
             ),
             "counts": _counter_dict(stochasticity_counts),
-            "repeat_count_histogram": _counter_dict(repeat_count_histogram),
+            "policy_noop_skip_interval_histogram": _counter_dict(
+                noop_skip_interval_histogram
+            ),
             "physical_action_counts": _counter_dict(physical_action_counts),
             "physical_action_counts_by_player": {
                 player: _counter_dict(counts)
@@ -3009,6 +3039,26 @@ def _episode_id_for_row(info: Mapping[str, Any], env_row: int) -> int:
     return int(array[int(env_row)])
 
 
+def _reset_seed_for_row(info: Mapping[str, Any], env_row: int) -> int:
+    reset_seeds = info.get("reset_seed")
+    if reset_seeds is None:
+        return -1
+    array = np.asarray(reset_seeds, dtype=np.uint64)
+    if array.ndim != 1 or array.shape[0] <= int(env_row):
+        return -1
+    return int(array[int(env_row)])
+
+
+def _reset_seed_array_from_info(info: Mapping[str, Any]) -> np.ndarray | None:
+    reset_seeds = info.get("reset_seed")
+    if reset_seeds is None:
+        return None
+    array = np.asarray(reset_seeds, dtype=np.uint64)
+    if array.ndim != 1:
+        return None
+    return array.copy()
+
+
 def _compact_search_record(record: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "ok": bool(record.get("ok")),
@@ -3115,25 +3165,37 @@ def main() -> None:
         "--policy-action-repeat-min",
         type=int,
         default=DEFAULT_POLICY_ACTION_REPEAT_MIN,
-        help="Minimum physical env steps to hold a fresh policy action for each row/seat.",
+        help=(
+            "Legacy name. Minimum macro length for each row/seat: one fresh "
+            "policy action, then optional skipped policy chances that send NOOP."
+        ),
     )
     parser.add_argument(
         "--policy-action-repeat-max",
         type=int,
         default=DEFAULT_POLICY_ACTION_REPEAT_MAX,
-        help="Maximum physical env steps to hold a fresh policy action for each row/seat.",
+        help=(
+            "Legacy name. Maximum macro length for each row/seat: one fresh "
+            "policy action, then optional skipped policy chances that send NOOP."
+        ),
     )
     parser.add_argument(
         "--policy-action-repeat-extra-probability",
         type=float,
         default=DEFAULT_POLICY_ACTION_REPEAT_EXTRA_PROBABILITY,
-        help="Chance to extend a row/seat action hold by one more physical step, repeated until max.",
+        help=(
+            "Legacy name. Chance to add one more skipped policy chance that "
+            "sends NOOP, repeated until max."
+        ),
     )
     parser.add_argument(
         "--policy-action-repeat-warmup-iterations",
         type=int,
         default=DEFAULT_POLICY_ACTION_REPEAT_WARMUP_ITERATIONS,
-        help="Linearly ramp action-repeat extra probability from 0 to the requested value.",
+        help=(
+            "Linearly ramp policy no-op skip extra probability from 0 to the "
+            "requested value."
+        ),
     )
     parser.add_argument(
         "--observation-noise-std",

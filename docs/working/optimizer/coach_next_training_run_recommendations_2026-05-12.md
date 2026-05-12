@@ -2,18 +2,16 @@
 
 Date: 2026-05-12
 
-Copy-paste handoff: After the renderer changes land, do not start with a long
-learning run. First run the canonical two-seat self-play path in profiling
-shape on L4/T4 with `browser_lines`, background eval/GIF disabled, and
-`profile_no_death` to confirm the new render/cache cost. Optimizer launched a
-wait-mode profile matrix named `opt-render-cache-wait-*`; use those results
-before choosing the next real run. Future background matrices should use
-`modal run --detach`. If the sweep shows render no longer dominates, start the
-next real Coach run on normal death mode with L4/T4, `batch_size=32` or `64`,
+Copy-paste handoff: Current canonical two-seat profiles are still render-bound.
+Use the canonical path, but do not expect bigger GPUs or B128 to fix speed yet.
+If Coach must start a real run before the next render pass, use L4/T4,
+`browser_lines`, normal death, `batch_size=32` or `64`,
 `collect_steps_per_iteration=64`, `updates_per_iteration=4`,
-`num_simulations=8` or `16`, sparse checkpoints, and background checkpoint
-eval/GIF enabled only at checkpoint cadence. Treat H100, batch 128, sim32, and
-multi-GPU as follow-up scaling experiments, not defaults.
+`num_simulations=8` or `16`, sparse checkpoints, and checkpoint eval/GIF only at
+checkpoint cadence. B64 gives more replay rows per wall clock than B16, but the
+gain is modest because render dominates. Do not default to B128/H100/multi-GPU
+until dirty-block render work lowers visual time. Future background matrices
+should use `modal run --detach`.
 
 ## Current Truth
 
@@ -42,19 +40,27 @@ multi-GPU as follow-up scaling experiments, not defaults.
 - H100 did not solve the pre-cache render bottleneck. That points to CPU render
   and Python/NumPy orchestration, not raw GPU model throughput, as the current
   Amdahl limit.
-- Perspective reuse and a conservative browser-line trail cache have landed or
-  are landing in the renderer lane, but the end-to-end two-seat profile evidence
-  is still pending.
+- Perspective reuse, a conservative browser-line trail cache, exact downsample
+  scratch, and a copy/recolor fast path have landed and passed focused tests.
 - The first non-wait `opt-render-cache-*` launch printed function-call IDs but
   did not produce attempt/progress files after the local app exited. Treat that
   as a bad profile launch pattern, not speed evidence.
-- Current wait-mode profile run IDs from the main thread:
-  `opt-render-cache-wait-l4-b16-sim16-20260512a`,
-  `opt-render-cache-wait-l4-b64-sim16-20260512a`,
-  `opt-render-cache-wait-l4-b128-sim16-20260512a`,
-  `opt-render-cache-wait-h100-b128-sim16-20260512a`,
-  `opt-render-cache-wait-l4-b64-sim32-20260512a`.
-  Treat them as pending until summaries land.
+- Current wait-mode matrix summary:
+
+```text
+run                                      B    sim  wall     visual   search  replay_rows
+opt-render-cache-wait-l4-b16-sim16      16   16   198.6s   136.2s   14.0s   2356
+opt-render-cache-wait-l4-b64-sim16      64   16   559.4s   494.9s   21.2s   7957
+opt-render-cache-wait-l4-b64-sim32      64   32   562.1s   493.5s   28.4s   7922
+opt-render-cache-wait-l4-b128-sim16     128  16   1112.7s  990.8s   61.0s   15623
+opt-render-cache-wait-h100-b128-sim16   128  16   978.9s   853.9s   57.8s   15611
+```
+
+- Plain read: B64 and B128 produce more replay rows per iteration, but render
+  grows enough that replay-row throughput only improves modestly. Sim32 at B64
+  is not much slower than sim16 because render is already dominating; it is not
+  proof that search is cheap in general. H100 helps B128 a bit, but the loop is
+  still CPU-render-bound.
 
 ## Run First
 
@@ -64,14 +70,13 @@ multi-GPU as follow-up scaling experiments, not defaults.
    `visual_stack_update_sec`, `policy_search_sec`, `env_step_sec`, learner time,
    elapsed wall time, action batching, and replay rows.
 2. If the gate still shows render above about `70%` of hot-loop time, keep the
-   first real run conservative: `batch_size=16-32`, `num_simulations=8`,
+   first real run conservative: `batch_size=32`, `num_simulations=8`,
    `collect_steps_per_iteration=64`, `updates_per_iteration=4`.
-3. If the cache sweep shows render is no longer dominant, use
-   `batch_size=64`, `num_simulations=16`, `collect_steps_per_iteration=64`,
-   `updates_per_iteration=4`, `learner_sample_size=128-256`.
-4. Only try `batch_size=128`, `num_simulations=32`, or H100 after the matching
-   pending profiles prove the extra rows/search are not just multiplying render
-   time.
+3. Use `batch_size=64`, `num_simulations=16` only if Coach wants a data-volume
+   trade-off and accepts slower iterations for a modest replay-row throughput
+   gain.
+4. Do not use `batch_size=128`, H100, or multi-GPU as the first real training
+   default. Revisit after dirty-block render work lowers visual time.
 
 ## Training Shape
 
@@ -80,9 +85,9 @@ Recommended first real run after the profiling gate:
 ```text
 --mode two-seat-selfplay
 --compute gpu-l4-t4
---batch-size 32 or 64
+--batch-size 32
 --max-train-iter long enough for several checkpoints
---num-simulations 8 or 16
+--num-simulations 8
 --two-seat-collect-steps-per-iteration 64
 --two-seat-updates-per-iteration 4
 --two-seat-replay-scope accumulated
@@ -111,13 +116,13 @@ eval/inspection/GIF.
 ## Scaling Read
 
 - Larger batches increase self-play volume and search batching opportunities,
-  but they also multiply visual stack updates. Until the cache profiles close,
-  batch 128 is a hypothesis, not a default.
-- More simulations increase search cost roughly linearly. While render dominates,
-  sim16 may be affordable; sim32 is only justified after the pending sim32
-  profile.
+  but they also multiply visual stack updates. In the current matrix B64 is a
+  modest throughput trade-off, B128 is too render-heavy for a default.
+- More simulations increase search cost. While render dominates, sim16 is
+  affordable at B64, but the next real run can start at sim8 unless Coach wants
+  stronger search immediately.
 - H100 is useful for quick sweeps if search/model becomes a larger share. It is
-  not required for the first real run if render remains CPU-bound.
+  not required for the first real run while render remains CPU-bound.
 - Multi-GPU is not a current two-seat recommendation. The canonical launcher
   does not expose H100x2 for two-seat mode, and the measured bottleneck is not
   yet a multi-GPU model throughput problem.

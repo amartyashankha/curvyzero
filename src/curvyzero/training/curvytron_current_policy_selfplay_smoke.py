@@ -35,6 +35,7 @@ from curvyzero.env.vector_visual_observation import (
     SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
 )
 from curvyzero.env.vector_visual_observation import SourceStateBrowserLineTrailLayerCache
+from curvyzero.env.vector_visual_observation import SourceStateCanvasGray64DirtyRenderCache
 from curvyzero.env.vector_visual_observation import SourceStateGray64DownsampleScratch
 from curvyzero.env.vector_visual_observation import TRAIL_RENDER_MODE_BODY_CIRCLES_FAST
 from curvyzero.env.vector_visual_observation import TRAIL_RENDER_MODE_BROWSER_LINES
@@ -347,7 +348,11 @@ class SourceStateGray64Stack4:
             SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
         )
         self._trail_layer_caches = [
-            SourceStateBrowserLineTrailLayerCache()
+            SourceStateBrowserLineTrailLayerCache(min_active_slots=1)
+            for _ in range(self.batch_size)
+        ]
+        self._dirty_render_caches = [
+            SourceStateCanvasGray64DirtyRenderCache(player_count=self.player_count)
             for _ in range(self.batch_size)
         ]
 
@@ -367,6 +372,7 @@ class SourceStateGray64Stack4:
                     rgb_base_out=self._rgb_base,
                     rgb_work_out=self._rgb,
                     trail_cache=self._trail_layer_caches[env_row],
+                    dirty_render_cache=self._dirty_render_caches[env_row],
                     downsample_scratch=self._downsample_scratch,
                     player_rgbs=[
                         player_perspective_rgb_palette(

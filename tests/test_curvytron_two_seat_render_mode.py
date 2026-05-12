@@ -8,6 +8,7 @@ from curvyzero.env.vector_visual_observation import (
     SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
 )
 from curvyzero.env.vector_visual_observation import SourceStateBrowserLineTrailLayerCache
+from curvyzero.env.vector_visual_observation import SourceStateCanvasGray64DirtyRenderCache
 from curvyzero.env.vector_visual_observation import SourceStateGray64DownsampleScratch
 from curvyzero.env.vector_visual_observation import TRAIL_RENDER_MODE_BODY_CIRCLES_FAST
 from curvyzero.env.vector_visual_observation import TRAIL_RENDER_MODE_BROWSER_LINES
@@ -234,6 +235,70 @@ def test_two_seat_perspective_reuse_accepts_trail_layer_cache_on_visual_trails()
     assert cache.stats.mask_recolors >= 1
 
 
+def test_two_seat_dirty_render_cache_matches_full_render_with_sprites():
+    state = _small_source_state()
+    state["visual_trail_active"] = np.asarray([[True, True, True, True]], dtype=bool)
+    state["visual_trail_write_cursor"] = np.asarray([2], dtype=np.int32)
+    state["visual_trail_pos"] = np.asarray(
+        [[[8.0, 8.0], [20.0, 12.0], [32.0, 16.0], [44.0, 20.0]]],
+        dtype=np.float64,
+    )
+    state["visual_trail_radius"] = np.asarray([[0.8, 0.8, 1.2, 1.2]], dtype=np.float64)
+    state["visual_trail_owner"] = np.asarray([[0, 0, 1, 1]], dtype=np.int16)
+    state["visual_trail_break_before"] = np.asarray([[False, False, True, False]], dtype=bool)
+    state["bonus_active"] = np.asarray([[True]], dtype=bool)
+    state["bonus_pos"] = np.asarray([[[24.0, 24.0]]], dtype=np.float64)
+    state["bonus_radius"] = np.asarray([[1.5]], dtype=np.float64)
+    state["bonus_type"] = np.asarray([[1]], dtype=np.int16)
+    palettes = [
+        player_perspective_rgb_palette(
+            state,
+            row=0,
+            controlled_player=player,
+            player_count=2,
+        )
+        for player in range(2)
+    ]
+    trail_cache = SourceStateBrowserLineTrailLayerCache(min_active_slots=1)
+    dirty_cache = SourceStateCanvasGray64DirtyRenderCache(player_count=2)
+
+    render_source_state_canvas_gray64_player_perspectives(
+        state,
+        row=0,
+        player_rgbs=palettes,
+        trail_cache=trail_cache,
+        dirty_render_cache=dirty_cache,
+        trail_render_mode=TRAIL_RENDER_MODE_BROWSER_LINES,
+    )
+    state["visual_trail_write_cursor"][0] = 3
+    state["pos"][0, 0] = [32.0, 16.0]
+
+    dirty = render_source_state_canvas_gray64_player_perspectives(
+        state,
+        row=0,
+        player_rgbs=palettes,
+        trail_cache=trail_cache,
+        dirty_render_cache=dirty_cache,
+        trail_render_mode=TRAIL_RENDER_MODE_BROWSER_LINES,
+    )
+    full = np.stack(
+        [
+            render_source_state_canvas_gray64(
+                state,
+                row=0,
+                player_rgb=palettes[player],
+                trail_render_mode=TRAIL_RENDER_MODE_BROWSER_LINES,
+            )
+            for player in range(2)
+        ],
+        axis=0,
+    )
+
+    assert np.array_equal(dirty, full)
+    assert dirty_cache.stats.hits >= 1
+    assert dirty_cache.stats.dirty_blocks_total > 0
+
+
 def test_rgb_canvas_like_to_gray64_downsample_scratch_matches_baseline():
     state = _small_source_state()
     rgb = render_source_state_rgb_canvas_like(
@@ -317,3 +382,110 @@ def test_two_seat_runner_records_render_mode_when_lightzero_is_blocked(monkeypat
     assert result["surface"]["render"]["trail_render_mode"] == (
         TRAIL_RENDER_MODE_BODY_CIRCLES_FAST
     )
+
+
+def test_two_seat_policy_skip_ticks_send_noop_and_do_not_emit_replay(monkeypatch):
+    def fake_policy_actions_batch(
+        _policy,
+        observations,
+        legal_action_mask,
+        *,
+        player_id,
+        step_index,
+        mode,
+        temperature,
+        epsilon,
+    ):
+        del observations, mode, temperature, epsilon
+        records = []
+        for row, player in enumerate(np.asarray(player_id, dtype=np.int64)):
+            action = 0 if int(player) == 0 else 2
+            assert bool(legal_action_mask[row, action])
+            records.append(
+                {
+                    "ok": True,
+                    "status": "ok",
+                    "step_index": int(step_index),
+                    "api": "fake_policy_actions_batch",
+                    "action": action,
+                }
+            )
+        return {
+            "ok": True,
+            "status": "ok",
+            "step_index": int(step_index),
+            "records": records,
+        }
+
+    monkeypatch.setattr(train_smoke, "_policy_actions_batch", fake_policy_actions_batch)
+
+    env = train_smoke.VectorMultiplayerEnv(
+        batch_size=1,
+        player_count=2,
+        seed=123,
+        max_ticks=32,
+        death_mode="profile_no_death",
+        natural_bonus_spawn=False,
+    )
+    visual_stack = SourceStateGray64Stack4(batch_size=1, player_count=2)
+    batch = env.reset(seed=123)
+    observation = visual_stack.update(env)
+
+    collection = train_smoke._collect_current_policy_iteration(
+        object(),
+        env,
+        visual_stack,
+        batch=batch,
+        observation=observation,
+        iteration=1,
+        decision_offset=0,
+        collect_steps=3,
+        alive_reward=1.0,
+        dead_reward=0.0,
+        terminal_outcome_reward_per_step=1.0,
+        return_target_discount=1.0,
+        action_selection_mode=train_smoke.ACTION_SELECTION_MODE_COLLECT,
+        collect_temperature=1.0,
+        collect_epsilon=0.0,
+        action_noop_probability=0.0,
+        action_noise_rng=np.random.default_rng(0),
+        policy_action_repeat_min=3,
+        policy_action_repeat_max=3,
+        policy_action_repeat_extra_probability=0.0,
+        policy_action_repeat_rng=np.random.default_rng(1),
+        observation_noise_std=0.0,
+        observation_noise_rng=np.random.default_rng(2),
+    )
+
+    assert collection["problems"] == []
+    assert collection["policy_search_row_count"] == 2
+    assert len(collection["records"]) == 3
+    assert len(collection["replay_rows"]) == 2
+    assert {row["iteration_step"] for row in collection["replay_rows"]} == {0}
+    assert all(
+        row["policy_noop_skip_count_after_action"] == 2
+        for row in collection["replay_rows"]
+    )
+
+    first, second, third = collection["records"]
+    assert first["fresh_policy_input_rows"] == 2
+    assert first["policy_noop_skip_rows"] == 0
+    assert np.array_equal(first["joint_action"], np.asarray([[0, 2]], dtype=np.int16))
+    for skipped in (second, third):
+        assert skipped["fresh_policy_input_rows"] == 0
+        assert skipped["policy_noop_skip_rows"] == 2
+        assert np.array_equal(
+            skipped["joint_action"],
+            np.full((1, 2), train_smoke.NOOP_ACTION_ID, dtype=np.int16),
+        )
+        assert np.array_equal(
+            skipped["executed_actions"],
+            np.full(2, train_smoke.NOOP_ACTION_ID, dtype=np.int16),
+        )
+        assert skipped["search"] == []
+
+    stochasticity = collection["control_stochasticity"]
+    assert stochasticity["schema_id"] == "curvyzero_two_seat_policy_noop_skip/v0"
+    assert stochasticity["counts"]["fresh_policy_decision_rows"] == 2
+    assert stochasticity["counts"]["policy_noop_skip_rows"] == 4
+    assert stochasticity["policy_noop_skip_interval_histogram"] == {"3": 2}

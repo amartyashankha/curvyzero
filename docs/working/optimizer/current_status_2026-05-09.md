@@ -173,23 +173,46 @@ Fresh visual-trail microbench after fixing the benchmark to use current
 `visual_trail_*` fields and the production cache/scratch path:
 
 ```text
-B8/P2/browser_lines/visual trail full_stack_update
-  L64:   112.42ms/update, 142.3 policy rows/s
-  L256:  139.09ms/update, 115.0 policy rows/s
-  L1024: 156.51ms/update, 102.2 policy rows/s
-  L4096: 156.75ms/update, 102.1 policy rows/s
+B8/P2/browser_lines/visual trail full_stack_update, after copy/recolor patch
+  L64:   110.71ms/update, 144.5 policy rows/s
+  L256:  162.52ms/update, 98.4 policy rows/s
+  L1024: 109.38ms/update, 146.2 policy rows/s
+  L4096:  99.25ms/update, 161.2 policy rows/s
 
-B16/P2/browser_lines/visual trail full_stack_update
-  L64:   230.60ms/update, 138.7 policy rows/s
-  L256:  277.25ms/update, 115.4 policy rows/s
-  L1024: 300.17ms/update, 106.6 policy rows/s
-  L4096: 286.18ms/update, 111.8 policy rows/s
+B16/P2/browser_lines/visual trail full_stack_update, after copy/recolor patch
+  L64:   220.26ms/update, 145.2 policy rows/s
+  L256:  195.29ms/update, 163.8 policy rows/s
+  L1024: 195.28ms/update, 163.9 policy rows/s
+  L4096: 199.80ms/update, 160.1 policy rows/s
 ```
 
 Plain read: the cache changes the long-trail slope from explosive to mostly
 fixed per-row composition/downsample cost in this synthetic visual-trail
-benchmark. It still is not cheap enough, but it is the right bottleneck shape
-to optimize next.
+benchmark. The follow-up copy/recolor patch helps the fixed cost, especially
+at B16, but it does not change the high-level conclusion. The next real target
+is dirty-block rendering/redownsample on top of the cache: update only the 64x64
+blocks touched by appended trail segments and moving heads/bonuses, with the
+current full renderer as the byte-parity oracle.
+
+Fresh canonical wait-mode matrix, 2026-05-12, `browser_lines`,
+`profile_no_death`, 20 iterations, 8 collect steps per iteration, 4 learner
+updates, background eval/GIF off:
+
+```text
+run                                      B    sim  wall     replay_rows  visual   search
+opt-render-cache-wait-l4-b16-sim16      16   16   198.6s   2356         136.2s   14.0s
+opt-render-cache-wait-l4-b64-sim16      64   16   559.4s   7957         494.9s   21.2s
+opt-render-cache-wait-l4-b64-sim32      64   32   562.1s   7922         493.5s   28.4s
+opt-render-cache-wait-l4-b128-sim16     128  16   1112.7s  15623        990.8s   61.0s
+opt-render-cache-wait-h100-b128-sim16   128  16   978.9s   15611        853.9s   57.8s
+```
+
+Plain read: larger batches produce more replay rows per iteration, but the wall
+clock is still mostly render. B64/B128 are not magic self-play scaling wins in
+the current renderer. Sim32 barely changes wall time at B64 because render still
+drowns search. H100 helps B128 a little, but the loop remains CPU-render-bound.
+If forced to launch a real Coach run before dirty-block work lands, prefer L4
+with B32/B64 as a modest data-throughput trade-off, not B128/H100 as a default.
 
 Profiling artifact hygiene: default Coach runs still enable background GIFs and
 write the `show_in_gif_browser.flag` marker. Optimizer profiling runs with
