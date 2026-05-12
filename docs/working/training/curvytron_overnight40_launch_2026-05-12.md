@@ -97,6 +97,37 @@ Expected first useful main-row checkpoints: roughly `2026-05-12T05:48Z` to
 and larger H100/B128 variants need their own first iteration-10 progress before
 we should trust a timing estimate.
 
+## Action Selection Snapshot
+
+Current overnight rows use:
+
+```text
+action_selection_mode=collect
+collect_temperature=1.0
+collect_epsilon=0.25
+```
+
+The two-seat adapter passes those directly to
+`MuZeroPolicy.collect_mode.forward(...)`. This is the training collection path,
+not the deterministic checkpoint GIF/eval path.
+
+Meaning:
+
+- training collection uses LightZero collect-mode MCTS and samples from MCTS
+  visit counts with temperature `1.0`;
+- the checkpoint GIF/eval path calls `MuZeroPolicy.eval_mode.forward(...)`,
+  which LightZero documents as choosing the highest-value action rather than
+  sampling;
+- therefore a one-action greedy GIF does not by itself prove the training
+  collection data is collapsed.
+
+Observed row `01` at iteration `10`: training collect actions were varied, with
+top action fractions around `0.38` per player and no collapse warning.
+
+Important caveat: the 40-run matrix does not currently sweep collect
+temperature or collect/eval action-selection mode. That is a valid follow-up
+knob if these runs do not show useful learning signal.
+
 ## Artifact Paths
 
 For each run id and attempt id:
@@ -109,6 +140,60 @@ For each run id and attempt id:
   `training/lightzero-curvytron-visual-survival/<run_id>/attempts/<attempt_id>/train/checkpoint_eval_poller.json`
 - Checkpoints:
   `training/lightzero-curvytron-visual-survival/<run_id>/checkpoints/lightzero`
+
+## Collect-Mode GIF Subscriber
+
+Added on `2026-05-12` after the 40 runs were already live:
+
+```text
+src/curvyzero/infra/modal/curvytron_collect_t1_gif_subscriber.py
+```
+
+Purpose: keep the existing training jobs alive and backfill the new
+`collect_t1.gif` view without relaunching training. The old per-run pollers were
+started before the two-GIF worker change, so they can keep writing only
+`raw.gif`. This sidecar scans the 40 overnight run checkpoint directories and
+spawns the current GIF worker for checkpoints missing:
+
+```text
+attempts/<attempt_id>/eval/live_checkpoint_iteration_N/selfplay/collect_t1.gif
+```
+
+Behavior:
+
+- deployed as Modal app `curvyzero-curvytron-collect-t1-gif-subscriber`;
+- runs every five minutes via `modal.Period(minutes=5)`;
+- uses the hard-coded overnight40 run and attempt ids from this launch;
+- writes state outside training attempts under:
+  `sidecars/lightzero-curvytron-visual-survival/collect-t1-gif-subscriber/overnight40a-20260512/`;
+- writes `manifest.json`, `latest_tick.json`, and `ticks/<utc_stamp>.json`;
+- does not touch training jobs, checkpoints, or run markers;
+- dispatches one Modal worker function per missing checkpoint, so GIF creation is
+  parallel across checkpoints;
+- each worker writes the same `raw.gif` and `collect_t1.gif` pair that the
+  current checkpoint GIF worker would have written if the run had started with
+  the newer code.
+
+Validation:
+
+- `py_compile` and `ruff` passed for the subscriber module.
+- Dry run found all 40 run roots and no missing roots.
+- One real smoke created `collect_t1.gif` for row 01 `iteration_100`.
+- A broad manual tick then spawned `80` checkpoint GIF workers with no spawn
+  failures.
+- A later scan saw `81` existing `collect_t1.gif` files across `106` observed
+  checkpoints.
+- A second broad manual tick spawned `26` more workers for the remaining
+  observed gaps.
+- Follow-up dry run at `2026-05-12T06:42Z`: `109` of `112` observed
+  checkpoints already had `collect_t1.gif`; `2` were still pending from a recent
+  spawn, and `1` new checkpoint had arrived after the manual backfill. The
+  scheduled five-minute tick should keep closing these small gaps as checkpoints
+  continue to arrive.
+
+Important caveat: the sidecar manifest records spawned jobs, and a later tick
+marks them done when `collect_t1.gif` appears. New checkpoints that arrive after
+the manual backfill are handled by the scheduled five-minute tick.
 
 ## Matrix
 

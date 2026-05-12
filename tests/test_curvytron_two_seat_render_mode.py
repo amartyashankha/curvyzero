@@ -25,6 +25,9 @@ from curvyzero.training.curvytron_current_policy_selfplay_smoke import (
     SourceStateGray64Stack4,
     player_perspective_rgb_palette,
 )
+from curvyzero.training.curvyzero_stacked_debug_visual_survival_profile import (
+    _strip_large_arrays,
+)
 
 
 def _small_source_state() -> dict[str, np.ndarray]:
@@ -597,3 +600,209 @@ def test_two_seat_policy_skip_ticks_send_noop_and_do_not_emit_replay(monkeypatch
     assert stochasticity["counts"]["fresh_policy_decision_rows"] == 2
     assert stochasticity["counts"]["policy_noop_skip_rows"] == 4
     assert stochasticity["policy_noop_skip_interval_histogram"] == {"3": 2}
+
+
+def test_two_seat_frozen_opponent_mix_does_not_emit_frozen_replay(monkeypatch):
+    def fake_policy_actions_batch(
+        _policy,
+        observations,
+        legal_action_mask,
+        *,
+        player_id,
+        step_index,
+        mode,
+        temperature,
+        epsilon,
+    ):
+        del observations, mode, temperature, epsilon
+        players = np.asarray(player_id, dtype=np.int64)
+        assert players.tolist() == [0, 1, 0]
+        records = []
+        for row, player in enumerate(players):
+            action = 0 if int(player) == 0 else 2
+            assert bool(legal_action_mask[row, action])
+            records.append(
+                {
+                    "ok": True,
+                    "status": "ok",
+                    "step_index": int(step_index),
+                    "api": "fake_policy_actions_batch",
+                    "action": action,
+                }
+            )
+        return {
+            "ok": True,
+            "status": "ok",
+            "step_index": int(step_index),
+            "records": records,
+        }
+
+    class FakeFrozenSelection:
+        def __init__(self, actions, opponent_mask):
+            self.actions = actions
+            self._opponent_mask = opponent_mask
+
+        def sidecar(self):
+            return {
+                "policy_id": "fake_frozen_checkpoint",
+                "actions": self.actions.copy(),
+                "opponent_mask": self._opponent_mask.copy(),
+            }
+
+    class FakeFrozenPolicy:
+        def select_actions(
+            self,
+            legal_action_mask,
+            opponent_mask,
+            *,
+            decision_index,
+            observation,
+        ):
+            del decision_index, observation
+            expected = np.asarray([[False, False], [False, True]], dtype=bool)
+            np.testing.assert_array_equal(opponent_mask, expected)
+            assert bool(legal_action_mask[1, 1, 2])
+            actions = np.full(opponent_mask.shape, train_smoke.NOOP_ACTION_ID, dtype=np.int16)
+            actions[opponent_mask] = 2
+            return FakeFrozenSelection(actions, opponent_mask)
+
+    monkeypatch.setattr(train_smoke, "_policy_actions_batch", fake_policy_actions_batch)
+
+    env = train_smoke.VectorMultiplayerEnv(
+        batch_size=2,
+        player_count=2,
+        seed=123,
+        max_ticks=32,
+        death_mode="profile_no_death",
+        natural_bonus_spawn=False,
+    )
+    visual_stack = SourceStateGray64Stack4(batch_size=2, player_count=2)
+    batch = env.reset(seed=123)
+    observation = visual_stack.update(env)
+
+    collection = train_smoke._collect_current_policy_iteration(
+        object(),
+        env,
+        visual_stack,
+        batch=batch,
+        observation=observation,
+        iteration=1,
+        decision_offset=0,
+        collect_steps=1,
+        alive_reward=1.0,
+        dead_reward=0.0,
+        terminal_outcome_reward_per_step=1.0,
+        bonus_pickup_reward_per_catch=0.0,
+        return_target_discount=1.0,
+        action_selection_mode=train_smoke.ACTION_SELECTION_MODE_COLLECT,
+        collect_temperature=1.0,
+        collect_epsilon=0.0,
+        action_noop_probability=0.0,
+        action_noise_rng=np.random.default_rng(0),
+        policy_action_repeat_min=1,
+        policy_action_repeat_max=1,
+        policy_action_repeat_extra_probability=0.0,
+        policy_action_repeat_rng=np.random.default_rng(1),
+        observation_noise_std=0.0,
+        observation_noise_rng=np.random.default_rng(2),
+        frozen_opponent_policy=FakeFrozenPolicy(),
+        frozen_opponent_row_mask=np.asarray([False, True], dtype=bool),
+        frozen_opponent_probability=0.5,
+        frozen_opponent_mix_rng=np.random.default_rng(3),
+        frozen_opponent_player_id=1,
+        frozen_opponent_metadata={
+            "enabled": True,
+            "checkpoint_ref": "training/example/checkpoints/lightzero/iteration_50.pth.tar",
+            "snapshot_ref": "example_snapshot",
+        },
+    )
+
+    assert collection["problems"] == []
+    assert collection["policy_search_row_count"] == 3
+    assert len(collection["replay_rows"]) == 3
+    assert all(
+        row["action_source"] == train_smoke.ACTION_SOURCE_CURRENT_POLICY
+        for row in collection["replay_rows"]
+    )
+    assert all(row["learner_controlled"] is True for row in collection["replay_rows"])
+    mixed_rows = [
+        row
+        for row in collection["replay_rows"]
+        if row["rollout_kind"] == train_smoke.ROLLOUT_KIND_CURRENT_POLICY_VS_FROZEN
+    ]
+    assert len(mixed_rows) == 1
+    assert mixed_rows[0]["env_row_id"] == 1
+    assert mixed_rows[0]["player_id"] == 0
+
+    record = collection["records"][0]
+    assert record["joint_action"][1, 1] == 2
+    assert record["frozen_opponent_slot_mask"][1, 1]
+    assert not record["current_policy_live_mask"][1, 1]
+    assert (
+        record["action_source_by_slot"][1, 1]
+        == train_smoke.ACTION_SOURCE_FROZEN_CHECKPOINT
+    )
+    assert collection["opponent_mix"]["current_policy_vs_frozen_rows"] == 1
+
+
+def test_two_seat_replay_sampler_rejects_frozen_rows():
+    with pytest.raises(ValueError, match="current-policy controlled"):
+        train_smoke._sample_replay_batch(
+            [
+                {
+                    "action_source": train_smoke.ACTION_SOURCE_FROZEN_CHECKPOINT,
+                    "learner_controlled": False,
+                }
+            ]
+        )
+
+
+def test_two_seat_replay_sampler_rejects_missing_control_metadata():
+    with pytest.raises(ValueError, match="current-policy controlled"):
+        train_smoke._sample_replay_batch([{"action": 1}])
+
+
+def test_frozen_opponent_reset_resampling_does_not_force_singletons_frozen():
+    original = np.asarray([True, False, False], dtype=bool)
+    resampled = train_smoke._resample_frozen_opponent_rows(
+        original,
+        row_mask=np.asarray([False, True, False], dtype=bool),
+        probability=0.25,
+        rng=np.random.default_rng(0),
+        enabled=True,
+    )
+
+    assert resampled.tolist() == [True, False, False]
+
+
+def test_frozen_opponent_reset_resampling_can_freeze_singletons_by_probability():
+    original = np.asarray([False, False, False], dtype=bool)
+    resampled = train_smoke._resample_frozen_opponent_rows(
+        original,
+        row_mask=np.asarray([False, True, False], dtype=bool),
+        probability=1.0,
+        rng=np.random.default_rng(0),
+        enabled=True,
+    )
+
+    assert resampled.tolist() == [False, True, False]
+
+
+def test_strip_large_arrays_handles_string_metadata_arrays():
+    summary = _strip_large_arrays(
+        {
+            "rollout_kind_by_row": np.asarray(
+                [
+                    train_smoke.ROLLOUT_KIND_CURRENT_POLICY_SELFPLAY,
+                    train_smoke.ROLLOUT_KIND_CURRENT_POLICY_VS_FROZEN,
+                ]
+            )
+        }
+    )
+
+    assert summary["rollout_kind_by_row"]["shape"] == [2]
+    assert summary["rollout_kind_by_row"]["dtype"].startswith("<U")
+    assert summary["rollout_kind_by_row"]["sample"] == [
+        train_smoke.ROLLOUT_KIND_CURRENT_POLICY_SELFPLAY,
+        train_smoke.ROLLOUT_KIND_CURRENT_POLICY_VS_FROZEN,
+    ]

@@ -72,7 +72,7 @@ class LightZeroCheckpointOpponentProvider:
         snapshot_ref: str,
         checkpoint_ref: str | None = None,
     ) -> OpponentActionChoice:
-        del decision_index, env_row, player_id, action_seed, snapshot_ref, checkpoint_ref
+        del decision_index, env_row, action_seed, snapshot_ref, checkpoint_ref
         if observation is None:
             raise ValueError("LightZero checkpoint provider requires an observation row")
         obs = _validate_observation_row(observation)
@@ -82,6 +82,7 @@ class LightZeroCheckpointOpponentProvider:
             policy,
             observation=obs,
             legal_action_mask=legal,
+            player_id=player_id,
             device=self._device,
         )
         action_id = _extract_eval_action(output)
@@ -313,6 +314,7 @@ def _policy_eval_forward(
     *,
     observation: np.ndarray,
     legal_action_mask: np.ndarray,
+    player_id: int,
     device: Any,
 ) -> Any:
     import torch
@@ -327,7 +329,7 @@ def _policy_eval_forward(
         return policy.eval_mode.forward(
             obs_tensor,
             action_mask=action_mask,
-            to_play=[-1],
+            to_play=[int(player_id)],
             ready_env_id=np.asarray([0]),
         )
 

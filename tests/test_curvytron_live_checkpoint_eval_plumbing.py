@@ -107,6 +107,8 @@ def test_background_eval_inspection_and_gif_can_be_explicitly_enabled():
     assert config["selfplay_gif"]["natural_bonus_spawn"] is True
     assert config["selfplay_gif"]["max_steps"] is None
     assert config["selfplay_gif"]["step_limit_kind"] == "until_environment_done"
+    assert config["selfplay_gif"]["collect_temperature"] == 1.0
+    assert config["selfplay_gif"]["collect_epsilon"] == 0.25
     assert (
         train_mod._background_gif_max_steps_arg(config["selfplay_gif"]["max_steps"])
         == 0
@@ -142,6 +144,47 @@ def test_modal_training_image_copies_curvytron_bonus_sprite_sheet():
         and str(entry.remote_path) == expected_remote_path.as_posix()
         for entry in entries
     )
+
+
+def test_two_seat_background_gif_uses_background_collect_knobs_not_training_payload():
+    background = train_mod._two_seat_background_eval_config(
+        payload={
+            "run_id": "run-a",
+            "attempt_id": "attempt-a",
+            "seed": 0,
+            "allow_optimizer_step": True,
+            "max_ticks": 64,
+            "natural_bonus_spawn": True,
+            "collect_temperature": 0.2,
+            "collect_epsilon": 0.0,
+        },
+        background_eval_enabled=True,
+        background_eval_launch_kind=train_mod.BACKGROUND_EVAL_LAUNCH_POLLER,
+        background_eval_compute="cpu",
+        background_eval_id_prefix="live_checkpoint",
+        background_eval_seed_count=1,
+        background_eval_seed_rng_seed=0,
+        background_eval_max_steps=64,
+        background_eval_step_detail_limit=2,
+        background_eval_num_simulations=4,
+        background_eval_batch_size=8,
+        background_eval_poll_interval_sec=0.01,
+        background_eval_poll_stable_polls=0,
+        background_eval_poller_max_runtime_sec=1.0,
+        background_eval_poller_idle_after_done_sec=0.0,
+        background_gif_enabled=True,
+        background_gif_seed_offset=10_000,
+        background_gif_max_steps=0,
+        background_gif_frame_stride=1,
+        background_gif_fps=8.0,
+        background_gif_scale=4,
+        background_gif_frame_size=512,
+        background_gif_collect_temperature=1.0,
+        background_gif_collect_epsilon=0.25,
+    )
+
+    assert background["selfplay_gif"]["collect_temperature"] == 1.0
+    assert background["selfplay_gif"]["collect_epsilon"] == 0.25
 
 
 def test_gif_browser_run_marker_is_written_under_run_root(tmp_path, monkeypatch):
@@ -208,6 +251,9 @@ def test_two_seat_payload_writes_gif_browser_run_marker(tmp_path, monkeypatch):
         "decision_ms": 300.0,
         "alive_reward": 1.0,
         "dead_reward": 0.0,
+        "terminal_outcome_reward_per_step": 1.0,
+        "bonus_pickup_reward_per_catch": 0.0,
+        "return_target_discount": 1.0,
         "action_selection_mode": "collect",
         "collect_temperature": 1.0,
         "collect_epsilon": 0.25,
@@ -292,6 +338,9 @@ def test_two_seat_payload_can_skip_gif_browser_run_marker(tmp_path, monkeypatch)
         "decision_ms": 300.0,
         "alive_reward": 1.0,
         "dead_reward": 0.0,
+        "terminal_outcome_reward_per_step": 1.0,
+        "bonus_pickup_reward_per_catch": 0.0,
+        "return_target_discount": 1.0,
         "action_selection_mode": "collect",
         "collect_temperature": 1.0,
         "collect_epsilon": 0.25,
@@ -339,6 +388,100 @@ def test_two_seat_payload_can_skip_gif_browser_run_marker(tmp_path, monkeypatch)
     assert not marker_path.exists()
     assert command["gif_browser_run_marker_enabled"] is False
     assert command["gif_browser_run_marker_ref"] is None
+
+
+def test_two_seat_payload_forwards_frozen_opponent_knobs(tmp_path, monkeypatch):
+    class FakeVolume:
+        def commit(self) -> None:
+            pass
+
+    received = {}
+
+    def fake_two_seat_train(**kwargs):
+        received.update(kwargs)
+        return {"ok": True, "status": "completed"}
+
+    checkpoint = tmp_path / "frozen.pth.tar"
+    checkpoint.write_bytes(b"checkpoint")
+
+    monkeypatch.setattr(train_mod, "RUNS_MOUNT", tmp_path)
+    monkeypatch.setattr(train_mod, "runs_volume", FakeVolume())
+    monkeypatch.setattr(
+        train_mod,
+        "run_curvytron_two_seat_lightzero_train_smoke",
+        fake_two_seat_train,
+    )
+
+    payload = {
+        "seed": 0,
+        "batch_size": 2,
+        "steps": 4,
+        "outer_iterations": 1,
+        "collect_steps_per_iteration": 1,
+        "updates_per_iteration": 1,
+        "num_simulations": 1,
+        "learner_updates": 1,
+        "allow_optimizer_step": True,
+        "replay_scope": "accumulated",
+        "learner_sample_size": 2,
+        "max_replay_rows": 16,
+        "record_log_limit": 4,
+        "replay_row_log_limit": 4,
+        "max_ticks": 16,
+        "death_mode": "normal",
+        "decision_ms": 300.0,
+        "alive_reward": 1.0,
+        "dead_reward": 0.0,
+        "terminal_outcome_reward_per_step": 1.0,
+        "bonus_pickup_reward_per_catch": 0.0,
+        "return_target_discount": 1.0,
+        "action_selection_mode": "collect",
+        "collect_temperature": 1.0,
+        "collect_epsilon": 0.25,
+        "action_noop_probability": 0.0,
+        "action_noop_warmup_iterations": 0,
+        "policy_action_repeat_min": 1,
+        "policy_action_repeat_max": 1,
+        "policy_action_repeat_extra_probability": 0.0,
+        "policy_action_repeat_warmup_iterations": 0,
+        "observation_noise_std": 0.0,
+        "trail_render_mode": train_mod.TRAIL_RENDER_MODE_DEFAULT,
+        "learning_rate": 0.0001,
+        "frozen_opponent_probability": 0.25,
+        "frozen_opponent_checkpoint_path": str(checkpoint),
+        "frozen_opponent_checkpoint_ref": "training/example/iteration_50.pth.tar",
+        "frozen_opponent_snapshot_ref": "snapshot-50",
+        "frozen_opponent_checkpoint_state_key": "model",
+        "frozen_opponent_player_id": 1,
+        "frozen_opponent_num_simulations": 4,
+        "frozen_opponent_use_cuda": False,
+        "checkpoint_every_iterations": 1,
+        "save_initial_checkpoint": True,
+        "progress_every_iterations": 1,
+        "progress_commit_every_iterations": 1,
+        "run_id": "run-two-seat-frozen",
+        "attempt_id": "attempt-two-seat-frozen",
+        "gif_browser_run_marker_enabled": False,
+    }
+
+    result = train_mod._run_two_seat_selfplay_payload(
+        payload,
+        compute_label="cpu",
+        use_cuda=False,
+    )
+
+    assert result["ok"] is True
+    assert received["frozen_opponent_probability"] == 0.25
+    assert received["frozen_opponent_checkpoint_path"] == str(checkpoint)
+    assert (
+        received["frozen_opponent_checkpoint_ref"]
+        == "training/example/iteration_50.pth.tar"
+    )
+    assert received["frozen_opponent_snapshot_ref"] == "snapshot-50"
+    assert received["frozen_opponent_checkpoint_state_key"] == "model"
+    assert received["frozen_opponent_player_id"] == 1
+    assert received["frozen_opponent_num_simulations"] == 4
+    assert received["frozen_opponent_use_cuda"] is False
 
 
 def test_source_state_fixed_opponent_surface_identity_is_explicit_control_lane():
@@ -1157,6 +1300,8 @@ def test_checkpoint_eval_poller_completes_eval_inspection_and_selfplay_gif_jobs(
         background_gif_fps=12.0,
         background_gif_scale=3,
         background_gif_frame_size=320,
+        background_gif_collect_temperature=0.75,
+        background_gif_collect_epsilon=0.125,
     )
 
     result = train_mod._run_checkpoint_eval_poller(
@@ -1199,6 +1344,8 @@ def test_checkpoint_eval_poller_completes_eval_inspection_and_selfplay_gif_jobs(
     assert gif_call["frame_stride"] == 2
     assert gif_call["fps"] == 12.0
     assert gif_call["scale"] == 3
+    assert gif_call["collect_temperature"] == 0.75
+    assert gif_call["collect_epsilon"] == 0.125
     assert gif_call["natural_bonus_spawn"] is False
     assert (
         gif_call["training_reward_variant"]
@@ -1261,6 +1408,8 @@ def test_local_launcher_passes_gif_config_to_poller_and_prints_enabled(
         background_gif_frame_stride=3,
         background_gif_fps=12.5,
         background_gif_scale=2,
+        background_gif_collect_temperature=0.5,
+        background_gif_collect_epsilon=0.125,
     )
 
     assert len(fake_train.calls) == 1
@@ -1281,6 +1430,8 @@ def test_local_launcher_passes_gif_config_to_poller_and_prints_enabled(
     assert fake_poller.calls[0]["background_gif_frame_stride"] == 3
     assert fake_poller.calls[0]["background_gif_fps"] == 12.5
     assert fake_poller.calls[0]["background_gif_scale"] == 2
+    assert fake_poller.calls[0]["background_gif_collect_temperature"] == 0.5
+    assert fake_poller.calls[0]["background_gif_collect_epsilon"] == 0.125
 
 
 def test_local_two_seat_launcher_passes_trail_render_mode(capsys, monkeypatch):
@@ -1353,6 +1504,8 @@ def test_local_two_seat_launcher_defaults_gif_browser_marker_enabled(
         attempt_id="attempt-default-gif-marker",
         wait_for_train=False,
         background_eval_enabled=False,
+        background_gif_collect_temperature=0.75,
+        background_gif_collect_epsilon=0.125,
     )
 
     payload = fake_train.payloads[0]
@@ -1363,6 +1516,8 @@ def test_local_two_seat_launcher_defaults_gif_browser_marker_enabled(
     assert printed["command"]["gif_browser_run_marker_enabled"] is True
     assert printed["background_eval"]["selfplay_gif"]["enabled"] is True
     assert printed["background_eval"]["selfplay_gif"]["natural_bonus_spawn"] is True
+    assert printed["background_eval"]["selfplay_gif"]["collect_temperature"] == 0.75
+    assert printed["background_eval"]["selfplay_gif"]["collect_epsilon"] == 0.125
 
 
 def test_local_two_seat_launcher_rejects_unknown_trail_render_mode(monkeypatch):

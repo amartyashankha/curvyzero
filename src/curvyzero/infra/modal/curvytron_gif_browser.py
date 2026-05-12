@@ -39,6 +39,17 @@ VOLUME_RELOAD_TTL_SECONDS = 30.0
 GIF_CACHE_MAX_AGE_SECONDS = 86_400
 DYNAMIC_RESPONSE_HEADERS = {"Cache-Control": "no-store"}
 RUN_PICKER_FLAG_FILENAME = run_mgmt.GIF_BROWSER_RUN_MARKER_FILENAME
+GIF_VARIANT_EVAL_GREEDY = "eval_greedy"
+GIF_VARIANT_COLLECT_T1 = "collect_t1"
+GIF_VARIANT_LABELS = {
+    GIF_VARIANT_EVAL_GREEDY: "Greedy eval",
+    GIF_VARIANT_COLLECT_T1: "Collect T=1",
+}
+GIF_VARIANT_FILENAMES = {
+    GIF_VARIANT_EVAL_GREEDY: "raw.gif",
+    GIF_VARIANT_COLLECT_T1: "collect_t1.gif",
+}
+ALLOWED_SELFPLAY_GIF_FILENAMES = frozenset(GIF_VARIANT_FILENAMES.values())
 CHECKPOINT_ITERATION_RE = re.compile(r"iteration[_-](\d+)")
 RUN_RECENCY_PATTERNS = (
     RUN_PICKER_FLAG_FILENAME,
@@ -215,8 +226,11 @@ def _validate_selfplay_summary_ref(ref_text: str) -> PurePosixPath:
 
 def _validate_selfplay_gif_ref(ref_text: str) -> PurePosixPath:
     ref = _validate_volume_ref(ref_text, suffix=".gif")
-    if _extract_selfplay_artifact_ids(ref, filename="raw.gif") is None:
-        raise RefValidationError("ref must be a selfplay raw.gif artifact")
+    if ref.name not in ALLOWED_SELFPLAY_GIF_FILENAMES or _extract_selfplay_artifact_ids(
+        ref,
+        filename=ref.name,
+    ) is None:
+        raise RefValidationError("ref must be a known selfplay GIF artifact")
     return ref
 
 
@@ -494,6 +508,76 @@ def _default_selected_run_id(runs: list[dict[str, Any]], requested_run_id: str) 
     return str(runs[0]["run_id"])
 
 
+def _gif_variant_rows(
+    mount: Path,
+    *,
+    summary: dict[str, Any],
+    summary_ref: PurePosixPath,
+    legacy_gif_ref: PurePosixPath,
+) -> list[dict[str, Any]]:
+    raw_variants = summary.get("gif_variants")
+    raw_variants = raw_variants if isinstance(raw_variants, dict) else {}
+    variants: list[dict[str, Any]] = []
+    for variant_id in (GIF_VARIANT_EVAL_GREEDY, GIF_VARIANT_COLLECT_T1):
+        default_ref = summary_ref.parent / GIF_VARIANT_FILENAMES[variant_id]
+        if variant_id == GIF_VARIANT_EVAL_GREEDY:
+            default_ref = legacy_gif_ref
+        variant_summary = raw_variants.get(variant_id)
+        variant_summary = variant_summary if isinstance(variant_summary, dict) else {}
+        ref_text = variant_summary.get("gif_ref")
+        try:
+            gif_ref = _validate_selfplay_gif_ref(
+                ref_text if isinstance(ref_text, str) else default_ref.as_posix()
+            )
+            expected_filename = GIF_VARIANT_FILENAMES[variant_id]
+            if gif_ref.parent != summary_ref.parent or gif_ref.name != expected_filename:
+                gif_ref = default_ref
+        except RefValidationError:
+            gif_ref = default_ref
+        gif_path = _path_for_ref(mount, gif_ref)
+        gif_stat = _safe_stat(gif_path)
+        gif_exists = gif_stat is not None and _safe_is_file(gif_path)
+        variants.append(
+            {
+                "variant_id": variant_id,
+                "label": variant_summary.get("label") or GIF_VARIANT_LABELS[variant_id],
+                "policy_mode": variant_summary.get("policy_mode"),
+                "temperature": variant_summary.get("temperature"),
+                "epsilon": variant_summary.get("epsilon"),
+                "gif_ref": gif_ref.as_posix(),
+                "gif_exists": gif_exists,
+                "gif_bytes": gif_stat.st_size if gif_exists and gif_stat is not None else None,
+                "gif_updated_ts": (
+                    gif_stat.st_mtime if gif_exists and gif_stat is not None else None
+                ),
+                "gif_updated_ns": (
+                    gif_stat.st_mtime_ns if gif_exists and gif_stat is not None else None
+                ),
+                "frame_count": _safe_int(
+                    variant_summary.get("frame_count", summary.get("frame_count"))
+                ),
+                "physical_steps": _safe_int(
+                    variant_summary.get("physical_steps", summary.get("physical_steps"))
+                ),
+                "max_steps": _safe_int(
+                    variant_summary.get("max_steps", summary.get("max_steps"))
+                ),
+                "terminal_reason": variant_summary.get(
+                    "terminal_reason",
+                    summary.get("terminal_reason"),
+                ),
+                "ok": (
+                    variant_summary.get("ok")
+                    if variant_summary
+                    else summary.get("ok")
+                    if variant_id == GIF_VARIANT_EVAL_GREEDY
+                    else None
+                ),
+            }
+        )
+    return variants
+
+
 def _summary_row(mount: Path, summary_path: Path) -> dict[str, Any] | None:
     summary_ref = _ref_from_path(mount, summary_path)
     try:
@@ -509,7 +593,7 @@ def _summary_row(mount: Path, summary_path: Path) -> dict[str, Any] | None:
     gif_ref_text = summary.get("gif_ref") if isinstance(summary.get("gif_ref"), str) else None
     try:
         gif_ref = _validate_selfplay_gif_ref(gif_ref_text or sibling_gif_ref.as_posix())
-        if gif_ref.parent != summary_ref.parent:
+        if gif_ref.parent != summary_ref.parent or gif_ref.name != "raw.gif":
             gif_ref = sibling_gif_ref
     except RefValidationError:
         gif_ref = sibling_gif_ref
@@ -520,6 +604,12 @@ def _summary_row(mount: Path, summary_path: Path) -> dict[str, Any] | None:
         return None
     gif_stat = _safe_stat(gif_path)
     gif_exists = gif_stat is not None and _safe_is_file(gif_path)
+    gif_variants = _gif_variant_rows(
+        mount,
+        summary=summary,
+        summary_ref=summary_ref,
+        legacy_gif_ref=gif_ref,
+    )
     checkpoint_ref = summary.get("checkpoint_ref")
     checkpoint_label = summary.get("checkpoint_label") or (
         PurePosixPath(checkpoint_ref).name if isinstance(checkpoint_ref, str) else None
@@ -533,6 +623,7 @@ def _summary_row(mount: Path, summary_path: Path) -> dict[str, Any] | None:
         "gif_bytes": gif_stat.st_size if gif_exists and gif_stat is not None else None,
         "gif_updated_ts": gif_stat.st_mtime if gif_exists and gif_stat is not None else None,
         "gif_updated_ns": gif_stat.st_mtime_ns if gif_exists and gif_stat is not None else None,
+        "gif_variants": gif_variants,
         "updated_at": datetime.fromtimestamp(stat.st_mtime, UTC).isoformat().replace(
             "+00:00", "Z"
         ),
@@ -819,11 +910,29 @@ def _fast_gif_url(row: dict[str, Any]) -> str:
     return _link("/gif", row["gif_ref"], v=gif_version)
 
 
+def _variant_gif_url(variant: dict[str, Any], row: dict[str, Any]) -> str:
+    gif_version_ns = int(variant.get("gif_updated_ns") or row.get("updated_ns") or 0)
+    gif_version = f"{gif_version_ns}-{variant.get('gif_bytes') or 0}"
+    return _link("/gif", variant["gif_ref"], v=gif_version)
+
+
 def _head_token(rows: list[dict[str, Any]]) -> str:
     if not rows:
         return ""
     row = rows[0]
     gif_version_ns = int(row.get("gif_updated_ns") or row.get("updated_ns") or 0)
+    variant_parts = []
+    for variant in row.get("gif_variants") or []:
+        variant_parts.append(
+            ",".join(
+                [
+                    str(variant.get("variant_id") or ""),
+                    str(int(variant.get("gif_updated_ns") or 0)),
+                    str(variant.get("gif_bytes") or 0),
+                    "1" if variant.get("gif_exists") is True else "0",
+                ]
+            )
+        )
     return ":".join(
         [
             str(row.get("run_id") or ""),
@@ -831,6 +940,7 @@ def _head_token(rows: list[dict[str, Any]]) -> str:
             str(row.get("eval_id") or ""),
             str(row.get("gif_bytes") or 0),
             str(gif_version_ns),
+            "|".join(variant_parts),
         ]
     )
 
@@ -1050,19 +1160,43 @@ def _render_rows(rows: list[dict[str, Any]]) -> str:
 
     rendered = []
     for index, row in enumerate(rows):
-        gif_url = _fast_gif_url(row)
+        primary_gif_url = _fast_gif_url(row)
         meta_url = _link("/meta", row["summary_ref"])
         checkpoint = row.get("checkpoint_label") or row.get("eval_id") or "checkpoint"
         loading = "eager" if index == 0 else "lazy"
         priority = "high" if index == 0 else "low"
-        preview = (
-            f'<a class="gif-frame" href="{_html_attr(gif_url)}">'
-            f'<img class="preview" loading="{loading}" decoding="async" '
-            f'fetchpriority="{priority}" src="{_html_attr(gif_url)}" '
-            f'width="224" height="224" alt=""></a>'
-            if row["gif_exists"]
-            else '<a class="gif-frame missing-preview" href="' + _html_attr(meta_url) + '">missing GIF</a>'
-        )
+        variant_previews = []
+        for variant in row.get("gif_variants") or []:
+            variant_label = variant.get("label") or variant.get("variant_id") or "GIF"
+            if variant.get("gif_exists") is True:
+                gif_url = _variant_gif_url(variant, row)
+                frame = (
+                    f'<a class="gif-frame" href="{_html_attr(gif_url)}">'
+                    f'<img class="preview" loading="{loading}" decoding="async" '
+                    f'fetchpriority="{priority}" src="{_html_attr(gif_url)}" '
+                    f'width="224" height="224" alt=""></a>'
+                )
+            else:
+                frame = (
+                    '<a class="gif-frame missing-preview" href="'
+                    + _html_attr(meta_url)
+                    + '">missing</a>'
+                )
+            variant_previews.append(
+                f'<div class="gif-variant"><div class="variant-label">'
+                f'{_html_attr(variant_label)}</div>{frame}</div>'
+            )
+        if not variant_previews:
+            variant_previews.append(
+                f'<div class="gif-variant"><div class="variant-label">Greedy eval</div>'
+                f'<a class="gif-frame" href="{_html_attr(primary_gif_url)}">'
+                f'<img class="preview" loading="{loading}" decoding="async" '
+                f'fetchpriority="{priority}" src="{_html_attr(primary_gif_url)}" '
+                f'width="224" height="224" alt=""></a></div>'
+                if row["gif_exists"]
+                else '<div class="gif-variant"><div class="variant-label">Greedy eval</div>'
+                '<a class="gif-frame missing-preview" href="' + _html_attr(meta_url) + '">missing</a></div>'
+            )
         ok_label = (
             "OK"
             if row["ok"] is True and row["gif_exists"]
@@ -1079,7 +1213,7 @@ def _render_rows(rows: list[dict[str, Any]]) -> str:
         rendered.append(
             f"""
             <article class="gif-card" data-run-id="{_html_attr(row["run_id"])}">
-                {preview}
+                <div class="variant-grid">{''.join(variant_previews)}</div>
                 <div class="gif-card-body">
                     <div class="gif-card-topline">
                         <strong>{_html_attr(checkpoint)}</strong>
@@ -1091,7 +1225,7 @@ def _render_rows(rows: list[dict[str, Any]]) -> str:
                     </div>
                     <div class="reason">{_html_attr(row["terminal_reason"])}</div>
                     <div class="links">
-                        <a href="{_html_attr(gif_url)}">GIF</a>
+                        <a href="{_html_attr(primary_gif_url)}">GIF</a>
                         <a href="{_html_attr(meta_url)}">JSON</a>
                     </div>
                 </div>
@@ -1406,7 +1540,7 @@ def _render_page(
         }}
         .gallery {{
             display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+            grid-template-columns: repeat(auto-fill, minmax(min(460px, 100%), 1fr));
             gap: 12px;
         }}
         .gif-card {{
@@ -1415,6 +1549,24 @@ def _render_page(
             border: 1px solid #dadce0;
             border-radius: 8px;
             box-shadow: 0 1px 2px rgba(60, 64, 67, 0.08);
+        }}
+        .variant-grid {{
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 8px;
+            padding: 8px;
+            background: #f8fafd;
+        }}
+        .gif-variant {{ min-width: 0; }}
+        .variant-label {{
+            margin: 0 0 5px;
+            color: #5f6368;
+            font-size: 12px;
+            font-weight: 650;
+            line-height: 1.2;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }}
         .gif-frame {{
             display: grid;
@@ -1495,6 +1647,9 @@ def _render_page(
             .top-meta {{ margin-top: 10px; }}
             .toolbar-actions {{ width: 100%; }}
             .toolbar-actions label, .toolbar-actions button, .toolbar-actions .button {{ flex: 1 1 120px; }}
+        }}
+        @media (max-width: 560px) {{
+            .variant-grid {{ grid-template-columns: 1fr; }}
         }}
     </style>
 </head>
@@ -1636,8 +1791,12 @@ def _render_page(
             const version = Math.floor(Number(row.gif_updated_ns || row.updated_ns || 0));
             return `${{version}}-${{row.gif_bytes || 0}}`;
         }};
+        const variantGifVersion = (variant, row) => {{
+            const version = Math.floor(Number(variant.gif_updated_ns || row.updated_ns || 0));
+            return `${{version}}-${{variant.gif_bytes || 0}}`;
+        }};
         const rowCard = (row, index) => {{
-            const gifUrl = artifactUrl("/gif", row.gif_ref, rowGifVersion(row));
+            const primaryGifUrl = artifactUrl("/gif", row.gif_ref, rowGifVersion(row));
             const metaUrl = artifactUrl("/meta", row.summary_ref);
             const checkpoint = row.checkpoint_label || row.eval_id || "checkpoint";
             const ok = row.ok === true && row.gif_exists === true;
@@ -1654,12 +1813,27 @@ def _render_page(
                 : String(row.physical_steps ?? "unknown");
             const loading = index === 0 ? "eager" : "lazy";
             const priority = index === 0 ? "high" : "low";
-            const preview = row.gif_exists === true
-                ? `<a class="gif-frame" href="${{gifUrl}}"><img class="preview" loading="${{loading}}" decoding="async" fetchpriority="${{priority}}" src="${{gifUrl}}" width="224" height="224" alt=""></a>`
-                : `<a class="gif-frame missing-preview" href="${{metaUrl}}">missing GIF</a>`;
+            const variants = Array.isArray(row.gif_variants) && row.gif_variants.length
+                ? row.gif_variants
+                : [{{
+                    variant_id: "eval_greedy",
+                    label: "Greedy eval",
+                    gif_ref: row.gif_ref,
+                    gif_exists: row.gif_exists,
+                    gif_bytes: row.gif_bytes,
+                    gif_updated_ns: row.gif_updated_ns
+                }}];
+            const variantGrid = variants.map((variant) => {{
+                const label = variant.label || variant.variant_id || "GIF";
+                if (variant.gif_exists === true && variant.gif_ref) {{
+                    const gifUrl = artifactUrl("/gif", variant.gif_ref, variantGifVersion(variant, row));
+                    return `<div class="gif-variant"><div class="variant-label">${{escapeHtml(label)}}</div><a class="gif-frame" href="${{escapeHtml(gifUrl)}}"><img class="preview" loading="${{loading}}" decoding="async" fetchpriority="${{priority}}" src="${{escapeHtml(gifUrl)}}" width="224" height="224" alt=""></a></div>`;
+                }}
+                return `<div class="gif-variant"><div class="variant-label">${{escapeHtml(label)}}</div><a class="gif-frame missing-preview" href="${{escapeHtml(metaUrl)}}">missing</a></div>`;
+            }}).join("");
             return `
                 <article class="gif-card" data-run-id="${{escapeHtml(row.run_id)}}">
-                    ${{preview}}
+                    <div class="variant-grid">${{variantGrid}}</div>
                     <div class="gif-card-body">
                         <div class="gif-card-topline">
                             <strong>${{escapeHtml(checkpoint)}}</strong>
@@ -1671,7 +1845,7 @@ def _render_page(
                         </div>
                         <div class="reason">${{escapeHtml(row.terminal_reason || "")}}</div>
                         <div class="links">
-                            <a href="${{gifUrl}}">GIF</a>
+                            <a href="${{primaryGifUrl}}">GIF</a>
                             <a href="${{metaUrl}}">JSON</a>
                         </div>
                     </div>

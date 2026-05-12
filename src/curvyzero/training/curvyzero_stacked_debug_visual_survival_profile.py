@@ -1536,14 +1536,26 @@ def _strip_large_arrays(value: Any) -> Any:
 
 def _array_summary(value: Any) -> dict[str, Any]:
     array = np.asarray(value)
-    return {
+    summary: dict[str, Any] = {
         "shape": [int(item) for item in array.shape],
         "dtype": str(array.dtype),
-        "min": float(array.min()) if array.size else None,
-        "max": float(array.max()) if array.size else None,
-        "mean": float(array.mean()) if array.size else None,
         "nonzero": int(np.count_nonzero(array)) if array.size else 0,
     }
+    if not array.size:
+        summary.update({"min": None, "max": None, "mean": None})
+        return summary
+    if np.issubdtype(array.dtype, np.number) or np.issubdtype(array.dtype, np.bool_):
+        summary.update(
+            {
+                "min": float(array.min()),
+                "max": float(array.max()),
+                "mean": float(array.mean()),
+            }
+        )
+        return summary
+    flat = array.reshape(-1)
+    summary["sample"] = [_to_plain(item) for item in flat[:8].tolist()]
+    return summary
 
 
 def _exception_result(exc: BaseException) -> dict[str, Any]:

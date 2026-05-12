@@ -279,6 +279,11 @@ class SnapshotBackedOpponentPolicy:
             "provider_version": provider_version,
             "opponent_kind": "snapshot_backed_learned_policy",
         }
+        load_summary = getattr(self.provider, "load_summary", None)
+        if callable(load_summary):
+            load_summary = load_summary()
+        if load_summary is not None:
+            metadata["provider_load_summary"] = dict(load_summary)
         return OpponentPolicySelection(
             policy_id=self.policy_id,
             policy_version=self.policy_version,

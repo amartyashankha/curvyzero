@@ -43,6 +43,7 @@ def _write_summary(
     checkpoint_label: str = "iteration_1",
     terminal_reason: str = "round_all_dead_draw",
     write_gif: bool = True,
+    write_collect_gif: bool = False,
 ) -> None:
     selfplay_dir = _selfplay_dir(
         tmp_path,
@@ -58,6 +59,10 @@ def _write_summary(
     gif_path = selfplay_dir / "raw.gif"
     if write_gif:
         gif_path.write_bytes(b"GIF89a")
+    collect_gif_ref = gif_ref.removesuffix("raw.gif") + "collect_t1.gif"
+    collect_gif_path = selfplay_dir / "collect_t1.gif"
+    if write_collect_gif:
+        collect_gif_path.write_bytes(b"GIF89a-collect")
     summary_path = selfplay_dir / "summary.json"
     summary_path.write_text(
         json.dumps(
@@ -72,12 +77,28 @@ def _write_summary(
                 "max_steps": 64,
                 "checkpoint_label": checkpoint_label,
                 "terminal_reason": terminal_reason,
+                "gif_variants": {
+                    "eval_greedy": {
+                        "label": "Greedy eval",
+                        "gif_ref": gif_ref,
+                        "frame_count": frame_count,
+                        "ok": ok,
+                    },
+                    "collect_t1": {
+                        "label": "Collect T=1",
+                        "gif_ref": collect_gif_ref,
+                        "frame_count": frame_count,
+                        "ok": ok if write_collect_gif else None,
+                    },
+                },
             }
         ),
         encoding="utf-8",
     )
     if write_gif:
         os.utime(gif_path, (mtime, mtime))
+    if write_collect_gif:
+        os.utime(collect_gif_path, (mtime + 1, mtime + 1))
     os.utime(summary_path, (mtime, mtime))
 
 
@@ -151,10 +172,12 @@ def test_validate_volume_ref_accepts_only_task_relative_gifs_and_json() -> None:
         "selfplay/raw.gif"
     )
     json_ref = gif_ref.removesuffix("raw.gif") + "summary.json"
+    collect_ref = gif_ref.removesuffix("raw.gif") + "collect_t1.gif"
 
     assert browser._validate_volume_ref(gif_ref, suffix=".gif").as_posix() == gif_ref
     assert browser._validate_volume_ref(json_ref, suffix=".json").as_posix() == json_ref
     assert browser._validate_selfplay_gif_ref(gif_ref).as_posix() == gif_ref
+    assert browser._validate_selfplay_gif_ref(collect_ref).as_posix() == collect_ref
     assert browser._validate_selfplay_summary_ref(json_ref).as_posix() == json_ref
 
 
@@ -235,6 +258,12 @@ def test_list_selfplay_summaries_filters_and_sorts_by_run_recency(tmp_path) -> N
     assert rows[0]["terminal_reason"] == "round_all_dead_draw"
     assert rows[0]["summary_ref"].endswith("/selfplay/summary.json")
     assert rows[0]["gif_ref"].endswith("/selfplay/raw.gif")
+    assert [variant["variant_id"] for variant in rows[0]["gif_variants"]] == [
+        "eval_greedy",
+        "collect_t1",
+    ]
+    assert rows[0]["gif_variants"][0]["gif_exists"] is True
+    assert rows[0]["gif_variants"][1]["gif_exists"] is False
 
     failed_rows = browser._list_selfplay_summaries(
         tmp_path,
@@ -568,6 +597,40 @@ def test_list_selfplay_summaries_falls_back_to_sibling_gif_ref(tmp_path) -> None
         f"training/{browser.TASK_ID}/run-a/attempts/attempt-a/eval/eval-a/"
         "selfplay/raw.gif"
     )
+    assert rows[0]["gif_variants"][1]["gif_ref"].endswith("/selfplay/collect_t1.gif")
+    assert rows[0]["gif_variants"][1]["gif_exists"] is False
+
+
+def test_summary_row_reports_collect_t1_variant_and_head_token(tmp_path) -> None:
+    _write_picker_flag(tmp_path, run_id="run-a")
+    _write_summary(
+        tmp_path,
+        run_id="run-a",
+        attempt_id="attempt-a",
+        eval_id="eval-a",
+        ok=True,
+        frame_count=5,
+        mtime=100,
+        write_collect_gif=False,
+    )
+    rows_without_collect = browser._list_selfplay_summaries(tmp_path)
+    token_without_collect = browser._head_token(rows_without_collect)
+
+    collect_path = _selfplay_dir(
+        tmp_path,
+        run_id="run-a",
+        attempt_id="attempt-a",
+        eval_id="eval-a",
+    ) / "collect_t1.gif"
+    collect_path.write_bytes(b"GIF89a-collect")
+    os.utime(collect_path, (101, 101))
+    browser._clear_listing_caches()
+
+    rows_with_collect = browser._list_selfplay_summaries(tmp_path)
+
+    assert rows_with_collect[0]["gif_variants"][1]["variant_id"] == "collect_t1"
+    assert rows_with_collect[0]["gif_variants"][1]["gif_exists"] is True
+    assert browser._head_token(rows_with_collect) != token_without_collect
 
 
 def test_summary_row_ignores_cross_artifact_gif_ref(tmp_path) -> None:

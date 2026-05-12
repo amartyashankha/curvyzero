@@ -62,6 +62,9 @@ from curvyzero.training.curvyzero_stacked_debug_visual_survival_profile import (
     _temporary_policy_batch_size,
     _to_plain,
 )
+from curvyzero.training.lightzero_checkpoint_opponent_provider import (
+    snapshot_backed_lightzero_checkpoint_opponent_policy,
+)
 from curvyzero.training.policy_row_mapping import build_policy_row_mapping
 from curvyzero.training.policy_row_mapping import policy_rows_to_joint_action
 
@@ -119,6 +122,14 @@ DEFAULT_POLICY_ACTION_REPEAT_WARMUP_ITERATIONS = 0
 DEFAULT_OBSERVATION_NOISE_STD = 0.10
 POLICY_ACTION_REPEAT_RNG_SALT = 0xC0A7A11
 CONTROL_STOCHASTICITY_SCHEMA_ID = "curvyzero_two_seat_policy_noop_skip/v0"
+OPPONENT_MIX_SCHEMA_ID = "curvyzero_two_seat_opponent_mix/v0"
+ROLLOUT_KIND_CURRENT_POLICY_SELFPLAY = "current_policy_selfplay"
+ROLLOUT_KIND_CURRENT_POLICY_VS_FROZEN = "current_policy_vs_frozen_checkpoint"
+ACTION_SOURCE_CURRENT_POLICY = "current_policy"
+ACTION_SOURCE_FROZEN_CHECKPOINT = "frozen_checkpoint"
+ACTION_SOURCE_ABSENT_NOOP = "absent_noop"
+DEFAULT_FROZEN_OPPONENT_PROBABILITY = 0.0
+DEFAULT_FROZEN_OPPONENT_PLAYER_ID = 1
 ACTION_SELECTION_MODE_COLLECT = "collect"
 ACTION_SELECTION_MODE_EVAL = "eval"
 ACTION_SELECTION_MODE_CHOICES = (
@@ -179,6 +190,14 @@ def run_curvytron_two_seat_lightzero_train_smoke(
     observation_noise_std: float = DEFAULT_OBSERVATION_NOISE_STD,
     trail_render_mode: str = STACK_RENDER_MODE_DEFAULT,
     learning_rate: float | None = None,
+    frozen_opponent_probability: float = DEFAULT_FROZEN_OPPONENT_PROBABILITY,
+    frozen_opponent_checkpoint_path: str | Path | None = None,
+    frozen_opponent_checkpoint_ref: str | None = None,
+    frozen_opponent_snapshot_ref: str | None = None,
+    frozen_opponent_checkpoint_state_key: str | None = None,
+    frozen_opponent_player_id: int = DEFAULT_FROZEN_OPPONENT_PLAYER_ID,
+    frozen_opponent_num_simulations: int | None = None,
+    frozen_opponent_use_cuda: bool | None = None,
     use_cuda: bool = False,
     require_installed_lightzero: bool = True,
 ) -> dict[str, Any]:
@@ -259,6 +278,24 @@ def run_curvytron_two_seat_lightzero_train_smoke(
     resolved_observation_noise_std = float(observation_noise_std)
     if resolved_observation_noise_std < 0.0:
         raise ValueError("observation_noise_std must be >= 0")
+    resolved_frozen_opponent_probability = float(frozen_opponent_probability)
+    if not 0.0 <= resolved_frozen_opponent_probability <= 1.0:
+        raise ValueError("frozen_opponent_probability must be in [0, 1]")
+    resolved_frozen_opponent_player_id = int(frozen_opponent_player_id)
+    if resolved_frozen_opponent_player_id not in (0, 1):
+        raise ValueError("frozen_opponent_player_id must be 0 or 1")
+    resolved_frozen_opponent_num_simulations = (
+        int(num_simulations)
+        if frozen_opponent_num_simulations is None
+        else int(frozen_opponent_num_simulations)
+    )
+    if resolved_frozen_opponent_num_simulations < 1:
+        raise ValueError("frozen_opponent_num_simulations must be >= 1")
+    resolved_frozen_opponent_use_cuda = (
+        bool(use_cuda)
+        if frozen_opponent_use_cuda is None
+        else bool(frozen_opponent_use_cuda)
+    )
     resolved_trail_render_mode = validate_stack_trail_render_mode(trail_render_mode)
     resolved_alive_reward = float(alive_reward)
     resolved_dead_reward = float(dead_reward)
@@ -351,6 +388,24 @@ def run_curvytron_two_seat_lightzero_train_smoke(
                 observation_noise_std=resolved_observation_noise_std,
                 trail_render_mode=resolved_trail_render_mode,
                 learning_rate=learning_rate,
+                frozen_opponent_probability=resolved_frozen_opponent_probability,
+                frozen_opponent_checkpoint_ref=frozen_opponent_checkpoint_ref,
+                frozen_opponent_snapshot_ref=frozen_opponent_snapshot_ref,
+                frozen_opponent_checkpoint_state_key=frozen_opponent_checkpoint_state_key,
+                frozen_opponent_player_id=resolved_frozen_opponent_player_id,
+                frozen_opponent_num_simulations=resolved_frozen_opponent_num_simulations,
+                frozen_opponent_use_cuda=resolved_frozen_opponent_use_cuda,
+                frozen_opponent_metadata=_frozen_opponent_metadata(
+                    enabled=False,
+                    probability=resolved_frozen_opponent_probability,
+                    checkpoint_path=frozen_opponent_checkpoint_path,
+                    checkpoint_ref=frozen_opponent_checkpoint_ref,
+                    snapshot_ref=frozen_opponent_snapshot_ref,
+                    state_key=frozen_opponent_checkpoint_state_key,
+                    player_id=resolved_frozen_opponent_player_id,
+                    num_simulations=resolved_frozen_opponent_num_simulations,
+                    use_cuda=resolved_frozen_opponent_use_cuda,
+                ),
                 use_cuda=use_cuda,
                 elapsed_sec=time.perf_counter() - run_started,
                 checkpoint_every_iterations=resolved_checkpoint_every_iterations,
@@ -377,6 +432,48 @@ def run_curvytron_two_seat_lightzero_train_smoke(
                 per_player_action_counts={"player_0": Counter(), "player_1": Counter()},
                 checkpoint_records=checkpoint_records,
             )
+        )
+
+    frozen_opponent_policy = None
+    frozen_opponent_metadata = _frozen_opponent_metadata(
+        enabled=False,
+        probability=resolved_frozen_opponent_probability,
+        checkpoint_path=frozen_opponent_checkpoint_path,
+        checkpoint_ref=frozen_opponent_checkpoint_ref,
+        snapshot_ref=frozen_opponent_snapshot_ref,
+        state_key=frozen_opponent_checkpoint_state_key,
+        player_id=resolved_frozen_opponent_player_id,
+        num_simulations=resolved_frozen_opponent_num_simulations,
+        use_cuda=resolved_frozen_opponent_use_cuda,
+    )
+    if resolved_frozen_opponent_probability > 0.0:
+        if frozen_opponent_checkpoint_path is None:
+            raise ValueError(
+                "frozen_opponent_checkpoint_path is required when "
+                "frozen_opponent_probability > 0"
+            )
+        snapshot_ref = frozen_opponent_snapshot_ref or "curvytron_two_seat_frozen_opponent"
+        checkpoint_ref = frozen_opponent_checkpoint_ref or str(frozen_opponent_checkpoint_path)
+        frozen_opponent_policy = snapshot_backed_lightzero_checkpoint_opponent_policy(
+            checkpoint_path=frozen_opponent_checkpoint_path,
+            snapshot_ref=snapshot_ref,
+            checkpoint_ref=checkpoint_ref,
+            seed=int(seed),
+            num_simulations=resolved_frozen_opponent_num_simulations,
+            batch_size=int(batch_size),
+            use_cuda=resolved_frozen_opponent_use_cuda,
+            state_key=frozen_opponent_checkpoint_state_key,
+        )
+        frozen_opponent_metadata = _frozen_opponent_metadata(
+            enabled=True,
+            probability=resolved_frozen_opponent_probability,
+            checkpoint_path=frozen_opponent_checkpoint_path,
+            checkpoint_ref=checkpoint_ref,
+            snapshot_ref=snapshot_ref,
+            state_key=frozen_opponent_checkpoint_state_key,
+            player_id=resolved_frozen_opponent_player_id,
+            num_simulations=resolved_frozen_opponent_num_simulations,
+            use_cuda=resolved_frozen_opponent_use_cuda,
         )
 
     resolved_checkpoint_dir = None if checkpoint_dir is None else Path(checkpoint_dir)
@@ -427,6 +524,7 @@ def run_curvytron_two_seat_lightzero_train_smoke(
                     "policy_action_repeat_warmup_iterations": int(
                         resolved_policy_action_repeat_warmup_iterations
                     ),
+                    "frozen_opponent": frozen_opponent_metadata,
                     **dict(checkpoint_metadata or {}),
                 },
             )
@@ -465,6 +563,7 @@ def run_curvytron_two_seat_lightzero_train_smoke(
                 "collect_epsilon": float(resolved_collect_epsilon),
                 "trail_render_mode": resolved_trail_render_mode,
                 "learning_rate": None if learning_rate is None else float(learning_rate),
+                "frozen_opponent": frozen_opponent_metadata,
             },
             print_line=progress_print,
         )
@@ -489,6 +588,13 @@ def run_curvytron_two_seat_lightzero_train_smoke(
     # The run seed initializes the RNG, but each row reset gets its own generated
     # reset seed. This keeps training starts varied while remaining reproducible.
     batch = env.reset(seed=None)
+    frozen_opponent_mix_rng = _frozen_opponent_mix_rng(seed=seed)
+    frozen_opponent_row_mask = _sample_frozen_opponent_rows(
+        batch_size=env.batch_size,
+        probability=resolved_frozen_opponent_probability,
+        rng=frozen_opponent_mix_rng,
+        enabled=frozen_opponent_policy is not None,
+    )
     initial_reset_seed_sample = _reset_seed_sample(batch.info)
     observation = visual_stack.update(env)
     problems.extend(_validate_visual_batch(observation, batch.action_mask, label="reset"))
@@ -567,9 +673,16 @@ def run_curvytron_two_seat_lightzero_train_smoke(
                 seed=seed,
                 iteration=iteration_number,
             ),
+            frozen_opponent_policy=frozen_opponent_policy,
+            frozen_opponent_row_mask=frozen_opponent_row_mask,
+            frozen_opponent_probability=resolved_frozen_opponent_probability,
+            frozen_opponent_mix_rng=frozen_opponent_mix_rng,
+            frozen_opponent_player_id=resolved_frozen_opponent_player_id,
+            frozen_opponent_metadata=frozen_opponent_metadata,
         )
         batch = collection["batch"]
         observation = collection["observation"]
+        frozen_opponent_row_mask = collection["frozen_opponent_row_mask"]
         decision_offset += int(collection["steps_collected"])
         problems.extend(collection["problems"])
 
@@ -729,6 +842,7 @@ def run_curvytron_two_seat_lightzero_train_smoke(
                         resolved_policy_action_repeat_warmup_iterations
                     ),
                     "observation_noise_std": float(resolved_observation_noise_std),
+                    "frozen_opponent": frozen_opponent_metadata,
                     "checkpoint_every_iterations": int(
                         resolved_checkpoint_every_iterations
                     ),
@@ -781,6 +895,7 @@ def run_curvytron_two_seat_lightzero_train_smoke(
         iteration_summaries[-1]["policy_search_row_count"] = int(
             collection["policy_search_row_count"]
         )
+        iteration_summaries[-1]["opponent_mix"] = collection["opponent_mix"]
         if (
             resolved_progress_path is not None
             and (
@@ -862,6 +977,14 @@ def run_curvytron_two_seat_lightzero_train_smoke(
             observation_noise_std=resolved_observation_noise_std,
             trail_render_mode=resolved_trail_render_mode,
             learning_rate=learning_rate,
+            frozen_opponent_probability=resolved_frozen_opponent_probability,
+            frozen_opponent_checkpoint_ref=frozen_opponent_checkpoint_ref,
+            frozen_opponent_snapshot_ref=frozen_opponent_snapshot_ref,
+            frozen_opponent_checkpoint_state_key=frozen_opponent_checkpoint_state_key,
+            frozen_opponent_player_id=resolved_frozen_opponent_player_id,
+            frozen_opponent_num_simulations=resolved_frozen_opponent_num_simulations,
+            frozen_opponent_use_cuda=resolved_frozen_opponent_use_cuda,
+            frozen_opponent_metadata=frozen_opponent_metadata,
             use_cuda=use_cuda,
             elapsed_sec=time.perf_counter() - run_started,
             checkpoint_every_iterations=resolved_checkpoint_every_iterations,
@@ -940,6 +1063,10 @@ def compact_curvytron_two_seat_lightzero_train_smoke_summary(
                     "policy_action_repeat_warmup_iterations"
                 ),
                 "trail_render_mode": inputs.get("trail_render_mode"),
+                "frozen_opponent": inputs.get("frozen_opponent"),
+                "frozen_opponent_probability": inputs.get(
+                    "frozen_opponent_probability"
+                ),
                 "use_cuda": inputs.get("use_cuda"),
                 "checkpoint_every_iterations": inputs.get(
                     "checkpoint_every_iterations"
@@ -953,6 +1080,7 @@ def compact_curvytron_two_seat_lightzero_train_smoke_summary(
             "steps_survived": result.get("steps_survived"),
             "collect_timing_summary": result.get("collect_timing_summary"),
             "episode_duration_summary": result.get("episode_duration_summary"),
+            "opponent_mix": result.get("opponent_mix"),
             "surface": {
                 "render": result.get("surface", {}).get("render"),
                 "stack_schema_id": result.get("surface", {}).get("stack_schema_id"),
@@ -1027,6 +1155,7 @@ def _compact_iteration_for_summary(iteration: Any) -> dict[str, Any]:
         "policy_batching_counts": iteration.get("policy_batching_counts"),
         "policy_search_call_count": iteration.get("policy_search_call_count"),
         "policy_search_row_count": iteration.get("policy_search_row_count"),
+        "opponent_mix": iteration.get("opponent_mix"),
     }
 
 
@@ -1053,6 +1182,294 @@ def _reset_seed_sample(
         {"env_row_id": int(row), "reset_seed": int(array[int(row)])}
         for row in rows[: max(0, int(limit))]
     ]
+
+
+def _frozen_opponent_metadata(
+    *,
+    enabled: bool,
+    probability: float,
+    checkpoint_path: str | Path | None,
+    checkpoint_ref: str | None,
+    snapshot_ref: str | None,
+    state_key: str | None,
+    player_id: int,
+    num_simulations: int,
+    use_cuda: bool,
+) -> dict[str, Any]:
+    return {
+        "schema_id": OPPONENT_MIX_SCHEMA_ID,
+        "enabled": bool(enabled),
+        "probability": float(probability),
+        "checkpoint_path": None
+        if checkpoint_path is None
+        else str(checkpoint_path),
+        "checkpoint_ref": checkpoint_ref,
+        "snapshot_ref": snapshot_ref,
+        "checkpoint_state_key": state_key,
+        "frozen_player_id": int(player_id),
+        "current_policy_player_id": 1 - int(player_id),
+        "num_simulations": int(num_simulations),
+        "use_cuda": bool(use_cuda),
+        "semantics": (
+            "frozen checkpoint supplies opponent actions for selected env rows; "
+            "only current-policy seats create learner replay rows"
+        ),
+    }
+
+
+def _frozen_opponent_mix_rng(*, seed: int) -> np.random.Generator:
+    seed_sequence = np.random.SeedSequence(
+        [
+            int(seed) & 0xFFFFFFFF,
+            (int(seed) >> 32) & 0xFFFFFFFF,
+            0xF20A0A,
+        ]
+    )
+    return np.random.default_rng(seed_sequence)
+
+
+def _sample_frozen_opponent_rows(
+    *,
+    batch_size: int,
+    probability: float,
+    rng: np.random.Generator,
+    enabled: bool,
+) -> np.ndarray:
+    rows = np.arange(int(batch_size), dtype=np.int64)
+    return _sample_frozen_opponent_rows_from_candidates(
+        rows,
+        probability=probability,
+        rng=rng,
+        enabled=enabled,
+        batch_size=int(batch_size),
+    )
+
+
+def _resample_frozen_opponent_rows(
+    frozen_opponent_row_mask: np.ndarray,
+    *,
+    row_mask: np.ndarray,
+    probability: float,
+    rng: np.random.Generator,
+    enabled: bool,
+) -> np.ndarray:
+    current = np.asarray(frozen_opponent_row_mask, dtype=bool).copy()
+    resets = np.asarray(row_mask, dtype=bool)
+    if current.shape != resets.shape:
+        raise ValueError("frozen opponent row mask and reset mask must both be [B]")
+    rows = np.flatnonzero(resets).astype(np.int64)
+    current[rows] = False
+    replacement = _sample_frozen_opponent_rows_from_reset_candidates(
+        rows,
+        probability=probability,
+        rng=rng,
+        enabled=enabled,
+        batch_size=current.shape[0],
+    )
+    current |= replacement
+    return current
+
+
+def _sample_frozen_opponent_rows_from_candidates(
+    rows: np.ndarray,
+    *,
+    probability: float,
+    rng: np.random.Generator,
+    enabled: bool,
+    batch_size: int,
+) -> np.ndarray:
+    mask = np.zeros(int(batch_size), dtype=bool)
+    if not bool(enabled):
+        return mask
+    probability = float(probability)
+    if probability <= 0.0 or rows.size == 0:
+        return mask
+    count = int(round(float(rows.size) * probability))
+    if probability > 0.0 and count == 0:
+        count = 1
+    count = min(max(count, 0), int(rows.size))
+    if count < 1:
+        return mask
+    chosen = rng.choice(rows, size=count, replace=False)
+    mask[np.asarray(chosen, dtype=np.int64)] = True
+    return mask
+
+
+def _sample_frozen_opponent_rows_from_reset_candidates(
+    rows: np.ndarray,
+    *,
+    probability: float,
+    rng: np.random.Generator,
+    enabled: bool,
+    batch_size: int,
+) -> np.ndarray:
+    mask = np.zeros(int(batch_size), dtype=bool)
+    if not bool(enabled):
+        return mask
+    probability = float(probability)
+    if probability <= 0.0 or rows.size == 0:
+        return mask
+    draws = rng.random(int(rows.size)) < min(probability, 1.0)
+    if not bool(np.any(draws)):
+        return mask
+    mask[np.asarray(rows[draws], dtype=np.int64)] = True
+    return mask
+
+
+def _current_policy_live_mask(
+    live_mask: np.ndarray,
+    *,
+    frozen_opponent_row_mask: np.ndarray,
+    frozen_opponent_player_id: int,
+) -> np.ndarray:
+    current = np.asarray(live_mask, dtype=bool).copy()
+    frozen_rows = np.asarray(frozen_opponent_row_mask, dtype=bool)
+    if current.ndim != 2 or current.shape[1] != 2:
+        raise ValueError("live_mask must have shape [B,2]")
+    if frozen_rows.shape != (current.shape[0],):
+        raise ValueError("frozen_opponent_row_mask must have shape [B]")
+    current[frozen_rows, int(frozen_opponent_player_id)] = False
+    return current
+
+
+def _frozen_opponent_slot_mask(
+    legal_action_mask: np.ndarray,
+    *,
+    frozen_opponent_row_mask: np.ndarray,
+    frozen_opponent_player_id: int,
+) -> np.ndarray:
+    legal = np.asarray(legal_action_mask, dtype=bool)
+    if legal.ndim != 3 or legal.shape[1] != 2:
+        raise ValueError("legal_action_mask must have shape [B,2,A]")
+    frozen_rows = np.asarray(frozen_opponent_row_mask, dtype=bool)
+    if frozen_rows.shape != (legal.shape[0],):
+        raise ValueError("frozen_opponent_row_mask must have shape [B]")
+    mask = np.zeros(legal.shape[:2], dtype=bool)
+    mask[frozen_rows, int(frozen_opponent_player_id)] = True
+    return mask & legal.any(axis=2)
+
+
+def _select_frozen_opponent_actions(
+    frozen_opponent_policy: Any,
+    *,
+    legal_action_mask: np.ndarray,
+    opponent_mask: np.ndarray,
+    observation: np.ndarray,
+    decision_index: int,
+) -> dict[str, Any]:
+    empty_actions = np.full(
+        np.asarray(legal_action_mask).shape[:2],
+        NOOP_ACTION_ID,
+        dtype=np.int16,
+    )
+    if frozen_opponent_policy is None or not bool(np.asarray(opponent_mask).any()):
+        return {
+            "ok": True,
+            "actions": empty_actions,
+            "sidecar": None,
+            "selection": None,
+            "opponent_action_count": 0,
+        }
+    try:
+        selection = frozen_opponent_policy.select_actions(
+            np.asarray(legal_action_mask, dtype=bool),
+            np.asarray(opponent_mask, dtype=bool),
+            decision_index=int(decision_index),
+            observation=np.asarray(observation, dtype=np.float32),
+        )
+        actions = np.asarray(selection.actions, dtype=np.int16)
+        if actions.shape != empty_actions.shape:
+            raise ValueError(
+                f"frozen opponent actions shape {actions.shape!r}; "
+                f"expected {empty_actions.shape!r}"
+            )
+        legal = np.asarray(legal_action_mask, dtype=bool)
+        opponent_slots = np.asarray(opponent_mask, dtype=bool)
+        for env_row, player_id in np.argwhere(opponent_slots):
+            action = int(actions[int(env_row), int(player_id)])
+            if action < 0 or action >= legal.shape[2] or not bool(
+                legal[int(env_row), int(player_id), action]
+            ):
+                raise ValueError(
+                    "frozen opponent selected illegal action "
+                    f"{action} for env_row={int(env_row)}, player={int(player_id)}"
+                )
+        full_actions = empty_actions.copy()
+        full_actions[opponent_slots] = actions[opponent_slots]
+        return {
+            "ok": True,
+            "actions": full_actions,
+            "sidecar": selection.sidecar(),
+            "selection": selection,
+            "opponent_action_count": int(opponent_slots.sum()),
+        }
+    except Exception as exc:  # pragma: no cover - runtime checkpoint diagnosis.
+        return {
+            "ok": False,
+            "actions": empty_actions,
+            "sidecar": None,
+            "selection": None,
+            "opponent_action_count": 0,
+            "exception": _exception_result(exc),
+        }
+
+
+def _action_source_by_slot(
+    *,
+    live_mask: np.ndarray,
+    current_policy_live_mask: np.ndarray,
+    frozen_opponent_slot_mask: np.ndarray,
+) -> np.ndarray:
+    live = np.asarray(live_mask, dtype=bool)
+    current = np.asarray(current_policy_live_mask, dtype=bool)
+    frozen = np.asarray(frozen_opponent_slot_mask, dtype=bool)
+    source = np.full(live.shape, ACTION_SOURCE_ABSENT_NOOP, dtype=object)
+    source[current] = ACTION_SOURCE_CURRENT_POLICY
+    source[frozen] = ACTION_SOURCE_FROZEN_CHECKPOINT
+    return source
+
+
+def _rollout_kind_by_row(
+    *,
+    batch_size: int,
+    frozen_opponent_row_mask: np.ndarray,
+) -> np.ndarray:
+    kinds = np.full(
+        int(batch_size),
+        ROLLOUT_KIND_CURRENT_POLICY_SELFPLAY,
+        dtype=object,
+    )
+    kinds[np.asarray(frozen_opponent_row_mask, dtype=bool)] = (
+        ROLLOUT_KIND_CURRENT_POLICY_VS_FROZEN
+    )
+    return kinds
+
+
+def _opponent_mix_summary(
+    *,
+    frozen_opponent_row_mask: np.ndarray,
+    frozen_opponent_player_id: int,
+    frozen_opponent_probability: float,
+    frozen_opponent_metadata: Mapping[str, Any],
+    step_counts: Counter[str] | None = None,
+) -> dict[str, Any]:
+    frozen_rows = np.asarray(frozen_opponent_row_mask, dtype=bool)
+    batch_size = int(frozen_rows.shape[0])
+    frozen_count = int(frozen_rows.sum())
+    summary = {
+        "schema_id": OPPONENT_MIX_SCHEMA_ID,
+        "enabled": bool(frozen_opponent_metadata.get("enabled")),
+        "configured_probability": float(frozen_opponent_probability),
+        "batch_size": batch_size,
+        "current_policy_selfplay_rows": int(batch_size - frozen_count),
+        "current_policy_vs_frozen_rows": frozen_count,
+        "frozen_opponent_player_id": int(frozen_opponent_player_id),
+        "current_policy_player_id_in_mixed_rows": 1 - int(frozen_opponent_player_id),
+        "frozen_opponent": dict(frozen_opponent_metadata),
+    }
+    if step_counts is not None:
+        summary["step_counts"] = _counter_dict(step_counts)
+    return summary
 
 
 def _result_payload(
@@ -1090,6 +1507,14 @@ def _result_payload(
     observation_noise_std: float,
     trail_render_mode: str,
     learning_rate: float | None,
+    frozen_opponent_probability: float = DEFAULT_FROZEN_OPPONENT_PROBABILITY,
+    frozen_opponent_checkpoint_ref: str | None = None,
+    frozen_opponent_snapshot_ref: str | None = None,
+    frozen_opponent_checkpoint_state_key: str | None = None,
+    frozen_opponent_player_id: int = DEFAULT_FROZEN_OPPONENT_PLAYER_ID,
+    frozen_opponent_num_simulations: int = 1,
+    frozen_opponent_use_cuda: bool = False,
+    frozen_opponent_metadata: Mapping[str, Any] | None = None,
     use_cuda: bool,
     elapsed_sec: float,
     checkpoint_every_iterations: int,
@@ -1113,6 +1538,20 @@ def _result_payload(
     checkpoint_records: list[dict[str, Any]],
 ) -> dict[str, Any]:
     render_metadata = source_state_gray64_stack4_render_metadata(trail_render_mode)
+    resolved_frozen_opponent_metadata = dict(
+        frozen_opponent_metadata
+        or _frozen_opponent_metadata(
+            enabled=False,
+            probability=frozen_opponent_probability,
+            checkpoint_path=None,
+            checkpoint_ref=frozen_opponent_checkpoint_ref,
+            snapshot_ref=frozen_opponent_snapshot_ref,
+            state_key=frozen_opponent_checkpoint_state_key,
+            player_id=frozen_opponent_player_id,
+            num_simulations=frozen_opponent_num_simulations,
+            use_cuda=frozen_opponent_use_cuda,
+        )
+    )
     resolved_learner_replay_rows = (
         replay_rows if learner_replay_rows is None else learner_replay_rows
     )
@@ -1250,6 +1689,14 @@ def _result_payload(
             "observation_noise_std": float(observation_noise_std),
             "trail_render_mode": render_metadata["trail_render_mode"],
             "learning_rate": None if learning_rate is None else float(learning_rate),
+            "frozen_opponent": resolved_frozen_opponent_metadata,
+            "frozen_opponent_probability": float(frozen_opponent_probability),
+            "frozen_opponent_checkpoint_ref": frozen_opponent_checkpoint_ref,
+            "frozen_opponent_snapshot_ref": frozen_opponent_snapshot_ref,
+            "frozen_opponent_checkpoint_state_key": frozen_opponent_checkpoint_state_key,
+            "frozen_opponent_player_id": int(frozen_opponent_player_id),
+            "frozen_opponent_num_simulations": int(frozen_opponent_num_simulations),
+            "frozen_opponent_use_cuda": bool(frozen_opponent_use_cuda),
             "default_trail_render_mode": render_metadata["default_trail_render_mode"],
             "supported_trail_render_modes": render_metadata[
                 "supported_trail_render_modes"
@@ -1289,6 +1736,15 @@ def _result_payload(
         "total_steps_collected": int(total_steps_collected),
         "collect_timing_summary": _collect_timing_summary(iteration_summaries),
         "episode_duration_summary": _episode_duration_summary(iteration_summaries),
+        "opponent_mix": {
+            "schema_id": OPPONENT_MIX_SCHEMA_ID,
+            "frozen_opponent": resolved_frozen_opponent_metadata,
+            "iteration_edges": [
+                item.get("opponent_mix")
+                for item in iteration_summaries[-5:]
+                if isinstance(item.get("opponent_mix"), Mapping)
+            ],
+        },
         "iterations": iteration_summaries,
         "action_counts": _counter_dict(action_counts),
         "action_counts_by_player": {
@@ -1374,6 +1830,12 @@ def _collect_current_policy_iteration(
     policy_action_repeat_rng: np.random.Generator,
     observation_noise_std: float,
     observation_noise_rng: np.random.Generator,
+    frozen_opponent_policy: Any | None = None,
+    frozen_opponent_row_mask: np.ndarray | None = None,
+    frozen_opponent_probability: float = DEFAULT_FROZEN_OPPONENT_PROBABILITY,
+    frozen_opponent_mix_rng: np.random.Generator | None = None,
+    frozen_opponent_player_id: int = DEFAULT_FROZEN_OPPONENT_PLAYER_ID,
+    frozen_opponent_metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     records: list[dict[str, Any]] = []
     replay_rows: list[dict[str, Any]] = []
@@ -1393,8 +1855,44 @@ def _collect_current_policy_iteration(
         "player_1": Counter(),
     }
     stochasticity_counts: Counter[str] = Counter()
+    opponent_mix_step_counts: Counter[str] = Counter()
     noop_skip_interval_histogram: Counter[int] = Counter()
     repeat_remaining = np.zeros((env.batch_size, env.player_count), dtype=np.int16)
+    frozen_enabled = (
+        frozen_opponent_policy is not None and float(frozen_opponent_probability) > 0.0
+    )
+    if frozen_opponent_mix_rng is None:
+        frozen_opponent_mix_rng = _frozen_opponent_mix_rng(seed=iteration)
+    if frozen_opponent_row_mask is None:
+        active_frozen_opponent_row_mask = _sample_frozen_opponent_rows(
+            batch_size=env.batch_size,
+            probability=frozen_opponent_probability,
+            rng=frozen_opponent_mix_rng,
+            enabled=frozen_enabled,
+        )
+    else:
+        active_frozen_opponent_row_mask = np.asarray(
+            frozen_opponent_row_mask,
+            dtype=bool,
+        ).copy()
+        if active_frozen_opponent_row_mask.shape != (env.batch_size,):
+            raise ValueError("frozen_opponent_row_mask must have shape [B]")
+        if not frozen_enabled:
+            active_frozen_opponent_row_mask[:] = False
+    resolved_frozen_opponent_metadata = dict(
+        frozen_opponent_metadata
+        or _frozen_opponent_metadata(
+            enabled=frozen_enabled,
+            probability=frozen_opponent_probability,
+            checkpoint_path=None,
+            checkpoint_ref=None,
+            snapshot_ref=None,
+            state_key=None,
+            player_id=frozen_opponent_player_id,
+            num_simulations=1,
+            use_cuda=False,
+        )
+    )
 
     def add_elapsed(name: str, started: float) -> None:
         timing_sec[name] += time.perf_counter() - started
@@ -1416,6 +1914,13 @@ def _collect_current_policy_iteration(
         add_elapsed("initial_autoreset_sec", started)
         batch = reset_batch
         clear_control_state(needs_reset)
+        active_frozen_opponent_row_mask = _resample_frozen_opponent_rows(
+            active_frozen_opponent_row_mask,
+            row_mask=needs_reset,
+            probability=frozen_opponent_probability,
+            rng=frozen_opponent_mix_rng,
+            enabled=frozen_enabled,
+        )
         problems.extend(
             _validate_visual_batch(
                 observation,
@@ -1434,9 +1939,35 @@ def _collect_current_policy_iteration(
         )
         add_elapsed("observation_noise_sec", started)
         started = time.perf_counter()
+        live_mask = batch.action_mask.any(axis=2)
+        current_policy_live = _current_policy_live_mask(
+            live_mask,
+            frozen_opponent_row_mask=active_frozen_opponent_row_mask,
+            frozen_opponent_player_id=frozen_opponent_player_id,
+        )
+        frozen_slot_mask = _frozen_opponent_slot_mask(
+            batch.action_mask,
+            frozen_opponent_row_mask=active_frozen_opponent_row_mask,
+            frozen_opponent_player_id=frozen_opponent_player_id,
+        )
+        action_source_by_slot = _action_source_by_slot(
+            live_mask=live_mask,
+            current_policy_live_mask=current_policy_live,
+            frozen_opponent_slot_mask=frozen_slot_mask,
+        )
+        rollout_kind_by_row = _rollout_kind_by_row(
+            batch_size=env.batch_size,
+            frozen_opponent_row_mask=active_frozen_opponent_row_mask,
+        )
+        opponent_mix_step_counts[ROLLOUT_KIND_CURRENT_POLICY_SELFPLAY] += int(
+            (~active_frozen_opponent_row_mask & live_mask.any(axis=1)).sum()
+        )
+        opponent_mix_step_counts[ROLLOUT_KIND_CURRENT_POLICY_VS_FROZEN] += int(
+            (active_frozen_opponent_row_mask & live_mask.any(axis=1)).sum()
+        )
         mapping = build_policy_row_mapping(
             policy_observation,
-            batch.action_mask.any(axis=2),
+            current_policy_live,
             batch.action_mask,
         )
         add_elapsed("policy_row_mapping_sec", started)
@@ -1611,6 +2142,38 @@ def _collect_current_policy_iteration(
             dtype=np.int16,
         )
         add_elapsed("joint_action_mapping_sec", started)
+        frozen_opponent_actions = np.full(
+            (env.batch_size, env.player_count),
+            NOOP_ACTION_ID,
+            dtype=np.int16,
+        )
+        frozen_opponent_sidecar = None
+        if bool(frozen_slot_mask.any()):
+            started = time.perf_counter()
+            frozen_selection = _select_frozen_opponent_actions(
+                frozen_opponent_policy,
+                legal_action_mask=batch.action_mask,
+                opponent_mask=frozen_slot_mask,
+                observation=policy_observation,
+                decision_index=decision_index,
+            )
+            add_elapsed("frozen_opponent_action_sec", started)
+            if not frozen_selection.get("ok"):
+                problems.append(
+                    "frozen opponent action selection failed: "
+                    f"{frozen_selection.get('exception')}"
+                )
+                break
+            frozen_opponent_actions = np.asarray(
+                frozen_selection["actions"],
+                dtype=np.int16,
+            )
+            frozen_opponent_sidecar = frozen_selection.get("sidecar")
+            joint_action[frozen_slot_mask] = frozen_opponent_actions[frozen_slot_mask]
+            for env_row, player in np.argwhere(frozen_slot_mask):
+                action = int(frozen_opponent_actions[int(env_row), int(player)])
+                physical_action_counts[action] += 1
+                physical_per_player_action_counts[f"player_{int(player)}"][action] += 1
 
         before_alive = batch.info.get("alive")
         started = time.perf_counter()
@@ -1653,6 +2216,14 @@ def _collect_current_policy_iteration(
             player = int(active_player_id[policy_row])
             action = int(selected[policy_row])
             policy_action = int(policy_selected[policy_row])
+            action_source = str(action_source_by_slot[env_row, player])
+            if action_source != ACTION_SOURCE_CURRENT_POLICY:
+                problems.append(
+                    "refusing to write non-current-policy row into learner replay: "
+                    f"env_row={env_row}, player={player}, source={action_source}"
+                )
+                break
+            rollout_kind = str(rollout_kind_by_row[env_row])
             sparse_outcome_reward = _sparse_outcome_reward(
                 step_batch.reward,
                 env_row=env_row,
@@ -1700,6 +2271,17 @@ def _collect_current_policy_iteration(
                     "env_row_id": env_row,
                     "player_id": player,
                     "to_play": player,
+                    "learner_controlled": True,
+                    "action_source": ACTION_SOURCE_CURRENT_POLICY,
+                    "rollout_kind": rollout_kind,
+                    "opponent_mix_schema_id": OPPONENT_MIX_SCHEMA_ID,
+                    "frozen_opponent_player_id": int(frozen_opponent_player_id),
+                    "frozen_opponent_checkpoint_ref": (
+                        resolved_frozen_opponent_metadata.get("checkpoint_ref")
+                    ),
+                    "frozen_opponent_snapshot_ref": (
+                        resolved_frozen_opponent_metadata.get("snapshot_ref")
+                    ),
                     "observation": active_observations[policy_row].copy(),
                     "next_observation": replay_next_observation[env_row, player].copy(),
                     "action_mask": active_legal[policy_row].copy(),
@@ -1791,10 +2373,26 @@ def _collect_current_policy_iteration(
             "action_selection_mode": action_selection_mode,
             "collect_temperature": float(collect_temperature),
             "collect_epsilon": float(collect_epsilon),
-            "same_policy_object_for_both_seats": True,
+            "same_policy_object_for_both_seats": not bool(
+                active_frozen_opponent_row_mask.any()
+            ),
+            "opponent_mix_schema_id": OPPONENT_MIX_SCHEMA_ID,
+            "opponent_mix": _opponent_mix_summary(
+                frozen_opponent_row_mask=active_frozen_opponent_row_mask,
+                frozen_opponent_player_id=frozen_opponent_player_id,
+                frozen_opponent_probability=frozen_opponent_probability,
+                frozen_opponent_metadata=resolved_frozen_opponent_metadata,
+            ),
+            "rollout_kind_by_row": rollout_kind_by_row.copy(),
+            "frozen_opponent_row_mask": active_frozen_opponent_row_mask.copy(),
+            "current_policy_live_mask": current_policy_live.copy(),
+            "frozen_opponent_slot_mask": frozen_slot_mask.copy(),
+            "action_source_by_slot": action_source_by_slot.copy(),
             "joint_action": joint_action.copy(),
             "policy_selected_actions": policy_selected.copy(),
             "executed_actions": selected.copy(),
+            "frozen_opponent_actions": frozen_opponent_actions.copy(),
+            "frozen_opponent_policy_sidecar": frozen_opponent_sidecar,
             "policy_noop_skip_actions_are_noop": True,
             "action_noise_noop_probability": float(action_noop_probability),
             "action_noise_noop_count": int(action_noise_mask.sum()),
@@ -1850,6 +2448,13 @@ def _collect_current_policy_iteration(
             )
             add_elapsed("loop_autoreset_sec", started)
             batch = reset_batch
+            active_frozen_opponent_row_mask = _resample_frozen_opponent_rows(
+                active_frozen_opponent_row_mask,
+                row_mask=needs_reset,
+                probability=frozen_opponent_probability,
+                rng=frozen_opponent_mix_rng,
+                enabled=frozen_enabled,
+            )
             record["autoreset_rows"] = reset_batch.info["reset_rows"].copy()
             record["autoreset_reset_seed_sample"] = _reset_seed_sample(
                 reset_batch.info,
@@ -1870,6 +2475,14 @@ def _collect_current_policy_iteration(
     return {
         "batch": batch,
         "observation": observation,
+        "frozen_opponent_row_mask": active_frozen_opponent_row_mask,
+        "opponent_mix": _opponent_mix_summary(
+            frozen_opponent_row_mask=active_frozen_opponent_row_mask,
+            frozen_opponent_player_id=frozen_opponent_player_id,
+            frozen_opponent_probability=frozen_opponent_probability,
+            frozen_opponent_metadata=resolved_frozen_opponent_metadata,
+            step_counts=opponent_mix_step_counts,
+        ),
         "records": records,
         "replay_rows": replay_rows,
         "problems": problems,
@@ -2242,6 +2855,7 @@ def _iteration_progress_line(
             "effective_policy_action_repeat_extra_probability"
         ),
         "control_stochasticity": iteration_summary.get("control_stochasticity"),
+        "opponent_mix": iteration_summary.get("opponent_mix"),
         "collect_timing_sec": iteration_summary.get("collect_timing_sec"),
         "policy_batching_counts": iteration_summary.get("policy_batching_counts"),
         "policy_search_call_count": iteration_summary.get("policy_search_call_count"),
@@ -2321,6 +2935,14 @@ def _iteration_summary(
         [row.get("bonus_pickup_count", 0) for row in replay_rows],
         dtype=np.int32,
     )
+    rollout_kind_counts = Counter(
+        str(row.get("rollout_kind", ROLLOUT_KIND_CURRENT_POLICY_SELFPLAY))
+        for row in replay_rows
+    )
+    action_source_counts = Counter(
+        str(row.get("action_source", ACTION_SOURCE_CURRENT_POLICY))
+        for row in replay_rows
+    )
     episode_steps = _completed_episode_steps(records)
     return _to_plain(
         {
@@ -2354,6 +2976,8 @@ def _iteration_summary(
             "replay": {
                 "status": "ok" if replay_rows else "empty",
                 "row_count": int(len(replay_rows)),
+                "rollout_kind_counts": _counter_dict(rollout_kind_counts),
+                "action_source_counts": _counter_dict(action_source_counts),
                 "scope": replay_scope,
                 "replay_rows_available": int(replay_rows_available),
                 "learner_batch_size": int(learner_batch_size),
@@ -2653,6 +3277,17 @@ def _sample_replay_batch(
             "learner_sample_size": learner_sample_size,
             "learner_batch_size": 0,
         }
+    bad_rows = [
+        index
+        for index, row in enumerate(rows)
+        if row.get("action_source") != ACTION_SOURCE_CURRENT_POLICY
+        or row.get("learner_controlled") is not True
+    ]
+    if bad_rows:
+        raise ValueError(
+            "learner replay rows must all be current-policy controlled; "
+            f"bad row indices: {bad_rows[:8]}"
+        )
     selected_rows, sample_indices, sampled_without_replacement = _select_replay_rows(
         rows,
         learner_sample_size=learner_sample_size,
@@ -3426,6 +4061,27 @@ def main() -> None:
         help="Optional LightZero policy learning_rate override. Omit to use the stock config default.",
     )
     parser.add_argument(
+        "--frozen-opponent-probability",
+        type=float,
+        default=DEFAULT_FROZEN_OPPONENT_PROBABILITY,
+        help="Fraction of env rows that use one frozen checkpoint opponent seat.",
+    )
+    parser.add_argument("--frozen-opponent-checkpoint-path", default=None)
+    parser.add_argument("--frozen-opponent-checkpoint-ref", default=None)
+    parser.add_argument("--frozen-opponent-snapshot-ref", default=None)
+    parser.add_argument("--frozen-opponent-checkpoint-state-key", default=None)
+    parser.add_argument(
+        "--frozen-opponent-player-id",
+        type=int,
+        default=DEFAULT_FROZEN_OPPONENT_PLAYER_ID,
+    )
+    parser.add_argument("--frozen-opponent-num-simulations", type=int, default=None)
+    parser.add_argument(
+        "--frozen-opponent-use-cuda",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
         "--death-mode",
         choices=tuple(vector_runtime.DEATH_MODES),
         default=DEFAULT_DEATH_MODE,
@@ -3514,6 +4170,14 @@ def main() -> None:
         observation_noise_std=args.observation_noise_std,
         trail_render_mode=args.trail_render_mode,
         learning_rate=args.learning_rate,
+        frozen_opponent_probability=args.frozen_opponent_probability,
+        frozen_opponent_checkpoint_path=args.frozen_opponent_checkpoint_path,
+        frozen_opponent_checkpoint_ref=args.frozen_opponent_checkpoint_ref,
+        frozen_opponent_snapshot_ref=args.frozen_opponent_snapshot_ref,
+        frozen_opponent_checkpoint_state_key=args.frozen_opponent_checkpoint_state_key,
+        frozen_opponent_player_id=args.frozen_opponent_player_id,
+        frozen_opponent_num_simulations=args.frozen_opponent_num_simulations,
+        frozen_opponent_use_cuda=args.frozen_opponent_use_cuda,
         death_mode=args.death_mode,
         natural_bonus_spawn=args.natural_bonus_spawn,
         checkpoint_every_iterations=args.checkpoint_every_iterations,
@@ -3549,6 +4213,8 @@ __all__ = [
     "DEFAULT_ACTION_NOOP_WARMUP_ITERATIONS",
     "DEFAULT_ALIVE_REWARD",
     "DEFAULT_DEAD_REWARD",
+    "DEFAULT_FROZEN_OPPONENT_PLAYER_ID",
+    "DEFAULT_FROZEN_OPPONENT_PROBABILITY",
     "DEFAULT_NATURAL_BONUS_SPAWN",
     "DEFAULT_OBSERVATION_NOISE_STD",
     "DEFAULT_RETURN_TARGET_DISCOUNT",

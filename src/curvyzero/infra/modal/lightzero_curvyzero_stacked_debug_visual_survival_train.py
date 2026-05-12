@@ -227,6 +227,12 @@ from curvyzero.training.curvytron_two_seat_lightzero_train_smoke import (
     DEFAULT_DEATH_MODE as TWO_SEAT_DEFAULT_DEATH_MODE,
 )
 from curvyzero.training.curvytron_two_seat_lightzero_train_smoke import (
+    DEFAULT_FROZEN_OPPONENT_PLAYER_ID as TWO_SEAT_DEFAULT_FROZEN_OPPONENT_PLAYER_ID,
+)
+from curvyzero.training.curvytron_two_seat_lightzero_train_smoke import (
+    DEFAULT_FROZEN_OPPONENT_PROBABILITY as TWO_SEAT_DEFAULT_FROZEN_OPPONENT_PROBABILITY,
+)
+from curvyzero.training.curvytron_two_seat_lightzero_train_smoke import (
     DEFAULT_NATURAL_BONUS_SPAWN as TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN,
 )
 from curvyzero.training.curvytron_two_seat_lightzero_train_smoke import (
@@ -344,6 +350,21 @@ DEFAULT_BACKGROUND_GIF_FRAME_STRIDE = 1
 DEFAULT_BACKGROUND_GIF_FPS = 8.0
 DEFAULT_BACKGROUND_GIF_SCALE = 4
 DEFAULT_BACKGROUND_GIF_FRAME_SIZE = SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE
+BACKGROUND_GIF_POLICY_MODE_COLLECT = "collect"
+BACKGROUND_GIF_POLICY_MODE_EVAL_GREEDY = "eval_greedy"
+BACKGROUND_GIF_POLICY_MODE_CHOICES = (
+    BACKGROUND_GIF_POLICY_MODE_COLLECT,
+    BACKGROUND_GIF_POLICY_MODE_EVAL_GREEDY,
+)
+DEFAULT_BACKGROUND_GIF_POLICY_MODE = BACKGROUND_GIF_POLICY_MODE_EVAL_GREEDY
+DEFAULT_BACKGROUND_GIF_COLLECT_TEMPERATURE = 1.0
+DEFAULT_BACKGROUND_GIF_COLLECT_EPSILON = 0.25
+BACKGROUND_GIF_VARIANT_EVAL_GREEDY = "eval_greedy"
+BACKGROUND_GIF_VARIANT_COLLECT_T1 = "collect_t1"
+BACKGROUND_GIF_VARIANT_FILENAMES = {
+    BACKGROUND_GIF_VARIANT_EVAL_GREEDY: "raw.gif",
+    BACKGROUND_GIF_VARIANT_COLLECT_T1: "collect_t1.gif",
+}
 DEFAULT_BACKGROUND_CHECKPOINT_WAIT_TIMEOUT_SEC = 30 * 60
 DEFAULT_BACKGROUND_CHECKPOINT_WAIT_POLL_SEC = 10.0
 BACKGROUND_EVAL_LAUNCH_HOOK = "hook"
@@ -2699,6 +2720,8 @@ def _run_visual_survival_train(
     background_gif_fps: float,
     background_gif_scale: int,
     background_gif_frame_size: int = DEFAULT_BACKGROUND_GIF_FRAME_SIZE,
+    background_gif_collect_temperature: float = DEFAULT_BACKGROUND_GIF_COLLECT_TEMPERATURE,
+    background_gif_collect_epsilon: float = DEFAULT_BACKGROUND_GIF_COLLECT_EPSILON,
     background_gif_checkpoint_seed_mixing_enabled: bool = (
         DEFAULT_BACKGROUND_GIF_CHECKPOINT_SEED_MIXING_ENABLED
     ),
@@ -2956,6 +2979,8 @@ def _run_visual_survival_train(
         "background_gif_fps": float(background_gif_fps),
         "background_gif_scale": int(background_gif_scale),
         "background_gif_frame_size": int(background_gif_frame_size),
+        "background_gif_collect_temperature": float(background_gif_collect_temperature),
+        "background_gif_collect_epsilon": float(background_gif_collect_epsilon),
         "gif_browser_run_marker_enabled": gif_browser_run_marker_enabled,
         "gif_browser_run_marker_ref": (
             runs.gif_browser_run_marker_ref(TASK_ID, run_id).as_posix()
@@ -3318,6 +3343,8 @@ def _run_visual_survival_train(
                 "frame_stride": command["background_gif_frame_stride"],
                 "fps": command["background_gif_fps"],
                 "frame_size": command["background_gif_frame_size"],
+                "collect_temperature": command["background_gif_collect_temperature"],
+                "collect_epsilon": command["background_gif_collect_epsilon"],
             },
         },
         "env_variant": command["env_variant"],
@@ -4956,6 +4983,18 @@ def _background_gif_config_from_command(command: dict[str, Any]) -> dict[str, An
         "frame_size": int(
             command.get("background_gif_frame_size", DEFAULT_BACKGROUND_GIF_FRAME_SIZE)
         ),
+        "collect_temperature": float(
+            command.get(
+                "background_gif_collect_temperature",
+                DEFAULT_BACKGROUND_GIF_COLLECT_TEMPERATURE,
+            )
+        ),
+        "collect_epsilon": float(
+            command.get(
+                "background_gif_collect_epsilon",
+                DEFAULT_BACKGROUND_GIF_COLLECT_EPSILON,
+            )
+        ),
         "natural_bonus_spawn": bool(
             command.get("natural_bonus_spawn", TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN)
         ),
@@ -5309,6 +5348,18 @@ def _spawn_one_checkpoint_background_gif(
             fps=float(gif_config.get("fps", DEFAULT_BACKGROUND_GIF_FPS)),
             scale=int(gif_config.get("scale", DEFAULT_BACKGROUND_GIF_SCALE)),
             frame_size=int(gif_config.get("frame_size", DEFAULT_BACKGROUND_GIF_FRAME_SIZE)),
+            collect_temperature=float(
+                gif_config.get(
+                    "collect_temperature",
+                    DEFAULT_BACKGROUND_GIF_COLLECT_TEMPERATURE,
+                )
+            ),
+            collect_epsilon=float(
+                gif_config.get(
+                    "collect_epsilon",
+                    DEFAULT_BACKGROUND_GIF_COLLECT_EPSILON,
+                )
+            ),
             training_env_variant=training_env_variant,
             training_reward_variant=str(
                 gif_config.get("training_reward_variant", DEFAULT_REWARD_VARIANT)
@@ -5404,6 +5455,8 @@ def _checkpoint_eval_poller_command(
     background_gif_fps: float,
     background_gif_scale: int,
     background_gif_frame_size: int = DEFAULT_BACKGROUND_GIF_FRAME_SIZE,
+    background_gif_collect_temperature: float = DEFAULT_BACKGROUND_GIF_COLLECT_TEMPERATURE,
+    background_gif_collect_epsilon: float = DEFAULT_BACKGROUND_GIF_COLLECT_EPSILON,
     background_gif_checkpoint_seed_mixing_enabled: bool = (
         DEFAULT_BACKGROUND_GIF_CHECKPOINT_SEED_MIXING_ENABLED
     ),
@@ -5441,6 +5494,8 @@ def _checkpoint_eval_poller_command(
         "background_gif_fps": background_gif_fps,
         "background_gif_scale": background_gif_scale,
         "background_gif_frame_size": background_gif_frame_size,
+        "background_gif_collect_temperature": background_gif_collect_temperature,
+        "background_gif_collect_epsilon": background_gif_collect_epsilon,
     }
 
 
@@ -6272,6 +6327,340 @@ def _write_selfplay_raw_frames_npz(
     return runs.file_summary(path, mount=RUNS_MOUNT)
 
 
+def _checkpoint_gif_policy_action(
+    *,
+    eval_mod: Any,
+    policy: Any,
+    observation: dict[str, Any],
+    policy_mode: str,
+    collect_temperature: float,
+    collect_epsilon: float,
+) -> dict[str, Any]:
+    if policy_mode == BACKGROUND_GIF_POLICY_MODE_EVAL_GREEDY:
+        result = dict(eval_mod._policy_eval_action(policy, observation))
+        result["policy_mode"] = BACKGROUND_GIF_POLICY_MODE_EVAL_GREEDY
+        result["policy_mode_label"] = "Greedy eval"
+        result["temperature"] = 0.0
+        result["epsilon"] = 0.0
+        return result
+    if policy_mode != BACKGROUND_GIF_POLICY_MODE_COLLECT:
+        raise ValueError(
+            "background GIF policy mode must be one of "
+            f"{BACKGROUND_GIF_POLICY_MODE_CHOICES!r}; got {policy_mode!r}"
+        )
+    if collect_temperature <= 0.0:
+        raise ValueError("collect temperature must be positive")
+    if not 0.0 <= collect_epsilon <= 1.0:
+        raise ValueError("collect epsilon must be in [0, 1]")
+
+    import numpy as np
+    import torch
+
+    obs_tensor = torch.as_tensor(
+        np.asarray([observation["observation"]]),
+        dtype=torch.float32,
+        device=eval_mod._policy_model_device(policy),
+    )
+    action_mask = np.asarray([observation["action_mask"]], dtype=np.float32)
+    to_play = [int(np.asarray(observation.get("to_play", -1)).reshape(-1)[0])]
+    ready_env_id = np.asarray([0])
+    with torch.no_grad():
+        output = policy.collect_mode.forward(
+            obs_tensor,
+            action_mask=action_mask,
+            temperature=float(collect_temperature),
+            to_play=to_play,
+            epsilon=float(collect_epsilon),
+            ready_env_id=ready_env_id,
+        )
+    return {
+        "ok": True,
+        "source": "policy_collect_mode",
+        "policy_mode": BACKGROUND_GIF_POLICY_MODE_COLLECT,
+        "policy_mode_label": "Collect sample",
+        "action": eval_mod._extract_eval_action(output),
+        "temperature": float(collect_temperature),
+        "epsilon": float(collect_epsilon),
+        "compact_output": eval_mod._compact_mcts_output(output),
+    }
+
+
+def _checkpoint_gif_variant_specs(
+    *,
+    collect_temperature: float,
+    collect_epsilon: float,
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "variant_id": BACKGROUND_GIF_VARIANT_EVAL_GREEDY,
+            "label": "Greedy eval",
+            "policy_mode": BACKGROUND_GIF_POLICY_MODE_EVAL_GREEDY,
+            "temperature": 0.0,
+            "epsilon": 0.0,
+            "gif_filename": BACKGROUND_GIF_VARIANT_FILENAMES[
+                BACKGROUND_GIF_VARIANT_EVAL_GREEDY
+            ],
+            "raw_frames_filename": "raw_frames.npz",
+            "telemetry_filename": "turn_commit_env_steps.jsonl",
+            "compatibility_role": "legacy_raw_gif",
+        },
+        {
+            "variant_id": BACKGROUND_GIF_VARIANT_COLLECT_T1,
+            "label": f"Collect T={collect_temperature:g}",
+            "policy_mode": BACKGROUND_GIF_POLICY_MODE_COLLECT,
+            "temperature": float(collect_temperature),
+            "epsilon": float(collect_epsilon),
+            "gif_filename": BACKGROUND_GIF_VARIANT_FILENAMES[
+                BACKGROUND_GIF_VARIANT_COLLECT_T1
+            ],
+            "raw_frames_filename": "collect_t1_frames.npz",
+            "telemetry_filename": "turn_commit_env_steps_collect_t1.jsonl",
+            "compatibility_role": "training_like_collect_sample",
+        },
+    ]
+
+
+def _capture_checkpoint_selfplay_gif_variant(
+    *,
+    eval_mod: Any,
+    state_dict: dict[str, Any],
+    seed: int,
+    checkpoint_ref: str,
+    clean_checkpoint_label: str,
+    artifact_root: Path,
+    variant: dict[str, Any],
+    source_max_steps: int,
+    effective_source_max_steps: int,
+    max_step_limit: int | None,
+    step_limit_kind: str,
+    num_simulations: int,
+    batch_size: int,
+    frame_stride: int,
+    fps: float,
+    scale: int,
+    frame_size: int,
+    training_env_variant: str,
+    training_reward_variant: str,
+    natural_bonus_spawn: bool,
+) -> dict[str, Any]:
+    import numpy as np
+
+    gif_path = artifact_root / str(variant["gif_filename"])
+    frames_path = artifact_root / str(variant["raw_frames_filename"])
+    telemetry_path = artifact_root / str(variant["telemetry_filename"])
+    policy, env, surface = eval_mod._make_policy_and_env(
+        state_dict=state_dict,
+        seed=int(seed),
+        use_cuda=False,
+        source_max_steps=int(effective_source_max_steps),
+        num_simulations=int(num_simulations),
+        batch_size=int(batch_size),
+        telemetry_path=telemetry_path,
+        env_variant=ENV_VARIANT_SOURCE_STATE_TURN_COMMIT,
+        reward_variant=DEFAULT_REWARD_VARIANT,
+        model_env_variant=training_env_variant,
+        model_reward_variant=training_reward_variant,
+        opponent_policy_kind=OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
+        opponent_checkpoint=None,
+        opponent_snapshot_ref=None,
+        opponent_checkpoint_state_key=None,
+        natural_bonus_spawn=bool(natural_bonus_spawn),
+    )
+
+    observation = env.reset(seed=int(seed))
+    first_frame, first_frame_capture = _copy_source_state_human_rgb_frame_with_source(
+        env,
+        frame_size=int(frame_size),
+    )
+    frames: list[Any] = [first_frame]
+    frame_captures: list[dict[str, Any]] = [first_frame_capture]
+    scalar_actions: list[dict[str, Any]] = []
+    joint_actions: list[dict[str, Any]] = []
+    physical_steps = 0
+    scalar_steps = 0
+    done = False
+    last_info: dict[str, Any] = {}
+    failure: dict[str, Any] | None = None
+
+    while not done and (max_step_limit is None or physical_steps < int(max_step_limit)):
+        try:
+            action_result = _checkpoint_gif_policy_action(
+                eval_mod=eval_mod,
+                policy=policy,
+                observation=observation,
+                policy_mode=str(variant["policy_mode"]),
+                collect_temperature=float(variant["temperature"]),
+                collect_epsilon=float(variant["epsilon"]),
+            )
+            timestep = env.step(int(action_result["action"]))
+            observation, reward, done, info = eval_mod._timestep_parts(timestep)
+        except Exception as exc:  # pragma: no cover - remote dependency diagnosis.
+            failure = {"scalar_step_index": scalar_steps, **_exception_result(exc)}
+            break
+
+        last_info = _to_plain(info) if isinstance(info, dict) else {"raw_info": _to_plain(info)}
+        scalar_actions.append(
+            {
+                "scalar_step_index": int(scalar_steps),
+                "action": int(action_result["action"]),
+                "acting_player_id": last_info.get("acting_player_id"),
+                "physical_env_advanced": bool(last_info.get("physical_env_advanced", False)),
+                "reward": _to_plain(reward),
+                "done": bool(done),
+                "policy_mode": variant["policy_mode"],
+                "temperature": variant["temperature"],
+                "epsilon": variant["epsilon"],
+            }
+        )
+        scalar_steps += 1
+        if bool(last_info.get("physical_env_advanced", False)):
+            physical_steps += 1
+            joint_actions.append(
+                {
+                    "physical_step_index": int(physical_steps - 1),
+                    "joint_action": last_info.get("joint_action"),
+                    "terminal_reason": last_info.get("terminal_reason"),
+                    "done": bool(done),
+                }
+            )
+            if physical_steps % frame_stride == 0 or done:
+                frame, frame_capture = _copy_source_state_human_rgb_frame_with_source(
+                    env,
+                    frame_size=int(frame_size),
+                )
+                frames.append(frame)
+                frame_captures.append(frame_capture)
+
+    raw_frames = np.stack(frames, axis=0).astype(np.uint8, copy=False)
+    frame_capture_method_counts = dict(
+        Counter(str(item.get("source", "unknown")) for item in frame_captures)
+    )
+    frame_capture_method = str(frame_captures[0].get("source", "unknown"))
+    artifact_metadata = {
+        "schema_id": "curvyzero_lightzero_curvytron_checkpoint_selfplay_rgb_frames/v0",
+        "variant_id": variant["variant_id"],
+        "variant_label": variant["label"],
+        "policy_mode": variant["policy_mode"],
+        "temperature": variant["temperature"],
+        "epsilon": variant["epsilon"],
+        "frame_source": "source_state_rgb_canvas_like",
+        "frame_schema_id": SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID,
+        "frame_truth_level": SOURCE_STATE_RGB_CANVAS_LIKE_TRUTH_LEVEL,
+        "browser_pixel_fidelity": False,
+        "frame_capture_method": frame_capture_method,
+        "frame_capture_method_counts": frame_capture_method_counts,
+        "frame_capture_details_sample": frame_captures[:4],
+        "frame_shape": [int(frame_size), int(frame_size), 3],
+        "saved_frame_shape": [int(frame_size), int(frame_size), 3],
+        "gif_filename": variant["gif_filename"],
+        "gif_content_kind": "source_state_rgb_canvas_like_rgb_frames",
+        "frame_count": int(raw_frames.shape[0]),
+        "frame_stride_physical_steps": int(frame_stride),
+        "seed": int(seed),
+        "natural_bonus_spawn": bool(natural_bonus_spawn),
+        "checkpoint_ref": checkpoint_ref,
+        "checkpoint_label": clean_checkpoint_label,
+        "max_steps": max_step_limit,
+        "step_limit_kind": step_limit_kind,
+        "configured_source_max_steps": int(source_max_steps),
+        "effective_source_max_steps": int(effective_source_max_steps),
+    }
+    frames_artifact = _write_selfplay_raw_frames_npz(
+        frames=raw_frames,
+        path=frames_path,
+        metadata=artifact_metadata,
+    )
+    gif_artifact = _save_raw_frames_gif(
+        frames=raw_frames,
+        gif_path=gif_path,
+        fps=float(fps),
+        scale=int(scale),
+    )
+    if failure is not None:
+        stop_reason = "capture_failure"
+    elif bool(done):
+        stop_reason = "environment_done"
+    elif max_step_limit is not None and physical_steps >= int(max_step_limit):
+        stop_reason = "gif_step_limit"
+    else:
+        stop_reason = "loop_exited"
+
+    scalar_action_trace = (
+        scalar_actions if max_step_limit is None else scalar_actions[: 2 * int(max_step_limit)]
+    )
+    joint_action_trace = (
+        joint_actions if max_step_limit is None else joint_actions[: int(max_step_limit)]
+    )
+    action_space_size = None
+    if isinstance(surface.get("compiled_policy"), dict):
+        try:
+            action_space_size = int(surface["compiled_policy"]["action_space_size"])
+        except (KeyError, TypeError, ValueError):
+            action_space_size = None
+    action_summary = _action_trace_observability(
+        scalar_actions,
+        player_field="acting_player_id",
+        action_field="action",
+        action_space_size=action_space_size,
+    )
+    action_summary["source"] = f"{variant['variant_id']}_scalar_policy_decisions"
+    joint_action_summary = _joint_action_trace_observability(
+        joint_actions,
+        action_space_size=action_space_size,
+    )
+    joint_action_summary["source"] = f"{variant['variant_id']}_joint_actions_physical_commits"
+    return {
+        "variant_id": variant["variant_id"],
+        "label": variant["label"],
+        "policy_mode": variant["policy_mode"],
+        "temperature": variant["temperature"],
+        "epsilon": variant["epsilon"],
+        "compatibility_role": variant["compatibility_role"],
+        "ok": failure is None,
+        "gif_filename": variant["gif_filename"],
+        "gif_ref": runs.file_ref(gif_path, mount=RUNS_MOUNT),
+        "raw_frames_ref": runs.file_ref(frames_path, mount=RUNS_MOUNT),
+        "telemetry_ref": (
+            runs.file_ref(telemetry_path, mount=RUNS_MOUNT) if telemetry_path.exists() else None
+        ),
+        "frame_count": int(raw_frames.shape[0]),
+        "physical_steps": int(physical_steps),
+        "scalar_steps": int(scalar_steps),
+        "done": bool(done),
+        "terminal_reason": last_info.get("terminal_reason"),
+        "stop_reason": stop_reason,
+        "max_steps": max_step_limit,
+        "step_limit_kind": step_limit_kind,
+        "configured_source_max_steps": int(source_max_steps),
+        "effective_source_max_steps": int(effective_source_max_steps),
+        "frame_stride": int(frame_stride),
+        "fps": float(fps),
+        "scale": 1,
+        "frame_size": int(frame_size),
+        "frame_source": "source_state_rgb_canvas_like",
+        "frame_schema_id": SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID,
+        "frame_truth_level": SOURCE_STATE_RGB_CANVAS_LIKE_TRUTH_LEVEL,
+        "browser_pixel_fidelity": False,
+        "frame_capture_method": frame_capture_method,
+        "frame_capture_method_counts": frame_capture_method_counts,
+        "frame_capture_details_sample": frame_captures[:4],
+        "action_summary": action_summary,
+        "greedy_action_collapse_warning": action_summary["action_collapse_warning"],
+        "greedy_action_collapse_players": action_summary["action_collapse_players"],
+        "joint_action_summary": joint_action_summary,
+        "action_trace": {
+            "scalar_actions": scalar_action_trace,
+            "joint_actions": joint_action_trace,
+        },
+        "failure": failure,
+        "surface": _to_plain(surface),
+        "artifacts": {
+            "gif": {**runs.file_summary(gif_path, mount=RUNS_MOUNT), **gif_artifact},
+            "raw_frames": frames_artifact,
+        },
+    }
+
+
 def _run_checkpoint_selfplay_gif(
     *,
     checkpoint_ref: str,
@@ -6291,9 +6680,9 @@ def _run_checkpoint_selfplay_gif(
     training_env_variant: str,
     training_reward_variant: str,
     natural_bonus_spawn: bool = TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN,
+    collect_temperature: float = DEFAULT_BACKGROUND_GIF_COLLECT_TEMPERATURE,
+    collect_epsilon: float = DEFAULT_BACKGROUND_GIF_COLLECT_EPSILON,
 ) -> dict[str, Any]:
-    import numpy as np
-
     if max_steps is not None and int(max_steps) < 0:
         raise ValueError(
             "background_gif_max_steps must be non-negative; 0 means no GIF step cap"
@@ -6316,6 +6705,10 @@ def _run_checkpoint_selfplay_gif(
         if max_step_limit is not None
         else int(DEFAULT_BACKGROUND_EVAL_MAX_STEPS),
     )
+    if collect_temperature <= 0.0:
+        raise ValueError("background GIF collect temperature must be positive")
+    if not 0.0 <= collect_epsilon <= 1.0:
+        raise ValueError("background GIF collect epsilon must be in [0, 1]")
 
     started_at = runs.utc_timestamp()
     clean_eval_id = _safe_generated_id(eval_id, fallback="live_checkpoint")
@@ -6329,9 +6722,6 @@ def _run_checkpoint_selfplay_gif(
         eval_id=clean_eval_id,
     )
     summary_path = artifact_root / "summary.json"
-    gif_path = artifact_root / "raw.gif"
-    frames_path = artifact_root / "raw_frames.npz"
-    telemetry_path = artifact_root / "turn_commit_env_steps.jsonl"
 
     try:
         if hasattr(runs_volume, "reload"):
@@ -6347,170 +6737,54 @@ def _run_checkpoint_selfplay_gif(
         if found is None:
             raise ValueError("checkpoint payload did not contain a LightZero state dict")
         found_key, state_dict = found
-        policy, env, surface = eval_mod._make_policy_and_env(
-            state_dict=state_dict,
-            seed=int(seed),
-            use_cuda=False,
-            source_max_steps=int(effective_source_max_steps),
-            num_simulations=int(num_simulations),
-            batch_size=int(batch_size),
-            telemetry_path=telemetry_path,
-            env_variant=ENV_VARIANT_SOURCE_STATE_TURN_COMMIT,
-            reward_variant=DEFAULT_REWARD_VARIANT,
-            model_env_variant=training_env_variant,
-            model_reward_variant=training_reward_variant,
-            opponent_policy_kind=OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
-            opponent_checkpoint=None,
-            opponent_snapshot_ref=None,
-            opponent_checkpoint_state_key=None,
-            natural_bonus_spawn=bool(natural_bonus_spawn),
-        )
-
-        observation = env.reset(seed=int(seed))
-        first_frame, first_frame_capture = _copy_source_state_human_rgb_frame_with_source(
-            env,
-            frame_size=int(frame_size),
-        )
-        frames: list[Any] = [first_frame]
-        frame_captures: list[dict[str, Any]] = [first_frame_capture]
-        scalar_actions: list[dict[str, Any]] = []
-        joint_actions: list[dict[str, Any]] = []
-        physical_steps = 0
-        scalar_steps = 0
-        done = False
-        last_info: dict[str, Any] = {}
-        failure: dict[str, Any] | None = None
-
-        while not done and (
-            max_step_limit is None or physical_steps < int(max_step_limit)
+        variants: dict[str, dict[str, Any]] = {}
+        for variant in _checkpoint_gif_variant_specs(
+            collect_temperature=float(collect_temperature),
+            collect_epsilon=float(collect_epsilon),
         ):
-            try:
-                action_result = eval_mod._policy_eval_action(policy, observation)
-                timestep = env.step(int(action_result["action"]))
-                observation, reward, done, info = eval_mod._timestep_parts(timestep)
-            except Exception as exc:  # pragma: no cover - remote dependency diagnosis.
-                failure = {"scalar_step_index": scalar_steps, **_exception_result(exc)}
-                break
-
-            last_info = _to_plain(info) if isinstance(info, dict) else {"raw_info": _to_plain(info)}
-            scalar_actions.append(
-                {
-                    "scalar_step_index": int(scalar_steps),
-                    "action": int(action_result["action"]),
-                    "acting_player_id": last_info.get("acting_player_id"),
-                    "physical_env_advanced": bool(last_info.get("physical_env_advanced", False)),
-                    "reward": _to_plain(reward),
-                    "done": bool(done),
-                }
+            result = _capture_checkpoint_selfplay_gif_variant(
+                eval_mod=eval_mod,
+                state_dict=state_dict,
+                seed=int(seed),
+                checkpoint_ref=checkpoint_ref,
+                clean_checkpoint_label=clean_checkpoint_label,
+                artifact_root=artifact_root,
+                variant=variant,
+                source_max_steps=int(source_max_steps),
+                effective_source_max_steps=int(effective_source_max_steps),
+                max_step_limit=max_step_limit,
+                step_limit_kind=step_limit_kind,
+                num_simulations=int(num_simulations),
+                batch_size=int(batch_size),
+                frame_stride=int(frame_stride),
+                fps=float(fps),
+                scale=int(scale),
+                frame_size=int(frame_size),
+                training_env_variant=training_env_variant,
+                training_reward_variant=training_reward_variant,
+                natural_bonus_spawn=bool(natural_bonus_spawn),
             )
-            scalar_steps += 1
-            if bool(last_info.get("physical_env_advanced", False)):
-                physical_steps += 1
-                joint_actions.append(
-                    {
-                        "physical_step_index": int(physical_steps - 1),
-                        "joint_action": last_info.get("joint_action"),
-                        "terminal_reason": last_info.get("terminal_reason"),
-                        "done": bool(done),
-                    }
-                )
-                if physical_steps % frame_stride == 0 or done:
-                    frame, frame_capture = _copy_source_state_human_rgb_frame_with_source(
-                        env,
-                        frame_size=int(frame_size),
-                    )
-                    frames.append(frame)
-                    frame_captures.append(frame_capture)
+            variants[str(result["variant_id"])] = result
 
-        raw_frames = np.stack(frames, axis=0).astype(np.uint8, copy=False)
-        frame_capture_method_counts = dict(
-            Counter(str(item.get("source", "unknown")) for item in frame_captures)
-        )
-        frame_capture_method = str(frame_captures[0].get("source", "unknown"))
-        artifact_metadata = {
-            "schema_id": "curvyzero_lightzero_curvytron_checkpoint_selfplay_rgb_frames/v0",
-            "frame_source": "source_state_rgb_canvas_like",
-            "frame_schema_id": SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID,
-            "frame_truth_level": SOURCE_STATE_RGB_CANVAS_LIKE_TRUTH_LEVEL,
-            "browser_pixel_fidelity": False,
-            "frame_capture_method": frame_capture_method,
-            "frame_capture_method_counts": frame_capture_method_counts,
-            "frame_capture_details_sample": frame_captures[:4],
-            "frame_shape": [int(frame_size), int(frame_size), 3],
-            "saved_frame_shape": [int(frame_size), int(frame_size), 3],
-            "gif_filename": "raw.gif",
-            "gif_content_kind": "source_state_rgb_canvas_like_rgb_frames",
-            "gif_filename_role": "legacy_selfplay_artifact_name",
-            "gif_filename_note": (
-                "raw.gif is a legacy artifact name; these frames are RGB "
-                "source-state canvas-like visuals, not the old raw gray tensor."
-            ),
-            "frame_count": int(raw_frames.shape[0]),
-            "frame_stride_physical_steps": int(frame_stride),
-            "seed": int(seed),
-            "natural_bonus_spawn": bool(natural_bonus_spawn),
-            "checkpoint_ref": checkpoint_ref,
-            "checkpoint_label": clean_checkpoint_label,
-            "max_steps": max_step_limit,
-            "step_limit_kind": step_limit_kind,
-            "configured_source_max_steps": int(source_max_steps),
-            "effective_source_max_steps": int(effective_source_max_steps),
-        }
-        frames_artifact = _write_selfplay_raw_frames_npz(
-            frames=raw_frames,
-            path=frames_path,
-            metadata=artifact_metadata,
-        )
-        gif_artifact = _save_raw_frames_gif(
-            frames=raw_frames,
-            gif_path=gif_path,
-            fps=float(fps),
-            scale=int(scale),
-        )
-        if failure is not None:
-            stop_reason = "capture_failure"
-        elif bool(done):
-            stop_reason = "environment_done"
-        elif max_step_limit is not None and physical_steps >= int(max_step_limit):
-            stop_reason = "gif_step_limit"
-        else:
-            stop_reason = "loop_exited"
-        scalar_action_trace = (
-            scalar_actions
-            if max_step_limit is None
-            else scalar_actions[: 2 * int(max_step_limit)]
-        )
-        joint_action_trace = (
-            joint_actions
-            if max_step_limit is None
-            else joint_actions[: int(max_step_limit)]
-        )
-        action_space_size = None
-        if isinstance(surface.get("compiled_policy"), dict):
-            try:
-                action_space_size = int(surface["compiled_policy"]["action_space_size"])
-            except (KeyError, TypeError, ValueError):
-                action_space_size = None
-        greedy_action_summary = _action_trace_observability(
-            scalar_actions,
-            player_field="acting_player_id",
-            action_field="action",
-            action_space_size=action_space_size,
-        )
-        greedy_action_summary["source"] = "scalar_actions_fresh_policy_decisions"
-        greedy_action_summary["greedy_action_collapse_warning"] = greedy_action_summary[
+        legacy = variants[BACKGROUND_GIF_VARIANT_EVAL_GREEDY]
+        collect = variants[BACKGROUND_GIF_VARIANT_COLLECT_T1]
+        legacy_action_summary = dict(legacy["action_summary"])
+        legacy_action_summary["greedy_action_collapse_warning"] = legacy_action_summary[
             "action_collapse_warning"
         ]
-        greedy_action_summary["greedy_action_collapse_players"] = greedy_action_summary[
+        legacy_action_summary["greedy_action_collapse_players"] = legacy_action_summary[
             "action_collapse_players"
         ]
-        joint_action_summary = _joint_action_trace_observability(
-            joint_actions,
-            action_space_size=action_space_size,
-        )
-        joint_action_summary["source"] = "joint_actions_physical_commits"
+        gif_variants = {
+            key: {
+                item_key: value
+                for item_key, value in item.items()
+                if item_key not in {"action_trace", "surface"}
+            }
+            for key, item in variants.items()
+        }
         summary = {
-            "ok": failure is None,
+            "ok": all(bool(item.get("ok")) for item in variants.values()),
             "schema_id": "curvyzero_lightzero_curvytron_checkpoint_selfplay_gif_summary/v0",
             "started_at": started_at,
             "ended_at": runs.utc_timestamp(),
@@ -6532,9 +6806,9 @@ def _run_checkpoint_selfplay_gif(
             "frame_schema_id": SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID,
             "frame_truth_level": SOURCE_STATE_RGB_CANVAS_LIKE_TRUTH_LEVEL,
             "browser_pixel_fidelity": False,
-            "frame_capture_method": frame_capture_method,
-            "frame_capture_method_counts": frame_capture_method_counts,
-            "frame_capture_details_sample": frame_captures[:4],
+            "frame_capture_method": legacy.get("frame_capture_method"),
+            "frame_capture_method_counts": legacy.get("frame_capture_method_counts"),
+            "frame_capture_details_sample": legacy.get("frame_capture_details_sample"),
             "raw_frame_source": "source_state_rgb_canvas_like",
             "raw_frame_is_browser_pixel": False,
             "raw_frame_shape": [int(frame_size), int(frame_size), 3],
@@ -6543,29 +6817,25 @@ def _run_checkpoint_selfplay_gif(
             "gif_content_kind": "source_state_rgb_canvas_like_rgb_frames",
             "gif_filename_role": "legacy_selfplay_artifact_name",
             "gif_filename_note": (
-                "raw.gif is a legacy artifact name; these frames are RGB "
-                "source-state canvas-like visuals, not the old raw gray tensor."
+                "raw.gif is the backward-compatible greedy/eval artifact. "
+                "collect_t1.gif is the training-like collect-mode sample."
             ),
-            "gif_ref": runs.file_ref(gif_path, mount=RUNS_MOUNT),
-            "raw_frames_ref": runs.file_ref(frames_path, mount=RUNS_MOUNT),
-            "telemetry_ref": (
-                runs.file_ref(telemetry_path, mount=RUNS_MOUNT)
-                if telemetry_path.exists()
-                else None
-            ),
-            "frame_count": int(raw_frames.shape[0]),
-            "physical_steps": int(physical_steps),
-            "scalar_steps": int(scalar_steps),
-            "greedy_action_collapse_warning": greedy_action_summary[
+            "gif_ref": legacy["gif_ref"],
+            "raw_frames_ref": legacy["raw_frames_ref"],
+            "telemetry_ref": legacy["telemetry_ref"],
+            "frame_count": legacy["frame_count"],
+            "physical_steps": legacy["physical_steps"],
+            "scalar_steps": legacy["scalar_steps"],
+            "greedy_action_collapse_warning": legacy_action_summary[
                 "greedy_action_collapse_warning"
             ],
-            "greedy_action_summary": greedy_action_summary,
-            "joint_action_summary": joint_action_summary,
+            "greedy_action_summary": legacy_action_summary,
+            "joint_action_summary": legacy["joint_action_summary"],
             "seed": int(seed),
             "seed_role": "effective_checkpoint_selfplay_seed",
-            "done": bool(done),
-            "terminal_reason": last_info.get("terminal_reason"),
-            "stop_reason": stop_reason,
+            "done": legacy["done"],
+            "terminal_reason": legacy["terminal_reason"],
+            "stop_reason": legacy["stop_reason"],
             "max_steps": max_step_limit,
             "step_limit_kind": step_limit_kind,
             "configured_source_max_steps": int(source_max_steps),
@@ -6576,15 +6846,28 @@ def _run_checkpoint_selfplay_gif(
             "frame_size": int(frame_size),
             "num_simulations": int(num_simulations),
             "batch_size": int(batch_size),
-            "surface": _to_plain(surface),
-            "action_trace": {
-                "scalar_actions": scalar_action_trace,
-                "joint_actions": joint_action_trace,
+            "surface": legacy["surface"],
+            "action_trace": legacy["action_trace"],
+            "failure": legacy["failure"] or collect["failure"],
+            "gif_variants_schema_id": "curvyzero_lightzero_curvytron_selfplay_gif_variants/v0",
+            "default_gif_variant": BACKGROUND_GIF_VARIANT_EVAL_GREEDY,
+            "compatibility_gif_variant": BACKGROUND_GIF_VARIANT_EVAL_GREEDY,
+            "gif_variants": gif_variants,
+            "variant_action_traces": {
+                key: item["action_trace"]
+                for key, item in variants.items()
             },
-            "failure": failure,
+            "variant_surfaces": {
+                key: item["surface"]
+                for key, item in variants.items()
+            },
             "artifacts": {
-                "gif": {**runs.file_summary(gif_path, mount=RUNS_MOUNT), **gif_artifact},
-                "raw_frames": frames_artifact,
+                "gif": legacy["artifacts"]["gif"],
+                "raw_frames": legacy["artifacts"]["raw_frames"],
+                "gif_variants": {
+                    key: item["artifacts"]
+                    for key, item in variants.items()
+                },
             },
         }
     except Exception as exc:  # pragma: no cover - remote dependency diagnosis.
@@ -7072,6 +7355,17 @@ def _two_seat_checkpoint_ref(run_id: str) -> Path:
     return runs.checkpoints_root_ref(TASK_ID, run_id) / "lightzero"
 
 
+def _reject_mutable_frozen_opponent_checkpoint_ref(ref: str | None) -> None:
+    if ref is None:
+        return
+    name = PurePosixPath(str(ref)).name
+    if name in {"latest.pth.tar", "ckpt_best.pth.tar"}:
+        raise ValueError(
+            "two-seat frozen opponent checkpoint refs must be immutable "
+            f"iteration_*.pth.tar files; got mutable ref {ref!r}"
+        )
+
+
 def _two_seat_call_refs(run_id: str, attempt_id: str) -> dict[str, Any]:
     train_ref = runs.attempt_train_ref(TASK_ID, run_id, attempt_id)
     checkpoint_ref = _two_seat_checkpoint_ref(run_id)
@@ -7112,6 +7406,8 @@ def _two_seat_background_eval_config(
     background_gif_fps: float,
     background_gif_scale: int,
     background_gif_frame_size: int,
+    background_gif_collect_temperature: float = DEFAULT_BACKGROUND_GIF_COLLECT_TEMPERATURE,
+    background_gif_collect_epsilon: float = DEFAULT_BACKGROUND_GIF_COLLECT_EPSILON,
 ) -> dict[str, Any]:
     return {
         "enabled": bool(background_eval_enabled),
@@ -7141,6 +7437,8 @@ def _two_seat_background_eval_config(
             "fps": float(background_gif_fps),
             "scale": int(background_gif_scale),
             "frame_size": int(background_gif_frame_size),
+            "collect_temperature": float(background_gif_collect_temperature),
+            "collect_epsilon": float(background_gif_collect_epsilon),
             "natural_bonus_spawn": bool(
                 payload.get("natural_bonus_spawn", TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN)
             ),
@@ -7201,6 +7499,18 @@ def _spawn_two_seat_checkpoint_poller(
         background_gif_fps=float(background["selfplay_gif"]["fps"]),
         background_gif_scale=int(background["selfplay_gif"]["scale"]),
         background_gif_frame_size=int(background["selfplay_gif"]["frame_size"]),
+        background_gif_collect_temperature=float(
+            background["selfplay_gif"].get(
+                "collect_temperature",
+                DEFAULT_BACKGROUND_GIF_COLLECT_TEMPERATURE,
+            )
+        ),
+        background_gif_collect_epsilon=float(
+            background["selfplay_gif"].get(
+                "collect_epsilon",
+                DEFAULT_BACKGROUND_GIF_COLLECT_EPSILON,
+            )
+        ),
         background_gif_natural_bonus_spawn=bool(
             background["selfplay_gif"].get(
                 "natural_bonus_spawn",
@@ -7221,6 +7531,7 @@ def _run_two_seat_selfplay_payload(
     compute_label: str,
     use_cuda: bool,
 ) -> dict[str, Any]:
+    payload = dict(payload)
     started_at = runs.utc_timestamp()
     run_id = str(payload["run_id"])
     attempt_id = str(payload["attempt_id"])
@@ -7262,6 +7573,61 @@ def _run_two_seat_selfplay_payload(
         payload.get("return_target_discount", TWO_SEAT_DEFAULT_RETURN_TARGET_DISCOUNT)
     )
     learning_rate = payload.get("learning_rate")
+    frozen_opponent_probability = float(
+        payload.get(
+            "frozen_opponent_probability",
+            TWO_SEAT_DEFAULT_FROZEN_OPPONENT_PROBABILITY,
+        )
+    )
+    if frozen_opponent_probability > 0.0:
+        frozen_checkpoint_path_text = payload.get("frozen_opponent_checkpoint_path")
+        frozen_checkpoint_ref = payload.get("frozen_opponent_checkpoint_ref")
+        _reject_mutable_frozen_opponent_checkpoint_ref(
+            str(frozen_checkpoint_ref or frozen_checkpoint_path_text)
+            if frozen_checkpoint_ref or frozen_checkpoint_path_text
+            else None
+        )
+        if frozen_checkpoint_path_text:
+            frozen_checkpoint_path = Path(str(frozen_checkpoint_path_text))
+            frozen_checkpoint_resolution = {
+                "source_kind": "path_from_payload",
+                "input": str(frozen_checkpoint_path_text),
+                "resolved_checkpoint_path": str(frozen_checkpoint_path),
+            }
+        elif frozen_checkpoint_ref:
+            frozen_checkpoint_path, frozen_checkpoint_resolution = (
+                runs.resolve_mounted_ref_or_path(
+                    str(frozen_checkpoint_ref),
+                    mount=RUNS_MOUNT,
+                    remote_root=REMOTE_ROOT,
+                )
+            )
+        else:
+            raise ValueError(
+                "frozen_opponent_checkpoint_ref is required when "
+                "frozen_opponent_probability > 0"
+            )
+        if not frozen_checkpoint_path.is_file():
+            raise FileNotFoundError(
+                "two-seat frozen opponent checkpoint file not found: "
+                f"{frozen_checkpoint_path}"
+            )
+        frozen_checkpoint_report_ref = str(
+            frozen_checkpoint_resolution.get("source_ref")
+            or frozen_checkpoint_ref
+            or frozen_checkpoint_path_text
+        )
+        payload["frozen_opponent_checkpoint_path"] = str(frozen_checkpoint_path)
+        payload["frozen_opponent_checkpoint_ref"] = frozen_checkpoint_report_ref
+        payload["frozen_opponent_checkpoint_resolution"] = {
+            **frozen_checkpoint_resolution,
+            "input": str(frozen_checkpoint_ref or frozen_checkpoint_path_text),
+            "resolved_checkpoint_path": str(frozen_checkpoint_path),
+            "file": runs.file_summary_any_mount(
+                frozen_checkpoint_path,
+                mount=RUNS_MOUNT,
+            ),
+        }
     command = {
         "schema_id": "curvyzero_canonical_two_seat_selfplay_command/v0",
         "mode": TWO_SEAT_SELFPLAY_MODE,
@@ -7351,6 +7717,23 @@ def _run_two_seat_selfplay_payload(
         observation_noise_std=float(payload["observation_noise_std"]),
         trail_render_mode=str(payload["trail_render_mode"]),
         learning_rate=learning_rate,
+        frozen_opponent_probability=frozen_opponent_probability,
+        frozen_opponent_checkpoint_path=payload.get("frozen_opponent_checkpoint_path"),
+        frozen_opponent_checkpoint_ref=payload.get("frozen_opponent_checkpoint_ref"),
+        frozen_opponent_snapshot_ref=payload.get("frozen_opponent_snapshot_ref"),
+        frozen_opponent_checkpoint_state_key=payload.get(
+            "frozen_opponent_checkpoint_state_key"
+        ),
+        frozen_opponent_player_id=int(
+            payload.get(
+                "frozen_opponent_player_id",
+                TWO_SEAT_DEFAULT_FROZEN_OPPONENT_PLAYER_ID,
+            )
+        ),
+        frozen_opponent_num_simulations=payload.get(
+            "frozen_opponent_num_simulations"
+        ),
+        frozen_opponent_use_cuda=payload.get("frozen_opponent_use_cuda"),
         use_cuda=bool(use_cuda),
         checkpoint_every_iterations=int(payload["checkpoint_every_iterations"]),
         save_initial_checkpoint=bool(payload["save_initial_checkpoint"]),
@@ -7378,6 +7761,17 @@ def _run_two_seat_selfplay_payload(
             "bonus_pickup_reward_per_catch": bonus_pickup_reward_per_catch,
             "return_target_discount": return_target_discount,
             "learning_rate": learning_rate,
+            "frozen_opponent_probability": frozen_opponent_probability,
+            "frozen_opponent_checkpoint_ref": payload.get(
+                "frozen_opponent_checkpoint_ref"
+            ),
+            "frozen_opponent_snapshot_ref": payload.get(
+                "frozen_opponent_snapshot_ref"
+            ),
+            "frozen_opponent_player_id": payload.get(
+                "frozen_opponent_player_id",
+                TWO_SEAT_DEFAULT_FROZEN_OPPONENT_PLAYER_ID,
+            ),
         },
         require_installed_lightzero=True,
     )
@@ -7551,6 +7945,8 @@ def lightzero_curvytron_visual_survival_checkpoint_selfplay_gif(
     training_env_variant: str = DEFAULT_ENV_VARIANT,
     training_reward_variant: str = DEFAULT_REWARD_VARIANT,
     natural_bonus_spawn: bool = TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN,
+    collect_temperature: float = DEFAULT_BACKGROUND_GIF_COLLECT_TEMPERATURE,
+    collect_epsilon: float = DEFAULT_BACKGROUND_GIF_COLLECT_EPSILON,
 ) -> dict[str, Any]:
     return _run_checkpoint_selfplay_gif(
         checkpoint_ref=checkpoint_ref,
@@ -7570,6 +7966,8 @@ def lightzero_curvytron_visual_survival_checkpoint_selfplay_gif(
         training_env_variant=training_env_variant,
         training_reward_variant=training_reward_variant,
         natural_bonus_spawn=bool(natural_bonus_spawn),
+        collect_temperature=float(collect_temperature),
+        collect_epsilon=float(collect_epsilon),
     )
 
 
@@ -7601,6 +7999,8 @@ def lightzero_curvytron_visual_survival_checkpoint_eval_poller(
     background_gif_fps: float = DEFAULT_BACKGROUND_GIF_FPS,
     background_gif_scale: int = DEFAULT_BACKGROUND_GIF_SCALE,
     background_gif_frame_size: int = DEFAULT_BACKGROUND_GIF_FRAME_SIZE,
+    background_gif_collect_temperature: float = DEFAULT_BACKGROUND_GIF_COLLECT_TEMPERATURE,
+    background_gif_collect_epsilon: float = DEFAULT_BACKGROUND_GIF_COLLECT_EPSILON,
     background_gif_natural_bonus_spawn: bool = TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN,
     poll_interval_sec: float = DEFAULT_BACKGROUND_EVAL_POLL_INTERVAL_SEC,
     stable_polls: int = DEFAULT_BACKGROUND_EVAL_POLL_STABLE_POLLS,
@@ -7635,6 +8035,8 @@ def lightzero_curvytron_visual_survival_checkpoint_eval_poller(
         background_gif_fps=background_gif_fps,
         background_gif_scale=background_gif_scale,
         background_gif_frame_size=background_gif_frame_size,
+        background_gif_collect_temperature=background_gif_collect_temperature,
+        background_gif_collect_epsilon=background_gif_collect_epsilon,
         natural_bonus_spawn=bool(background_gif_natural_bonus_spawn),
     )
     return _run_checkpoint_eval_poller(
@@ -7703,6 +8105,8 @@ def lightzero_curvytron_visual_survival_cpu(
     background_gif_fps: float = DEFAULT_BACKGROUND_GIF_FPS,
     background_gif_scale: int = DEFAULT_BACKGROUND_GIF_SCALE,
     background_gif_frame_size: int = DEFAULT_BACKGROUND_GIF_FRAME_SIZE,
+    background_gif_collect_temperature: float = DEFAULT_BACKGROUND_GIF_COLLECT_TEMPERATURE,
+    background_gif_collect_epsilon: float = DEFAULT_BACKGROUND_GIF_COLLECT_EPSILON,
 ) -> dict[str, Any]:
     return _run_visual_survival_train(
         mode=mode,
@@ -7756,6 +8160,8 @@ def lightzero_curvytron_visual_survival_cpu(
         background_gif_fps=background_gif_fps,
         background_gif_scale=background_gif_scale,
         background_gif_frame_size=background_gif_frame_size,
+        background_gif_collect_temperature=background_gif_collect_temperature,
+        background_gif_collect_epsilon=background_gif_collect_epsilon,
     )
 
 
@@ -7835,6 +8241,8 @@ def lightzero_curvytron_visual_survival_gpu(
     background_gif_fps: float = DEFAULT_BACKGROUND_GIF_FPS,
     background_gif_scale: int = DEFAULT_BACKGROUND_GIF_SCALE,
     background_gif_frame_size: int = DEFAULT_BACKGROUND_GIF_FRAME_SIZE,
+    background_gif_collect_temperature: float = DEFAULT_BACKGROUND_GIF_COLLECT_TEMPERATURE,
+    background_gif_collect_epsilon: float = DEFAULT_BACKGROUND_GIF_COLLECT_EPSILON,
 ) -> dict[str, Any]:
     return _run_visual_survival_train(
         mode=mode,
@@ -7888,6 +8296,8 @@ def lightzero_curvytron_visual_survival_gpu(
         background_gif_fps=background_gif_fps,
         background_gif_scale=background_gif_scale,
         background_gif_frame_size=background_gif_frame_size,
+        background_gif_collect_temperature=background_gif_collect_temperature,
+        background_gif_collect_epsilon=background_gif_collect_epsilon,
     )
 
 
@@ -8163,6 +8573,17 @@ def main(
     two_seat_observation_noise_std: float = TWO_SEAT_DEFAULT_OBSERVATION_NOISE_STD,
     two_seat_trail_render_mode: str = TRAIL_RENDER_MODE_DEFAULT,
     two_seat_learning_rate: float | None = None,
+    two_seat_frozen_opponent_probability: float = (
+        TWO_SEAT_DEFAULT_FROZEN_OPPONENT_PROBABILITY
+    ),
+    two_seat_frozen_opponent_checkpoint_ref: str | None = None,
+    two_seat_frozen_opponent_snapshot_ref: str | None = None,
+    two_seat_frozen_opponent_checkpoint_state_key: str | None = None,
+    two_seat_frozen_opponent_player_id: int = (
+        TWO_SEAT_DEFAULT_FROZEN_OPPONENT_PLAYER_ID
+    ),
+    two_seat_frozen_opponent_num_simulations: int | None = None,
+    two_seat_frozen_opponent_use_cuda: bool | None = None,
     two_seat_checkpoint_every_iterations: int | None = None,
     two_seat_save_initial_checkpoint: bool = DEFAULT_TWO_SEAT_SAVE_INITIAL_CHECKPOINT,
     two_seat_progress_every_iterations: int = DEFAULT_TWO_SEAT_PROGRESS_EVERY_ITERATIONS,
@@ -8190,6 +8611,8 @@ def main(
     background_gif_fps: float = DEFAULT_BACKGROUND_GIF_FPS,
     background_gif_scale: int = DEFAULT_BACKGROUND_GIF_SCALE,
     background_gif_frame_size: int = DEFAULT_BACKGROUND_GIF_FRAME_SIZE,
+    background_gif_collect_temperature: float = DEFAULT_BACKGROUND_GIF_COLLECT_TEMPERATURE,
+    background_gif_collect_epsilon: float = DEFAULT_BACKGROUND_GIF_COLLECT_EPSILON,
     output_detail: str = OUTPUT_DETAIL_COMPACT,
 ) -> None:
     if output_detail not in OUTPUT_DETAIL_CHOICES:
@@ -8228,6 +8651,23 @@ def main(
             raise ValueError(
                 "two-seat self-play trail render mode must be one of "
                 f"{STACK_RENDER_MODE_ORDER!r}; got {two_seat_trail_render_mode!r}"
+            )
+        two_seat_frozen_opponent_probability = float(
+            two_seat_frozen_opponent_probability
+        )
+        if not 0.0 <= two_seat_frozen_opponent_probability <= 1.0:
+            raise ValueError("two_seat_frozen_opponent_probability must be in [0, 1]")
+        two_seat_frozen_checkpoint_input = (
+            two_seat_frozen_opponent_checkpoint_ref or opponent_checkpoint_ref
+        )
+        if two_seat_frozen_opponent_probability > 0.0:
+            if not two_seat_frozen_checkpoint_input:
+                raise ValueError(
+                    "two_seat_frozen_opponent_checkpoint_ref is required when "
+                    "two_seat_frozen_opponent_probability > 0"
+                )
+            _reject_mutable_frozen_opponent_checkpoint_ref(
+                two_seat_frozen_checkpoint_input
             )
         two_seat_payload = {
             "seed": seed,
@@ -8283,6 +8723,19 @@ def main(
             "observation_noise_std": two_seat_observation_noise_std,
             "trail_render_mode": two_seat_trail_render_mode,
             "learning_rate": two_seat_learning_rate,
+            "frozen_opponent_probability": two_seat_frozen_opponent_probability,
+            "frozen_opponent_checkpoint_path": None,
+            "frozen_opponent_checkpoint_ref": two_seat_frozen_checkpoint_input,
+            "frozen_opponent_checkpoint_resolution": None,
+            "frozen_opponent_snapshot_ref": two_seat_frozen_opponent_snapshot_ref,
+            "frozen_opponent_checkpoint_state_key": (
+                two_seat_frozen_opponent_checkpoint_state_key
+            ),
+            "frozen_opponent_player_id": int(two_seat_frozen_opponent_player_id),
+            "frozen_opponent_num_simulations": (
+                two_seat_frozen_opponent_num_simulations
+            ),
+            "frozen_opponent_use_cuda": two_seat_frozen_opponent_use_cuda,
             "checkpoint_every_iterations": (
                 save_ckpt_after_iter
                 if two_seat_checkpoint_every_iterations is None
@@ -8320,6 +8773,8 @@ def main(
             background_gif_fps=background_gif_fps,
             background_gif_scale=background_gif_scale,
             background_gif_frame_size=background_gif_frame_size,
+            background_gif_collect_temperature=background_gif_collect_temperature,
+            background_gif_collect_epsilon=background_gif_collect_epsilon,
         )
         poller_call = None
         poller_call_id = None
@@ -8449,6 +8904,8 @@ def main(
         "background_gif_fps": background_gif_fps,
         "background_gif_scale": background_gif_scale,
         "background_gif_frame_size": background_gif_frame_size,
+        "background_gif_collect_temperature": background_gif_collect_temperature,
+        "background_gif_collect_epsilon": background_gif_collect_epsilon,
     }
     exp_name_ref = (runs.attempt_train_ref(TASK_ID, run_id, attempt_id) / "lightzero_exp").as_posix()
     poller_call = None
@@ -8483,6 +8940,8 @@ def main(
             background_gif_fps=background_gif_fps,
             background_gif_scale=background_gif_scale,
             background_gif_frame_size=background_gif_frame_size,
+            background_gif_collect_temperature=background_gif_collect_temperature,
+            background_gif_collect_epsilon=background_gif_collect_epsilon,
             poll_interval_sec=background_eval_poll_interval_sec,
             stable_polls=background_eval_poll_stable_polls,
             max_runtime_sec=background_eval_poller_max_runtime_sec,
