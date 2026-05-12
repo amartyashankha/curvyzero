@@ -3,12 +3,22 @@ import json
 import numpy as np
 
 from curvyzero.env.vector_multiplayer_env import JOINT_ACTION_SCHEMA_ID
+from curvyzero.env.vector_visual_observation import SOURCE_STATE_CANVAS_GRAY64_SCHEMA_HASH
+from curvyzero.env.vector_visual_observation import SOURCE_STATE_CANVAS_GRAY64_SCHEMA_ID
+from curvyzero.env.vector_visual_observation import SOURCE_STATE_CANVAS_GRAY64_SHAPE
+from curvyzero.env.vector_visual_observation import SOURCE_STATE_CANVAS_GRAY64_SURFACE
+from curvyzero.env.vector_visual_observation import SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID
+from curvyzero.env.vector_visual_observation import rgb_canvas_like_to_gray64
+from curvyzero.env.vector_visual_observation import render_source_state_canvas_gray64
+from curvyzero.env.vector_visual_observation import render_source_state_rgb_canvas_like
 from curvyzero.training.curvyzero_source_state_visual_turn_commit_lightzero_env import (
     CurvyZeroSourceStateVisualTurnCommitLightZeroEnv,
     CurvyZeroSourceStateVisualTurnCommitLightZeroLocalEnv,
     ENV_VARIANT_SOURCE_STATE_TURN_COMMIT,
     LIGHTZERO_SOURCE_STATE_VISUAL_TURN_COMMIT_ENV_ID,
     LIGHTZERO_SOURCE_STATE_VISUAL_TURN_COMMIT_ENV_TYPE,
+    SOURCE_STATE_CANVAS_LIKE_RAW_SCHEMA_HASH,
+    SOURCE_STATE_CANVAS_LIKE_RAW_SHAPE,
     SOURCE_STATE_TURN_COMMIT_RUNTIME_TOPOLOGY,
     STACKED_SOURCE_STATE_GRAY64_SCHEMA_HASH,
     STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID,
@@ -44,7 +54,22 @@ def test_source_state_turn_commit_reset_shape_and_metadata():
     assert env.last_reset_info["observation_schema_id"] == STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID
     assert env.last_reset_info["observation_schema_hash"] == STACKED_SOURCE_STATE_GRAY64_SCHEMA_HASH
     assert env.last_reset_info["schema_hash"] == STACKED_SOURCE_STATE_GRAY64_SCHEMA_HASH
+    assert env.last_reset_info["single_frame_schema_id"] == SOURCE_STATE_CANVAS_GRAY64_SCHEMA_ID
+    assert (
+        env.last_reset_info["single_frame_schema_hash"]
+        == SOURCE_STATE_CANVAS_GRAY64_SCHEMA_HASH
+    )
+    assert env.last_reset_info["raw_observation_schema_id"] == SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID
+    assert env.last_reset_info["raw_observation_schema_hash"] == SOURCE_STATE_CANVAS_LIKE_RAW_SCHEMA_HASH
     assert env.last_reset_info["raw_observation_available"] is True
+    assert env.last_reset_info["raw_observation_dtype"] == "uint8"
+    assert env.last_reset_info["raw_observation_color_space"] == "RGB"
+    assert env.last_reset_info["raw_frame_shape"] == list(SOURCE_STATE_CANVAS_LIKE_RAW_SHAPE)
+    assert env.last_reset_info["grayscale_frame_shape"] == list(SOURCE_STATE_CANVAS_GRAY64_SHAPE)
+    assert (
+        "render_source_state_canvas_gray64"
+        in env.last_reset_info["grayscale_observation_source"]
+    )
     assert env.last_reset_info["turn_commit_adapter"] is True
     assert env.last_reset_info["turn_commit_rule"] == (
         "physical_env_advances_only_after_all_players_commit"
@@ -52,7 +77,7 @@ def test_source_state_turn_commit_reset_shape_and_metadata():
     assert env.last_reset_info["runtime_topology"] == SOURCE_STATE_TURN_COMMIT_RUNTIME_TOPOLOGY
     assert env.last_reset_info["debug_fidelity_only"] is False
     assert env.last_reset_info["source_fidelity_claim"] == "source_state_backed_non_browser_pixel"
-    assert env.last_reset_info["visual_surface"] == "source_state_visual_tensor"
+    assert env.last_reset_info["visual_surface"] == SOURCE_STATE_CANVAS_GRAY64_SURFACE
     assert env.last_reset_info["visual_source_state_backed"] is True
     assert env.last_reset_info["uses_ale"] is False
     assert env.last_reset_info["current_policy_self_play"] is True
@@ -67,14 +92,41 @@ def test_source_state_turn_commit_reset_shape_and_metadata():
     assert env.last_reset_info["adapter_timestep"] == 0
 
     raw = env.raw_observation()
+    raw_from_render = env.render("source_state_raw_visual_tensor")
     perspective_raw = env.raw_observation(player_perspective=True)
     assert raw is not None
+    assert raw_from_render is not None
     assert perspective_raw is not None
-    assert raw.shape == (1, 64, 64)
+    assert raw.shape == SOURCE_STATE_CANVAS_LIKE_RAW_SHAPE
     assert raw.dtype == np.uint8
+    np.testing.assert_array_equal(raw, raw_from_render)
+    np.testing.assert_array_equal(raw, env.render("source_state_rgb_canvas_like"))
+    np.testing.assert_array_equal(
+        raw,
+        render_source_state_rgb_canvas_like(env._env.state, row=0),
+    )
+    human_rgb = env.human_rgb_observation(frame_size=128)
+    assert human_rgb is not None
+    assert human_rgb.shape == (128, 128, 3)
+    assert human_rgb.dtype == np.uint8
+    np.testing.assert_array_equal(
+        human_rgb,
+        render_source_state_rgb_canvas_like(env._env.state, row=0, frame_size=128),
+    )
+    assert perspective_raw.shape == SOURCE_STATE_CANVAS_LIKE_RAW_SHAPE
+    assert perspective_raw.dtype == np.uint8
+    gray64 = rgb_canvas_like_to_gray64(perspective_raw)
+    np.testing.assert_array_equal(
+        gray64,
+        render_source_state_canvas_gray64(env._env.state, row=0),
+    )
+    np.testing.assert_array_equal(
+        env.render("source_state_grayscale64_visual_tensor"),
+        gray64,
+    )
     np.testing.assert_allclose(
         observation["observation"][-1],
-        perspective_raw[0].astype(np.float32) / np.float32(255.0),
+        gray64[0].astype(np.float32) / np.float32(255.0),
         rtol=0.0,
         atol=1e-7,
     )
@@ -102,6 +154,23 @@ def test_source_state_turn_commit_pending_then_commit_advances_once():
     assert env.active_player_index == 1
     assert int(after_pending["tick_index"][0]) == int(before["tick_index"][0])
     assert float(after_pending["elapsed_ms"][0]) == float(before["elapsed_ms"][0])
+    pending_perspective_raw = env.raw_observation(player_perspective=True)
+    assert pending_perspective_raw is not None
+    pending_gray64 = rgb_canvas_like_to_gray64(pending_perspective_raw)
+    np.testing.assert_array_equal(
+        pending_gray64,
+        render_source_state_canvas_gray64(
+            env._env.state,
+            row=0,
+            player_rgb=env._perspective_rgb_palettes[1],
+        ),
+    )
+    np.testing.assert_allclose(
+        pending.obs["observation"][-1],
+        pending_gray64[0].astype(np.float32) / np.float32(255.0),
+        rtol=0.0,
+        atol=1e-7,
+    )
 
     committed = env.step(2)
     after_commit = env._env._public_info()
@@ -116,7 +185,9 @@ def test_source_state_turn_commit_pending_then_commit_advances_once():
     assert committed.info["joint_action_schema_id"] == JOINT_ACTION_SCHEMA_ID
     assert committed.reward in {0.0, 1.0}
     assert env.active_player_index == 0
-    assert int(after_commit["tick_index"][0]) == int(before["tick_index"][0]) + 1
+    assert int(after_commit["tick_index"][0]) == int(before["tick_index"][0]) + int(
+        committed.info["decision_source_frames"]
+    )
     assert float(after_commit["elapsed_ms"][0]) > float(before["elapsed_ms"][0])
 
 

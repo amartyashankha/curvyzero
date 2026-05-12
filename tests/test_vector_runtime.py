@@ -710,6 +710,15 @@ def _print_manager_step_state(
         "visible_trail_last_pos": np.zeros((row_count, 1, 2), dtype=np.float64),
         "has_draw_cursor": np.ones((row_count, 1), dtype=bool),
         "draw_cursor_pos": pos.copy(),
+        "visual_trail_active": np.zeros((row_count, body_capacity), dtype=bool),
+        "visual_trail_pos": np.zeros((row_count, body_capacity, 2), dtype=np.float64),
+        "visual_trail_radius": np.zeros((row_count, body_capacity), dtype=np.float64),
+        "visual_trail_owner": np.full((row_count, body_capacity), -1, dtype=np.int16),
+        "visual_trail_break_before": np.zeros((row_count, body_capacity), dtype=bool),
+        "visual_trail_write_cursor": np.zeros(row_count, dtype=np.int32),
+        "visual_trail_overflow": np.zeros(row_count, dtype=bool),
+        "has_visual_trail_last": np.zeros((row_count, 1), dtype=bool),
+        "visual_trail_last_pos": np.zeros((row_count, 1, 2), dtype=np.float64),
         "score": np.zeros((row_count, 1), dtype=np.int32),
         "round_score": np.zeros((row_count, 1), dtype=np.int32),
         "event_count": np.zeros(row_count, dtype=np.int16),
@@ -902,6 +911,56 @@ def test_natural_toggle_toggles_printing_and_updates_distance_like_toggle():
     assert counters["print_manager_toggle_updates"] == 2
     assert counters["print_manager_toggle_rows_unhandled"] == 2
     assert counters["print_manager_death_stops"] == 0
+
+
+def test_step_many_marks_segment_break_when_inserting_after_cleared_draw_cursor():
+    state = _print_manager_step_state(2)
+    state["body_break_before"] = np.zeros_like(state["body_active"])
+    state["printing"][:, 0] = True
+    state["print_manager_active"][:, 0] = False
+    state["speed"][:, 0] = 0.0
+    state["has_draw_cursor"][:, 0] = [False, True]
+    state["draw_cursor_pos"][1, 0] = [8.0, 10.0]
+
+    vector_runtime.step_many(
+        vector_runtime.VectorStepInput(
+            state=state,
+            step_ms=np.full(2, 1000.0, dtype=np.float64),
+            source_moves=np.zeros((2, 1), dtype=np.int8),
+            player_count=1,
+            print_manager_mode=np.asarray(["none", "none"], dtype=object),
+            event_mode=vector_runtime.EVENT_MODE_NONE,
+        ),
+    )
+
+    np.testing.assert_array_equal(state["body_count"][:, 0], [1, 1])
+    np.testing.assert_array_equal(state["body_break_before"][:, 0], [True, False])
+
+
+def test_step_many_records_dense_visual_position_points_without_changing_body_cadence():
+    state = _print_manager_step_state(1)
+    state["printing"][:, 0] = True
+    state["print_manager_active"][:, 0] = False
+    state["speed"][:, 0] = 0.5
+    state["has_visual_trail_last"][:, 0] = True
+    state["visual_trail_last_pos"][:, 0] = state["pos"][:, 0]
+
+    vector_runtime.step_many(
+        vector_runtime.VectorStepInput(
+            state=state,
+            step_ms=np.asarray([1000.0], dtype=np.float64),
+            source_moves=np.zeros((1, 1), dtype=np.int8),
+            player_count=1,
+            print_manager_mode=np.asarray(["none"], dtype=object),
+            event_mode=vector_runtime.EVENT_MODE_NONE,
+        ),
+    )
+
+    assert int(state["body_count"][0, 0]) == 0
+    assert int(state["visual_trail_write_cursor"][0]) == 1
+    assert bool(state["visual_trail_active"][0, 0]) is True
+    assert bool(state["visual_trail_break_before"][0, 0]) is False
+    np.testing.assert_allclose(state["visual_trail_pos"][0, 0], state["pos"][0, 0])
 
 
 @pytest.mark.parametrize("death_kind", ["wall", "body"])
@@ -1954,9 +2013,7 @@ def test_bonus_spawn_cap_metadata_pins_source_cap_gate_for_type_selection():
         "bonus.next_delay_after_pop",
     ]
 
-    one_type_scenario = _load_lifecycle_scenario(
-        "source_bonus_spawn_type_position_rng_step.json"
-    )
+    one_type_scenario = _load_lifecycle_scenario("source_bonus_spawn_type_position_rng_step.json")
     one_type_random = one_type_scenario["source_setup"]["random"]
     assert isinstance(one_type_random, dict)
     type_draw = one_type_random["math_random_sequence"][2]
@@ -2228,8 +2285,7 @@ def test_bonus_spawn_due_rows_raises_when_all_position_candidates_hit_body_world
         dtype=np.float64,
     )
     margin = vector_runtime.SOURCE_BONUS_RADIUS + (
-        vector_runtime.SOURCE_BONUS_POSITION_MARGIN_FRACTION
-        * float(state["map_size"][0])
+        vector_runtime.SOURCE_BONUS_POSITION_MARGIN_FRACTION * float(state["map_size"][0])
     )
     span = float(state["map_size"][0]) - margin * 2.0
     candidate_positions = margin + position_draws[0] * span
@@ -2851,9 +2907,7 @@ def test_step_many_catches_forced_velocity_bonus_and_expiry_restores_speed(
     )
     assert int(state["bonus_stack_type"][0, target_player, 0]) == bonus_type_code
     assert int(state["bonus_stack_duration_ms"][0, target_player, 0]) == duration_ms
-    assert state["bonus_stack_velocity_delta"][0, target_player, 0] == pytest.approx(
-        expected_delta
-    )
+    assert state["bonus_stack_velocity_delta"][0, target_player, 0] == pytest.approx(expected_delta)
 
     expiry_counters = _step_runtime_timer_only(state, timer_advance_ms=duration_ms)
 
@@ -2864,9 +2918,7 @@ def test_step_many_catches_forced_velocity_bonus_and_expiry_restores_speed(
         np.full((1, 2), vector_runtime.SOURCE_AVATAR_ANGULAR_VELOCITY_PER_MS),
     )
     np.testing.assert_array_equal(state["bonus_stack_count"], np.asarray([[0, 0]]))
-    assert int(state["bonus_stack_type"][0, target_player, 0]) == (
-        vector_runtime.BONUS_TYPE_NONE
-    )
+    assert int(state["bonus_stack_type"][0, target_player, 0]) == (vector_runtime.BONUS_TYPE_NONE)
 
 
 def test_step_many_catches_forced_bonus_enemy_big_targets_other_alive_avatar():
@@ -2916,9 +2968,7 @@ def test_step_many_catches_forced_bonus_enemy_inverse_and_expiry_restores_direct
     assert catch_counters["bonus_stack_appends"] == 1
     np.testing.assert_array_equal(state["inverse"], np.asarray([[False, True]]))
     np.testing.assert_array_equal(state["bonus_stack_count"], np.asarray([[0, 1]]))
-    assert int(state["bonus_stack_type"][0, 1, 0]) == (
-        vector_runtime.BONUS_TYPE_ENEMY_INVERSE
-    )
+    assert int(state["bonus_stack_type"][0, 1, 0]) == (vector_runtime.BONUS_TYPE_ENEMY_INVERSE)
     assert int(state["bonus_stack_inverse_delta"][0, 1, 0]) == 1
 
     expiry_counters = _step_runtime_timer_only(
@@ -3001,9 +3051,7 @@ def test_step_many_catches_forced_bonus_self_master_and_expiry_restores_state():
         np.asarray([[False, True]]),
     )
     np.testing.assert_array_equal(state["bonus_stack_count"], np.asarray([[1, 0]]))
-    assert int(state["bonus_stack_type"][0, 0, 0]) == (
-        vector_runtime.BONUS_TYPE_SELF_MASTER
-    )
+    assert int(state["bonus_stack_type"][0, 0, 0]) == (vector_runtime.BONUS_TYPE_SELF_MASTER)
     assert int(state["bonus_stack_duration_ms"][0, 0, 0]) == (
         vector_runtime.BONUS_SELF_MASTER_DURATION_MS
     )
@@ -3209,9 +3257,7 @@ def test_step_many_catches_forced_bonus_game_borderless_like_js_fixture():
     assert "bonus_stack_count" not in state
     np.testing.assert_array_equal(state["bonus_game_stack_count"], np.asarray([1]))
     assert int(state["bonus_game_stack_id"][0, 0]) == 1
-    assert int(state["bonus_game_stack_type"][0, 0]) == (
-        vector_runtime.BONUS_TYPE_GAME_BORDERLESS
-    )
+    assert int(state["bonus_game_stack_type"][0, 0]) == (vector_runtime.BONUS_TYPE_GAME_BORDERLESS)
     assert int(state["bonus_game_stack_duration_ms"][0, 0]) == (
         vector_runtime.BONUS_GAME_BORDERLESS_DURATION_MS
     )

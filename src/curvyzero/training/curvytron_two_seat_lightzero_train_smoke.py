@@ -28,8 +28,8 @@ from curvyzero.env.vector_visual_observation import (
 from curvyzero.env.vector_visual_observation import (
     SOURCE_STATE_GRAY64_NORMALIZED_VALUE_RANGE,
 )
-from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_SCHEMA_HASH
-from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_SCHEMA_ID
+from curvyzero.env.vector_visual_observation import SOURCE_STATE_CANVAS_GRAY64_SCHEMA_HASH
+from curvyzero.env.vector_visual_observation import SOURCE_STATE_CANVAS_GRAY64_SCHEMA_ID
 from curvyzero.env.vector_visual_observation import TRAIL_RENDER_MODE_DEFAULT
 from curvyzero.env.vector_visual_observation import TRAIL_RENDER_MODE_ORDER
 from curvyzero.env.trainer_contract import stable_contract_hash
@@ -100,10 +100,13 @@ DEFAULT_DEATH_MODE = vector_runtime.DEATH_MODE_NORMAL
 DEFAULT_CHECKPOINT_EVERY_ITERATIONS = 100
 DEFAULT_PROGRESS_EVERY_ITERATIONS = 100
 DEFAULT_PROGRESS_COMMIT_EVERY_ITERATIONS = 100
+DEFAULT_ACTION_NOOP_PROBABILITY = 0.0
+DEFAULT_ACTION_NOOP_WARMUP_ITERATIONS = 0
 DEFAULT_POLICY_ACTION_REPEAT_MIN = 1
-DEFAULT_POLICY_ACTION_REPEAT_MAX = 1
-DEFAULT_POLICY_ACTION_REPEAT_EXTRA_PROBABILITY = 0.0
+DEFAULT_POLICY_ACTION_REPEAT_MAX = 3
+DEFAULT_POLICY_ACTION_REPEAT_EXTRA_PROBABILITY = 0.20
 DEFAULT_POLICY_ACTION_REPEAT_WARMUP_ITERATIONS = 0
+DEFAULT_OBSERVATION_NOISE_STD = 0.10
 POLICY_ACTION_REPEAT_RNG_SALT = 0xC0A7A11
 CONTROL_STOCHASTICITY_SCHEMA_ID = "curvyzero_two_seat_policy_action_repeat/v0"
 ACTION_SELECTION_MODE_COLLECT = "collect"
@@ -147,8 +150,8 @@ def run_curvytron_two_seat_lightzero_train_smoke(
     action_selection_mode: str = ACTION_SELECTION_MODE_COLLECT,
     collect_temperature: float = 1.0,
     collect_epsilon: float = 0.25,
-    action_noop_probability: float = 0.0,
-    action_noop_warmup_iterations: int = 0,
+    action_noop_probability: float = DEFAULT_ACTION_NOOP_PROBABILITY,
+    action_noop_warmup_iterations: int = DEFAULT_ACTION_NOOP_WARMUP_ITERATIONS,
     policy_action_repeat_min: int = DEFAULT_POLICY_ACTION_REPEAT_MIN,
     policy_action_repeat_max: int = DEFAULT_POLICY_ACTION_REPEAT_MAX,
     policy_action_repeat_extra_probability: float = (
@@ -157,7 +160,7 @@ def run_curvytron_two_seat_lightzero_train_smoke(
     policy_action_repeat_warmup_iterations: int = (
         DEFAULT_POLICY_ACTION_REPEAT_WARMUP_ITERATIONS
     ),
-    observation_noise_std: float = 0.0,
+    observation_noise_std: float = DEFAULT_OBSERVATION_NOISE_STD,
     trail_render_mode: str = TRAIL_RENDER_MODE_DEFAULT,
     use_cuda: bool = False,
     require_installed_lightzero: bool = True,
@@ -1103,8 +1106,8 @@ def _result_payload(
             "per_policy_row_shape": list(STACKED_SOURCE_STATE_GRAY64_SHAPE),
             "observation_dtype": SOURCE_STATE_GRAY64_NORMALIZED_DTYPE,
             "value_range": list(SOURCE_STATE_GRAY64_NORMALIZED_VALUE_RANGE),
-            "single_frame_schema_id": SOURCE_STATE_GRAY64_SCHEMA_ID,
-            "single_frame_schema_hash": SOURCE_STATE_GRAY64_SCHEMA_HASH,
+            "single_frame_schema_id": SOURCE_STATE_CANVAS_GRAY64_SCHEMA_ID,
+            "single_frame_schema_hash": SOURCE_STATE_CANVAS_GRAY64_SCHEMA_HASH,
             "render": render_metadata,
             "stack_schema_id": STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID,
             "player_perspective_schema_id": PLAYER_PERSPECTIVE_SCHEMA_ID,
@@ -2869,11 +2872,15 @@ def main() -> None:
     )
     parser.add_argument("--collect-temperature", type=float, default=1.0)
     parser.add_argument("--collect-epsilon", type=float, default=0.25)
-    parser.add_argument("--action-noop-probability", type=float, default=0.0)
+    parser.add_argument(
+        "--action-noop-probability",
+        type=float,
+        default=DEFAULT_ACTION_NOOP_PROBABILITY,
+    )
     parser.add_argument(
         "--action-noop-warmup-iterations",
         type=int,
-        default=0,
+        default=DEFAULT_ACTION_NOOP_WARMUP_ITERATIONS,
         help="Linearly ramp action no-op probability from 0 to the requested value over this many outer iterations.",
     )
     parser.add_argument(
@@ -2903,7 +2910,7 @@ def main() -> None:
     parser.add_argument(
         "--observation-noise-std",
         type=float,
-        default=0.0,
+        default=DEFAULT_OBSERVATION_NOISE_STD,
         help="Gaussian noise added to policy visual inputs and replay frames, clipped to [0, 1].",
     )
     parser.add_argument(
@@ -3021,6 +3028,9 @@ __all__ = [
     "ACTION_SELECTION_MODE_CHOICES",
     "ACTION_SELECTION_MODE_COLLECT",
     "ACTION_SELECTION_MODE_EVAL",
+    "DEFAULT_ACTION_NOOP_PROBABILITY",
+    "DEFAULT_ACTION_NOOP_WARMUP_ITERATIONS",
+    "DEFAULT_OBSERVATION_NOISE_STD",
     "LEARN_BATCH_BLOCKER",
     "REPLAY_SCOPE_ACCUMULATED",
     "REPLAY_SCOPE_CHOICES",

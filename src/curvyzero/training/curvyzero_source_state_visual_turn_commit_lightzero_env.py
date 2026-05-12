@@ -10,34 +10,44 @@ import numpy as np
 
 from curvyzero.env import vector_runtime
 from curvyzero.env.vector_multiplayer_env import ACTION_COUNT
+from curvyzero.env.vector_multiplayer_env import DEFAULT_DECISION_SOURCE_FRAMES
+from curvyzero.env.vector_multiplayer_env import DEFAULT_SOURCE_FRAME_DECISION_MS
 from curvyzero.env.vector_multiplayer_env import JOINT_ACTION_SCHEMA_ID
 from curvyzero.env.vector_multiplayer_env import NATURAL_BONUS_ENV_IMPL_ID
 from curvyzero.env.vector_multiplayer_env import NATURAL_BONUS_RULESET_ID
 from curvyzero.env.vector_multiplayer_env import PUBLIC_NATURAL_BONUS_ENV_CONTRACT_ID
+from curvyzero.env.vector_multiplayer_env import SOURCE_PHYSICS_STEP_MS
 from curvyzero.env.vector_multiplayer_env import VectorMultiplayerEnv
 from curvyzero.env.trainer_contract import stable_contract_hash
 from curvyzero.env.vector_visual_observation import (
-    SOURCE_STATE_GRAY64_BROWSER_PIXEL_FIDELITY,
+    SOURCE_STATE_CANVAS_GRAY64_BROWSER_PIXEL_FIDELITY,
 )
 from curvyzero.env.vector_visual_observation import (
-    SOURCE_STATE_GRAY64_NORMALIZED_DTYPE,
+    SOURCE_STATE_CANVAS_GRAY64_NORMALIZED_DTYPE,
 )
 from curvyzero.env.vector_visual_observation import (
-    SOURCE_STATE_GRAY64_NORMALIZED_VALUE_RANGE,
+    SOURCE_STATE_CANVAS_GRAY64_NORMALIZED_VALUE_RANGE,
 )
-from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_RENDERER_IMPL_ID
-from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_SCHEMA_HASH
-from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_SCHEMA_ID
-from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_SHAPE
 from curvyzero.env.vector_visual_observation import (
-    SOURCE_STATE_GRAY64_SOURCE_FIDELITY_LEVEL,
+    SOURCE_STATE_CANVAS_GRAY64_RENDERER_IMPL_ID,
 )
-from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_SOURCE_STATE_BACKED
-from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_SURFACE
-from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_TRUTH_LEVEL
-from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_USES_ALE
+from curvyzero.env.vector_visual_observation import SOURCE_STATE_CANVAS_GRAY64_SCHEMA_HASH
+from curvyzero.env.vector_visual_observation import SOURCE_STATE_CANVAS_GRAY64_SCHEMA_ID
+from curvyzero.env.vector_visual_observation import SOURCE_STATE_CANVAS_GRAY64_SHAPE
+from curvyzero.env.vector_visual_observation import (
+    SOURCE_STATE_CANVAS_GRAY64_SOURCE_FIDELITY_LEVEL,
+)
+from curvyzero.env.vector_visual_observation import (
+    SOURCE_STATE_CANVAS_GRAY64_SOURCE_STATE_BACKED,
+)
+from curvyzero.env.vector_visual_observation import SOURCE_STATE_CANVAS_GRAY64_SURFACE
+from curvyzero.env.vector_visual_observation import SOURCE_STATE_CANVAS_GRAY64_TRUTH_LEVEL
+from curvyzero.env.vector_visual_observation import SOURCE_STATE_CANVAS_GRAY64_USES_ALE
 from curvyzero.env.vector_visual_observation import (
     SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
+)
+from curvyzero.env.vector_visual_observation import (
+    SOURCE_STATE_RGB_CANVAS_LIKE_PLAYER_RGB,
 )
 from curvyzero.env.vector_visual_observation import (
     SOURCE_STATE_RGB_CANVAS_LIKE_RENDERER_IMPL_ID,
@@ -46,8 +56,9 @@ from curvyzero.env.vector_visual_observation import SOURCE_STATE_RGB_CANVAS_LIKE
 from curvyzero.env.vector_visual_observation import (
     SOURCE_STATE_RGB_CANVAS_LIKE_TRUTH_LEVEL,
 )
-from curvyzero.env.vector_visual_observation import SourceStateGray64Renderer
-from curvyzero.env.vector_visual_observation import normalize_source_state_gray64
+from curvyzero.env.vector_visual_observation import TRAIL_RENDER_MODE_DEFAULT
+from curvyzero.env.vector_visual_observation import TRAIL_RENDER_MODE_ORDER
+from curvyzero.env.vector_visual_observation import render_source_state_canvas_gray64
 from curvyzero.env.vector_visual_observation import render_source_state_rgb_canvas_like
 from curvyzero.training.curvyzero_debug_visual_lightzero_smoke import (
     LocalDebugVisualLightZeroTimestep,
@@ -122,22 +133,66 @@ SOURCE_STATE_TURN_COMMIT_ADAPTER_IMPL_ID = (
     "curvyzero_source_state_visual_turn_commit_lightzero_adapter/v0"
 )
 STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID = (
-    "curvyzero_source_state_gray64_stack4_player_perspective/v1"
+    "curvyzero_source_state_rgb_canvas_like_gray64_stack4_player_perspective/v0"
 )
 STACKED_SOURCE_STATE_GRAY64_SHAPE = (4, 64, 64)
-PLAYER_PERSPECTIVE_SCHEMA_ID = "curvyzero_player_perspective_source_state_gray64/v0"
+SOURCE_STATE_CANVAS_LIKE_RAW_SHAPE = (
+    SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
+    SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
+    3,
+)
+SOURCE_STATE_CANVAS_LIKE_RAW_DTYPE = "uint8"
+SOURCE_STATE_CANVAS_LIKE_RAW_VALUE_RANGE = (0, 255)
+SOURCE_STATE_BROWSER_PIXEL_FIDELITY_CLAIM = "not_validated_against_browser_canvas"
+SOURCE_STATE_CANVAS_LIKE_RAW_SCHEMA_HASH = stable_contract_hash(
+    {
+        "schema_id": SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID,
+        "renderer_impl_id": SOURCE_STATE_RGB_CANVAS_LIKE_RENDERER_IMPL_ID,
+        "default_trail_render_mode": TRAIL_RENDER_MODE_DEFAULT,
+        "supported_trail_render_modes": list(TRAIL_RENDER_MODE_ORDER),
+        "shape": list(SOURCE_STATE_CANVAS_LIKE_RAW_SHAPE),
+        "dtype": SOURCE_STATE_CANVAS_LIKE_RAW_DTYPE,
+        "range": list(SOURCE_STATE_CANVAS_LIKE_RAW_VALUE_RANGE),
+        "frame_size": SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
+        "source": (
+            "render_source_state_rgb_canvas_like("
+            f"frame_size={SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE}, "
+            f"trail_render_mode={TRAIL_RENDER_MODE_DEFAULT!r})"
+        ),
+        "truth_level": SOURCE_STATE_RGB_CANVAS_LIKE_TRUTH_LEVEL,
+        "browser_pixel_fidelity": False,
+        "browser_pixel_fidelity_claim": SOURCE_STATE_BROWSER_PIXEL_FIDELITY_CLAIM,
+    }
+)
+PLAYER_PERSPECTIVE_SCHEMA_ID = (
+    "curvyzero_player_perspective_source_state_rgb_canvas_like_gray64/v0"
+)
 STACKED_SOURCE_STATE_GRAY64_SCHEMA_HASH = stable_contract_hash(
     {
         "schema_id": STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID,
-        "single_frame_schema_id": SOURCE_STATE_GRAY64_SCHEMA_ID,
-        "single_frame_schema_hash": SOURCE_STATE_GRAY64_SCHEMA_HASH,
+        "single_frame_schema_id": SOURCE_STATE_CANVAS_GRAY64_SCHEMA_ID,
+        "single_frame_schema_hash": SOURCE_STATE_CANVAS_GRAY64_SCHEMA_HASH,
+        "raw_observation_schema_id": SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID,
+        "raw_observation_schema_hash": SOURCE_STATE_CANVAS_LIKE_RAW_SCHEMA_HASH,
         "player_perspective_schema_id": PLAYER_PERSPECTIVE_SCHEMA_ID,
+        "default_trail_render_mode": TRAIL_RENDER_MODE_DEFAULT,
+        "supported_trail_render_modes": list(TRAIL_RENDER_MODE_ORDER),
         "shape": list(STACKED_SOURCE_STATE_GRAY64_SHAPE),
-        "dtype": SOURCE_STATE_GRAY64_NORMALIZED_DTYPE,
-        "range": list(SOURCE_STATE_GRAY64_NORMALIZED_VALUE_RANGE),
+        "dtype": SOURCE_STATE_CANVAS_GRAY64_NORMALIZED_DTYPE,
+        "range": list(SOURCE_STATE_CANVAS_GRAY64_NORMALIZED_VALUE_RANGE),
         "frame_stack_owner": "curvyzero_source_state_turn_commit_wrapper",
-        "frame_stack_proof": "wrapper_owned_fifo_stack; not LightZero env-manager stacking",
-        "controlled_player_semantics": "active LightZero player is SELF; other player is OTHER",
+        "frame_stack_proof": (
+            "wrapper_owned_full_canvas_rgb_to_player_perspective_gray64_fifo_stack; "
+            "not LightZero env-manager stacking"
+        ),
+        "source_path": (
+            "render_source_state_canvas_gray64 source-state raw RGB canvas -> "
+            "optional active-player color perspective -> area-downsampled gray64 -> "
+            "normalized FIFO stack"
+        ),
+        "controlled_player_semantics": (
+            "active LightZero player is SELF; other player is OTHER in the model gray stack"
+        ),
     }
 )
 SELF_BODY_VALUE = 96
@@ -148,7 +203,7 @@ SOURCE_BODY_VALUE_BASE = 96
 SOURCE_BODY_VALUE_STEP = 32
 SOURCE_HEAD_VALUE_BASE = 224
 SOURCE_HEAD_VALUE_STEP = 8
-DEFAULT_DECISION_MS = 300.0
+DEFAULT_DECISION_MS = DEFAULT_SOURCE_FRAME_DECISION_MS
 DEFAULT_MAX_TICKS = 2_000
 ENV_VARIANT_SOURCE_STATE_TURN_COMMIT = "source_state_turn_commit"
 SOURCE_STATE_TURN_COMMIT_RUNTIME_TOPOLOGY = (
@@ -194,10 +249,15 @@ class CurvyZeroSourceStateVisualTurnCommitLightZeroLocalEnv:
         self._seed = int(_cfg_get(cfg, "seed", 0))
         self._episode_seed = self._seed
         self._dynamic_seed = bool(_cfg_get(cfg, "dynamic_seed", False))
-        self._decision_ms = float(_cfg_get(cfg, "decision_ms", DEFAULT_DECISION_MS))
+        (
+            self._decision_source_frames,
+            self._source_physics_step_ms,
+            self._decision_ms,
+        ) = _source_frame_decision_config(cfg)
         self._max_ticks = int(
             _cfg_get(cfg, "max_ticks", _cfg_get(cfg, "source_max_steps", DEFAULT_MAX_TICKS))
         )
+        self._max_source_ticks = self._max_ticks * self._decision_source_frames
         disable_death_for_profile = bool(_cfg_get(cfg, "disable_death_for_profile", False))
         configured_death_mode = str(
             _cfg_get(cfg, "death_mode", vector_runtime.DEATH_MODE_NORMAL)
@@ -216,11 +276,19 @@ class CurvyZeroSourceStateVisualTurnCommitLightZeroLocalEnv:
         if self._telemetry_stride < 1:
             raise ValueError("telemetry_stride must be at least 1")
         self._env = self._new_env(self._seed)
-        self._renderer = SourceStateGray64Renderer(validate_state=False)
-        self._raw_frame = np.zeros(SOURCE_STATE_GRAY64_SHAPE, dtype=np.uint8)
-        self._perspective_frame = np.zeros(SOURCE_STATE_GRAY64_SHAPE, dtype=np.uint8)
-        self._normalized_frame = np.zeros(SOURCE_STATE_GRAY64_SHAPE, dtype=np.float32)
-        self._perspective_luts = tuple(_player_perspective_lut(player) for player in range(2))
+        self._raw_frame = np.zeros(SOURCE_STATE_CANVAS_LIKE_RAW_SHAPE, dtype=np.uint8)
+        self._perspective_frame = np.zeros(
+            SOURCE_STATE_CANVAS_LIKE_RAW_SHAPE,
+            dtype=np.uint8,
+        )
+        self._gray64_frame = np.zeros(SOURCE_STATE_CANVAS_GRAY64_SHAPE, dtype=np.uint8)
+        self._normalized_frame = np.zeros(
+            SOURCE_STATE_CANVAS_GRAY64_SHAPE,
+            dtype=np.float32,
+        )
+        self._perspective_rgb_palettes = tuple(
+            _player_perspective_rgb_palette(player) for player in range(2)
+        )
         self._stack = np.zeros((2, *STACKED_SOURCE_STATE_GRAY64_SHAPE), dtype=np.float32)
         self._turn_player_ids = ("player_0", "player_1")
         self._active_player_index = 0
@@ -309,10 +377,14 @@ class CurvyZeroSourceStateVisualTurnCommitLightZeroLocalEnv:
         if mode == "source_state_player_perspective_raw_visual_tensor":
             return self.raw_observation(player_perspective=True)
         if mode == "source_state_rgb_canvas_like":
-            return self.human_rgb_observation()
+            return self.raw_observation()
+        if mode == "source_state_grayscale64_visual_tensor":
+            return self._gray64_frame.copy()
         return None
 
     def raw_observation(self, *, player_perspective: bool = False) -> np.ndarray | None:
+        """Return the latest full-size raw RGB canvas-like frame."""
+
         if not self._has_reset:
             return None
         frame = self._perspective_frame if player_perspective else self._raw_frame
@@ -333,7 +405,9 @@ class CurvyZeroSourceStateVisualTurnCommitLightZeroLocalEnv:
             player_count=2,
             seed=seed,
             decision_ms=self._decision_ms,
-            max_ticks=self._max_ticks,
+            decision_source_frames=self._decision_source_frames,
+            source_physics_step_ms=self._source_physics_step_ms,
+            max_ticks=self._max_source_ticks,
             death_mode=self._death_mode,
             natural_bonus_spawn=True,
         )
@@ -421,19 +495,39 @@ class CurvyZeroSourceStateVisualTurnCommitLightZeroLocalEnv:
         }
 
     def _update_stack_for_player(self, player_index: int) -> np.ndarray:
-        raw = self._renderer.render(self._env.state, row=0, out=self._raw_frame)
-        perspective = _normalize_player_perspective(
-            raw,
-            controlled_player=player_index,
-            out=self._perspective_frame,
-            lut=self._perspective_luts[player_index],
-        )
-        normalized = normalize_source_state_gray64(
-            perspective,
+        if player_index == 0:
+            gray64 = render_source_state_canvas_gray64(
+                self._env.state,
+                row=0,
+                out=self._gray64_frame,
+                rgb_out=self._raw_frame,
+                trail_render_mode=TRAIL_RENDER_MODE_DEFAULT,
+            )
+            np.copyto(self._perspective_frame, self._raw_frame)
+        else:
+            render_source_state_rgb_canvas_like(
+                self._env.state,
+                row=0,
+                out=self._raw_frame,
+                frame_size=SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
+                trail_render_mode=TRAIL_RENDER_MODE_DEFAULT,
+            )
+            gray64 = render_source_state_canvas_gray64(
+                self._env.state,
+                row=0,
+                out=self._gray64_frame,
+                rgb_out=self._perspective_frame,
+                player_rgb=self._perspective_rgb_palettes[player_index],
+                trail_render_mode=TRAIL_RENDER_MODE_DEFAULT,
+            )
+        np.multiply(
+            gray64,
+            np.float32(1.0 / 255.0),
             out=self._normalized_frame,
+            casting="unsafe",
         )
         self._stack[player_index, :-1] = self._stack[player_index, 1:]
-        self._stack[player_index, -1] = normalized[0]
+        self._stack[player_index, -1] = self._normalized_frame[0]
         return self._stack[player_index]
 
     def _action_mask(self, player_index: int, *, active: bool) -> np.ndarray:
@@ -536,19 +630,41 @@ class CurvyZeroSourceStateVisualTurnCommitLightZeroLocalEnv:
             "ruleset_id": ruleset_id,
             "rules_hash": str(public_info["rules_hash"]),
             "decision_ms": float(self._decision_ms),
+            "decision_source_frames": int(self._decision_source_frames),
+            "source_physics_step_ms": float(self._source_physics_step_ms),
+            "source_frame_decision": True,
             "max_ticks": int(self._max_ticks),
+            "max_source_ticks": int(self._max_source_ticks),
             "player_count": 2,
             "player_ids": self._turn_player_ids,
             "observation_schema_id": STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID,
             "observation_schema_hash": STACKED_SOURCE_STATE_GRAY64_SCHEMA_HASH,
             "schema_hash": STACKED_SOURCE_STATE_GRAY64_SCHEMA_HASH,
-            "single_frame_schema_id": SOURCE_STATE_GRAY64_SCHEMA_ID,
-            "single_frame_schema_hash": SOURCE_STATE_GRAY64_SCHEMA_HASH,
-            "raw_observation_schema_id": SOURCE_STATE_GRAY64_SCHEMA_ID,
-            "raw_observation_schema_hash": SOURCE_STATE_GRAY64_SCHEMA_HASH,
+            "single_frame_schema_id": SOURCE_STATE_CANVAS_GRAY64_SCHEMA_ID,
+            "single_frame_schema_hash": SOURCE_STATE_CANVAS_GRAY64_SCHEMA_HASH,
+            "raw_observation_schema_id": SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID,
+            "raw_observation_schema_hash": SOURCE_STATE_CANVAS_LIKE_RAW_SCHEMA_HASH,
             "raw_observation_available": True,
+            "raw_observation_accessors": [
+                "raw_observation()",
+                "render('source_state_raw_visual_tensor')",
+                "render('source_state_rgb_canvas_like')",
+            ],
+            "raw_observation_dtype": SOURCE_STATE_CANVAS_LIKE_RAW_DTYPE,
+            "raw_observation_color_space": "RGB",
+            "raw_observation_source": (
+                "render_source_state_rgb_canvas_like("
+                f"frame_size={SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE}, "
+                f"trail_render_mode={TRAIL_RENDER_MODE_DEFAULT!r})"
+            ),
+            "grayscale_observation_source": (
+                "render_source_state_canvas_gray64("
+                "rgb_out=active_player_raw_observation_buffer, "
+                f"trail_render_mode={TRAIL_RENDER_MODE_DEFAULT!r})"
+            ),
             "player_perspective_schema_id": PLAYER_PERSPECTIVE_SCHEMA_ID,
-            "renderer_impl_id": SOURCE_STATE_GRAY64_RENDERER_IMPL_ID,
+            "renderer_impl_id": SOURCE_STATE_CANVAS_GRAY64_RENDERER_IMPL_ID,
+            "raw_renderer_impl_id": SOURCE_STATE_RGB_CANVAS_LIKE_RENDERER_IMPL_ID,
             "human_rgb_renderer_impl_id": SOURCE_STATE_RGB_CANVAS_LIKE_RENDERER_IMPL_ID,
             "human_rgb_schema_id": SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID,
             "human_rgb_truth_level": SOURCE_STATE_RGB_CANVAS_LIKE_TRUTH_LEVEL,
@@ -557,25 +673,33 @@ class CurvyZeroSourceStateVisualTurnCommitLightZeroLocalEnv:
                 SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
                 3,
             ],
-            "truth_level": SOURCE_STATE_GRAY64_TRUTH_LEVEL,
-            "source_fidelity_level": SOURCE_STATE_GRAY64_SOURCE_FIDELITY_LEVEL,
+            "truth_level": SOURCE_STATE_CANVAS_GRAY64_TRUTH_LEVEL,
+            "source_fidelity_level": SOURCE_STATE_CANVAS_GRAY64_SOURCE_FIDELITY_LEVEL,
             "source_fidelity_claim": "source_state_backed_non_browser_pixel",
-            "visual_surface": SOURCE_STATE_GRAY64_SURFACE,
-            "visual_truth_level": SOURCE_STATE_GRAY64_TRUTH_LEVEL,
-            "visual_source_state_backed": SOURCE_STATE_GRAY64_SOURCE_STATE_BACKED,
+            "visual_surface": SOURCE_STATE_CANVAS_GRAY64_SURFACE,
+            "visual_truth_level": SOURCE_STATE_CANVAS_GRAY64_TRUTH_LEVEL,
+            "visual_source_state_backed": SOURCE_STATE_CANVAS_GRAY64_SOURCE_STATE_BACKED,
             "debug_fidelity_only": False,
-            "browser_pixel_fidelity": SOURCE_STATE_GRAY64_BROWSER_PIXEL_FIDELITY,
-            "uses_ale": SOURCE_STATE_GRAY64_USES_ALE,
+            "browser_pixel_fidelity": SOURCE_STATE_CANVAS_GRAY64_BROWSER_PIXEL_FIDELITY,
+            "browser_pixel_fidelity_claim": SOURCE_STATE_BROWSER_PIXEL_FIDELITY_CLAIM,
+            "uses_ale": SOURCE_STATE_CANVAS_GRAY64_USES_ALE,
             "ale_usage": "none",
+            "default_trail_render_mode": TRAIL_RENDER_MODE_DEFAULT,
+            "supported_trail_render_modes": list(TRAIL_RENDER_MODE_ORDER),
+            "trail_render_mode": TRAIL_RENDER_MODE_DEFAULT,
             "shape": list(STACKED_SOURCE_STATE_GRAY64_SHAPE),
-            "dtype": SOURCE_STATE_GRAY64_NORMALIZED_DTYPE,
-            "range": list(SOURCE_STATE_GRAY64_NORMALIZED_VALUE_RANGE),
-            "value_range": list(SOURCE_STATE_GRAY64_NORMALIZED_VALUE_RANGE),
-            "raw_frame_shape": list(SOURCE_STATE_GRAY64_SHAPE),
+            "dtype": SOURCE_STATE_CANVAS_GRAY64_NORMALIZED_DTYPE,
+            "range": list(SOURCE_STATE_CANVAS_GRAY64_NORMALIZED_VALUE_RANGE),
+            "value_range": list(SOURCE_STATE_CANVAS_GRAY64_NORMALIZED_VALUE_RANGE),
+            "raw_frame_shape": list(SOURCE_STATE_CANVAS_LIKE_RAW_SHAPE),
+            "grayscale_frame_shape": list(SOURCE_STATE_CANVAS_GRAY64_SHAPE),
             "lightzero_payload_shape": list(STACKED_SOURCE_STATE_GRAY64_SHAPE),
             "model_observation_shape": list(STACKED_SOURCE_STATE_GRAY64_SHAPE),
             "frame_stack_owner": "curvyzero_source_state_turn_commit_wrapper",
-            "frame_stack_proof": "wrapper_owned_fifo_stack; not LightZero env-manager stacking",
+            "frame_stack_proof": (
+                "wrapper_owned_full_canvas_rgb_to_player_perspective_gray64_fifo_stack; "
+                "not LightZero env-manager stacking"
+            ),
             "reward_schema_id": SURVIVAL_TIME_REWARD_SCHEMA_ID,
             "reward_schema_hash": SURVIVAL_TIME_REWARD_SCHEMA_HASH,
             "bonus_support_mode": str(public_info["bonus_support_mode"]),
@@ -785,6 +909,8 @@ def _normalize_player_perspective(
     out: np.ndarray,
     lut: np.ndarray | None = None,
 ) -> np.ndarray:
+    """Legacy gray64 SELF/OTHER remap helper retained for focused compatibility tests."""
+
     mapping = _player_perspective_lut(controlled_player) if lut is None else lut
     np.take(mapping, frame, out=out)
     return out
@@ -802,6 +928,17 @@ def _player_perspective_lut(controlled_player: int) -> np.ndarray:
             SELF_HEAD_VALUE if source_player == controlled_player else OTHER_HEAD_VALUE
         )
     return mapping
+
+
+def _player_perspective_rgb_palette(controlled_player: int) -> tuple[tuple[int, int, int], ...]:
+    """Map source player colors to stable SELF/OTHER colors for shared-policy input."""
+
+    colors = np.asarray(SOURCE_STATE_RGB_CANVAS_LIKE_PLAYER_RGB, dtype=np.uint8).copy()
+    self_rgb = np.asarray(SOURCE_STATE_RGB_CANVAS_LIKE_PLAYER_RGB[0], dtype=np.uint8)
+    other_rgb = np.asarray(SOURCE_STATE_RGB_CANVAS_LIKE_PLAYER_RGB[1], dtype=np.uint8)
+    for source_player in range(2):
+        colors[source_player] = self_rgb if source_player == controlled_player else other_rgb
+    return tuple(tuple(int(channel) for channel in color) for color in colors)
 
 
 def _validate_action(action: Any) -> int:
@@ -827,6 +964,34 @@ def _cfg_get(cfg: Any, key: str, default: Any) -> Any:
     return getattr(cfg, key, default)
 
 
+def _source_frame_decision_config(cfg: Any) -> tuple[int, float, float]:
+    source_physics_step_ms = float(
+        _cfg_get(cfg, "source_physics_step_ms", SOURCE_PHYSICS_STEP_MS)
+    )
+    if not np.isfinite(source_physics_step_ms) or source_physics_step_ms <= 0.0:
+        raise ValueError("source_physics_step_ms must be positive and finite")
+
+    raw_frames = _cfg_get(cfg, "decision_source_frames", None)
+    if raw_frames is None:
+        raw_decision_ms = _cfg_get(cfg, "decision_ms", None)
+        if raw_decision_ms is None:
+            frames = DEFAULT_DECISION_SOURCE_FRAMES
+        else:
+            ratio = float(raw_decision_ms) / source_physics_step_ms
+            frames = int(round(ratio))
+            if frames < 1 or not np.isclose(ratio, frames, rtol=0.0, atol=1e-6):
+                raise ValueError(
+                    "decision_ms must be a whole number of source physics frames; "
+                    "prefer decision_source_frames"
+                )
+    else:
+        frames = int(raw_frames)
+        if frames < 1:
+            raise ValueError("decision_source_frames must be positive")
+
+    return frames, source_physics_step_ms, frames * source_physics_step_ms
+
+
 __all__ = [
     "CurvyZeroSourceStateVisualTurnCommitLightZeroEnv",
     "CurvyZeroSourceStateVisualTurnCommitLightZeroLocalEnv",
@@ -834,6 +999,8 @@ __all__ = [
     "LIGHTZERO_SOURCE_STATE_VISUAL_TURN_COMMIT_ENV_TYPE",
     "LIGHTZERO_SOURCE_STATE_VISUAL_TURN_COMMIT_IMPORT_NAMES",
     "SOURCE_STATE_TURN_COMMIT_ADAPTER_IMPL_ID",
+    "SOURCE_STATE_CANVAS_LIKE_RAW_SCHEMA_HASH",
+    "SOURCE_STATE_CANVAS_LIKE_RAW_SHAPE",
     "STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID",
     "STACKED_SOURCE_STATE_GRAY64_SCHEMA_HASH",
     "STACKED_SOURCE_STATE_GRAY64_SHAPE",

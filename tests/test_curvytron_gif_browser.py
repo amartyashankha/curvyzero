@@ -8,6 +8,13 @@ import pytest
 from curvyzero.infra.modal import curvytron_gif_browser as browser
 
 
+@pytest.fixture(autouse=True)
+def _clear_browser_listing_caches():
+    browser._clear_listing_caches()
+    yield
+    browser._clear_listing_caches()
+
+
 def _selfplay_dir(tmp_path, *, run_id: str, attempt_id: str, eval_id: str):
     return (
         tmp_path
@@ -31,7 +38,9 @@ def _write_summary(
     ok: bool,
     frame_count: int,
     mtime: int,
+    checkpoint_label: str = "iteration_1",
     terminal_reason: str = "round_all_dead_draw",
+    write_gif: bool = True,
 ) -> None:
     selfplay_dir = _selfplay_dir(
         tmp_path,
@@ -45,7 +54,8 @@ def _write_summary(
         f"{eval_id}/selfplay/raw.gif"
     )
     gif_path = selfplay_dir / "raw.gif"
-    gif_path.write_bytes(b"GIF89a")
+    if write_gif:
+        gif_path.write_bytes(b"GIF89a")
     summary_path = selfplay_dir / "summary.json"
     summary_path.write_text(
         json.dumps(
@@ -58,13 +68,14 @@ def _write_summary(
                 "frame_count": frame_count,
                 "physical_steps": frame_count - 1,
                 "max_steps": 64,
-                "checkpoint_label": "iteration_1",
+                "checkpoint_label": checkpoint_label,
                 "terminal_reason": terminal_reason,
             }
         ),
         encoding="utf-8",
     )
-    os.utime(gif_path, (mtime, mtime))
+    if write_gif:
+        os.utime(gif_path, (mtime, mtime))
     os.utime(summary_path, (mtime, mtime))
 
 
@@ -165,7 +176,7 @@ def test_strict_selfplay_refs_reject_other_task_files(ref, validator) -> None:
         validator(ref)
 
 
-def test_list_selfplay_summaries_filters_and_sorts_recent(tmp_path) -> None:
+def test_list_selfplay_summaries_filters_and_sorts_by_run_recency(tmp_path) -> None:
     _write_picker_flag(tmp_path, run_id="run-old")
     _write_picker_flag(tmp_path, run_id="run-new")
     _write_summary(
@@ -187,7 +198,7 @@ def test_list_selfplay_summaries_filters_and_sorts_recent(tmp_path) -> None:
         mtime=200,
     )
 
-    rows = browser._list_selfplay_summaries(tmp_path, limit=10)
+    rows = browser._list_selfplay_summaries(tmp_path, ok_filter="all", limit=10)
 
     assert [row["run_id"] for row in rows] == ["run-new", "run-old"]
     assert rows[0]["gif_exists"] is True
@@ -206,6 +217,91 @@ def test_list_selfplay_summaries_filters_and_sorts_recent(tmp_path) -> None:
 
     assert len(failed_rows) == 1
     assert failed_rows[0]["run_id"] == "run-new"
+
+
+def test_list_selfplay_summaries_defaults_to_successful_gifs(tmp_path) -> None:
+    _write_picker_flag(tmp_path, run_id="run-a")
+    _write_summary(
+        tmp_path,
+        run_id="run-a",
+        attempt_id="attempt-a",
+        eval_id="live_checkpoint_iteration_1",
+        ok=True,
+        frame_count=5,
+        mtime=100,
+        checkpoint_label="iteration_1",
+    )
+    _write_summary(
+        tmp_path,
+        run_id="run-a",
+        attempt_id="attempt-a",
+        eval_id="live_checkpoint_iteration_2",
+        ok=True,
+        frame_count=5,
+        mtime=200,
+        checkpoint_label="iteration_2",
+        write_gif=False,
+    )
+
+    default_rows = browser._list_selfplay_summaries(tmp_path, run_id="run-a")
+    failed_rows = browser._list_selfplay_summaries(
+        tmp_path,
+        run_id="run-a",
+        ok_filter="failed",
+    )
+
+    assert [row["eval_id"] for row in default_rows] == ["live_checkpoint_iteration_1"]
+    assert [row["eval_id"] for row in failed_rows] == ["live_checkpoint_iteration_2"]
+
+
+def test_list_selfplay_summaries_sorts_selected_run_by_iteration(tmp_path) -> None:
+    _write_picker_flag(tmp_path, run_id="run-a")
+    for iteration, mtime in ((14, 300), (16, 100), (15, 200)):
+        _write_summary(
+            tmp_path,
+            run_id="run-a",
+            attempt_id="attempt-a",
+            eval_id=f"live_checkpoint_iteration_{iteration}",
+            ok=True,
+            frame_count=5,
+            mtime=mtime,
+            checkpoint_label=f"iteration_{iteration}",
+        )
+
+    rows = browser._list_selfplay_summaries(tmp_path, run_id="run-a", limit=10)
+
+    assert [row["eval_id"] for row in rows] == [
+        "live_checkpoint_iteration_16",
+        "live_checkpoint_iteration_15",
+        "live_checkpoint_iteration_14",
+    ]
+
+
+def test_list_selfplay_summaries_reuses_short_ttl_cache_for_same_run_state(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(browser, "LISTING_CACHE_TTL_SECONDS", 60.0)
+    _write_picker_flag(tmp_path, run_id="run-a")
+    _write_summary(
+        tmp_path,
+        run_id="run-a",
+        attempt_id="attempt-a",
+        eval_id="live_checkpoint_iteration_1",
+        ok=True,
+        frame_count=5,
+        mtime=100,
+    )
+
+    rows = browser._list_selfplay_summaries(tmp_path, run_id="run-a", limit=10)
+
+    def fail_summary_row(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("summary rows should come from cache")
+
+    monkeypatch.setattr(browser, "_summary_row", fail_summary_row)
+    cached_rows = browser._list_selfplay_summaries(tmp_path, run_id="run-a", limit=10)
+
+    assert [row["eval_id"] for row in rows] == ["live_checkpoint_iteration_1"]
+    assert cached_rows == rows
 
 
 def test_list_runs_sorts_by_recent_gif_summary_and_checkpoint_artifacts(tmp_path) -> None:
@@ -518,11 +614,20 @@ def test_fastapi_routes_serve_only_selfplay_artifacts(tmp_path, monkeypatch) -> 
     assert api_response.status_code == 200
     assert api_response.json()["rows"][0]["gif_ref"] == gif_ref
     assert gif_response.status_code == 200
-    assert gif_response.headers["cache-control"] == "no-store"
+    assert gif_response.headers["cache-control"].startswith("public, max-age=")
+    assert gif_response.headers["etag"]
     assert gif_response.content == b"GIF89a"
     assert meta_response.status_code == 200
     assert rejected_response.status_code == 400
-    assert volume.reload_count >= 3
+    assert volume.reload_count >= 1
+
+    cached_gif_response = client.get(
+        "/gif",
+        params={"ref": gif_ref},
+        headers={"If-None-Match": gif_response.headers["etag"]},
+    )
+
+    assert cached_gif_response.status_code == 304
 
 
 def test_fastapi_index_and_api_accept_run_id_picker_selection(
@@ -590,6 +695,67 @@ def test_fastapi_index_and_api_accept_run_id_picker_selection(
     assert [run["run_id"] for run in api_response.json()["runs"]] == [
         "run-new",
         "run-old",
+    ]
+
+
+def test_fastapi_defaults_to_newest_run_and_successful_gifs(
+    tmp_path, monkeypatch
+) -> None:
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(browser, "RUNS_MOUNT", tmp_path)
+    _write_picker_flag(tmp_path, run_id="run-old")
+    _write_picker_flag(tmp_path, run_id="run-new")
+    _write_summary(
+        tmp_path,
+        run_id="run-old",
+        attempt_id="attempt-old",
+        eval_id="live_checkpoint_iteration_99",
+        ok=True,
+        frame_count=5,
+        mtime=100,
+        checkpoint_label="iteration_99",
+    )
+    _write_summary(
+        tmp_path,
+        run_id="run-new",
+        attempt_id="attempt-new",
+        eval_id="live_checkpoint_iteration_16",
+        ok=True,
+        frame_count=5,
+        mtime=200,
+        checkpoint_label="iteration_16",
+    )
+    _write_summary(
+        tmp_path,
+        run_id="run-new",
+        attempt_id="attempt-new",
+        eval_id="live_checkpoint_iteration_15",
+        ok=True,
+        frame_count=5,
+        mtime=300,
+        checkpoint_label="iteration_15",
+        write_gif=False,
+    )
+    app = browser._build_fastapi_app(None)
+    client = TestClient(app)
+
+    page_response = client.get("/")
+    api_response = client.get("/api/summaries")
+    failed_response = client.get("/api/summaries", params={"run_id": "run-new", "ok": "failed"})
+
+    assert page_response.status_code == 200
+    assert "<summary>run-new</summary>" in page_response.text
+    assert "missing raw.gif" not in page_response.text
+    assert api_response.status_code == 200
+    assert api_response.json()["selected_run_id"] == "run-new"
+    assert [row["eval_id"] for row in api_response.json()["rows"]] == [
+        "live_checkpoint_iteration_16"
+    ]
+    assert [row["eval_id"] for row in failed_response.json()["rows"]] == [
+        "live_checkpoint_iteration_15"
     ]
 
 
@@ -664,6 +830,40 @@ def test_fastapi_hide_run_fetch_waits_and_returns_next_url(tmp_path, monkeypatch
     assert payload["marker_existed"] is True
     assert payload["hidden"] is True
     assert not _picker_flag_path(tmp_path, run_id="run-old").exists()
+
+
+def test_fastapi_hide_run_clears_cached_run_picker_state(tmp_path, monkeypatch) -> None:
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(browser, "LISTING_CACHE_TTL_SECONDS", 60.0)
+    monkeypatch.setattr(browser, "RUNS_MOUNT", tmp_path)
+    _write_picker_flag(tmp_path, run_id="run-old")
+    _write_summary(
+        tmp_path,
+        run_id="run-old",
+        attempt_id="attempt-a",
+        eval_id="eval-a",
+        ok=True,
+        frame_count=5,
+        mtime=100,
+    )
+    app = browser._build_fastapi_app(None)
+    client = TestClient(app)
+
+    before = client.get("/api/summaries")
+    delete_response = client.post(
+        "/api/runs/run-old/hide",
+        headers={"X-Requested-With": "fetch"},
+    )
+    after = client.get("/api/summaries")
+
+    assert before.json()["runs"][0]["run_id"] == "run-old"
+    assert delete_response.status_code == 200
+    assert after.json()["runs"] == []
+    assert after.json()["rows"] == []
+    assert after.json()["selected_run_id"] == ""
 
 
 def test_fastapi_routes_keep_serving_when_volume_reload_fails(tmp_path, monkeypatch) -> None:

@@ -12,7 +12,11 @@ from collections.abc import Mapping
 from collections.abc import Sequence
 from dataclasses import dataclass
 from dataclasses import field
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
+import struct
+import zlib
 
 import numpy as np
 
@@ -53,6 +57,76 @@ SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE = 704
 SOURCE_STATE_RGB_CANVAS_LIKE_BACKGROUND_RGB = (34, 34, 34)
 SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_RGB = (255, 190, 40)
 SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_OUTLINE_RGB = (255, 255, 255)
+SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_TYPE_RGB = (
+    SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_RGB,
+    (78, 78, 78),  # BonusSelfSmall
+    (92, 92, 92),  # BonusSelfSlow
+    (106, 106, 106),  # BonusSelfFast
+    (120, 120, 120),  # BonusSelfMaster
+    (134, 134, 134),  # BonusEnemySlow
+    (148, 148, 148),  # BonusEnemyFast
+    (162, 162, 162),  # BonusEnemyBig
+    (176, 176, 176),  # BonusEnemyInverse
+    (190, 190, 190),  # BonusEnemyStraightAngle
+    (204, 204, 204),  # BonusGameBorderless
+    (218, 218, 218),  # BonusAllColor
+    (232, 232, 232),  # BonusGameClear
+)
+SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_TYPE_CODE_BY_NAME = {
+    "BonusSelfSmall": 1,
+    "BonusSelfSlow": 2,
+    "BonusSelfFast": 3,
+    "BonusSelfMaster": 4,
+    "BonusEnemySlow": 5,
+    "BonusEnemyFast": 6,
+    "BonusEnemyBig": 7,
+    "BonusEnemyInverse": 8,
+    "BonusEnemyStraightAngle": 9,
+    "BonusGameBorderless": 10,
+    "BonusAllColor": 11,
+    "BonusGameClear": 12,
+}
+SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_TYPE_NAME_BY_CODE = (
+    None,
+    "BonusSelfSmall",
+    "BonusSelfSlow",
+    "BonusSelfFast",
+    "BonusSelfMaster",
+    "BonusEnemySlow",
+    "BonusEnemyFast",
+    "BonusEnemyBig",
+    "BonusEnemyInverse",
+    "BonusEnemyStraightAngle",
+    "BonusGameBorderless",
+    "BonusAllColor",
+    "BonusGameClear",
+)
+SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_SPRITE_SHEET_RELATIVE_PATH = (
+    "third_party/curvytron-reference/web/images/bonus.png"
+)
+SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_SPRITE_COLUMNS = 3
+SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_SPRITE_ROWS = 4
+SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_SPRITE_NAMES = (
+    "BonusSelfFast",
+    "BonusEnemyFast",
+    "BonusSelfSlow",
+    "BonusEnemySlow",
+    "BonusGameBorderless",
+    "BonusSelfMaster",
+    "BonusEnemyBig",
+    "BonusAllColor",
+    "BonusEnemyInverse",
+    "BonusSelfSmall",
+    "BonusGameClear",
+    "BonusEnemyStraightAngle",
+)
+SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_SPRITE_INDEX_BY_NAME = {
+    name: index for index, name in enumerate(SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_SPRITE_NAMES)
+}
+SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_TYPE_CODE_BY_SPRITE_INDEX = tuple(
+    SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_TYPE_CODE_BY_NAME[name]
+    for name in SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_SPRITE_NAMES
+)
 SOURCE_STATE_RGB_CANVAS_LIKE_PLAYER_RGB = (
     (255, 0, 0),
     (0, 255, 0),
@@ -69,21 +143,27 @@ TRAIL_RENDER_MODE_ORDER = (
     TRAIL_RENDER_MODE_BODY_CIRCLES_FAST,
 )
 TRAIL_RENDER_MODE_DEFAULT = TRAIL_RENDER_MODE_BROWSER_LINES
+BONUS_RENDER_MODE_BROWSER_SPRITES = "browser_sprites"
+BONUS_RENDER_MODE_CIRCLES_FAST = "circles_fast"
+BONUS_RENDER_MODES = frozenset((BONUS_RENDER_MODE_BROWSER_SPRITES, BONUS_RENDER_MODE_CIRCLES_FAST))
+BONUS_RENDER_MODE_ORDER = (
+    BONUS_RENDER_MODE_BROWSER_SPRITES,
+    BONUS_RENDER_MODE_CIRCLES_FAST,
+)
+BONUS_RENDER_MODE_DEFAULT = BONUS_RENDER_MODE_BROWSER_SPRITES
 SOURCE_STATE_RGB_BROWSER_LINES_RENDERER_IMPL_ID = (
     "curvyzero_source_state_rgb_canvas_like_browser_lines_numpy/v0"
 )
 SOURCE_STATE_RGB_BODY_CIRCLES_FAST_RENDERER_IMPL_ID = (
     "curvyzero_source_state_rgb_canvas_like_body_circles_fast_numpy/v0"
 )
-SOURCE_STATE_RGB_CANVAS_LIKE_RENDERER_IMPL_ID = (
-    SOURCE_STATE_RGB_BROWSER_LINES_RENDERER_IMPL_ID
-)
+SOURCE_STATE_RGB_CANVAS_LIKE_RENDERER_IMPL_ID = SOURCE_STATE_RGB_BROWSER_LINES_RENDERER_IMPL_ID
 SOURCE_STATE_CANVAS_GRAY64_SCHEMA_ID = "curvyzero_source_state_canvas_gray64/v0"
 SOURCE_STATE_CANVAS_GRAY64_BROWSER_LINES_RENDERER_IMPL_ID = (
-    "curvyzero_source_state_canvas_gray64_browser_lines_numpy/v0"
+    "curvyzero_source_state_canvas_gray64_browser_lines_downsampled_canvas_numpy/v0"
 )
 SOURCE_STATE_CANVAS_GRAY64_BODY_CIRCLES_FAST_RENDERER_IMPL_ID = (
-    "curvyzero_source_state_canvas_gray64_body_circles_fast_numpy/v0"
+    "curvyzero_source_state_canvas_gray64_body_circles_fast_downsampled_canvas_numpy/v0"
 )
 SOURCE_STATE_CANVAS_GRAY64_RENDERER_IMPL_ID = (
     SOURCE_STATE_CANVAS_GRAY64_BROWSER_LINES_RENDERER_IMPL_ID
@@ -95,13 +175,11 @@ SOURCE_STATE_CANVAS_GRAY64_SHAPE = SOURCE_STATE_GRAY64_SHAPE
 SOURCE_STATE_CANVAS_GRAY64_DTYPE = SOURCE_STATE_GRAY64_DTYPE
 SOURCE_STATE_CANVAS_GRAY64_VALUE_RANGE = SOURCE_STATE_GRAY64_VALUE_RANGE
 SOURCE_STATE_CANVAS_GRAY64_NORMALIZED_DTYPE = SOURCE_STATE_GRAY64_NORMALIZED_DTYPE
-SOURCE_STATE_CANVAS_GRAY64_NORMALIZED_VALUE_RANGE = (
-    SOURCE_STATE_GRAY64_NORMALIZED_VALUE_RANGE
-)
+SOURCE_STATE_CANVAS_GRAY64_NORMALIZED_VALUE_RANGE = SOURCE_STATE_GRAY64_NORMALIZED_VALUE_RANGE
 SOURCE_STATE_CANVAS_GRAY64_SURFACE = "source_state_canvas_gray64_tensor"
 SOURCE_STATE_CANVAS_GRAY64_TRUTH_LEVEL = SOURCE_STATE_RGB_CANVAS_LIKE_TRUTH_LEVEL
 SOURCE_STATE_CANVAS_GRAY64_SOURCE_FIDELITY_LEVEL = (
-    "source_vector_state_canvas_like_rgb_luma_raster"
+    "source_vector_state_canvas_like_rgb_luma_area_downsampled_raster"
 )
 SOURCE_STATE_CANVAS_GRAY64_PERSPECTIVE = "global_browser_like_source_state"
 SOURCE_STATE_CANVAS_GRAY64_COMPARISON_TARGET = "curvyzero_source_state_rgb_canvas_like/v0"
@@ -137,12 +215,19 @@ SOURCE_STATE_GRAY64_OPTIONAL_STATE_FIELDS = (
     "state.bonus_pos",
     "state.bonus_radius",
 )
+SOURCE_STATE_VISUAL_TRAIL_FIELDS = (
+    "state.visual_trail_active",
+    "state.visual_trail_write_cursor",
+    "state.visual_trail_pos",
+    "state.visual_trail_radius",
+    "state.visual_trail_owner",
+    "state.visual_trail_break_before",
+)
 _SOURCE_STATE_ARRAY_KEYS = tuple(
     field_name.removeprefix("state.") for field_name in SOURCE_STATE_GRAY64_STATE_FIELDS
 )
 _SOURCE_STATE_OPTIONAL_ARRAY_KEYS = tuple(
-    field_name.removeprefix("state.")
-    for field_name in SOURCE_STATE_GRAY64_OPTIONAL_STATE_FIELDS
+    field_name.removeprefix("state.") for field_name in SOURCE_STATE_GRAY64_OPTIONAL_STATE_FIELDS
 )
 SOURCE_STATE_GRAY64_BONUS_VALUE = 208
 SOURCE_STATE_GRAY64_DEFAULT_AVATAR_RADIUS = 0.6
@@ -185,9 +270,7 @@ _SOURCE_STATE_GRAY64_RENDERER_PAYLOAD: dict[str, Any] = {
     "optional_state_fields": list(SOURCE_STATE_GRAY64_OPTIONAL_STATE_FIELDS),
     "comparison_target": SOURCE_STATE_GRAY64_COMPARISON_TARGET,
 }
-SOURCE_STATE_GRAY64_RENDERER_IMPL_HASH = stable_contract_hash(
-    _SOURCE_STATE_GRAY64_RENDERER_PAYLOAD
-)
+SOURCE_STATE_GRAY64_RENDERER_IMPL_HASH = stable_contract_hash(_SOURCE_STATE_GRAY64_RENDERER_PAYLOAD)
 
 _SOURCE_STATE_GRAY64_SCHEMA_PAYLOAD: dict[str, Any] = {
     "schema_id": SOURCE_STATE_GRAY64_SCHEMA_ID,
@@ -320,16 +403,18 @@ def render_source_state_rgb_canvas_like(
     player_rgb: Sequence[Sequence[int]] | None = None,
     background_rgb: Sequence[int] = SOURCE_STATE_RGB_CANVAS_LIKE_BACKGROUND_RGB,
     trail_render_mode: str = TRAIL_RENDER_MODE_DEFAULT,
+    bonus_render_mode: str = BONUS_RENDER_MODE_DEFAULT,
 ) -> np.ndarray:
     """Render one vector runtime row into a browser-like RGB frame.
 
     This is for human inspection, not model input. It uses the source-state arrays,
     the browser's dark background, player colors, visible trail bodies or browser-style
-    trail lines, live heads, and active bonus circles. It is intentionally separate
-    from the 64x64 gray learning tensor.
+    trail lines, live heads, and active bonus sprites by default. It is
+    intentionally separate from the 64x64 gray learning tensor.
     """
 
     mode = _validated_trail_render_mode(trail_render_mode)
+    bonus_mode = _validated_bonus_render_mode(bonus_render_mode)
     arrays = _trusted_arrays(state)
     row_index = _row_index(row, arrays["tick"].shape[0])
     size = _rgb_frame_size(frame_size)
@@ -362,11 +447,14 @@ def render_source_state_rgb_canvas_like(
 
     if "bonus_active" in arrays:
         bonus_slots = np.flatnonzero(arrays["bonus_active"][row_index])
-        _draw_bonus_circles_rgb(
+        bonus_type = arrays.get("bonus_type")
+        _draw_bonuses_rgb(
             frame,
             arrays["bonus_pos"][row_index, bonus_slots],
             arrays["bonus_radius"][row_index, bonus_slots],
             map_size,
+            bonus_types=None if bonus_type is None else bonus_type[row_index, bonus_slots],
+            bonus_render_mode=bonus_mode,
         )
 
     player_count = arrays["pos"].shape[1]
@@ -395,31 +483,165 @@ def render_source_state_canvas_gray64(
     player_rgb: Sequence[Sequence[int]] | None = None,
     background_rgb: Sequence[int] = SOURCE_STATE_RGB_CANVAS_LIKE_BACKGROUND_RGB,
     trail_render_mode: str = TRAIL_RENDER_MODE_DEFAULT,
+    bonus_render_mode: str = BONUS_RENDER_MODE_DEFAULT,
 ) -> np.ndarray:
     """Render browser-like source-state RGB, then convert it to gray64.
 
-    This is the clean model-facing visual path: one source-state, browser-like
-    RGB image at 64x64, converted with fixed luminance weights. It is still not
-    a DOM/browser canvas pixel-parity claim.
+    This is the clean model-facing visual path: render the raw browser-like
+    source canvas at its default inspection resolution, then convert/downsample
+    that image to the 64x64 training tensor. It is still not a DOM/browser
+    canvas pixel-parity claim.
     """
 
     mode = _validated_trail_render_mode(trail_render_mode)
+    bonus_mode = _validated_bonus_render_mode(bonus_render_mode)
+    source_frame_size = SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE
     rgb = render_source_state_rgb_canvas_like(
         state,
         row=row,
-        out=rgb_out,
-        frame_size=SOURCE_STATE_CANVAS_GRAY64_SHAPE[1],
+        out=_compatible_rgb_out(rgb_out, frame_size=source_frame_size),
+        frame_size=source_frame_size,
         player_rgb=player_rgb,
         background_rgb=background_rgb,
         trail_render_mode=mode,
+        bonus_render_mode=bonus_mode,
     )
     return rgb_canvas_like_to_gray64(rgb, out=out)
+
+
+def render_source_state_canvas_gray64_player_perspectives(
+    state: Mapping[str, np.ndarray],
+    *,
+    row: int = 0,
+    player_rgbs: Sequence[Sequence[Sequence[int]]],
+    out: np.ndarray | None = None,
+    rgb_base_out: np.ndarray | None = None,
+    rgb_work_out: np.ndarray | None = None,
+    background_rgb: Sequence[int] = SOURCE_STATE_RGB_CANVAS_LIKE_BACKGROUND_RGB,
+    trail_render_mode: str = TRAIL_RENDER_MODE_DEFAULT,
+    bonus_render_mode: str = BONUS_RENDER_MODE_DEFAULT,
+) -> np.ndarray:
+    """Render gray64 frames for all player perspectives with one trail pass.
+
+    The expensive browser-line trail geometry is independent of which player is
+    controlled; only the self/other palette changes. For the common two-seat
+    path, render trails once, remap exact RGB player colors per perspective, then
+    draw perspective-specific bonuses/heads in the same order as the scalar
+    renderer before downsampling.
+    """
+
+    mode = _validated_trail_render_mode(trail_render_mode)
+    bonus_mode = _validated_bonus_render_mode(bonus_render_mode)
+    arrays = _trusted_arrays(state)
+    row_index = _row_index(row, arrays["tick"].shape[0])
+    player_count = arrays["pos"].shape[1]
+    palettes = tuple(player_rgbs)
+    if len(palettes) != player_count:
+        raise VectorVisualObservationError(
+            f"player_rgbs must contain {player_count} palettes, got {len(palettes)}"
+        )
+
+    frames = (
+        np.empty((player_count, *SOURCE_STATE_CANVAS_GRAY64_SHAPE), dtype=np.uint8)
+        if out is None
+        else _validated_player_perspective_frames(out, player_count=player_count)
+    )
+    if player_count != 2:
+        for player in range(player_count):
+            render_source_state_canvas_gray64(
+                state,
+                row=row_index,
+                out=frames[player],
+                player_rgb=palettes[player],
+                background_rgb=background_rgb,
+                trail_render_mode=mode,
+                bonus_render_mode=bonus_mode,
+            )
+        return frames
+
+    source_frame_size = SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE
+    base = (
+        np.empty((source_frame_size, source_frame_size, 3), dtype=np.uint8)
+        if rgb_base_out is None
+        else _validated_rgb_frame(rgb_base_out, frame_size=source_frame_size)
+    )
+    work = (
+        np.empty((source_frame_size, source_frame_size, 3), dtype=np.uint8)
+        if rgb_work_out is None
+        else _validated_rgb_frame(rgb_work_out, frame_size=source_frame_size)
+    )
+    if np.shares_memory(base, work):
+        raise VectorVisualObservationError("rgb_base_out and rgb_work_out must not alias")
+
+    base[:, :] = _rgb_triplet(background_rgb)
+    map_size = float(arrays["map_size"][row_index])
+    base_colors = _player_rgb_values(arrays, row_index, player_rgb=palettes[0])
+    if not _rgb_palette_reuse_safe(
+        base_colors,
+        background_rgb=background_rgb,
+        extra_reserved_colors=((120, 120, 120),),
+    ):
+        for player in range(player_count):
+            render_source_state_canvas_gray64(
+                state,
+                row=row_index,
+                out=frames[player],
+                player_rgb=palettes[player],
+                background_rgb=background_rgb,
+                trail_render_mode=mode,
+                bonus_render_mode=bonus_mode,
+            )
+        return frames
+    if mode == TRAIL_RENDER_MODE_BROWSER_LINES:
+        _render_source_state_rgb_browser_lines(
+            base,
+            arrays,
+            row_index,
+            map_size,
+            colors=base_colors,
+        )
+    else:
+        _render_source_state_rgb_body_circles_fast(
+            base,
+            arrays,
+            row_index,
+            map_size,
+            colors=base_colors,
+        )
+
+    for player, palette in enumerate(palettes):
+        colors = _player_rgb_values(arrays, row_index, player_rgb=palette)
+        work[:] = base
+        if player != 0:
+            _remap_rgb_palette_pixels(
+                work,
+                source=base,
+                from_colors=base_colors,
+                to_colors=colors,
+            )
+        _draw_source_state_rgb_bonuses(
+            work,
+            arrays,
+            row_index,
+            map_size,
+            bonus_render_mode=bonus_mode,
+        )
+        _draw_source_state_rgb_heads(
+            work,
+            arrays,
+            row_index,
+            map_size,
+            colors=colors,
+        )
+        rgb_canvas_like_to_gray64(work, out=frames[player])
+    return frames
 
 
 def render_source_snapshot_rgb_canvas_like(
     snapshot: Mapping[str, Any],
     *,
     world_bodies: Sequence[Mapping[str, Any]] | None = None,
+    visual_trail_points: Sequence[Mapping[str, Any]] | None = None,
     bonus_bodies: Sequence[Mapping[str, Any]] | None = None,
     avatar_body_metadata: Sequence[Mapping[str, Any]] | None = None,
     out: np.ndarray | None = None,
@@ -428,10 +650,12 @@ def render_source_snapshot_rgb_canvas_like(
     background_rgb: Sequence[int] = SOURCE_STATE_RGB_CANVAS_LIKE_BACKGROUND_RGB,
     default_avatar_radius: float = SOURCE_STATE_GRAY64_DEFAULT_AVATAR_RADIUS,
     trail_render_mode: str = TRAIL_RENDER_MODE_DEFAULT,
+    bonus_render_mode: str = BONUS_RENDER_MODE_DEFAULT,
 ) -> np.ndarray:
     """Render a source-env snapshot into the browser-like RGB frame."""
 
     mode = _validated_trail_render_mode(trail_render_mode)
+    bonus_mode = _validated_bonus_render_mode(bonus_render_mode)
     size = _rgb_frame_size(frame_size)
     frame = (
         np.empty((size, size, 3), dtype=np.uint8)
@@ -450,9 +674,18 @@ def render_source_snapshot_rgb_canvas_like(
     avatar_radius_by_id = _source_avatar_radius_by_id(avatar_body_metadata)
 
     body_records = _source_mapping_sequence(world_bodies, name="world_bodies")
+    visual_trail_records = (
+        None
+        if visual_trail_points is None
+        else _source_mapping_sequence(
+            visual_trail_points,
+            name="visual_trail_points",
+        )
+    )
     _render_source_snapshot_rgb_trails(
         frame,
         body_records,
+        visual_trail_records,
         player_index_by_avatar_id,
         map_size,
         colors=colors,
@@ -470,7 +703,14 @@ def render_source_snapshot_rgb_canvas_like(
             [float(bonus.get("radius", 0.0)) for bonus in bonus_records],
             dtype=np.float64,
         )
-        _draw_bonus_circles_rgb(frame, bonus_positions, bonus_radii, map_size)
+        _draw_bonuses_rgb(
+            frame,
+            bonus_positions,
+            bonus_radii,
+            map_size,
+            bonus_types=_source_bonus_type_codes(bonus_records),
+            bonus_render_mode=bonus_mode,
+        )
 
     for player, avatar in enumerate(avatars):
         if not bool(avatar.get("present", True)):
@@ -500,6 +740,7 @@ def render_source_snapshot_canvas_gray64(
     snapshot: Mapping[str, Any],
     *,
     world_bodies: Sequence[Mapping[str, Any]] | None = None,
+    visual_trail_points: Sequence[Mapping[str, Any]] | None = None,
     bonus_bodies: Sequence[Mapping[str, Any]] | None = None,
     avatar_body_metadata: Sequence[Mapping[str, Any]] | None = None,
     out: np.ndarray | None = None,
@@ -508,19 +749,24 @@ def render_source_snapshot_canvas_gray64(
     background_rgb: Sequence[int] = SOURCE_STATE_RGB_CANVAS_LIKE_BACKGROUND_RGB,
     default_avatar_radius: float = SOURCE_STATE_GRAY64_DEFAULT_AVATAR_RADIUS,
     trail_render_mode: str = TRAIL_RENDER_MODE_DEFAULT,
+    bonus_render_mode: str = BONUS_RENDER_MODE_DEFAULT,
 ) -> np.ndarray:
     mode = _validated_trail_render_mode(trail_render_mode)
+    bonus_mode = _validated_bonus_render_mode(bonus_render_mode)
+    source_frame_size = SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE
     rgb = render_source_snapshot_rgb_canvas_like(
         snapshot,
         world_bodies=world_bodies,
+        visual_trail_points=visual_trail_points,
         bonus_bodies=bonus_bodies,
         avatar_body_metadata=avatar_body_metadata,
-        out=rgb_out,
-        frame_size=SOURCE_STATE_CANVAS_GRAY64_SHAPE[1],
+        out=_compatible_rgb_out(rgb_out, frame_size=source_frame_size),
+        frame_size=source_frame_size,
         player_rgb=player_rgb,
         background_rgb=background_rgb,
         default_avatar_radius=default_avatar_radius,
         trail_render_mode=mode,
+        bonus_render_mode=bonus_mode,
     )
     return rgb_canvas_like_to_gray64(rgb, out=out)
 
@@ -533,25 +779,22 @@ def rgb_canvas_like_to_gray64(
     """Convert an RGB canvas-like frame to CHW uint8 gray64."""
 
     rgb_array = np.asarray(rgb)
-    if rgb_array.shape != (64, 64, 3):
+    if rgb_array.ndim != 3 or rgb_array.shape[2] != 3 or rgb_array.shape[0] != rgb_array.shape[1]:
         raise VectorVisualObservationError(
-            f"rgb must have shape (64, 64, 3), got {rgb_array.shape}"
+            f"rgb must have square HWC RGB shape, got {rgb_array.shape}"
         )
     if rgb_array.dtype != np.uint8:
         raise VectorVisualObservationError(f"rgb dtype must be uint8, got {rgb_array.dtype}")
+    if rgb_array.shape[0] < SOURCE_STATE_CANVAS_GRAY64_SHAPE[1]:
+        raise VectorVisualObservationError(
+            "rgb frame size must be at least 64 for gray64 conversion"
+        )
     frame = (
         np.empty(SOURCE_STATE_CANVAS_GRAY64_SHAPE, dtype=np.uint8)
         if out is None
         else _validated_frame(out, name="out")
     )
-    gray = (
-        rgb_array[:, :, 0].astype(np.float32) * np.float32(0.299)
-        + rgb_array[:, :, 1].astype(np.float32) * np.float32(0.587)
-        + rgb_array[:, :, 2].astype(np.float32) * np.float32(0.114)
-    )
-    np.rint(gray, out=gray)
-    np.clip(gray, 0.0, 255.0, out=gray)
-    frame[0] = gray.astype(np.uint8)
+    frame[0] = _rgb_canvas_like_luma_downsample64(rgb_array)
     return frame
 
 
@@ -695,16 +938,25 @@ def source_state_canvas_gray64_schema() -> dict[str, Any]:
         "normalized_range": list(SOURCE_STATE_CANVAS_GRAY64_NORMALIZED_VALUE_RANGE),
         "channel_order": "CHW",
         "pixel_semantics": (
-            "luminance of source-state browser-like RGB frame rendered at 64x64"
+            "area-downsampled luminance of the source-state browser-like RGB canvas"
         ),
         "rgb_source_schema_id": SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID,
         "rgb_renderer_impl_id": SOURCE_STATE_RGB_CANVAS_LIKE_RENDERER_IMPL_ID,
+        "rgb_source_frame_size": SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
+        "downsample_target_frame_size": SOURCE_STATE_CANVAS_GRAY64_SHAPE[1],
+        "downsample_method": "integer_area_average_after_luma",
+        "downsample_ratio": (
+            SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE // SOURCE_STATE_CANVAS_GRAY64_SHAPE[1]
+        ),
         "renderer_impl_id": SOURCE_STATE_CANVAS_GRAY64_RENDERER_IMPL_ID,
         "state_fields": list(SOURCE_STATE_GRAY64_STATE_FIELDS),
         "optional_state_fields": [
             *SOURCE_STATE_GRAY64_OPTIONAL_STATE_FIELDS,
             "state.avatar_color",
             "state.body_num",
+            "state.body_break_before",
+            *SOURCE_STATE_VISUAL_TRAIL_FIELDS,
+            "state.bonus_type",
         ],
         "perspective": SOURCE_STATE_CANVAS_GRAY64_PERSPECTIVE,
         "comparison_target": SOURCE_STATE_CANVAS_GRAY64_COMPARISON_TARGET,
@@ -719,18 +971,35 @@ def source_state_canvas_gray64_schema() -> dict[str, Any]:
         "trail_renderer_is_approximation": False,
         "browser_trail_semantics": "persistent_background_canvas_round_line_caps",
         "browser_client_trail_point_caveat": (
-            "vector/source snapshots expose persisted body points, not all client "
-            "position-event trail points"
+            "browser_lines prefers optional visual_trail_* position-event points; "
+            "without them it falls back to sparse persisted body points"
         ),
-        "trail_raster_antialiasing": "binary_numpy_coverage_no_browser_antialiasing",
+        "trail_raster_antialiasing": (
+            "binary_numpy_coverage_at_source_resolution_then_area_downsampled"
+        ),
+        "default_bonus_render_mode": BONUS_RENDER_MODE_DEFAULT,
+        "supported_bonus_render_modes": list(BONUS_RENDER_MODE_ORDER),
+        "bonus_render_mode": BONUS_RENDER_MODE_DEFAULT,
+        "bonus_renderer_kind": "source_sprite_atlas_tiles",
+        "bonus_renderer_truth_level": ("source_state_browser_bonus_sprite_atlas_non_pixel_parity"),
+        "bonus_renderer_is_approximation": False,
+        "bonus_sprite_missing_fallback": "deterministic_type_coded_placeholder_stamp",
+        "bonus_sprite_cache": "in_process_lru_stamp_cache_by_tile_index_and_pixel_size",
+        "bonus_sprite_sheet": SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_SPRITE_SHEET_RELATIVE_PATH,
+        "bonus_sprite_grid": [
+            SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_SPRITE_COLUMNS,
+            SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_SPRITE_ROWS,
+        ],
+        "bonus_sprite_names": list(SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_SPRITE_NAMES),
         "uses_ale": SOURCE_STATE_CANVAS_GRAY64_USES_ALE,
-        "grayscale_conversion": "round(0.299*r + 0.587*g + 0.114*b)",
+        "grayscale_conversion": (
+            "render source RGB at 704x704; compute 0.299*r + 0.587*g + 0.114*b; "
+            "average each 11x11 area block; round to uint8"
+        ),
     }
 
 
-SOURCE_STATE_CANVAS_GRAY64_SCHEMA_HASH = stable_contract_hash(
-    source_state_canvas_gray64_schema()
-)
+SOURCE_STATE_CANVAS_GRAY64_SCHEMA_HASH = stable_contract_hash(source_state_canvas_gray64_schema())
 
 
 def render_source_state_bonus64_stack4_player_perspective_v1(
@@ -753,11 +1022,7 @@ def render_source_state_bonus64_stack4_player_perspective_v1(
     row_index = _row_index(row, arrays["tick"].shape[0])
     player_count = arrays["pos"].shape[1]
     controlled = _row_index(controlled_player, player_count)
-    other = (
-        1 - controlled
-        if player_count == 2
-        else _first_other_player(controlled, player_count)
-    )
+    other = 1 - controlled if player_count == 2 else _first_other_player(controlled, player_count)
     bonus_arrays = _bonus64_arrays(state, arrays)
     output = _validated_bonus64_out(out)
     output.fill(0.0)
@@ -765,12 +1030,12 @@ def render_source_state_bonus64_stack4_player_perspective_v1(
     if occupancy_stack is None:
         raw_frame = render_source_state_gray64(state, row=row_index)
         perspective_frame = _player_perspective_gray64(raw_frame, controlled)
-        output[:SOURCE_STATE_BONUS64_STACK4_OCCUPANCY_CHANNELS] = (
-            perspective_frame.astype(np.float32, copy=False) * np.float32(1.0 / 255.0)
-        )
+        output[:SOURCE_STATE_BONUS64_STACK4_OCCUPANCY_CHANNELS] = perspective_frame.astype(
+            np.float32, copy=False
+        ) * np.float32(1.0 / 255.0)
     else:
-        output[:SOURCE_STATE_BONUS64_STACK4_OCCUPANCY_CHANNELS] = (
-            _validated_occupancy_stack(occupancy_stack)
+        output[:SOURCE_STATE_BONUS64_STACK4_OCCUPANCY_CHANNELS] = _validated_occupancy_stack(
+            occupancy_stack
         )
 
     _draw_bonus64_bonus_planes(output, bonus_arrays, row_index)
@@ -917,9 +1182,10 @@ def _validated_arrays(state: Mapping[str, np.ndarray]) -> dict[str, np.ndarray]:
     body_pos = _numeric_array(state, "body_pos", shape=(batch_size, body_capacity, 2))
     body_radius = _numeric_array(state, "body_radius", shape=body_shape)
     body_owner = _integer_array(state, "body_owner", shape=body_shape)
-    body_num = (
-        _integer_array(state, "body_num", shape=body_shape)
-        if "body_num" in state
+    body_num = _integer_array(state, "body_num", shape=body_shape) if "body_num" in state else None
+    body_break_before = (
+        _bool_array(state, "body_break_before", shape=body_shape)
+        if "body_break_before" in state
         else None
     )
     body_write_cursor = _integer_array(state, "body_write_cursor", shape=(batch_size,))
@@ -928,7 +1194,9 @@ def _validated_arrays(state: Mapping[str, np.ndarray]) -> dict[str, np.ndarray]:
             "state['body_write_cursor'] values must be in [0, body_capacity]"
         )
     if bool((~np.isfinite(body_pos)).any()) or bool((~np.isfinite(body_radius)).any()):
-        raise VectorVisualObservationError("body position and radius arrays must contain finite values")
+        raise VectorVisualObservationError(
+            "body position and radius arrays must contain finite values"
+        )
     if bool((body_radius < 0.0).any()):
         raise VectorVisualObservationError("state['body_radius'] values must be non-negative")
 
@@ -957,6 +1225,9 @@ def _validated_arrays(state: Mapping[str, np.ndarray]) -> dict[str, np.ndarray]:
     }
     if body_num is not None:
         arrays["body_num"] = body_num
+    if body_break_before is not None:
+        arrays["body_break_before"] = body_break_before
+    arrays.update(_optional_visual_trail_arrays(state, batch_size=batch_size))
     arrays.update(_optional_bonus_arrays(state, batch_size=batch_size))
     return arrays
 
@@ -970,7 +1241,63 @@ def _trusted_arrays(state: Mapping[str, np.ndarray]) -> dict[str, np.ndarray]:
         arrays["avatar_color"] = np.asarray(state["avatar_color"])
     if "body_num" in state:
         arrays["body_num"] = np.asarray(state["body_num"])
+    if "body_break_before" in state:
+        arrays["body_break_before"] = np.asarray(state["body_break_before"])
+    for field_name in SOURCE_STATE_VISUAL_TRAIL_FIELDS:
+        name = field_name.removeprefix("state.")
+        if name in state:
+            arrays[name] = np.asarray(state[name])
+    if "bonus_type" in state:
+        arrays["bonus_type"] = np.asarray(state["bonus_type"])
     return arrays
+
+
+def _optional_visual_trail_arrays(
+    state: Mapping[str, np.ndarray],
+    *,
+    batch_size: int,
+) -> dict[str, np.ndarray]:
+    names = tuple(
+        field_name.removeprefix("state.") for field_name in SOURCE_STATE_VISUAL_TRAIL_FIELDS
+    )
+    present = [name in state for name in names]
+    if not any(present):
+        return {}
+    if not all(present):
+        missing = [name for name, is_present in zip(names, present, strict=True) if not is_present]
+        raise VectorVisualObservationError(
+            f"optional visual trail arrays must be supplied together; missing {missing}"
+        )
+    active = _bool_array(state, "visual_trail_active", ndim=2)
+    if active.shape[0] != batch_size:
+        raise VectorVisualObservationError("state['visual_trail_active'] must have shape [B,C]")
+    capacity = active.shape[1]
+    shape = (batch_size, capacity)
+    write_cursor = _integer_array(state, "visual_trail_write_cursor", shape=(batch_size,))
+    pos = _numeric_array(state, "visual_trail_pos", shape=(batch_size, capacity, 2))
+    radius = _numeric_array(state, "visual_trail_radius", shape=shape)
+    owner = _integer_array(state, "visual_trail_owner", shape=shape)
+    break_before = _bool_array(state, "visual_trail_break_before", shape=shape)
+    if bool(((write_cursor < 0) | (write_cursor > capacity)).any()):
+        raise VectorVisualObservationError(
+            "state['visual_trail_write_cursor'] values must be in [0, visual capacity]"
+        )
+    if bool((~np.isfinite(pos)).any()) or bool((~np.isfinite(radius)).any()):
+        raise VectorVisualObservationError(
+            "visual trail position and radius arrays must contain finite values"
+        )
+    if bool((radius < 0.0).any()):
+        raise VectorVisualObservationError(
+            "state['visual_trail_radius'] values must be non-negative"
+        )
+    return {
+        "visual_trail_active": active,
+        "visual_trail_write_cursor": write_cursor,
+        "visual_trail_pos": pos,
+        "visual_trail_radius": radius,
+        "visual_trail_owner": owner,
+        "visual_trail_break_before": break_before,
+    }
 
 
 def _optional_bonus_arrays(
@@ -988,8 +1315,7 @@ def _optional_bonus_arrays(
             if not is_present
         ]
         raise VectorVisualObservationError(
-            "optional bonus visual arrays must be supplied together; "
-            f"missing {missing}"
+            f"optional bonus visual arrays must be supplied together; missing {missing}"
         )
     bonus_active = _bool_array(state, "bonus_active", ndim=2)
     if bonus_active.shape[0] != batch_size:
@@ -997,15 +1323,25 @@ def _optional_bonus_arrays(
     bonus_capacity = bonus_active.shape[1]
     bonus_pos = _numeric_array(state, "bonus_pos", shape=(batch_size, bonus_capacity, 2))
     bonus_radius = _numeric_array(state, "bonus_radius", shape=(batch_size, bonus_capacity))
+    bonus_type = (
+        _integer_array(state, "bonus_type", shape=(batch_size, bonus_capacity))
+        if "bonus_type" in state
+        else None
+    )
     if bool((~np.isfinite(bonus_pos)).any()) or bool((~np.isfinite(bonus_radius)).any()):
-        raise VectorVisualObservationError("bonus position and radius arrays must contain finite values")
+        raise VectorVisualObservationError(
+            "bonus position and radius arrays must contain finite values"
+        )
     if bool((bonus_radius < 0.0).any()):
         raise VectorVisualObservationError("state['bonus_radius'] values must be non-negative")
-    return {
+    arrays: dict[str, np.ndarray] = {
         "bonus_active": bonus_active,
         "bonus_pos": bonus_pos,
         "bonus_radius": bonus_radius,
     }
+    if bonus_type is not None:
+        arrays["bonus_type"] = bonus_type
+    return arrays
 
 
 def _state_array(state: Mapping[str, np.ndarray], name: str) -> np.ndarray:
@@ -1075,9 +1411,7 @@ def _row_index(row: int, batch_size: int) -> int:
     except (TypeError, ValueError) as exc:
         raise VectorVisualObservationError("row must be an integer") from exc
     if row_index < 0 or row_index >= batch_size:
-        raise VectorVisualObservationError(
-            f"row must be in [0, {batch_size}), got {row_index}"
-        )
+        raise VectorVisualObservationError(f"row must be in [0, {batch_size}), got {row_index}")
     return row_index
 
 
@@ -1243,6 +1577,41 @@ def _validated_rgb_frame(out: np.ndarray, *, frame_size: int) -> np.ndarray:
     return array
 
 
+def _compatible_rgb_out(out: np.ndarray | None, *, frame_size: int) -> np.ndarray | None:
+    if out is None:
+        return None
+    array = np.asarray(out)
+    if array.shape == (frame_size, frame_size, 3):
+        return _validated_rgb_frame(array, frame_size=frame_size)
+    if array.shape == (64, 64, 3) and frame_size != 64:
+        if array.dtype != np.uint8:
+            raise VectorVisualObservationError(f"rgb_out dtype must be uint8, got {array.dtype}")
+        return None
+    return _validated_rgb_frame(array, frame_size=frame_size)
+
+
+def _rgb_canvas_like_luma_downsample64(rgb_array: np.ndarray) -> np.ndarray:
+    target_size = SOURCE_STATE_CANVAS_GRAY64_SHAPE[1]
+    source_size = int(rgb_array.shape[0])
+    if source_size % target_size != 0:
+        raise VectorVisualObservationError(
+            "rgb frame size must be 64 or an integer multiple of 64 for gray64 conversion"
+        )
+    ratio = source_size // target_size
+    gray = (
+        rgb_array[:, :, 0].astype(np.float32) * np.float32(0.299)
+        + rgb_array[:, :, 1].astype(np.float32) * np.float32(0.587)
+        + rgb_array[:, :, 2].astype(np.float32) * np.float32(0.114)
+    )
+    downsampled = gray.reshape(target_size, ratio, target_size, ratio).mean(
+        axis=(1, 3),
+        dtype=np.float32,
+    )
+    np.rint(downsampled, out=downsampled)
+    np.clip(downsampled, 0.0, 255.0, out=downsampled)
+    return downsampled.astype(np.uint8)
+
+
 def _rgb_triplet(value: Sequence[int]) -> np.ndarray:
     array = np.asarray(value, dtype=np.int16)
     if array.shape != (3,):
@@ -1274,6 +1643,107 @@ def _player_rgb_values(
     return colors
 
 
+def _validated_player_perspective_frames(
+    out: np.ndarray,
+    *,
+    player_count: int,
+) -> np.ndarray:
+    array = np.asarray(out)
+    expected = (int(player_count), *SOURCE_STATE_CANVAS_GRAY64_SHAPE)
+    if array.shape != expected:
+        raise VectorVisualObservationError(f"out must have shape {expected}, got {array.shape}")
+    if array.dtype != np.uint8:
+        raise VectorVisualObservationError(f"out dtype must be uint8, got {array.dtype}")
+    return array
+
+
+def _remap_rgb_palette_pixels(
+    target: np.ndarray,
+    *,
+    source: np.ndarray,
+    from_colors: np.ndarray,
+    to_colors: np.ndarray,
+) -> None:
+    if from_colors.shape != to_colors.shape:
+        raise VectorVisualObservationError(
+            f"palette shapes differ: {from_colors.shape} vs {to_colors.shape}"
+        )
+    for from_rgb, to_rgb in zip(from_colors, to_colors, strict=True):
+        from_triplet = _rgb_triplet(from_rgb)
+        to_triplet = _rgb_triplet(to_rgb)
+        if bool(np.array_equal(from_triplet, to_triplet)):
+            continue
+        mask = np.all(source == from_triplet, axis=2)
+        if bool(mask.any()):
+            target[mask] = to_triplet
+
+
+def _rgb_palette_reuse_safe(
+    colors: np.ndarray,
+    *,
+    background_rgb: Sequence[int],
+    extra_reserved_colors: Sequence[Sequence[int]] = (),
+) -> bool:
+    triplets = [_rgb_triplet(color) for color in colors]
+    reserved = [_rgb_triplet(background_rgb), *[_rgb_triplet(color) for color in extra_reserved_colors]]
+    seen: set[tuple[int, int, int]] = set()
+    for triplet in triplets:
+        key = tuple(int(value) for value in triplet)
+        if key in seen:
+            return False
+        seen.add(key)
+        for reserved_triplet in reserved:
+            if bool(np.array_equal(triplet, reserved_triplet)):
+                return False
+    return True
+
+
+def _draw_source_state_rgb_bonuses(
+    frame: np.ndarray,
+    arrays: Mapping[str, np.ndarray],
+    row: int,
+    map_size: float,
+    *,
+    bonus_render_mode: str,
+) -> None:
+    if "bonus_active" not in arrays:
+        return
+    bonus_slots = np.flatnonzero(arrays["bonus_active"][row])
+    bonus_type = arrays.get("bonus_type")
+    _draw_bonuses_rgb(
+        frame,
+        arrays["bonus_pos"][row, bonus_slots],
+        arrays["bonus_radius"][row, bonus_slots],
+        map_size,
+        bonus_types=None if bonus_type is None else bonus_type[row, bonus_slots],
+        bonus_render_mode=bonus_render_mode,
+    )
+
+
+def _draw_source_state_rgb_heads(
+    frame: np.ndarray,
+    arrays: Mapping[str, np.ndarray],
+    row: int,
+    map_size: float,
+    *,
+    colors: np.ndarray,
+) -> None:
+    player_count = arrays["pos"].shape[1]
+    for player in range(player_count):
+        if not bool(arrays["present"][row, player]):
+            continue
+        if not bool(arrays["alive"][row, player]):
+            continue
+        _draw_world_circle_rgb(
+            frame,
+            arrays["pos"][row, player, 0],
+            arrays["pos"][row, player, 1],
+            arrays["radius"][row, player],
+            map_size,
+            color=colors[player],
+        )
+
+
 def _source_avatar_rgb_values(
     avatars: Sequence[Mapping[str, Any]],
     *,
@@ -1303,9 +1773,7 @@ def _hex_color_to_rgb(value: str, *, fallback: Sequence[int]) -> np.ndarray:
     if len(text) != 6:
         return _rgb_triplet(fallback)
     try:
-        return _rgb_triplet(
-            (int(text[0:2], 16), int(text[2:4], 16), int(text[4:6], 16))
-        )
+        return _rgb_triplet((int(text[0:2], 16), int(text[2:4], 16), int(text[4:6], 16)))
     except ValueError:
         return _rgb_triplet(fallback)
 
@@ -1325,9 +1793,7 @@ def _fill_player_status_planes(
         _ratio_plane_value(arrays, "speed", "base_speed", row=row, player=player, scale=2.0)
     )
     output[start_channel + 2].fill(_bool_player_value(arrays, "inverse", row, player))
-    output[start_channel + 3].fill(
-        _turn_override_value(arrays, row=row, player=player)
-    )
+    output[start_channel + 3].fill(_turn_override_value(arrays, row=row, player=player))
     output[start_channel + 4].fill(_bool_player_value(arrays, "invincible", row, player))
     output[start_channel + 5].fill(_bool_player_value(arrays, "printing", row, player))
     output[start_channel + 6].fill(_player_bonus_ttl_value(arrays, row=row, player=player))
@@ -1377,7 +1843,11 @@ def _turn_override_value(
     base_array = arrays.get("base_angular_velocity_per_ms")
     if value_array is None or base_array is None:
         return 0.0
-    return 1.0 if not np.isclose(float(value_array[row, player]), float(base_array[row, player])) else 0.0
+    return (
+        1.0
+        if not np.isclose(float(value_array[row, player]), float(base_array[row, player]))
+        else 0.0
+    )
 
 
 def _player_bonus_ttl_value(
@@ -1396,7 +1866,10 @@ def _player_bonus_ttl_value(
     durations = np.asarray(duration_array[row, player, :count], dtype=np.float64)
     if durations.size == 0:
         return 0.0
-    return float(np.clip(np.nanmax(durations), 0.0, SOURCE_STATE_BONUS64_STACK4_MAX_TTL_MS) / SOURCE_STATE_BONUS64_STACK4_MAX_TTL_MS)
+    return float(
+        np.clip(np.nanmax(durations), 0.0, SOURCE_STATE_BONUS64_STACK4_MAX_TTL_MS)
+        / SOURCE_STATE_BONUS64_STACK4_MAX_TTL_MS
+    )
 
 
 def _game_borderless_value(state: Mapping[str, np.ndarray], row: int) -> float:
@@ -1423,7 +1896,10 @@ def _game_bonus_ttl_value(state: Mapping[str, np.ndarray], row: int) -> float:
     durations = np.asarray(duration_array)[row, :count].astype(np.float64, copy=False)
     if durations.size == 0:
         return 0.0
-    return float(np.clip(np.nanmax(durations), 0.0, SOURCE_STATE_BONUS64_STACK4_MAX_TTL_MS) / SOURCE_STATE_BONUS64_STACK4_MAX_TTL_MS)
+    return float(
+        np.clip(np.nanmax(durations), 0.0, SOURCE_STATE_BONUS64_STACK4_MAX_TTL_MS)
+        / SOURCE_STATE_BONUS64_STACK4_MAX_TTL_MS
+    )
 
 
 def _first_other_player(controlled: int, player_count: int) -> int:
@@ -1439,6 +1915,16 @@ def _validated_trail_render_mode(value: str) -> str:
         supported = ", ".join(TRAIL_RENDER_MODE_ORDER)
         raise VectorVisualObservationError(
             f"trail_render_mode must be one of [{supported}], got {value!r}"
+        )
+    return mode
+
+
+def _validated_bonus_render_mode(value: str) -> str:
+    mode = str(value)
+    if mode not in BONUS_RENDER_MODES:
+        supported = ", ".join(BONUS_RENDER_MODE_ORDER)
+        raise VectorVisualObservationError(
+            f"bonus_render_mode must be one of [{supported}], got {value!r}"
         )
     return mode
 
@@ -1474,6 +1960,12 @@ def _canvas_gray64_renderer_impl_id(mode: str) -> str:
 def _body_slot_limit(arrays: Mapping[str, np.ndarray], row: int) -> int:
     capacity = arrays["body_active"].shape[1]
     cursor = int(arrays["body_write_cursor"][row])
+    return int(np.clip(cursor, 0, capacity))
+
+
+def _visual_trail_slot_limit(arrays: Mapping[str, np.ndarray], row: int) -> int:
+    capacity = arrays["visual_trail_active"].shape[1]
+    cursor = int(arrays["visual_trail_write_cursor"][row])
     return int(np.clip(cursor, 0, capacity))
 
 
@@ -1516,9 +2008,27 @@ def _render_source_state_rgb_browser_lines(
     *,
     colors: np.ndarray,
 ) -> None:
+    if "visual_trail_active" in arrays:
+        trail_limit = _visual_trail_slot_limit(arrays, row)
+        active_slots = np.flatnonzero(arrays["visual_trail_active"][row, :trail_limit])
+        if active_slots.size:
+            _draw_browser_line_trails_rgb(
+                frame,
+                arrays["visual_trail_pos"][row, active_slots],
+                arrays["visual_trail_radius"][row, active_slots],
+                arrays["visual_trail_owner"][row, active_slots],
+                map_size,
+                colors=colors,
+                slots=active_slots,
+                body_nums=None,
+                break_before=arrays["visual_trail_break_before"][row, active_slots],
+            )
+            return
+
     body_limit = _body_slot_limit(arrays, row)
     active_slots = np.flatnonzero(arrays["body_active"][row, :body_limit])
     body_num = arrays.get("body_num")
+    body_break_before = arrays.get("body_break_before")
     _draw_browser_line_trails_rgb(
         frame,
         arrays["body_pos"][row, active_slots],
@@ -1528,12 +2038,14 @@ def _render_source_state_rgb_browser_lines(
         colors=colors,
         slots=active_slots,
         body_nums=None if body_num is None else body_num[row, active_slots],
+        break_before=(None if body_break_before is None else body_break_before[row, active_slots]),
     )
 
 
 def _render_source_snapshot_rgb_trails(
     frame: np.ndarray,
     body_records: Sequence[Mapping[str, Any]],
+    visual_trail_records: Sequence[Mapping[str, Any]] | None,
     player_index_by_avatar_id: Mapping[int, int],
     map_size: float,
     *,
@@ -1541,6 +2053,21 @@ def _render_source_snapshot_rgb_trails(
     default_avatar_radius: float,
     trail_render_mode: str,
 ) -> None:
+    if (
+        trail_render_mode == TRAIL_RENDER_MODE_BROWSER_LINES
+        and visual_trail_records is not None
+        and len(visual_trail_records) > 0
+    ):
+        _render_source_snapshot_visual_trail_records(
+            frame,
+            visual_trail_records,
+            player_index_by_avatar_id,
+            map_size,
+            colors=colors,
+            default_avatar_radius=default_avatar_radius,
+        )
+        return
+
     if not body_records:
         return
     body_positions = np.asarray(
@@ -1569,6 +2096,7 @@ def _render_source_snapshot_rgb_trails(
         )
         return
     body_nums = _source_body_nums(body_records)
+    break_before = _source_body_break_before(body_records)
     _draw_browser_line_trails_rgb(
         frame,
         body_positions,
@@ -1578,6 +2106,47 @@ def _render_source_snapshot_rgb_trails(
         colors=colors,
         slots=np.arange(len(body_records), dtype=np.int32),
         body_nums=body_nums,
+        break_before=break_before,
+    )
+
+
+def _render_source_snapshot_visual_trail_records(
+    frame: np.ndarray,
+    records: Sequence[Mapping[str, Any]],
+    player_index_by_avatar_id: Mapping[int, int],
+    map_size: float,
+    *,
+    colors: np.ndarray,
+    default_avatar_radius: float,
+) -> None:
+    if not records:
+        return
+    positions = np.asarray(
+        [[float(point["x"]), float(point["y"])] for point in records],
+        dtype=np.float64,
+    )
+    radii = np.asarray(
+        [float(point.get("radius", default_avatar_radius)) for point in records],
+        dtype=np.float64,
+    )
+    owners = np.asarray(
+        [
+            _source_body_owner_index(point.get("avatarId"), player_index_by_avatar_id)
+            for point in records
+        ],
+        dtype=np.int16,
+    )
+    break_before = _source_body_break_before(records)
+    _draw_browser_line_trails_rgb(
+        frame,
+        positions,
+        radii,
+        owners,
+        map_size,
+        colors=colors,
+        slots=np.arange(len(records), dtype=np.int32),
+        body_nums=None,
+        break_before=break_before,
     )
 
 
@@ -1593,6 +2162,40 @@ def _source_body_nums(body_records: Sequence[Mapping[str, Any]]) -> np.ndarray |
     return np.asarray(values, dtype=np.int32)
 
 
+def _source_body_break_before(
+    body_records: Sequence[Mapping[str, Any]],
+) -> np.ndarray | None:
+    values: list[bool] = []
+    for body in body_records:
+        if "breakBefore" in body:
+            values.append(bool(body["breakBefore"]))
+        elif "body_break_before" in body:
+            values.append(bool(body["body_break_before"]))
+        else:
+            return None
+    return np.asarray(values, dtype=bool)
+
+
+def _source_bonus_type_codes(
+    bonus_records: Sequence[Mapping[str, Any]],
+) -> np.ndarray | None:
+    values: list[int] = []
+    for bonus in bonus_records:
+        bonus_type = bonus.get("type")
+        if bonus_type is None:
+            return None
+        try:
+            values.append(int(bonus_type))
+            continue
+        except (TypeError, ValueError):
+            pass
+        code = SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_TYPE_CODE_BY_NAME.get(str(bonus_type))
+        if code is None:
+            return None
+        values.append(code)
+    return np.asarray(values, dtype=np.int16)
+
+
 def _draw_browser_line_trails_rgb(
     canvas: np.ndarray,
     positions: np.ndarray,
@@ -1603,6 +2206,7 @@ def _draw_browser_line_trails_rgb(
     colors: np.ndarray,
     slots: np.ndarray,
     body_nums: np.ndarray | None,
+    break_before: np.ndarray | None,
 ) -> None:
     if positions.size == 0:
         return
@@ -1618,20 +2222,25 @@ def _draw_browser_line_trails_rgb(
     slots = slots[finite].astype(np.int64, copy=False)
     if body_nums is not None:
         body_nums = body_nums[finite].astype(np.int64, copy=False)
+    if break_before is not None:
+        break_before = break_before[finite].astype(bool, copy=False)
 
     for owner in _browser_line_owner_draw_order(owners):
         owner_mask = owners == owner
         owner_positions = positions[owner_mask]
         owner_radii = radii[owner_mask]
         owner_slots = slots[owner_mask]
-        order = _browser_line_body_order(owner_slots, None if body_nums is None else body_nums[owner_mask])
+        owner_body_nums = None if body_nums is None else body_nums[owner_mask]
+        order = _browser_line_body_order(owner_slots, owner_body_nums)
         color = _body_owner_rgb(owner, colors)
+        ordered_breaks = None if break_before is None else break_before[owner_mask][order]
         _draw_ordered_browser_line_path_rgb(
             canvas,
             owner_positions[order],
             owner_radii[order],
             map_size,
             color=color,
+            break_before=ordered_breaks,
         )
 
 
@@ -1659,18 +2268,15 @@ def _draw_ordered_browser_line_path_rgb(
     map_size: float,
     *,
     color: Sequence[int] | np.ndarray,
+    break_before: np.ndarray | None,
 ) -> None:
     if positions.size == 0:
         return
     start = 0
     for index in range(1, positions.shape[0]):
-        prev = positions[index - 1]
-        current = positions[index]
         radius_changed = not np.isclose(radii[index], radii[start], rtol=0.0, atol=1e-9)
-        gap = abs(float(current[0]) - float(prev[0])) > 1.0 or abs(
-            float(current[1]) - float(prev[1])
-        ) > 1.0
-        if gap or radius_changed:
+        segment_break = break_before is not None and bool(break_before[index])
+        if segment_break or radius_changed:
             _draw_rounded_world_polyline_rgb(
                 canvas,
                 positions[start:index],
@@ -1843,10 +2449,7 @@ def _draw_body_circles(
     radius = radii.astype(np.float64, copy=False)
     finite = np.isfinite(x) & np.isfinite(y) & np.isfinite(radius)
     intersects = (
-        (x + radius > 0.0)
-        & (x - radius < map_size)
-        & (y + radius > 0.0)
-        & (y - radius < map_size)
+        (x + radius > 0.0) & (x - radius < map_size) & (y + radius > 0.0) & (y - radius < map_size)
     )
     finite &= intersects
     if not bool(finite.any()):
@@ -1966,14 +2569,136 @@ def _draw_body_circles_rgb(
         )
 
 
+def _draw_bonuses_rgb(
+    canvas: np.ndarray,
+    positions: np.ndarray,
+    radii: np.ndarray,
+    map_size: float,
+    *,
+    bonus_types: np.ndarray | None,
+    bonus_render_mode: str,
+) -> None:
+    if bonus_render_mode == BONUS_RENDER_MODE_CIRCLES_FAST:
+        _draw_bonus_circles_rgb(
+            canvas,
+            positions,
+            radii,
+            map_size,
+            bonus_types=bonus_types,
+        )
+        return
+    _draw_bonus_sprites_rgb(
+        canvas,
+        positions,
+        radii,
+        map_size,
+        bonus_types=bonus_types,
+    )
+
+
+def _draw_bonus_sprites_rgb(
+    canvas: np.ndarray,
+    positions: np.ndarray,
+    radii: np.ndarray,
+    map_size: float,
+    *,
+    bonus_types: np.ndarray | None = None,
+) -> None:
+    if positions.size == 0:
+        return
+    if bonus_types is None:
+        bonus_types_iter = (None for _ in range(len(positions)))
+    else:
+        bonus_types_iter = (int(value) for value in bonus_types)
+    for position, radius, bonus_type in zip(positions, radii, bonus_types_iter, strict=True):
+        sprite_index = _bonus_sprite_index(bonus_type)
+        if sprite_index is None:
+            _draw_bonus_circles_rgb(
+                canvas,
+                np.asarray([position], dtype=np.float64),
+                np.asarray([radius], dtype=np.float64),
+                map_size,
+                bonus_types=None,
+            )
+            continue
+        _draw_world_sprite_rgb(
+            canvas,
+            position[0],
+            position[1],
+            radius,
+            map_size,
+            sprite_index=sprite_index,
+        )
+
+
+def _draw_world_sprite_rgb(
+    canvas: np.ndarray,
+    x_value: Any,
+    y_value: Any,
+    radius_value: Any,
+    map_size: float,
+    *,
+    sprite_index: int,
+) -> None:
+    x = float(x_value)
+    y = float(y_value)
+    radius = float(radius_value)
+    if not np.isfinite(x) or not np.isfinite(y) or not np.isfinite(radius):
+        return
+    if radius <= 0.0:
+        return
+    if x + radius <= 0.0 or x - radius >= map_size:
+        return
+    if y + radius <= 0.0 or y - radius >= map_size:
+        return
+
+    size = int(canvas.shape[0])
+    scale = float(size) / float(map_size)
+    dst_x = _canvas_round((x - radius) * scale)
+    dst_y = _canvas_round((y - radius) * scale)
+    dst_size = _canvas_round((radius * 2.0) * scale)
+    if dst_size <= 0:
+        return
+
+    x0 = max(0, dst_x)
+    y0 = max(0, dst_y)
+    x1 = min(size, dst_x + dst_size)
+    y1 = min(size, dst_y + dst_size)
+    if x0 >= x1 or y0 >= y1:
+        return
+
+    stamp_rgb, stamp_alpha = _source_bonus_sprite_stamp(sprite_index, dst_size)
+    local_x0 = x0 - dst_x
+    local_y0 = y0 - dst_y
+    local_x1 = local_x0 + (x1 - x0)
+    local_y1 = local_y0 + (y1 - y0)
+    sprite_patch = stamp_rgb[local_y0:local_y1, local_x0:local_x1]
+    alpha = stamp_alpha[local_y0:local_y1, local_x0:local_x1]
+    if not bool((alpha > 0.0).any()):
+        return
+
+    view = canvas[y0:y1, x0:x1]
+    rgb = sprite_patch.astype(np.float32)
+    blended = rgb * alpha + view.astype(np.float32) * (np.float32(1.0) - alpha)
+    np.rint(blended, out=blended)
+    np.clip(blended, 0.0, 255.0, out=blended)
+    view[:] = blended.astype(np.uint8)
+
+
 def _draw_bonus_circles_rgb(
     canvas: np.ndarray,
     positions: np.ndarray,
     radii: np.ndarray,
     map_size: float,
+    *,
+    bonus_types: np.ndarray | None = None,
 ) -> None:
     outline_radius = map_size * 2.0 / float(canvas.shape[0])
-    for position, radius in zip(positions, radii, strict=True):
+    if bonus_types is None:
+        bonus_types_iter = (None for _ in range(len(positions)))
+    else:
+        bonus_types_iter = (int(value) for value in bonus_types)
+    for position, radius, bonus_type in zip(positions, radii, bonus_types_iter, strict=True):
         _draw_world_circle_rgb(
             canvas,
             position[0],
@@ -1988,8 +2713,253 @@ def _draw_bonus_circles_rgb(
             position[1],
             radius,
             map_size,
-            color=SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_RGB,
+            color=_bonus_type_rgb(bonus_type),
         )
+
+
+def _bonus_type_rgb(bonus_type: int | None) -> tuple[int, int, int]:
+    if bonus_type is None:
+        return SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_RGB
+    if bonus_type < 0 or bonus_type >= len(SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_TYPE_RGB):
+        return SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_RGB
+    return SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_TYPE_RGB[bonus_type]
+
+
+def _bonus_sprite_index(bonus_type: int | None) -> int | None:
+    if bonus_type is None:
+        return None
+    if bonus_type < 0 or bonus_type >= len(SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_TYPE_NAME_BY_CODE):
+        return None
+    name = SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_TYPE_NAME_BY_CODE[bonus_type]
+    if name is None:
+        return None
+    return SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_SPRITE_INDEX_BY_NAME.get(name)
+
+
+def _canvas_round(value: float) -> int:
+    return int(value + 0.5)
+
+
+@lru_cache(maxsize=1)
+def _source_bonus_sprite_tiles() -> np.ndarray:
+    path = _source_bonus_sprite_sheet_path()
+    image = _load_rgba_png(path)
+    rows = SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_SPRITE_ROWS
+    columns = SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_SPRITE_COLUMNS
+    if image.shape[0] % rows != 0 or image.shape[1] % columns != 0:
+        raise VectorVisualObservationError(
+            f"bonus sprite sheet dimensions must divide evenly by {columns} columns and {rows} rows"
+        )
+    tile_height = image.shape[0] // rows
+    tile_width = image.shape[1] // columns
+    tiles = []
+    for index in range(rows * columns):
+        row = index // columns
+        column = index % columns
+        tiles.append(
+            image[
+                row * tile_height : (row + 1) * tile_height,
+                column * tile_width : (column + 1) * tile_width,
+            ].copy()
+        )
+    return np.stack(tiles, axis=0)
+
+
+@lru_cache(maxsize=256)
+def _source_bonus_sprite_stamp(sprite_index: int, dst_size: int) -> tuple[np.ndarray, np.ndarray]:
+    if dst_size <= 0:
+        raise VectorVisualObservationError("sprite stamp size must be positive")
+    if (
+        sprite_index < 0
+        or sprite_index >= len(SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_SPRITE_NAMES)
+    ):
+        raise VectorVisualObservationError(f"bonus sprite index out of range: {sprite_index}")
+    try:
+        tiles = _source_bonus_sprite_tiles()
+    except VectorVisualObservationError:
+        return _source_bonus_placeholder_stamp(sprite_index, dst_size)
+    tile = tiles[sprite_index]
+    tile_height, tile_width = tile.shape[:2]
+    local_x = np.arange(dst_size, dtype=np.int32)
+    local_y = np.arange(dst_size, dtype=np.int32)
+    src_x = np.clip((local_x * tile_width) // dst_size, 0, tile_width - 1)
+    src_y = np.clip((local_y * tile_height) // dst_size, 0, tile_height - 1)
+    stamp = tile[src_y[:, None], src_x[None, :]]
+    stamp_rgb = stamp[:, :, :3].copy()
+    stamp_alpha = stamp[:, :, 3:4].astype(np.float32, copy=True) * np.float32(1.0 / 255.0)
+    return stamp_rgb, stamp_alpha
+
+
+@lru_cache(maxsize=256)
+def _source_bonus_placeholder_stamp(
+    sprite_index: int,
+    dst_size: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    if (
+        sprite_index < 0
+        or sprite_index >= len(SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_TYPE_CODE_BY_SPRITE_INDEX)
+    ):
+        raise VectorVisualObservationError(f"bonus sprite index out of range: {sprite_index}")
+    type_code = SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_TYPE_CODE_BY_SPRITE_INDEX[sprite_index]
+    fill = np.asarray(_bonus_type_rgb(type_code), dtype=np.uint8)
+    stamp_rgb = np.empty((dst_size, dst_size, 3), dtype=np.uint8)
+    stamp_rgb[:, :] = fill
+    yy, xx = np.ogrid[:dst_size, :dst_size]
+    center = (float(dst_size) - 1.0) * 0.5
+    radius = max(0.0, center)
+    distance_sq = (xx.astype(np.float64) - center) ** 2 + (
+        yy.astype(np.float64) - center
+    ) ** 2
+    circle = distance_sq <= radius * radius
+    border_width = max(1.0, float(dst_size) * 0.08)
+    inner_radius = max(0.0, radius - border_width)
+    border = circle & (distance_sq >= inner_radius * inner_radius)
+    stamp_rgb[border] = SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_OUTLINE_RGB
+    if dst_size >= 5:
+        stripe_period = 3 + (sprite_index % 4)
+        stripe = circle & (((xx + yy + sprite_index) % stripe_period) == 0)
+        stamp_rgb[stripe] = np.minimum(
+            stamp_rgb[stripe].astype(np.int16) + np.int16(36),
+            np.int16(255),
+        ).astype(np.uint8)
+    stamp_alpha = circle.astype(np.float32)[:, :, None]
+    return stamp_rgb, stamp_alpha
+
+
+def _source_bonus_sprite_sheet_path() -> Path:
+    relative_path = Path(SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_SPRITE_SHEET_RELATIVE_PATH)
+    candidates = (
+        Path(__file__).resolve().parents[3] / relative_path,
+        Path.cwd() / relative_path,
+        Path("/repo") / relative_path,
+        Path("/") / relative_path,
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return candidates[0]
+
+
+def _load_rgba_png(path: Path) -> np.ndarray:
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        raise VectorVisualObservationError(f"could not read bonus sprite sheet: {path}") from exc
+    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise VectorVisualObservationError(f"bonus sprite sheet is not a PNG: {path}")
+
+    offset = 8
+    width = height = bit_depth = color_type = interlace = None
+    idat_parts: list[bytes] = []
+    while offset < len(data):
+        if offset + 8 > len(data):
+            raise VectorVisualObservationError("bonus sprite sheet PNG is truncated")
+        length = struct.unpack(">I", data[offset : offset + 4])[0]
+        chunk_type = data[offset + 4 : offset + 8]
+        chunk_data_start = offset + 8
+        chunk_data_end = chunk_data_start + length
+        if chunk_data_end + 4 > len(data):
+            raise VectorVisualObservationError("bonus sprite sheet PNG chunk is truncated")
+        chunk_data = data[chunk_data_start:chunk_data_end]
+        offset = chunk_data_end + 4
+        if chunk_type == b"IHDR":
+            width, height, bit_depth, color_type, _compression, _filter, interlace = (
+                _parse_png_ihdr(chunk_data)
+            )
+        elif chunk_type == b"IDAT":
+            idat_parts.append(chunk_data)
+        elif chunk_type == b"IEND":
+            break
+
+    if (
+        width is None
+        or height is None
+        or bit_depth != 8
+        or color_type != 6
+        or interlace != 0
+        or not idat_parts
+    ):
+        raise VectorVisualObservationError(
+            "bonus sprite sheet must be an 8-bit non-interlaced RGBA PNG"
+        )
+    return _decode_rgba_png_scanlines(width, height, b"".join(idat_parts))
+
+
+def _parse_png_ihdr(chunk_data: bytes) -> tuple[int, int, int, int, int, int, int]:
+    if len(chunk_data) != 13:
+        raise VectorVisualObservationError("bonus sprite sheet has invalid IHDR")
+    return struct.unpack(">IIBBBBB", chunk_data)
+
+
+def _decode_rgba_png_scanlines(width: int, height: int, compressed: bytes) -> np.ndarray:
+    try:
+        raw = zlib.decompress(compressed)
+    except zlib.error as exc:
+        raise VectorVisualObservationError("bonus sprite sheet IDAT data is invalid") from exc
+    bytes_per_pixel = 4
+    stride = width * bytes_per_pixel
+    expected = height * (stride + 1)
+    if len(raw) != expected:
+        raise VectorVisualObservationError("bonus sprite sheet PNG payload has invalid size")
+
+    rows = np.empty((height, stride), dtype=np.uint8)
+    previous = np.zeros(stride, dtype=np.uint8)
+    offset = 0
+    for row in range(height):
+        filter_type = raw[offset]
+        offset += 1
+        scanline = np.frombuffer(raw, dtype=np.uint8, count=stride, offset=offset).copy()
+        offset += stride
+        _unfilter_png_scanline(scanline, previous, filter_type, bytes_per_pixel)
+        rows[row] = scanline
+        previous = scanline
+    return rows.reshape(height, width, bytes_per_pixel)
+
+
+def _unfilter_png_scanline(
+    scanline: np.ndarray,
+    previous: np.ndarray,
+    filter_type: int,
+    bytes_per_pixel: int,
+) -> None:
+    if filter_type == 0:
+        return
+    if filter_type == 1:
+        for index in range(bytes_per_pixel, scanline.size):
+            scanline[index] = (int(scanline[index]) + int(scanline[index - bytes_per_pixel])) & 0xFF
+        return
+    if filter_type == 2:
+        for index in range(scanline.size):
+            scanline[index] = (int(scanline[index]) + int(previous[index])) & 0xFF
+        return
+    if filter_type == 3:
+        for index in range(scanline.size):
+            left = int(scanline[index - bytes_per_pixel]) if index >= bytes_per_pixel else 0
+            up = int(previous[index])
+            scanline[index] = (int(scanline[index]) + ((left + up) // 2)) & 0xFF
+        return
+    if filter_type == 4:
+        for index in range(scanline.size):
+            left = int(scanline[index - bytes_per_pixel]) if index >= bytes_per_pixel else 0
+            up = int(previous[index])
+            up_left = int(previous[index - bytes_per_pixel]) if index >= bytes_per_pixel else 0
+            scanline[index] = (
+                int(scanline[index]) + _png_paeth_predictor(left, up, up_left)
+            ) & 0xFF
+        return
+    raise VectorVisualObservationError(f"unsupported PNG filter type {filter_type}")
+
+
+def _png_paeth_predictor(left: int, up: int, up_left: int) -> int:
+    estimate = left + up - up_left
+    left_distance = abs(estimate - left)
+    up_distance = abs(estimate - up)
+    up_left_distance = abs(estimate - up_left)
+    if left_distance <= up_distance and left_distance <= up_left_distance:
+        return left
+    if up_distance <= up_left_distance:
+        return up
+    return up_left
 
 
 def _body_values(owners: np.ndarray) -> np.ndarray:
@@ -2103,6 +3073,11 @@ def _source_body_owner_index(
 
 
 __all__ = [
+    "BONUS_RENDER_MODE_BROWSER_SPRITES",
+    "BONUS_RENDER_MODE_CIRCLES_FAST",
+    "BONUS_RENDER_MODE_DEFAULT",
+    "BONUS_RENDER_MODE_ORDER",
+    "BONUS_RENDER_MODES",
     "SOURCE_STATE_CANVAS_GRAY64_BROWSER_PIXEL_FIDELITY",
     "SOURCE_STATE_CANVAS_GRAY64_BROWSER_PIXEL_FIDELITY_CLAIM",
     "SOURCE_STATE_CANVAS_GRAY64_COMPARISON_TARGET",
@@ -2165,6 +3140,8 @@ __all__ = [
     "SOURCE_STATE_GRAY64_VALUE_RANGE",
     "SOURCE_STATE_RGB_BODY_CIRCLES_FAST_RENDERER_IMPL_ID",
     "SOURCE_STATE_RGB_BROWSER_LINES_RENDERER_IMPL_ID",
+    "SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_SPRITE_NAMES",
+    "SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_SPRITE_SHEET_RELATIVE_PATH",
     "SOURCE_STATE_RGB_CANVAS_LIKE_RENDERER_IMPL_ID",
     "TRAIL_RENDER_MODE_BODY_CIRCLES_FAST",
     "TRAIL_RENDER_MODE_BROWSER_LINES",
@@ -2175,6 +3152,7 @@ __all__ = [
     "VectorVisualObservationError",
     "normalize_source_state_gray64",
     "render_source_state_canvas_gray64",
+    "render_source_state_canvas_gray64_player_perspectives",
     "render_source_state_bonus64_stack4_player_perspective_v1",
     "render_source_state_rgb_canvas_like",
     "render_source_snapshot_canvas_gray64",

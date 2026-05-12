@@ -10,6 +10,10 @@ launcher. Stock LightZero eval is off by default; use CurvyZero checkpoint eval,
 inspection, and GIF jobs for observability. Default checkpoint cadence is sparse,
 about every `100` iterations. Keep the path close to LightZero: only the
 environment and the small simultaneous-action/self-play bridge should be custom.
+Default starts are already varied by generated reset seeds. Default robustness
+noise is mild: policy actions use repeat `min=1`, `max=3`, `extra_probability=0.20`,
+which is about `80%` normal, `16%` held one extra step, and `4%` held two extra
+steps. Visual input gets Gaussian noise `0.10`, and random no-op/drop is off.
 Next real work is to launch and monitor clean long CurvyTron self-play runs from
 this canonical path, with survival curves and collapse checks.
 
@@ -39,6 +43,11 @@ been deleted. Historical commands must be translated to the canonical launcher.
 - The env advances once with the joint action.
 - The learner updates that same policy before later collection.
 - Modal GPU L4/T4 works; smoke saw model parameters on `cuda:0`.
+- Reset starts are varied: the trainer seeds the vector env, then calls
+  `reset(seed=None)`, so each row gets a generated reset seed.
+- Default stochasticity is mild and simple: `policy_action_repeat_max=3`,
+  `policy_action_repeat_extra_probability=0.20`, `observation_noise_std=0.10`,
+  `action_noop_probability=0.0`, and no warmup schedule.
 - Checkpoints write to:
   `training/lightzero-curvytron-visual-survival/<run_id>/checkpoints/lightzero`.
 - Progress writes to:

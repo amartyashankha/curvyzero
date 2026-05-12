@@ -13,10 +13,31 @@ eval/inspection/GIF jobs.
 
 Current render truth, 2026-05-12: canonical two-seat self-play defaults to
 `two_seat_trail_render_mode=browser_lines`. That route renders source-state RGB
-browser-style lines at 64x64 and converts to gray64 for the stacked policy
-tensor. `body_circles_fast` is an explicit speed comparison mode. The same
-two-seat runner exposes `two_seat_death_mode=profile_no_death` for optimizer
-long-survival profiles only.
+browser-style lines at 704x704, converts/downsamples to gray64, and stacks the
+64x64 policy tensor. `body_circles_fast` is an explicit speed comparison mode.
+The same two-seat runner exposes `two_seat_death_mode=profile_no_death` for
+optimizer long-survival profiles only.
+
+Fresh render bottleneck read, 2026-05-12: long no-death profiles show render
+redraw dominating policy/search once trails grow. Current research lives in
+[CurvyTron render optimization research](render_optimization_research_2026-05-12.md).
+The local render microbench is `scripts/benchmark_render_lane_microbench.py`;
+use it for renderer iteration before launching full training profiles.
+The active surface now renders 704x704 RGB and downsamples to 64x64, so older
+direct-64 numbers are stale shape evidence only. Reprofile this active surface
+before choosing render optimizations.
+
+Fresh render optimization landing, 2026-05-12: the two-seat stack now reuses
+one shared trail render for safe `P=2` player perspectives and falls back to
+independent renders for unsafe palettes. Focused tests pass. The new granular
+microbench says stack copy and downsample are small compared with long trail
+redraw; next renderer work should target incremental/static trail rendering or
+direct-luma drawing.
+
+Profiling artifact hygiene, 2026-05-12: default Coach runs still create the GIF
+browser marker and background GIF artifacts. Optimizer profiling commands should
+use `--no-background-gif-enabled`; that now also suppresses the
+`show_in_gif_browser.flag` marker so profile runs do not clutter the website.
 
 This lane owns speed/training-loop setup synthesis: how CurvyTron visual
 LightZero-style stacked-frame rollouts, sidecar scalar diagnostics,
@@ -36,6 +57,9 @@ Training and policy-quality claims stay in the [training state index](../trainin
   archived/current-control source-state visual `train_muzero` timing, renderer
   fix, telemetry stride, MCTS/search read, and next bottlenecks. It is not the
   Coach canonical launcher.
+- [CurvyTron render optimization research](render_optimization_research_2026-05-12.md) -
+  current two-seat render bottleneck evidence, cost model, and optimization
+  menu while Environment Reconstruction stabilizes richer visuals.
 - [Runtime verdict](runtime_verdict_2026-05-10.md) - compact CurvyTron source
   path, CPU/GPU boundary, current profile, Modal Mctx evidence, and near-term
   architecture stance.

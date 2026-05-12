@@ -48,11 +48,24 @@ import modal
 from curvyzero.env.trainer_contract import (
     REWARD_SCHEMA_ID as SPARSE_ROUND_OUTCOME_REWARD_SCHEMA_ID,
 )
+from curvyzero.env.vector_visual_observation import (
+    SOURCE_STATE_CANVAS_GRAY64_BROWSER_PIXEL_FIDELITY,
+)
+from curvyzero.env.vector_visual_observation import SOURCE_STATE_CANVAS_GRAY64_SHAPE
+from curvyzero.env.vector_visual_observation import (
+    SOURCE_STATE_CANVAS_GRAY64_SOURCE_STATE_BACKED,
+)
+from curvyzero.env.vector_visual_observation import SOURCE_STATE_CANVAS_GRAY64_SURFACE
+from curvyzero.env.vector_visual_observation import SOURCE_STATE_CANVAS_GRAY64_TRUTH_LEVEL
+from curvyzero.env.vector_visual_observation import SOURCE_STATE_CANVAS_GRAY64_USES_ALE
 from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_BROWSER_PIXEL_FIDELITY
 from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_SOURCE_STATE_BACKED
 from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_SURFACE
 from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_TRUTH_LEVEL
 from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_USES_ALE
+from curvyzero.env.vector_visual_observation import (
+    SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_SPRITE_SHEET_RELATIVE_PATH,
+)
 from curvyzero.env.vector_visual_observation import (
     SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
 )
@@ -172,6 +185,15 @@ from curvyzero.training.curvyzero_source_state_visual_turn_commit_lightzero_env 
     SOURCE_STATE_TURN_COMMIT_ADAPTER_IMPL_ID,
 )
 from curvyzero.training.curvyzero_source_state_visual_turn_commit_lightzero_env import (
+    SOURCE_STATE_CANVAS_LIKE_RAW_SHAPE as TURN_COMMIT_SOURCE_STATE_CANVAS_LIKE_RAW_SHAPE,
+)
+from curvyzero.training.curvyzero_source_state_visual_turn_commit_lightzero_env import (
+    STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID as TURN_COMMIT_STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID,
+)
+from curvyzero.training.curvyzero_source_state_visual_turn_commit_lightzero_env import (
+    STACKED_SOURCE_STATE_GRAY64_SHAPE as TURN_COMMIT_STACKED_SOURCE_STATE_GRAY64_SHAPE,
+)
+from curvyzero.training.curvyzero_source_state_visual_turn_commit_lightzero_env import (
     TURN_COMMIT_TRAINING_STATUS,
 )
 from curvyzero.training.curvyzero_survival_time_lightzero_smoke import (
@@ -180,34 +202,43 @@ from curvyzero.training.curvyzero_survival_time_lightzero_smoke import (
 from curvyzero.training.curvytron_visual_observation import (
     DEBUG_OCCUPANCY_GRAY64_STACK_SHAPE,
 )
-from curvyzero.training.curvytron_two_seat_lightzero_train import (
+from curvyzero.training.curvytron_two_seat_lightzero_train_smoke import (
+    DEFAULT_ACTION_NOOP_PROBABILITY as TWO_SEAT_DEFAULT_ACTION_NOOP_PROBABILITY,
+)
+from curvyzero.training.curvytron_two_seat_lightzero_train_smoke import (
+    DEFAULT_ACTION_NOOP_WARMUP_ITERATIONS as TWO_SEAT_DEFAULT_ACTION_NOOP_WARMUP_ITERATIONS,
+)
+from curvyzero.training.curvytron_two_seat_lightzero_train_smoke import (
     DEFAULT_CHECKPOINT_EVERY_ITERATIONS as TWO_SEAT_DEFAULT_CHECKPOINT_EVERY_ITERATIONS,
 )
-from curvyzero.training.curvytron_two_seat_lightzero_train import (
+from curvyzero.training.curvytron_two_seat_lightzero_train_smoke import (
     DEFAULT_DEATH_MODE as TWO_SEAT_DEFAULT_DEATH_MODE,
 )
-from curvyzero.training.curvytron_two_seat_lightzero_train import (
+from curvyzero.training.curvytron_two_seat_lightzero_train_smoke import (
+    DEFAULT_OBSERVATION_NOISE_STD as TWO_SEAT_DEFAULT_OBSERVATION_NOISE_STD,
+)
+from curvyzero.training.curvytron_two_seat_lightzero_train_smoke import (
     DEFAULT_POLICY_ACTION_REPEAT_EXTRA_PROBABILITY as TWO_SEAT_DEFAULT_POLICY_ACTION_REPEAT_EXTRA_PROBABILITY,
 )
-from curvyzero.training.curvytron_two_seat_lightzero_train import (
+from curvyzero.training.curvytron_two_seat_lightzero_train_smoke import (
     DEFAULT_POLICY_ACTION_REPEAT_MAX as TWO_SEAT_DEFAULT_POLICY_ACTION_REPEAT_MAX,
 )
-from curvyzero.training.curvytron_two_seat_lightzero_train import (
+from curvyzero.training.curvytron_two_seat_lightzero_train_smoke import (
     DEFAULT_POLICY_ACTION_REPEAT_MIN as TWO_SEAT_DEFAULT_POLICY_ACTION_REPEAT_MIN,
 )
-from curvyzero.training.curvytron_two_seat_lightzero_train import (
+from curvyzero.training.curvytron_two_seat_lightzero_train_smoke import (
     DEFAULT_POLICY_ACTION_REPEAT_WARMUP_ITERATIONS as TWO_SEAT_DEFAULT_POLICY_ACTION_REPEAT_WARMUP_ITERATIONS,
 )
-from curvyzero.training.curvytron_two_seat_lightzero_train import (
+from curvyzero.training.curvytron_two_seat_lightzero_train_smoke import (
     DEFAULT_PROGRESS_COMMIT_EVERY_ITERATIONS as TWO_SEAT_DEFAULT_PROGRESS_COMMIT_EVERY_ITERATIONS,
 )
-from curvyzero.training.curvytron_two_seat_lightzero_train import (
+from curvyzero.training.curvytron_two_seat_lightzero_train_smoke import (
     DEFAULT_PROGRESS_EVERY_ITERATIONS as TWO_SEAT_DEFAULT_PROGRESS_EVERY_ITERATIONS,
 )
-from curvyzero.training.curvytron_two_seat_lightzero_train import (
+from curvyzero.training.curvytron_two_seat_lightzero_train_smoke import (
     compact_curvytron_two_seat_lightzero_train_smoke_summary,
 )
-from curvyzero.training.curvytron_two_seat_lightzero_train import (
+from curvyzero.training.curvytron_two_seat_lightzero_train_smoke import (
     run_curvytron_two_seat_lightzero_train_smoke,
 )
 
@@ -516,6 +547,12 @@ LIGHTZERO_RESUME_STATE_DIRNAME = "lightzero_resume_state"
 TARGET_AUDIT_MAX_SEGMENTS = 4
 TARGET_AUDIT_MAX_STEPS_PER_SEGMENT = 8
 TARGET_AUDIT_MAX_REPLAY_SAMPLES = 3
+CURVYTRON_BONUS_SPRITE_SHEET_LOCAL_PATH = (
+    Path.cwd() / SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_SPRITE_SHEET_RELATIVE_PATH
+)
+CURVYTRON_BONUS_SPRITE_SHEET_REMOTE_PATH = (
+    REMOTE_ROOT / SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_SPRITE_SHEET_RELATIVE_PATH
+)
 
 image = (
     modal.Image.debian_slim(python_version="3.11")
@@ -527,6 +564,11 @@ image = (
     )
     .env({"PYTHONPATH": str(REMOTE_ROOT / "src")})
     .add_local_dir(Path.cwd() / "src", remote_path=str(REMOTE_ROOT / "src"), copy=True)
+    .add_local_file(
+        CURVYTRON_BONUS_SPRITE_SHEET_LOCAL_PATH,
+        remote_path=str(CURVYTRON_BONUS_SPRITE_SHEET_REMOTE_PATH),
+        copy=True,
+    )
 )
 runs_volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 app = modal.App(APP_NAME)
@@ -1121,32 +1163,53 @@ def _install_lightzero_phase_profile(
         else:
             profiler.add_note("source-state env class missing for env hooks")
 
-        def make_normalize_wrapped(original: Any) -> Any:
-            def wrapped(*args: Any, **kwargs: Any) -> Any:
-                with profiler.timer("env_normalize_gray64_sec"):
-                    result = original(*args, **kwargs)
-                profiler.add_count("env_normalize_gray64_calls")
-                return result
-
-            return wrapped
-
-        patch_module_function(env_module, "normalize_source_state_gray64", make_normalize_wrapped)
-
         try:
             visual_module = importlib.import_module("curvyzero.env.vector_visual_observation")
         except Exception as exc:  # pragma: no cover - remote diagnosis only.
             profiler.add_note(f"could not import visual observation hooks: {type(exc).__name__}: {exc}")
         else:
-            renderer_cls = getattr(visual_module, "SourceStateGray64Renderer", None)
-            if inspect.isclass(renderer_cls):
-                patch_timed_method(
-                    renderer_cls,
-                    "render",
-                    "env_render_gray64_sec",
-                    "env_render_gray64_calls",
-                )
-            else:
-                profiler.add_note("SourceStateGray64Renderer missing for render hook")
+            def make_rgb_canvas_render_wrapped(original: Any) -> Any:
+                def wrapped(*args: Any, **kwargs: Any) -> Any:
+                    with profiler.timer("env_render_rgb_canvas_sec"):
+                        result = original(*args, **kwargs)
+                    profiler.add_count("env_render_rgb_canvas_calls")
+                    return result
+
+                return wrapped
+
+            def make_rgb_to_gray64_wrapped(original: Any) -> Any:
+                def wrapped(*args: Any, **kwargs: Any) -> Any:
+                    with profiler.timer("env_rgb_to_gray64_sec"):
+                        result = original(*args, **kwargs)
+                    profiler.add_count("env_rgb_to_gray64_calls")
+                    return result
+
+                return wrapped
+
+            def make_gray64_render_wrapped(original: Any) -> Any:
+                def wrapped(*args: Any, **kwargs: Any) -> Any:
+                    with profiler.timer("env_render_gray64_sec"):
+                        result = original(*args, **kwargs)
+                    profiler.add_count("env_render_gray64_calls")
+                    return result
+
+                return wrapped
+
+            patch_module_function(
+                visual_module,
+                "render_source_state_rgb_canvas_like",
+                make_rgb_canvas_render_wrapped,
+            )
+            patch_module_function(
+                visual_module,
+                "rgb_canvas_like_to_gray64",
+                make_rgb_to_gray64_wrapped,
+            )
+            patch_module_function(
+                visual_module,
+                "render_source_state_canvas_gray64",
+                make_gray64_render_wrapped,
+            )
 
         try:
             vector_env_module = importlib.import_module("curvyzero.env.vector_multiplayer_env")
@@ -2737,6 +2800,7 @@ def _run_visual_survival_train(
         opponent_checkpoint_report_ref=opponent_checkpoint_report_ref,
     )
 
+    gif_browser_run_marker_enabled = bool(background_gif_enabled)
     command = {
         "mode": mode,
         "compute": compute,
@@ -2842,12 +2906,15 @@ def _run_visual_survival_train(
         "background_gif_fps": float(background_gif_fps),
         "background_gif_scale": int(background_gif_scale),
         "background_gif_frame_size": int(background_gif_frame_size),
-        "gif_browser_run_marker_ref": runs.gif_browser_run_marker_ref(
-            TASK_ID,
-            run_id,
-        ).as_posix(),
+        "gif_browser_run_marker_enabled": gif_browser_run_marker_enabled,
+        "gif_browser_run_marker_ref": (
+            runs.gif_browser_run_marker_ref(TASK_ID, run_id).as_posix()
+            if gif_browser_run_marker_enabled
+            else None
+        ),
     }
-    _write_gif_browser_run_marker(run_id=run_id, created_at=started_at)
+    if gif_browser_run_marker_enabled:
+        _write_gif_browser_run_marker(run_id=run_id, created_at=started_at)
     _write_run_manifest_once(run_id=run_id, config=command)
     _write_attempt_state(
         run_id=run_id,
@@ -3590,8 +3657,11 @@ def _env_variant_spec(env_variant: str) -> dict[str, Any]:
             ),
             "opponent_training_relation": TURN_COMMIT_OPPONENT_TRAINING_RELATION,
             "turn_commit_adapter": True,
-            "observation_shape": list(STACKED_SOURCE_STATE_GRAY64_SHAPE),
-            "observation_schema_id": STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID,
+            "observation_shape": list(TURN_COMMIT_STACKED_SOURCE_STATE_GRAY64_SHAPE),
+            "observation_schema_id": TURN_COMMIT_STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID,
+            "raw_observation_schema_id": SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID,
+            "raw_frame_shape": list(TURN_COMMIT_SOURCE_STATE_CANVAS_LIKE_RAW_SHAPE),
+            "grayscale_frame_shape": list(SOURCE_STATE_CANVAS_GRAY64_SHAPE),
             "debug_fidelity_only": False,
             "source_fidelity_claim": "source_state_backed_non_browser_pixel",
             "single_product_runtime_path": True,
@@ -3605,11 +3675,11 @@ def _env_variant_spec(env_variant: str) -> dict[str, Any]:
             "current_policy_two_seat_action_collection": True,
             "two_seat_self_play_status": TURN_COMMIT_TRAINING_STATUS,
             "fixed_opponent_is_two_seat_self_play": False,
-            "browser_pixel_fidelity": SOURCE_STATE_GRAY64_BROWSER_PIXEL_FIDELITY,
-            "uses_ale": SOURCE_STATE_GRAY64_USES_ALE,
-            "visual_surface": SOURCE_STATE_GRAY64_SURFACE,
-            "visual_truth_level": SOURCE_STATE_GRAY64_TRUTH_LEVEL,
-            "visual_source_state_backed": SOURCE_STATE_GRAY64_SOURCE_STATE_BACKED,
+            "browser_pixel_fidelity": SOURCE_STATE_CANVAS_GRAY64_BROWSER_PIXEL_FIDELITY,
+            "uses_ale": SOURCE_STATE_CANVAS_GRAY64_USES_ALE,
+            "visual_surface": SOURCE_STATE_CANVAS_GRAY64_SURFACE,
+            "visual_truth_level": SOURCE_STATE_CANVAS_GRAY64_TRUTH_LEVEL,
+            "visual_source_state_backed": SOURCE_STATE_CANVAS_GRAY64_SOURCE_STATE_BACKED,
         }
     if env_variant == ENV_VARIANT_SOURCE_STATE_JOINT_ACTION:
         return {
@@ -5780,14 +5850,12 @@ def _copy_source_state_raw_frame(env: Any) -> Any:
     if raw is None:
         raise RuntimeError("self-play env did not expose source_state_raw_visual_tensor")
     frame = np.asarray(raw, dtype=np.uint8)
-    if frame.shape == (1, 64, 64):
-        return frame[0].copy()
-    if frame.shape == (64, 64):
+    if frame.ndim == 3 and frame.shape[-1] == 3:
         return frame.copy()
-    raise ValueError(f"raw source-state frame shape {frame.shape!r}; expected (1, 64, 64)")
+    raise ValueError(f"raw source-state frame shape {frame.shape!r}; expected [H, W, 3] RGB")
 
 
-def _resize_rgb_frame_nearest(frame: Any, *, frame_size: int) -> Any:
+def _resize_rgb_frame_for_gif(frame: Any, *, frame_size: int) -> tuple[Any, str]:
     import numpy as np
 
     rgb = np.asarray(frame, dtype=np.uint8)
@@ -5797,10 +5865,23 @@ def _resize_rgb_frame_nearest(frame: Any, *, frame_size: int) -> Any:
     if target_size < 1:
         raise ValueError("background_gif_frame_size must be positive")
     if rgb.shape[:2] == (target_size, target_size):
-        return rgb.copy()
+        return rgb.copy(), "none"
     height, width = int(rgb.shape[0]), int(rgb.shape[1])
     if height < 1 or width < 1:
         raise ValueError(f"RGB frame shape {rgb.shape!r}; expected non-empty height/width")
+    if (
+        target_size < height
+        and target_size < width
+        and height % target_size == 0
+        and width % target_size == 0
+    ):
+        y_ratio = height // target_size
+        x_ratio = width // target_size
+        downsampled = rgb.reshape(target_size, y_ratio, target_size, x_ratio, 3).mean(
+            axis=(1, 3),
+            dtype=np.float32,
+        )
+        return np.rint(downsampled).astype(np.uint8), "area_average"
     y_index = np.minimum(
         np.arange(target_size, dtype=np.int64) * height // target_size,
         height - 1,
@@ -5809,7 +5890,7 @@ def _resize_rgb_frame_nearest(frame: Any, *, frame_size: int) -> Any:
         np.arange(target_size, dtype=np.int64) * width // target_size,
         width - 1,
     )
-    return rgb[y_index[:, None], x_index[None, :]].copy()
+    return rgb[y_index[:, None], x_index[None, :]].copy(), "nearest"
 
 
 def _source_state_rgb_frame_candidate(
@@ -5826,13 +5907,15 @@ def _source_state_rgb_frame_candidate(
     input_shape = [int(item) for item in array.shape]
     if array.ndim != 3 or array.shape[-1] != 3:
         return None
-    rgb = _resize_rgb_frame_nearest(array, frame_size=int(frame_size))
+    rgb, resize_method = _resize_rgb_frame_for_gif(array, frame_size=int(frame_size))
     return rgb, {
         "source": source,
         "input_shape": input_shape,
         "input_dtype": str(array.dtype),
         "output_shape": [int(item) for item in rgb.shape],
-        "resized_nearest": input_shape != [int(frame_size), int(frame_size), 3],
+        "resized": input_shape != [int(frame_size), int(frame_size), 3],
+        "resize_method": resize_method,
+        "resized_nearest": resize_method == "nearest",
     }
 
 
@@ -5878,7 +5961,22 @@ def _copy_source_state_human_rgb_frame_with_source(
     if hasattr(env, "raw_observation"):
         raw_result = candidate("raw_observation", env.raw_observation)
         if raw_result is not None:
-            return raw_result
+            if str(raw_result[1].get("resize_method")) != "nearest":
+                return raw_result
+            skipped.append(
+                {
+                    "source": "raw_observation",
+                    "status": "rgb_requires_nearest_resize",
+                    "shape": raw_result[1]["input_shape"],
+                    "dtype": raw_result[1]["input_dtype"],
+                    "preferred_frame_size": int(frame_size),
+                }
+            )
+            deferred_raw_result = raw_result
+        else:
+            deferred_raw_result = None
+    else:
+        deferred_raw_result = None
     if hasattr(env, "human_rgb_observation"):
         human_result = candidate(
             "human_rgb_observation",
@@ -5893,6 +5991,9 @@ def _copy_source_state_human_rgb_frame_with_source(
         )
         if render_result is not None:
             return render_result
+    if deferred_raw_result is not None:
+        deferred_raw_result[1]["skipped_prior_sources"] = skipped.copy()
+        return deferred_raw_result
     raise RuntimeError(
         "self-play env did not expose an RGB source_state_rgb_canvas_like frame; "
         f"skipped_sources={skipped!r}"
@@ -5905,6 +6006,61 @@ def _copy_source_state_human_rgb_frame(env: Any, *, frame_size: int) -> Any:
         frame_size=int(frame_size),
     )
     return frame
+
+
+SOURCE_STATE_COLLISION_MODEL_SUMMARY = (
+    "server/source physics checks current head circle overlap against stored body "
+    "circles; browser-style connected trail lines are visual inspection geometry"
+)
+SOURCE_STATE_COLLISION_VISUAL_WARNING = (
+    "A rendered line crossing is not itself proof of a physics collision. Use "
+    "death_player/death_cause/death_hit_owner and stored body state for collision truth."
+)
+
+
+def _first_death_from_info(info: dict[str, Any]) -> dict[str, Any]:
+    def first_scalar(value: Any) -> Any:
+        plain = _to_plain(value)
+        while isinstance(plain, list) and plain:
+            plain = plain[0]
+        return plain
+
+    def row_slot(value: Any, slot: int = 0) -> Any:
+        plain = _to_plain(value)
+        if plain is None:
+            return None
+        if isinstance(plain, list):
+            if not plain:
+                return None
+            row = plain[0] if isinstance(plain[0], list) else plain
+            if not isinstance(row, list) or len(row) <= slot:
+                return None
+            return row[slot]
+        return plain if slot == 0 else None
+
+    raw_count = first_scalar(info.get("death_count"))
+    try:
+        death_count = int(raw_count)
+    except (TypeError, ValueError):
+        death_count = 0
+
+    player = row_slot(info.get("death_player"))
+    hit_owner = row_slot(info.get("death_hit_owner"))
+    return {
+        "death_happened": death_count > 0,
+        "death_count": death_count,
+        "death_player": player,
+        "death_player_id": f"player_{player}" if isinstance(player, int) and player >= 0 else None,
+        "death_cause": row_slot(info.get("death_cause")),
+        "death_cause_name": row_slot(info.get("death_cause_name")),
+        "death_hit_owner": hit_owner,
+        "death_hit_owner_id": (
+            f"player_{hit_owner}" if isinstance(hit_owner, int) and hit_owner >= 0 else None
+        ),
+        "terminal_reason": info.get("terminal_reason"),
+        "collision_model": SOURCE_STATE_COLLISION_MODEL_SUMMARY,
+        "visual_warning": SOURCE_STATE_COLLISION_VISUAL_WARNING,
+    }
 
 
 def _save_raw_frames_gif(
@@ -6759,6 +6915,9 @@ def _run_two_seat_selfplay_payload(
         RUNS_MOUNT,
         runs.latest_attempt_ref(TASK_ID, run_id),
     )
+    gif_browser_run_marker_enabled = bool(
+        payload.get("gif_browser_run_marker_enabled", DEFAULT_BACKGROUND_GIF_ENABLED)
+    )
     command = {
         "schema_id": "curvyzero_canonical_two_seat_selfplay_command/v0",
         "mode": TWO_SEAT_SELFPLAY_MODE,
@@ -6769,7 +6928,15 @@ def _run_two_seat_selfplay_payload(
         "compute": compute_label,
         "use_cuda": bool(use_cuda),
         **payload,
+        "gif_browser_run_marker_enabled": gif_browser_run_marker_enabled,
+        "gif_browser_run_marker_ref": (
+            runs.gif_browser_run_marker_ref(TASK_ID, run_id).as_posix()
+            if gif_browser_run_marker_enabled
+            else None
+        ),
     }
+    if gif_browser_run_marker_enabled:
+        _write_gif_browser_run_marker(run_id=run_id, created_at=started_at)
     runs.write_json(command_path, _to_plain(command))
     runs.write_json(
         attempt_path,
@@ -7606,8 +7773,10 @@ def main(
     two_seat_action_selection_mode: str = "collect",
     two_seat_collect_temperature: float = 1.0,
     two_seat_collect_epsilon: float = 0.25,
-    two_seat_action_noop_probability: float = 0.0,
-    two_seat_action_noop_warmup_iterations: int = 0,
+    two_seat_action_noop_probability: float = TWO_SEAT_DEFAULT_ACTION_NOOP_PROBABILITY,
+    two_seat_action_noop_warmup_iterations: int = (
+        TWO_SEAT_DEFAULT_ACTION_NOOP_WARMUP_ITERATIONS
+    ),
     two_seat_policy_action_repeat_min: int = TWO_SEAT_DEFAULT_POLICY_ACTION_REPEAT_MIN,
     two_seat_policy_action_repeat_max: int = TWO_SEAT_DEFAULT_POLICY_ACTION_REPEAT_MAX,
     two_seat_policy_action_repeat_extra_probability: float = (
@@ -7616,7 +7785,7 @@ def main(
     two_seat_policy_action_repeat_warmup_iterations: int = (
         TWO_SEAT_DEFAULT_POLICY_ACTION_REPEAT_WARMUP_ITERATIONS
     ),
-    two_seat_observation_noise_std: float = 0.0,
+    two_seat_observation_noise_std: float = TWO_SEAT_DEFAULT_OBSERVATION_NOISE_STD,
     two_seat_trail_render_mode: str = TRAIL_RENDER_MODE_DEFAULT,
     two_seat_checkpoint_every_iterations: int | None = None,
     two_seat_save_initial_checkpoint: bool = DEFAULT_TWO_SEAT_SAVE_INITIAL_CHECKPOINT,
@@ -7741,6 +7910,7 @@ def main(
             "progress_commit_every_iterations": two_seat_progress_commit_every_iterations,
             "run_id": run_id,
             "attempt_id": attempt_id,
+            "gif_browser_run_marker_enabled": bool(background_gif_enabled),
         }
         background = _two_seat_background_eval_config(
             payload=two_seat_payload,

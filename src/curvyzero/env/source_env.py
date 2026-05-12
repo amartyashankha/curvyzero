@@ -104,6 +104,7 @@ class SourceBodyState:
     num: int = 0
     birth_ms: float = 0.0
     trail_latency: int = 3
+    break_before: bool = False
     id: int | None = None
     island_ids: set[str] = field(default_factory=set)
 
@@ -114,6 +115,24 @@ class SourceBodyState:
 
     def is_old(self, now_ms: float) -> bool:
         return now_ms - self.birth_ms >= 2000
+
+
+@dataclass(slots=True)
+class SourceVisualTrailPoint:
+    x: float
+    y: float
+    radius: float
+    avatar_id: int
+    break_before: bool = False
+
+    def to_snapshot(self) -> dict[str, object]:
+        return {
+            "x": _source_number(self.x),
+            "y": _source_number(self.y),
+            "radius": _source_number(self.radius),
+            "avatarId": self.avatar_id,
+            "breakBefore": self.break_before,
+        }
 
 
 @dataclass(slots=True)
@@ -316,6 +335,8 @@ class SourceAvatarState:
     trail_point_count: int = 0
     trail_last_x: float | None = None
     trail_last_y: float | None = None
+    visual_trail_last_x: float | None = None
+    visual_trail_last_y: float | None = None
     body_num: int = 0
     body_count: int = 0
     velocity: float = 16.0
@@ -330,6 +351,7 @@ class SourceAvatarState:
     direction_in_loop: bool = True
     print_manager: SourcePrintManagerState = field(default_factory=SourcePrintManagerState)
     active_bonuses: list[SourceBonusState] = field(default_factory=list)
+    visual_trail_points: list[SourceVisualTrailPoint] = field(default_factory=list)
 
     def clear_for_round(self, reference: CurvyTronReferenceDefaults) -> None:
         self.x = reference.avatar_radius
@@ -348,11 +370,14 @@ class SourceAvatarState:
         self.angular_velocity_base = reference.angular_velocity_radians_per_ms
         self.radius = reference.avatar_radius
         self.trail_latency = reference.trail_latency_points
+        self.visual_trail_last_x = None
+        self.visual_trail_last_y = None
         self.inverse = False
         self.invincible = False
         self.direction_in_loop = True
         self.print_manager.clear()
         self.active_bonuses.clear()
+        self.visual_trail_points.clear()
 
     def set_angle(self, angle: float) -> None:
         self.angle = angle
@@ -421,7 +446,7 @@ class SourceAvatarState:
             trail_latency=self.trail_latency,
         )
 
-    def stored_body(self, birth_ms: float) -> SourceBodyState:
+    def stored_body(self, birth_ms: float, *, break_before: bool = False) -> SourceBodyState:
         return SourceBodyState(
             x=self.x,
             y=self.y,
@@ -430,6 +455,7 @@ class SourceAvatarState:
             num=self.body_count,
             birth_ms=birth_ms,
             trail_latency=self.trail_latency,
+            break_before=break_before,
         )
 
     def to_snapshot(self, *, include_bonus: bool = False) -> dict[str, object]:
@@ -449,9 +475,7 @@ class SourceAvatarState:
         }
         if include_bonus:
             snapshot["radius"] = _source_number(self.radius)
-            snapshot["activeBonuses"] = [
-                bonus.to_stack_snapshot() for bonus in self.active_bonuses
-            ]
+            snapshot["activeBonuses"] = [bonus.to_stack_snapshot() for bonus in self.active_bonuses]
         return snapshot
 
 
@@ -513,9 +537,7 @@ class SourceGameState:
         if include_bonus:
             snapshot["bonusCount"] = self.bonus_count
             snapshot["bonusWorldBodyCount"] = bonus_world_body_count
-            snapshot["activeBonuses"] = [
-                bonus.to_stack_snapshot() for bonus in self.active_bonuses
-            ]
+            snapshot["activeBonuses"] = [bonus.to_stack_snapshot() for bonus in self.active_bonuses]
         return snapshot
 
 
@@ -655,8 +677,7 @@ class CurvyTronSourceEnv:
                 break
             if callbacks >= _MAX_TIMER_CALLBACKS_PER_ADVANCE:
                 raise SourceEnvError(
-                    "timer advance exceeded "
-                    f"{_MAX_TIMER_CALLBACKS_PER_ADVANCE} callbacks"
+                    f"timer advance exceeded {_MAX_TIMER_CALLBACKS_PER_ADVANCE} callbacks"
                 )
 
             callbacks += 1
@@ -738,8 +759,16 @@ class CurvyTronSourceEnv:
                 "num": body.num,
                 "birthMs": _source_number(body.birth_ms),
                 "trailLatency": body.trail_latency,
+                "breakBefore": body.break_before,
             }
             for body in game.world.iter_unique_bodies()
+        )
+
+    def visual_trail_snapshot(self) -> tuple[dict[str, object], ...]:
+        """Return browser-like accumulated visual trail point records."""
+
+        return tuple(
+            point.to_snapshot() for avatar in self.avatars for point in avatar.visual_trail_points
         )
 
     def bonus_bodies_snapshot(self) -> tuple[dict[str, object], ...]:
@@ -812,8 +841,7 @@ class CurvyTronSourceEnv:
         game = self._require_game()
         if bonus_type not in _SOURCE_BONUS_DURATIONS_MS:
             raise SourceEnvError(
-                "source bonus seed supports only source default bonus types; "
-                f"got {bonus_type}"
+                f"source bonus seed supports only source default bonus types; got {bonus_type}"
             )
         if game.bonus_world is None:
             game.bonus_world = SourceWorldState(game.size, island_count=1)
@@ -839,8 +867,7 @@ class CurvyTronSourceEnv:
         """Replace the deterministic Math.random tape and clear recorded calls."""
 
         self.random.sequence = tuple(
-            _coerce_random_sequence_value(value, index)
-            for index, value in enumerate(random_values)
+            _coerce_random_sequence_value(value, index) for index, value in enumerate(random_values)
         )
         self.random.calls.clear()
 
@@ -1125,10 +1152,7 @@ class CurvyTronSourceEnv:
                 y=margin + self._next_random(y_site, None) * span,
                 radius=margin,
             )
-            if (
-                game.world.get_body(body) is None
-                and game.bonus_world.get_body(body) is None
-            ):
+            if game.world.get_body(body) is None and game.bonus_world.get_body(body) is None:
                 return body.x, body.y
             attempt += 1
 
@@ -1242,18 +1266,37 @@ class CurvyTronSourceEnv:
                 avatar.trail_point_count = 0
                 avatar.trail_last_x = None
                 avatar.trail_last_y = None
+                avatar.visual_trail_last_x = None
+                avatar.visual_trail_last_y = None
         self._record_event(
             "property",
             {"avatar": avatar.id, "property": "printing", "value": avatar.printing},
         )
 
+    def _add_visual_trail_point(self, avatar: SourceAvatarState) -> None:
+        break_before = avatar.visual_trail_last_x is None or avatar.visual_trail_last_y is None
+        avatar.visual_trail_points.append(
+            SourceVisualTrailPoint(
+                x=avatar.x,
+                y=avatar.y,
+                radius=avatar.radius,
+                avatar_id=avatar.id,
+                break_before=break_before,
+            )
+        )
+        avatar.visual_trail_last_x = avatar.x
+        avatar.visual_trail_last_y = avatar.y
+
     def _add_point(self, avatar: SourceAvatarState, *, important: bool) -> None:
         game = self._require_game()
+        break_before = avatar.trail_last_x is None or avatar.trail_last_y is None
         avatar.trail_point_count += 1
         avatar.trail_last_x = avatar.x
         avatar.trail_last_y = avatar.y
+        if important:
+            self._add_visual_trail_point(avatar)
         if game.started and game.world is not None and game.world.active:
-            game.world.add_body(avatar.stored_body(self.now_ms))
+            game.world.add_body(avatar.stored_body(self.now_ms, break_before=break_before))
             game.world_body_count = game.world.body_count
             game.world_active = game.world.active
             avatar.body_count += 1
@@ -1308,6 +1351,8 @@ class CurvyTronSourceEnv:
                         "y": _source_number(avatar.y),
                     },
                 )
+            if avatar.printing:
+                self._add_visual_trail_point(avatar)
             if avatar.printing and self._is_time_to_draw(avatar):
                 self._add_point(avatar, important=False)
             border = _bound_intersect(
@@ -1319,6 +1364,12 @@ class CurvyTronSourceEnv:
             if border is not None:
                 if game.borderless:
                     avatar.set_position(*_opposite_position(border[0], border[1], game.size))
+                    avatar.trail_last_x = None
+                    avatar.trail_last_y = None
+                    avatar.visual_trail_last_x = None
+                    avatar.visual_trail_last_y = None
+                    if avatar.printing:
+                        self._add_visual_trail_point(avatar)
                 else:
                     self._kill_avatar(avatar, None, frame_start_deaths)
                     death_in_frame = True
@@ -1435,11 +1486,7 @@ class CurvyTronSourceEnv:
         elif bonus.type.startswith("BonusEnemy"):
             self._apply_bonus_to_avatars(
                 bonus,
-                [
-                    target
-                    for target in self.avatars
-                    if target.alive and target.id != avatar.id
-                ],
+                [target for target in self.avatars if target.alive and target.id != avatar.id],
             )
         elif bonus.type.startswith("BonusAll"):
             self._apply_bonus_to_avatars(
@@ -1499,6 +1546,10 @@ class CurvyTronSourceEnv:
         game.world.activate()
         game.world_active = game.world.active
         game.world_body_count = game.world.body_count
+        for avatar in self.avatars:
+            avatar.visual_trail_points.clear()
+            avatar.visual_trail_last_x = None
+            avatar.visual_trail_last_y = None
         self._record_event("clear")
 
     def _apply_bonus_to_game_stack(self, bonus: SourceBonusState) -> None:
@@ -1907,7 +1958,9 @@ def _distance_to_border(border: int, x: float, y: float, size: float) -> float:
     return y
 
 
-def _bound_intersect(x: float, y: float, *, margin: float, size: float) -> tuple[float, float] | None:
+def _bound_intersect(
+    x: float, y: float, *, margin: float, size: float
+) -> tuple[float, float] | None:
     if x - margin < 0:
         return (0, y)
     if x + margin > size:
@@ -2118,6 +2171,7 @@ def _coerce_bonus_rate(value: float) -> float:
 __all__ = [
     "SourceBodyState",
     "SourceBonusState",
+    "SourceVisualTrailPoint",
     "CurvyTronSourceEnv",
     "SourceAvatarState",
     "SourceEnvError",

@@ -29,19 +29,35 @@ Observation-path purge ledger:
 ## Plain Current State
 
 - We are not at full CurvyTron environment fidelity.
+- Current top lane is 2P environment fidelity for training: source-state raw
+  704x704 RGB, 11x11 downsampled gray64, continuous trails, typed bonus
+  sprites/visibility, normal-wall and borderless behavior, and stored-body
+  collision depth.
 - There is one public runtime name under hardening:
   `VectorMultiplayerEnv`.
 - There is one active 2P visual product path:
-  source-state browser-like RGB64 raw frame -> deterministic gray64 ->
-  frame stack. Bonus64/rich tensors are diagnostics only.
+  source-state browser-like 704x704 RGB raw frame -> 11x11 area-downsampled
+  gray64 -> frame stack. Bonus64/rich tensors are diagnostics only.
 - Visual terminology guardrail: `browser_lines` is now the default
   browser-style source-state renderer for this product image path, and
   `body_circles_fast` is an explicit approximation for speed/profiling. This is
-  still native/source-state rendering, not real browser canvas pixel parity.
+  still native/source-state rendering, not browser canvas pixel parity. It
+  prefers `visual_trail_*` points when present and falls back to sparse body
+  points.
+- Bonus sprites in the current source-state renderer come from the one 300x400
+  `web/images/bonus.png` atlas: 3x4 tiles, 12 source-default bonus types.
 - Browser/canvas pixels are not P0, and the current source-state visual gate is
   not browser pixel parity.
 - Trainer wrapper/replay propagation is still open unless a doc names an
   explicit proof. Do not infer it from gray64 or bonus64 harness passes.
+- Confirmed cadence/collision rule: source CurvyTron frames are about 16.67 ms
+  from `BaseGame.framerate = (1 / 60) * 1000`. Collision truth is stored body
+  circle endpoint overlap plus death/collision metadata, not visual trail
+  crossing alone.
+- Trainer wrappers now use `decision_source_frames` as the real knob, derive
+  `decision_ms`, hold controls for that window, simulate source-sized internal
+  frames, and stop early on death. The old pattern of treating one 300 ms
+  decision as one physics step can tunnel through stored bodies.
 - Strict `VectorTrainerEnv1v1NoBonus` is only a proof/profiling boundary. It is
   not the destination.
 - `VectorMultiplayerEnv` is the intended public runtime name. The
@@ -50,8 +66,9 @@ Observation-path purge ledger:
 - Cleanup decision: product direction is one fast source-faithful runtime, not
   two implementations. Public-env cleanup should consolidate behavior into this
   runtime path and remove confusion from historical naming.
-- Treat it as a narrow metadata/public-state surface today, not a trainer-ready
-  env and not a full CurvyTron fidelity claim. It has partial public seeded and natural bonus slices only.
+- Treat it as a narrow public-state surface today, not a full CurvyTron fidelity
+  claim. It has promoted seeded and focused natural bonus effect slices, but
+  trainer observation/replay/final-state coverage is still not a blanket claim.
 - Latest focused environment validation after the bonus stack-capacity,
   SelfMaster wall-parity, AllColor stack-order, generated-RNG extension, and
   natural timer callback-cap removal and natural bonus effect coverage reported `282 passed`; focused source
@@ -61,10 +78,10 @@ Observation-path purge ledger:
 - Latest 2P bonus fidelity fix: slow/fast speed bonuses now also change turn
   rate with the source formula, and expiry restores it. This was a real gap
   caught by the current coverage audit.
-- The largest gaps are full bonus breadth, timer/random ordering for public
-  bonus scheduling, broader 3P/4P lifecycle/public parity, full public replay
-  and final state, old toy-path quarantine, and final cleanup. Bonus replay is
-  still metadata/audit only, not full replay arrays.
+- The largest current gaps are 2P trainer observation/final/replay propagation,
+  JS/original stress fixtures for the remaining bonus/collision cases, bonus
+  metadata/replay beyond audit rows, broader 3P/4P lifecycle/public parity, old
+  toy-path quarantine, and final cleanup.
 - Latest public base hardening: direct public body/trail/collision canary
   tests, the long 2P reset-to-terminal source rollout, warmdown/match-end
   checks, the 2P metadata replay bridge, and the source-state LightZero wrapper
@@ -102,18 +119,18 @@ Observation-path purge ledger:
   non-browser-pixel source-state tensors. This is route evidence only. It is
   not the next priority and not an environment-fidelity claim.
 - Visual size wording: the source 2P arena is 88 source units from
-  `CurvyTronReferenceDefaults.arena_size_for_players(2)`. The 64x64 size is
-  our learned raw observation raster from source state, not the original game
-  arena size.
+  `CurvyTronReferenceDefaults.arena_size_for_players(2)`. The 704x704 RGB frame
+  is our source-state raw visual product surface, and 64x64 is the downsampled
+  learned gray64 tensor size, not the original game arena size.
 - Latest 2P source-state visual check:
   `scripts/compare_2p_raw_visual_observation.py --suite core2p --format plain`
   compares source-shaped state against `VectorMultiplayerEnv` through the
-  active product image path: source-state browser-like RGB64 raw frame ->
-  deterministic gray64. The 2026-05-11 source-state/native check passed 35
-  scenarios exactly. Keep it as source-vs-vector state/raster regression
+  active product image path: source-state browser-like 704x704 RGB raw frame ->
+  11x11 area-downsampled gray64. The 2026-05-11 source-state/native check passed
+  35 scenarios exactly. Keep it as source-vs-vector state/raster regression
   evidence, not browser canvas pixel evidence. `browser_lines` is the default
-  browser-style source-state mode; `body_circles_fast` remains selectable and
-  clearly labeled as approximate.
+  source-state mode over sparse body points; `body_circles_fast` remains
+  selectable and clearly labeled as approximate.
 - The fuller one-line visual command is now
   `scripts/compare_2p_raw_visual_observation.py --suite full2p --format plain`.
   Recorded result:
@@ -174,29 +191,37 @@ and final observations, public metadata, and later browser pixel parity.
 
 ## 2P Status
 
-Full 2P fidelity is not done. The current source-state visual gate is internal:
-`scripts/compare_2p_raw_visual_observation.py --suite core2p --format plain`
-matched 34/34 source-state gray64 scenarios exactly through the native
-source-state render path. This is not browser canvas pixel parity. The
-PrintManager RNG canary is intentionally not a gray64 case; it proves
-random/event ordering, not a distinct rendered state. Deeper evidence and gap
-detail live in
+Full 2P fidelity is not done. The current source-state visual gate is internal;
+the latest recorded `full2p` run matched `canvas_gray64=35/35`,
+`typed_bonus=12/12`, and `final_obs=pass` through the native source-state render
+path. This is not browser canvas pixel parity. The new 2P collision/body-depth
+canaries pin the important source rule: stored body circle endpoint overlap and
+death metadata are collision truth, while a rendered line crossing alone is not.
+Large one-step decisions can tunnel; source-frame substeps catch the death.
+Deeper evidence and gap detail live in
 [two_player_fidelity_gap_catalog_2026-05-11.md](two_player_fidelity_gap_catalog_2026-05-11.md)
 and
 [remaining_reconstruction_gap_catalog_2026-05-11.md](remaining_reconstruction_gap_catalog_2026-05-11.md).
 
 Next 2P environment-fidelity checklist:
 
-1. Add a real browser/canvas pixel harness and golden reference frames before
+1. Keep the candidate trainer observation on the clean source-state image path:
+   704x704 RGB raw frame -> 11x11 area-downsampled gray64 -> stack. Keep
+   bonus64/rich tensors as diagnostic proof for hidden bonus facts.
+2. Keep continuous trail topology guarded: prefer `visual_trail_*` when present,
+   connect sparse persisted bodies otherwise, and split only on explicit break
+   state.
+3. Keep typed map bonus sprites visible through the source atlas path, while
+   remembering gray64 is still not a full hidden bonus-state tensor.
+4. Expand the 2P wall/borderless/collision canaries around wrap destination
+   bodies, wall priority, trail latency, and same-frame death ordering.
+5. Add JS/original fixture parity for bonus stack/death stress cases that are
+   currently source-env programmatic probes.
+6. Promote final/replay bonus state beyond metadata-only audit rows.
+7. Add a real browser/canvas pixel harness and golden reference frames before
    making browser pixel parity claims. The existing `full2p` command is a
    source-state/native visual consistency gate.
-2. Add JS/original fixture parity for the bonus stack/death stress cases that
-   are currently source-env programmatic probes.
-3. Promote final/replay bonus state beyond metadata-only audit rows.
-4. Keep the candidate trainer observation on the clean source-state image path:
-   RGB64 raw frame -> gray64 -> stack. Keep bonus64/rich tensors as diagnostic
-   proof for hidden bonus facts.
-5. Keep row-local RNG/replay history and fully blocked generated bonus-position
+8. Keep row-local RNG/replay history and fully blocked generated bonus-position
    policy explicit.
 
 Closed on 2026-05-11: focused 2P survivor movement during warmdown now has
@@ -205,8 +230,9 @@ coverage. It proves no second `round:end`, no rescore, death order preservation,
 and correct next-round RNG cursor for the continuing-round case.
 
 Do not describe the game as 64x64: for 2P the source arena is 88 units, while
-64x64 is only the learned raw observation raster size. The source-state route
-proof is fixed-opponent plumbing only, not an environment-fidelity claim.
+704x704 is the raw source-state visual frame and 64x64 is only the learned
+downsampled gray64 tensor size. The source-state route proof is fixed-opponent
+plumbing only, not an environment-fidelity claim.
 
 ## Current Direction
 
@@ -220,13 +246,17 @@ source claim -> JS oracle/probe -> CurvyTronSourceEnv parity -> optimized parity
 ```
 
 Native CurvyTron should be described as held control state advanced through
-elapsed-ms frames. `step` and `joint_action` are wrapper/API terms; do not let
-them replace the source mental model.
+elapsed-ms frames. Source frames are about 16.67 ms from
+`BaseGame.framerate = (1 / 60) * 1000`. `step` and `joint_action` are
+wrapper/API terms; do not let them replace the source mental model.
 
 Strict `VectorTrainerEnv1v1NoBonus` is a fixed decision wrapper over source
 control state. It accepts trainer action ids, maps them to native source moves,
-and holds that control state for `decision_ms`; it is not native discrete
-simultaneous actions and not the product runtime.
+and holds that control state for `decision_source_frames` source frames while
+internally advancing source-sized frames and stopping early on death. Current
+wrappers derive `decision_ms` from that frame count. One 300 ms decision must
+not be collapsed into one physics step; that can tunnel through stored bodies.
+It is not native discrete simultaneous actions and not the product runtime.
 Its restrictions are temporary explicit non-fidelity profile choices, not the
 reconstruction path. Reconstruct source-default CurvyTron behavior in
 `VectorMultiplayerEnv`.
@@ -401,19 +431,35 @@ Current fast-path snapshot:
 - Cleanup note: lifecycle metadata now comes from the public env state path
   without the stale overlay plumbing, and old scalar replay builder code has
   been removed. This is maintenance, not a new training claim.
-- This is not full environment fidelity. First gaps remain: broader natural
-  bonus catch/effect matrix, fuller bonus metadata/replay audit, full public
-  replay/final observations, broader lifecycle/multiplayer parity, browser
-  pixel parity later, and final cleanup. Current replay preservation is
-  metadata/audit only, not full replay arrays.
+- This is not full environment fidelity. First gaps now center on the 2P
+  training-fidelity lane: raw/full-res/downsample propagation, continuous-trail
+  and bonus-sprite regressions, wall/borderless/collision stress, fuller bonus
+  metadata/replay audit, full public replay/final observations, broader
+  lifecycle/multiplayer parity, browser pixel parity later, and final cleanup.
+  Current replay preservation is metadata/audit only, not full replay arrays.
 
 ## Current Environment Gap Queue
 
 Plain remaining issues before stronger environment claims:
 
-1. Broader natural bonus catch/effect matrix beyond the promoted focused
-   public seeded/natural slices.
-2. Halley capacity-audit follow-up: generated public random tape auto-extends,
+1. Finish 2P visual observation fidelity on the current product path: raw
+   704x704 RGB, 11x11 downsampled gray64, frame stack, terminal/final frames,
+   metadata, and no accidental fallback to legacy 64x64/direct drawing.
+2. Keep continuous trail rendering source-faithful enough for training:
+   `visual_trail_*` first, sparse body connection second, explicit breaks for
+   clears/gaps/wraps/resets, and `body_circles_fast` labeled approximate.
+3. Keep typed bonus visibility honest: source atlas sprites for active map
+   bonuses in the RGB path, downsampled visibility in gray64, bonus64/rich
+   tensors only as diagnostics, and no claim that gray64 exposes all hidden
+   bonus stack facts.
+4. Finish 2P wall/borderless/collision depth: normal-wall priority, borderless
+   wrap destination-body behavior, stored-body circle overlap, own-trail latency,
+   head-head/death ordering, and source-frame substep decisions that avoid
+   tunneling.
+5. Add JS/original fixture parity for the remaining 2P bonus stack/death stress
+   cases that are currently source-env programmatic probes.
+6. Promote final/replay bonus state beyond metadata-only audit rows.
+7. Halley capacity-audit follow-up: generated public random tape auto-extends,
    generated natural bonus position retry is not stopped by
    `natural_bonus_position_attempt_capacity`, and fixture/direct finite tapes
    remain strict. Public natural bonus timer advancement no longer has an
@@ -421,34 +467,35 @@ Plain remaining issues before stronger environment claims:
    fixed-array guard for bad direct runtime fixtures, not a public env bug; a
    fully blocked generated map may still need policy. Keep `max_ticks`, body
    overflow, and event overflow classified as truncation-by-design.
-3. Keep the fixed `BonusSelfMaster` wall-death parity guard green: normal-wall
+8. Keep the fixed `BonusSelfMaster` wall-death parity guard green: normal-wall
    death still kills a SelfMaster/invincible avatar, while body collision
    remains suppressed.
-4. Keep the fixed multi-target `BonusAllColor` event-order and older-wins stack
+9. Keep the fixed multi-target `BonusAllColor` event-order and older-wins stack
    precedence guards green while broader stack/death cases expand.
-5. Timer/random ordering for public bonus scheduling: source/runtime slices are
+10. Timer/random ordering for public bonus scheduling: source/runtime slices are
    pinned, but public ownership of timers, RNG cursor/draw counts, and natural
    bonus scheduling is not broad.
-5. Borderless stack behavior and wrap/collision side effects beyond the seeded
+11. Borderless stack behavior and wrap/collision side effects beyond the seeded
    public `BonusGameBorderless` expiry slice. Source/runtime/public
    duration/expiry is now covered by focused tests and a source fixture.
-6. Fuller bonus public metadata and replay audit: spawned bonus identity,
+12. Fuller bonus public metadata and replay audit: spawned bonus identity,
    catch/expiry/clear events, random cursor/draw counts, active stack facts,
    and source refs. Current replay preservation is metadata/audit only, not
    full replay arrays.
-7. Broader bonus effects and interactions beyond the current promoted
-   runtime/public slices.
-8. Full public replay and final observations for multiplayer rows, including
+13. Broader bonus stack/death interactions beyond the current promoted
+   catch/expiry/effect slices.
+14. Full public replay and final observations for multiplayer rows, including
    reset/RNG provenance, terminal facts, reward/mask maps, and final-row policy.
-9. Broader lifecycle and multiplayer parity: natural reset/warmup, warmdown
+15. Broader lifecycle and multiplayer parity: natural reset/warmup, warmdown
    frame movement, next-round/match-end policy, present/absent and leave edges,
    masks, and rewards.
-10. Browser/source pixel parity later, after source state, public replay, and
-   lifecycle rows are stable. Current raw 64x64 source-state raster parity is
-   model-observation evidence only, not original browser/canvas pixel evidence.
-11. Old toy path quarantine: toy-v0/debug routes are historical smoke evidence
+16. Browser/source pixel parity later, after source state, public replay, and
+   lifecycle rows are stable. Current 704x704 raw -> gray64 source-state raster
+   parity is model-observation evidence only, not original browser/canvas pixel
+   evidence.
+17. Old toy path quarantine: toy-v0/debug routes are historical smoke evidence
    only, not a product runtime or fidelity proof.
-12. Modal, speed, and fixed-opponent route smokes stay labeled as route evidence
+18. Modal, speed, and fixed-opponent route smokes stay labeled as route evidence
    or measurement evidence. They are not the next environment priority.
 
 ## Current Source State
@@ -473,8 +520,10 @@ Plain remaining issues before stronger environment claims:
   path, one default multi-type weight/type RNG path, one game-world retry path,
   and one expiry/restore path.
 - Movement should stay framed as source elapsed-ms kinematics with held control
-  state. Wrapper APIs may expose `step` or `joint_action`, but source behavior
-  is not defined by those wrapper names.
+  state and about 16.67 ms source frames. Wrapper APIs may expose `step` or
+  `joint_action`, but source behavior is not defined by those wrapper names.
+- Collision should stay framed as stored body circle endpoint overlap plus
+  death/collision metadata. Visual trail crossing alone is not source truth.
 - Existing promoted mechanics include movement, normal wall and borderless
   behavior, body collision/order canaries, PrintManager toggles/start/death
   stops, normal trail cadence, forced trail gaps, one natural trail-gap source
@@ -510,9 +559,21 @@ Plain remaining issues before stronger environment claims:
 
 ## Next Tasks
 
-1. Widen natural bonus support beyond the promoted focused public
-   seeded/natural slices.
-2. Promote Halley's capacity-audit policy: generated public random tape
+1. Lock the 2P visual trainer path end to end: raw 704x704 RGB, gray64
+   downsample, frame stack, terminal/final frames, and replay/telemetry metadata.
+2. Keep continuous trails and segment breaks regression-tested across source,
+   vector, wrapper, and GIF/raw-frame inspection paths.
+3. Keep bonus sprites/type visibility on the default source-state path; use
+   bonus64/rich tensors only for diagnostic proof of hidden bonus facts.
+4. Expand 2P wall/borderless/collision-body-depth parity around wrap,
+   destination-body collisions, wall priority, own-trail latency, head-head/death
+   ordering, and source-frame substep decisions.
+5. Add JS/original fixture parity for remaining 2P bonus stack/death stress
+   cases.
+6. Widen bonus public metadata/replay audit for spawn, catch, expiry, clear,
+   active stack, and RNG facts while keeping the claim metadata-only until full
+   replay arrays exist.
+7. Promote Halley's capacity-audit policy: generated public random tape
    auto-extends, generated natural bonus position retry is not capped by
    `natural_bonus_position_attempt_capacity`, fixture/direct finite tapes stay
    strict, and public natural bonus timer advancement has no artificial
@@ -520,26 +581,24 @@ Plain remaining issues before stronger environment claims:
    fixed-array guard; a fully blocked generated map may still need policy.
    Designed truncations are `max_ticks`, body overflow, and event
    overflow.
-3. Keep the fixed `BonusSelfMaster` wall/body parity checks in the focused
+8. Keep the fixed `BonusSelfMaster` wall/body parity checks in the focused
    bonus suite.
-4. Finish timer/random ordering for public bonus scheduling.
-5. Finish borderless stack/wrap/collision semantics beyond the seeded public
+9. Finish timer/random ordering for public bonus scheduling.
+10. Finish borderless stack/wrap/collision semantics beyond the seeded public
    expiry slice. Source/runtime/public duration/expiry has focused coverage; do
    not list that proof as missing.
-6. Widen bonus public metadata/replay audit for spawn, catch, expiry, clear,
-   active stack, and RNG facts while keeping the claim metadata-only until full
-   replay arrays exist.
-7. Add broader bonus effects and interactions one source claim at a time.
-8. Fill full public replay and final-observation rows for multiplayer
+11. Add broader bonus stack/death interactions one source claim at a time.
+12. Fill full public replay and final-observation rows for multiplayer
    lifecycle and bonus states.
-9. Broaden lifecycle/multiplayer parity after the bonus and replay facts are
+13. Broaden lifecycle/multiplayer parity after the bonus and replay facts are
    named: natural reset/warmup, warmdown movement, next-round/match-end,
    present/absent, leave, masks, and rewards.
-10. Keep browser/source pixel parity later. It follows stable source state,
-   public replay, and lifecycle rows. Source-vs-vector raw 64x64 parity proves
-   the source-state observation raster only, not browser canvas pixels.
-11. Keep old toy/debug paths quarantined as historical smoke evidence only.
-12. Keep Modal, speed, and fixed-opponent route smokes labeled as route evidence
+14. Keep browser/source pixel parity later. It follows stable source state,
+   public replay, and lifecycle rows. Source-vs-vector 704x704 raw ->
+   downsampled gray64 parity proves the source-state observation raster only,
+   not browser canvas pixels.
+15. Keep old toy/debug paths quarantined as historical smoke evidence only.
+16. Keep Modal, speed, and fixed-opponent route smokes labeled as route evidence
    only.
 
 ## Boundaries

@@ -99,9 +99,7 @@ BONUS_TYPE_NAME_BY_CODE = (
     "BonusAllColor",
     "BonusGameClear",
 )
-BONUS_TYPE_SELECTION_METADATA_SCHEMA_ID = (
-    "curvyzero_vector_bonus_type_selection_metadata/v1"
-)
+BONUS_TYPE_SELECTION_METADATA_SCHEMA_ID = "curvyzero_vector_bonus_type_selection_metadata/v1"
 BONUS_TYPE_SELECTION_METADATA_SURFACE = "select_bonus_type_metadata"
 BONUS_SPAWN_CAP_METADATA_SCHEMA_ID = "curvyzero_vector_bonus_spawn_cap_metadata/v1"
 BONUS_SPAWN_CAP_METADATA_SURFACE = "bonus_spawn_cap_metadata"
@@ -346,9 +344,7 @@ DEATH_CAUSE_NAMES = (
 WARMUP_TIMER_ADVANCE_NO_BONUS_INFO_SCHEMA_ID = (
     "curvyzero_vector_warmup_no_bonus_timer_advance_info/v1"
 )
-WARMUP_TIMER_ADVANCE_INFO_SCHEMA_ID = (
-    "curvyzero_vector_warmup_1v1_no_bonus_timer_advance_info/v1"
-)
+WARMUP_TIMER_ADVANCE_INFO_SCHEMA_ID = "curvyzero_vector_warmup_1v1_no_bonus_timer_advance_info/v1"
 WARMDOWN_TIMER_ADVANCE_NO_BONUS_INFO_SCHEMA_ID = (
     "curvyzero_vector_warmdown_no_bonus_timer_advance_info/v1"
 )
@@ -586,6 +582,12 @@ def _step_many_kernel(
         )
         _timer_add(phase_timers, "movement_sec", started)
 
+        _append_visual_trail_points_batched(
+            state,
+            player=player,
+            write_mask=live_mask & state["printing"][:, player],
+        )
+
         if events_enabled:
             started = _timer_start(phase_timers)
             _emit_position_events_batched(state, player, live_mask)
@@ -628,6 +630,12 @@ def _step_many_kernel(
         counters["borderless_wraps"] += wrap_count
         _timer_add(phase_timers, "border_wrap_sec", started)
 
+        _append_visual_trail_points_batched(
+            state,
+            player=player,
+            write_mask=wrapped_mask & state["printing"][:, player],
+        )
+
         if events_enabled:
             started = _timer_start(phase_timers)
             _emit_position_events_batched(state, player, wrapped_mask)
@@ -644,9 +652,7 @@ def _step_many_kernel(
             started = _timer_start(phase_timers)
             state["alive"][wall_hit_mask, player] = False
             state["death_tick"][wall_hit_mask, player] = state["tick"][wall_hit_mask]
-            state["round_score"][wall_hit_mask, player] += frame_start_deaths[
-                wall_hit_mask
-            ]
+            state["round_score"][wall_hit_mask, player] += frame_start_deaths[wall_hit_mask]
             _append_death_list_batched(
                 state,
                 player=player,
@@ -730,9 +736,7 @@ def _step_many_kernel(
                 started = _timer_start(phase_timers)
                 body_death_rows = np.flatnonzero(body_hit_mask)
                 state["alive"][body_death_rows, player] = False
-                state["death_tick"][body_death_rows, player] = state["tick"][
-                    body_death_rows
-                ]
+                state["death_tick"][body_death_rows, player] = state["tick"][body_death_rows]
                 _append_death_list_batched(
                     state,
                     player=player,
@@ -795,13 +799,11 @@ def _step_many_kernel(
                 player=player,
                 live_mask=print_manager_live_mask & no_toggle_mode,
             )
-            toggle, no_toggle_from_toggle, visual_clears = (
-                _update_print_manager_toggle_batched(
-                    state,
-                    player=player,
-                    live_mask=print_manager_live_mask & toggle_mode,
-                    events_enabled=events_enabled,
-                )
+            toggle, no_toggle_from_toggle, visual_clears = _update_print_manager_toggle_batched(
+                state,
+                player=player,
+                live_mask=print_manager_live_mask & toggle_mode,
+                events_enabled=events_enabled,
             )
             counters["print_manager_no_toggle_updates"] += no_toggle
             counters["print_manager_toggle_updates"] += toggle
@@ -1112,9 +1114,7 @@ def advance_warmdown_no_bonus_timers(
     timer_overflow_rows: list[int] = []
     spawn_infos: list[dict[str, Any]] = []
 
-    active_rows = np.flatnonzero(
-        ~lifecycle_arrays["done"] & ~lifecycle_arrays["overflow"]
-    )
+    active_rows = np.flatnonzero(~lifecycle_arrays["done"] & ~lifecycle_arrays["overflow"])
     for row in active_rows:
         row_int = int(row)
         active_slots = np.flatnonzero(timer_arrays["active"][row_int])
@@ -1141,9 +1141,7 @@ def advance_warmdown_no_bonus_timers(
                 continue
             kind = int(timer_arrays["kind"][row_int, slot])
             if kind != TIMER_KIND_WARMDOWN_END:
-                raise VectorRuntimeError(
-                    f"unsupported warmdown timer kind {kind}"
-                )
+                raise VectorRuntimeError(f"unsupported warmdown timer kind {kind}")
 
             _clear_timer_slot(timer_arrays, row=row_int, slot=slot)
             counters["pre_step_timer_fires"] += 1
@@ -1260,9 +1258,7 @@ def _advance_warmup_no_bonus_timers_impl(
     print_start_players: list[int] = []
     timer_overflow_rows: list[int] = []
 
-    active_rows = np.flatnonzero(
-        ~lifecycle_arrays["done"] & ~lifecycle_arrays["overflow"]
-    )
+    active_rows = np.flatnonzero(~lifecycle_arrays["done"] & ~lifecycle_arrays["overflow"])
     callback_count = 0
     for row in active_rows:
         row_int = int(row)
@@ -1342,9 +1338,7 @@ def _advance_warmup_no_bonus_timers_impl(
                         print_start_rows.append(row_int)
                         print_start_players.append(player)
                 else:
-                    raise VectorRuntimeError(
-                        f"unsupported warmup timer kind {kind}"
-                    )
+                    raise VectorRuntimeError(f"unsupported warmup timer kind {kind}")
 
     random_draw_delta = random_tape["draw_count"].astype(np.int64) - (
         random_draw_count_before.astype(np.int64)
@@ -1471,11 +1465,7 @@ def advance_player_movement(
     move_factor = moves[:, player].astype(np.float64, copy=False)
     if inverse is not None:
         move_factor = np.where(inverse[:, player], -move_factor, move_factor)
-    angle_delta = (
-        angular_velocity[:, player]
-        * step_ms_array
-        * move_factor
-    )
+    angle_delta = angular_velocity[:, player] * step_ms_array * move_factor
     new_heading = old_heading + angle_delta
     heading[:, player] = np.where(live_rows, new_heading, old_heading)
     distance = speed[:, player] * step_ms_array / 1000.0
@@ -1554,6 +1544,38 @@ def apply_borderless_wrap(
         ):
             raise VectorRuntimeError("live_body_num and body_count must have shape [B,P]")
         live_body_num[wrapped, player] = body_count[wrapped, player]
+    if wrapped.any() and "has_draw_cursor" in state:
+        has_draw_cursor = _state_array(state, "has_draw_cursor")
+        draw_cursor_pos = _state_array(state, "draw_cursor_pos")
+        if (
+            has_draw_cursor.ndim != 2
+            or has_draw_cursor.shape[0] != row_count
+            or has_draw_cursor.dtype != np.bool_
+            or player >= has_draw_cursor.shape[1]
+            or draw_cursor_pos.shape != (*has_draw_cursor.shape, 2)
+            or not np.issubdtype(draw_cursor_pos.dtype, np.number)
+        ):
+            raise VectorRuntimeError(
+                "has_draw_cursor and draw_cursor_pos must have shapes [B,P] and [B,P,2]"
+            )
+        has_draw_cursor[wrapped, player] = False
+        draw_cursor_pos[wrapped, player] = 0.0
+    if wrapped.any() and "has_visual_trail_last" in state:
+        has_visual_trail_last = _state_array(state, "has_visual_trail_last")
+        visual_trail_last_pos = _state_array(state, "visual_trail_last_pos")
+        if (
+            has_visual_trail_last.ndim != 2
+            or has_visual_trail_last.shape[0] != row_count
+            or has_visual_trail_last.dtype != np.bool_
+            or player >= has_visual_trail_last.shape[1]
+            or visual_trail_last_pos.shape != (*has_visual_trail_last.shape, 2)
+            or not np.issubdtype(visual_trail_last_pos.dtype, np.number)
+        ):
+            raise VectorRuntimeError(
+                "has_visual_trail_last and visual_trail_last_pos must have shapes [B,P] and [B,P,2]"
+            )
+        has_visual_trail_last[wrapped, player] = False
+        visual_trail_last_pos[wrapped, player] = 0.0
     return int(wrapped.sum()), wrapped
 
 
@@ -1631,6 +1653,28 @@ def _append_body_points_batched(
         return 0, int(overflow_rows.size)
 
     body_num = state["body_count"][insert_rows, player].copy()
+    if "body_break_before" in state:
+        body_break_before = _state_array(state, "body_break_before")
+        if (
+            body_break_before.shape != state["body_active"].shape
+            or body_break_before.dtype != np.bool_
+        ):
+            raise VectorRuntimeError("body_break_before must be a bool array with shape [B,C]")
+        if "has_draw_cursor" in state:
+            has_draw_cursor = _state_array(state, "has_draw_cursor")
+            if (
+                has_draw_cursor.ndim != 2
+                or has_draw_cursor.shape[0] != state["body_active"].shape[0]
+                or has_draw_cursor.dtype != np.bool_
+                or player >= has_draw_cursor.shape[1]
+            ):
+                raise VectorRuntimeError("has_draw_cursor must be a bool array with shape [B,P]")
+            body_break_before[insert_rows, insert_cursor] = ~has_draw_cursor[
+                insert_rows,
+                player,
+            ]
+        else:
+            body_break_before[insert_rows, insert_cursor] = False
     state["body_active"][insert_rows, insert_cursor] = True
     state["body_pos"][insert_rows, insert_cursor] = state["pos"][insert_rows, player]
     state["body_radius"][insert_rows, insert_cursor] = state["radius"][insert_rows, player]
@@ -1646,6 +1690,56 @@ def _append_body_points_batched(
     state["visible_trail_last_pos"][insert_rows, player] = state["pos"][insert_rows, player]
     state["has_draw_cursor"][insert_rows, player] = True
     state["draw_cursor_pos"][insert_rows, player] = state["pos"][insert_rows, player]
+    if insert_kind == BODY_KIND_IMPORTANT:
+        _append_visual_trail_points_batched(
+            state,
+            player=player,
+            write_mask=write_mask,
+        )
+    return int(insert_rows.size), int(overflow_rows.size)
+
+
+def _append_visual_trail_points_batched(
+    state: Mapping[str, np.ndarray],
+    *,
+    player: int,
+    write_mask: np.ndarray,
+) -> tuple[int, int]:
+    visual_arrays = _optional_visual_trail_arrays(
+        state,
+        row_count=state["tick"].shape[0],
+        player_count=state["pos"].shape[1],
+    )
+    if visual_arrays is None:
+        return 0, 0
+
+    rows = np.flatnonzero(write_mask)
+    if rows.size == 0:
+        return 0, 0
+
+    capacity = visual_arrays["active"].shape[1]
+    cursor = visual_arrays["write_cursor"][rows].astype(np.int64, copy=False)
+    can_insert = cursor < capacity
+    overflow_rows = rows[~can_insert]
+    if overflow_rows.size:
+        visual_arrays["overflow"][overflow_rows] = True
+
+    insert_rows = rows[can_insert]
+    insert_cursor = cursor[can_insert]
+    if insert_rows.size == 0:
+        return 0, int(overflow_rows.size)
+
+    visual_arrays["active"][insert_rows, insert_cursor] = True
+    visual_arrays["pos"][insert_rows, insert_cursor] = state["pos"][insert_rows, player]
+    visual_arrays["radius"][insert_rows, insert_cursor] = state["radius"][insert_rows, player]
+    visual_arrays["owner"][insert_rows, insert_cursor] = player
+    visual_arrays["break_before"][insert_rows, insert_cursor] = ~visual_arrays["has_last"][
+        insert_rows,
+        player,
+    ]
+    visual_arrays["write_cursor"][insert_rows] += 1
+    visual_arrays["has_last"][insert_rows, player] = True
+    visual_arrays["last_pos"][insert_rows, player] = state["pos"][insert_rows, player]
     return int(insert_rows.size), int(overflow_rows.size)
 
 
@@ -2208,8 +2302,7 @@ def _enabled_bonus_type_code_matrix(
     )
     if not bool(np.isin(codes, allowed_codes).all()):
         raise VectorRuntimeError(
-            "enabled_type_codes must contain source default bonus type codes or "
-            "BonusNone padding"
+            "enabled_type_codes must contain source default bonus type codes or BonusNone padding"
         )
     return codes.astype(np.int16, copy=False)
 
@@ -2435,9 +2528,7 @@ def _optional_bonus_game_stack_arrays(
         or stack_id.shape[0] != row_count
         or not np.issubdtype(stack_id.dtype, np.integer)
     ):
-        raise VectorRuntimeError(
-            "bonus_game_stack_id must be an integer array with shape [B,S]"
-        )
+        raise VectorRuntimeError("bonus_game_stack_id must be an integer array with shape [B,S]")
     stack_shape = stack_id.shape
     return {
         "count": count,
@@ -2637,10 +2728,7 @@ def _catch_bonus_batched(
                             player=target_player,
                             value=next_inverse,
                         )
-                if (
-                    _bonus_has_invincible_effect(caught_type)
-                    and old_invincible is not None
-                ):
+                if _bonus_has_invincible_effect(caught_type) and old_invincible is not None:
                     next_invincible = bool(state["invincible"][row_int, target_player])
                     if old_invincible != next_invincible:
                         _emit_invincible_property_event_row(
@@ -2699,9 +2787,7 @@ def _bonus_target_players(
             if target != catcher and bool(alive[row, target])
         )
     if target_group == BONUS_TARGET_ALL:
-        return tuple(
-            target for target in range(player_count) if bool(alive[row, target])
-        )
+        return tuple(target for target in range(player_count) if bool(alive[row, target]))
     raise VectorRuntimeError(f"unsupported avatar bonus target group {target_group!r}")
 
 
@@ -2718,8 +2804,7 @@ def _bonus_all_color_values(
         raise VectorRuntimeError("avatar_color must be an integer array with shape [B,P]")
     snapshot = [int(colors[row, player]) for player in target_players]
     return {
-        player: snapshot[(index + 1) % len(snapshot)]
-        for index, player in enumerate(target_players)
+        player: snapshot[(index + 1) % len(snapshot)] for index, player in enumerate(target_players)
     }
 
 
@@ -2797,6 +2882,8 @@ def _apply_bonus_game_clear(
         body_arrays["num"][row, :] = -1
         body_arrays["insert_tick"][row, :] = -1
         body_arrays["insert_kind"][row, :] = -1
+        if "break_before" in body_arrays:
+            body_arrays["break_before"][row, :] = False
         body_arrays["write_cursor"][row] = 0
         body_arrays["overflow"][row] = False
     _clear_visible_trail_row(
@@ -2832,15 +2919,41 @@ def _clear_visible_trail_row(
             row,
             :player_count,
         ] = 0
-    for name in ("has_visible_trail_last", "has_draw_cursor"):
+    for name in ("has_visible_trail_last", "has_draw_cursor", "has_visual_trail_last"):
         if name in state:
             _bool_array_shape(state, name, shape=player_shape)[row, :player_count] = False
-    for name in ("visible_trail_last_pos", "draw_cursor_pos"):
+    for name in ("visible_trail_last_pos", "draw_cursor_pos", "visual_trail_last_pos"):
         if name in state:
             _numeric_array_shape(state, name, shape=(*player_shape, 2))[
                 row,
                 :player_count,
             ] = 0.0
+    _clear_visual_trail_points_row(state, row=row, row_count=row_count)
+
+
+def _clear_visual_trail_points_row(
+    state: Mapping[str, np.ndarray],
+    *,
+    row: int,
+    row_count: int,
+) -> None:
+    if "visual_trail_active" not in state:
+        return
+    active = _bool_array_shape(
+        state,
+        "visual_trail_active",
+        ndim=2,
+        row_count=row_count,
+    )
+    capacity = active.shape[1]
+    trail_shape = (row_count, capacity)
+    active[row, :] = False
+    _numeric_array_shape(state, "visual_trail_pos", shape=(*trail_shape, 2))[row] = 0.0
+    _numeric_array_shape(state, "visual_trail_radius", shape=trail_shape)[row] = 0.0
+    _integer_array_shape(state, "visual_trail_owner", shape=trail_shape)[row] = -1
+    _bool_array_shape(state, "visual_trail_break_before", shape=trail_shape)[row] = False
+    _integer_array_shape(state, "visual_trail_write_cursor", shape=(row_count,))[row] = 0
+    _bool_array_shape(state, "visual_trail_overflow", shape=(row_count,))[row] = False
 
 
 def _caught_bonus_slot(
@@ -2884,9 +2997,7 @@ def _append_bonus_stack_entry(
 
     stack_arrays["id"][row, player, cursor] = bonus_id
     stack_arrays["type"][row, player, cursor] = bonus_type
-    stack_arrays["duration_ms"][row, player, cursor] = (
-        _bonus_avatar_stack_duration_ms(bonus_type)
-    )
+    stack_arrays["duration_ms"][row, player, cursor] = _bonus_avatar_stack_duration_ms(bonus_type)
     stack_arrays["radius_power"][row, player, cursor] = _bonus_radius_power(bonus_type)
     velocity_delta = stack_arrays.get("velocity_delta")
     if isinstance(velocity_delta, np.ndarray):
@@ -2896,9 +3007,7 @@ def _append_bonus_stack_entry(
         inverse_delta[row, player, cursor] = _bonus_inverse_delta(bonus_type)
     angular_velocity_per_ms = stack_arrays.get("angular_velocity_per_ms")
     if isinstance(angular_velocity_per_ms, np.ndarray):
-        angular_velocity_per_ms[row, player, cursor] = _bonus_angular_velocity_per_ms(
-            bonus_type
-        )
+        angular_velocity_per_ms[row, player, cursor] = _bonus_angular_velocity_per_ms(bonus_type)
     invincible_delta = stack_arrays.get("invincible_delta")
     if isinstance(invincible_delta, np.ndarray):
         invincible_delta[row, player, cursor] = _bonus_invincible_delta(bonus_type)
@@ -3162,13 +3271,8 @@ def _apply_bonus_avatar_effect_without_stack(
             player=player,
             shape=inverse.shape,
         )
-        inverse[row, player] = (
-            int(base_inverse) + _bonus_inverse_delta(changed_type)
-        ) % 2 != 0
-    if (
-        _bonus_has_angular_velocity_effect(changed_type)
-        and "angular_velocity_per_ms" in state
-    ):
+        inverse[row, player] = (int(base_inverse) + _bonus_inverse_delta(changed_type)) % 2 != 0
+    if _bonus_has_angular_velocity_effect(changed_type) and "angular_velocity_per_ms" in state:
         angular_velocity = _numeric_array_shape(
             state,
             "angular_velocity_per_ms",
@@ -3351,13 +3455,9 @@ def _resolve_bonus_angular_velocity_from_stack(
         return SOURCE_AVATAR_ANGULAR_VELOCITY_PER_MS
     angular_velocity = _state_array(state, "angular_velocity_per_ms")
     if angular_velocity.ndim != 2 or angular_velocity.shape[0] != row_count:
-        raise VectorRuntimeError(
-            "angular_velocity_per_ms must be a numeric array with shape [B,P]"
-        )
+        raise VectorRuntimeError("angular_velocity_per_ms must be a numeric array with shape [B,P]")
     if not np.issubdtype(angular_velocity.dtype, np.number):
-        raise VectorRuntimeError(
-            "angular_velocity_per_ms must be a numeric array with shape [B,P]"
-        )
+        raise VectorRuntimeError("angular_velocity_per_ms must be a numeric array with shape [B,P]")
 
     next_angular_velocity = _bonus_speed_adjusted_base_angular_velocity_per_ms(
         state,
@@ -3510,9 +3610,7 @@ def _resolve_bonus_color_from_stack(
             raise VectorRuntimeError(f"unsupported avatar bonus stack type {stack_type}")
         if _bonus_has_color_effect(stack_type):
             if not isinstance(stack_color, np.ndarray):
-                raise VectorRuntimeError(
-                    "bonus_stack_color is required for color bonus stacks"
-                )
+                raise VectorRuntimeError("bonus_stack_color is required for color bonus stacks")
             slot_color = int(stack_color[row, player, slot])
             if slot_color >= 0:
                 next_color = slot_color
@@ -3584,10 +3682,7 @@ def _source_speed_adjusted_angular_velocity_per_ms(
     if base_speed <= 0.0 or speed <= 0.0:
         return base_angular_velocity_per_ms
     ratio = speed / base_speed
-    return (
-        ratio * base_angular_velocity_per_ms
-        + math.log(1.0 / ratio) / 1000.0
-    )
+    return ratio * base_angular_velocity_per_ms + math.log(1.0 / ratio) / 1000.0
 
 
 def _bonus_speed_adjusted_base_angular_velocity_per_ms(
@@ -3737,9 +3832,7 @@ def _expire_bonus_avatar_stacks_batched(
                     or effect.expiry_counter is None
                     or not _is_runtime_avatar_bonus(stack_type)
                 ):
-                    raise VectorRuntimeError(
-                        f"unsupported avatar bonus stack type {stack_type}"
-                    )
+                    raise VectorRuntimeError(f"unsupported avatar bonus stack type {stack_type}")
 
                 remaining_ms = float(stack_arrays["duration_ms"][row_int, player, slot])
                 next_remaining_ms = remaining_ms - advance_ms
@@ -3936,16 +4029,12 @@ def _expire_bonus_game_borderless_stacks_batched(
                 slot += 1
                 continue
             if stack_type != BONUS_TYPE_GAME_BORDERLESS:
-                raise VectorRuntimeError(
-                    "only BonusGameBorderless game stack expiry is supported"
-                )
+                raise VectorRuntimeError("only BonusGameBorderless game stack expiry is supported")
 
             remaining_ms = float(game_stack_arrays["duration_ms"][row_int, slot])
             next_remaining_ms = remaining_ms - advance_ms
             if next_remaining_ms > 0.0:
-                game_stack_arrays["duration_ms"][row_int, slot] = int(
-                    round(next_remaining_ms)
-                )
+                game_stack_arrays["duration_ms"][row_int, slot] = int(round(next_remaining_ms))
                 slot += 1
                 continue
 
@@ -4113,12 +4202,10 @@ def _advance_pre_step_timers_batched(
     )
     for name, value in avatar_expiries.items():
         counters[name] += value
-    counters["bonus_game_borderless_expiries"] += (
-        _expire_bonus_game_borderless_stacks_batched(
-            state,
-            timer_advance_ms=advance,
-            events_enabled=events_enabled,
-        )
+    counters["bonus_game_borderless_expiries"] += _expire_bonus_game_borderless_stacks_batched(
+        state,
+        timer_advance_ms=advance,
+        events_enabled=events_enabled,
     )
     if "timer_active" not in state or not state["timer_active"].any():
         return counters
@@ -4204,6 +4291,9 @@ def _clear_visible_trail_batched(
     state["visible_trail_last_pos"][mask, player] = 0.0
     state["has_draw_cursor"][mask, player] = False
     state["draw_cursor_pos"][mask, player] = 0.0
+    if "has_visual_trail_last" in state:
+        state["has_visual_trail_last"][mask, player] = False
+        state["visual_trail_last_pos"][mask, player] = 0.0
 
 
 def _append_death_list_batched(
@@ -4286,10 +4376,7 @@ def _optional_death_detail_array(
     if name not in state:
         return None
     array = _state_array(state, name)
-    if (
-        array.shape != (row_count, capacity)
-        or not np.issubdtype(array.dtype, np.integer)
-    ):
+    if array.shape != (row_count, capacity) or not np.issubdtype(array.dtype, np.integer):
         raise VectorRuntimeError(f"{name} must be an integer array with shape [B,D]")
     return array
 
@@ -4393,11 +4480,7 @@ def _mark_terminal_lifecycle_row(
     player_count: int,
     winner: int,
 ) -> None:
-    reason = (
-        TERMINAL_REASON_SURVIVOR_WIN
-        if winner >= 0
-        else TERMINAL_REASON_ALL_DEAD_DRAW
-    )
+    reason = TERMINAL_REASON_SURVIVOR_WIN if winner >= 0 else TERMINAL_REASON_ALL_DEAD_DRAW
     if _uses_round_lifecycle(state):
         _mark_round_lifecycle_row(
             state,
@@ -5432,7 +5515,7 @@ def _body_point_arrays(
 ) -> dict[str, np.ndarray]:
     body_active = _bool_array_shape(state, "body_active", ndim=2, row_count=row_count)
     body_shape = body_active.shape
-    return {
+    arrays = {
         "active": body_active,
         "pos": _numeric_array_shape(state, "body_pos", shape=(*body_shape, 2)),
         "radius": _numeric_array_shape(state, "body_radius", shape=body_shape),
@@ -5465,6 +5548,13 @@ def _body_point_arrays(
             shape=(row_count, player_count),
         ),
     }
+    if "body_break_before" in state:
+        arrays["break_before"] = _bool_array_shape(
+            state,
+            "body_break_before",
+            shape=body_shape,
+        )
+    return arrays
 
 
 def _optional_visible_trail_arrays(
@@ -5484,9 +5574,7 @@ def _optional_visible_trail_arrays(
         return {name: None for name in names}
     missing = [name for name in names if name not in state]
     if missing:
-        raise VectorRuntimeError(
-            "visible trail arrays must be supplied together"
-        )
+        raise VectorRuntimeError("visible trail arrays must be supplied together")
 
     player_shape = (row_count, player_count)
     return {
@@ -5513,6 +5601,82 @@ def _optional_visible_trail_arrays(
         "draw_cursor_pos": _numeric_array_shape(
             state,
             "draw_cursor_pos",
+            shape=(*player_shape, 2),
+        ),
+    }
+
+
+def _optional_visual_trail_arrays(
+    state: Mapping[str, np.ndarray],
+    *,
+    row_count: int,
+    player_count: int,
+) -> dict[str, np.ndarray] | None:
+    names = (
+        "visual_trail_active",
+        "visual_trail_pos",
+        "visual_trail_radius",
+        "visual_trail_owner",
+        "visual_trail_break_before",
+        "visual_trail_write_cursor",
+        "visual_trail_overflow",
+        "has_visual_trail_last",
+        "visual_trail_last_pos",
+    )
+    if not any(name in state for name in names):
+        return None
+    missing = [name for name in names if name not in state]
+    if missing:
+        raise VectorRuntimeError("visual trail arrays must be supplied together")
+
+    active = _bool_array_shape(state, "visual_trail_active", ndim=2, row_count=row_count)
+    trail_shape = active.shape
+    player_shape = (row_count, player_count)
+    write_cursor = _integer_array_shape(
+        state,
+        "visual_trail_write_cursor",
+        shape=(row_count,),
+    )
+    if bool(((write_cursor < 0) | (write_cursor > trail_shape[1])).any()):
+        raise VectorRuntimeError(
+            "visual_trail_write_cursor values must be in [0, visual trail capacity]"
+        )
+    return {
+        "active": active,
+        "pos": _numeric_array_shape(
+            state,
+            "visual_trail_pos",
+            shape=(*trail_shape, 2),
+        ),
+        "radius": _numeric_array_shape(
+            state,
+            "visual_trail_radius",
+            shape=trail_shape,
+        ),
+        "owner": _integer_array_shape(
+            state,
+            "visual_trail_owner",
+            shape=trail_shape,
+        ),
+        "break_before": _bool_array_shape(
+            state,
+            "visual_trail_break_before",
+            shape=trail_shape,
+        ),
+        "write_cursor": write_cursor,
+        "overflow": _bool_array_shape(
+            state,
+            "visual_trail_overflow",
+            shape=(row_count,),
+        ),
+        "has_last": _bool_array_shape(
+            state,
+            "has_visual_trail_last",
+            shape=player_shape,
+        ),
+        "last_pos": _numeric_array_shape(
+            state,
+            "visual_trail_last_pos",
             shape=(*player_shape, 2),
         ),
     }
@@ -5711,13 +5875,18 @@ def _clear_player_round_arrays(
     for name in ("print_manager_distance",):
         if name in state:
             _numeric_array_shape(state, name, shape=player_shape)[row, :player_count] = 0.0
-    for name in ("print_manager_last_pos", "visible_trail_last_pos", "draw_cursor_pos"):
+    for name in (
+        "print_manager_last_pos",
+        "visible_trail_last_pos",
+        "draw_cursor_pos",
+        "visual_trail_last_pos",
+    ):
         if name in state:
             _numeric_array_shape(state, name, shape=(*player_shape, 2))[row, :player_count] = 0.0
     for name in ("visible_trail_count", "body_count", "live_body_num"):
         if name in state:
             _integer_array_shape(state, name, shape=player_shape)[row, :player_count] = 0
-    for name in ("has_visible_trail_last", "has_draw_cursor"):
+    for name in ("has_visible_trail_last", "has_draw_cursor", "has_visual_trail_last"):
         if name in state:
             _bool_array_shape(state, name, shape=player_shape)[row, :player_count] = False
 
@@ -5743,8 +5912,11 @@ def _clear_body_round_arrays(
     body_arrays["num"][row, :] = -1
     body_arrays["insert_tick"][row, :] = -1
     body_arrays["insert_kind"][row, :] = -1
+    if "break_before" in body_arrays:
+        body_arrays["break_before"][row, :] = False
     body_arrays["write_cursor"][row] = 0
     body_arrays["overflow"][row] = False
+    _clear_visual_trail_points_row(state, row=row, row_count=row_count)
 
 
 def _schedule_next_round_game_start_timer(
@@ -5842,6 +6014,11 @@ def _append_important_body_point(
     body_arrays["num"][row, cursor] = body_arrays["count"][row, player]
     body_arrays["insert_tick"][row, cursor] = tick[row]
     body_arrays["insert_kind"][row, cursor] = BODY_KIND_IMPORTANT
+    if "break_before" in body_arrays:
+        has_draw_cursor = visible_arrays.get("has_draw_cursor")
+        body_arrays["break_before"][row, cursor] = (
+            False if has_draw_cursor is None else not bool(has_draw_cursor[row, player])
+        )
     body_arrays["write_cursor"][row] += 1
     lifecycle_arrays["world_body_count"][row] += 1
     body_arrays["count"][row, player] += 1
@@ -5852,6 +6029,13 @@ def _append_important_body_point(
         visible_arrays["visible_trail_last_pos"][row, player] = pos[row, player]
         visible_arrays["has_draw_cursor"][row, player] = True
         visible_arrays["draw_cursor_pos"][row, player] = pos[row, player]
+    row_mask = np.zeros(_state_array(state, "tick").shape[0], dtype=bool)
+    row_mask[row] = True
+    _append_visual_trail_points_batched(
+        state,
+        player=player,
+        write_mask=row_mask,
+    )
     return 1, 0
 
 

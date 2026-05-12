@@ -14,8 +14,12 @@ from curvyzero.env.vector_multiplayer_env import VectorMultiplayerEnv
 from curvyzero.env.vector_visual_observation import (
     SOURCE_STATE_RGB_CANVAS_LIKE_RENDERER_IMPL_ID,
 )
+from curvyzero.env.vector_visual_observation import (
+    SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
+)
 from curvyzero.env.vector_visual_observation import SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID
 from curvyzero.env.vector_visual_observation import rgb_canvas_like_to_gray64
+from curvyzero.env.vector_visual_observation import render_source_state_canvas_gray64
 from curvyzero.env.vector_visual_observation import render_source_state_rgb_canvas_like
 from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
     CurvyZeroSourceStateVisualSurvivalLightZeroEnv,
@@ -26,8 +30,8 @@ from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env imp
     SOURCE_STATE_CANVAS_LIKE_GRAY64_SCHEMA_HASH,
     SOURCE_STATE_CANVAS_LIKE_GRAY64_SCHEMA_ID,
     SOURCE_STATE_CANVAS_LIKE_GRAY64_SURFACE,
-    SOURCE_STATE_CANVAS_LIKE_RAW64_SCHEMA_HASH,
-    SOURCE_STATE_CANVAS_LIKE_RAW64_SHAPE,
+    SOURCE_STATE_CANVAS_LIKE_RAW_CANVAS_SCHEMA_HASH,
+    SOURCE_STATE_CANVAS_LIKE_RAW_CANVAS_SHAPE,
     SOURCE_STATE_DEFAULT_TRAIL_RENDER_MODE,
     SOURCE_STATE_FIXED_OPPONENT_ENV_VARIANT,
     SOURCE_STATE_FIXED_OPPONENT_RUNTIME_TOPOLOGY,
@@ -73,11 +77,24 @@ def test_source_state_visual_survival_reset_shape_and_metadata():
         == SOURCE_STATE_CANVAS_LIKE_GRAY64_SCHEMA_HASH
     )
     assert env.last_reset_info["raw_observation_schema_id"] == SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID
-    assert env.last_reset_info["raw_observation_schema_hash"] == SOURCE_STATE_CANVAS_LIKE_RAW64_SCHEMA_HASH
+    assert env.last_reset_info["raw_observation_schema_hash"] == SOURCE_STATE_CANVAS_LIKE_RAW_CANVAS_SCHEMA_HASH
     assert env.last_reset_info["raw_observation_available"] is True
     assert env.last_reset_info["raw_observation_dtype"] == "uint8"
     assert env.last_reset_info["raw_observation_color_space"] == "RGB"
-    assert env.last_reset_info["raw_frame_shape"] == list(SOURCE_STATE_CANVAS_LIKE_RAW64_SHAPE)
+    assert env.last_reset_info["raw_frame_shape"] == list(SOURCE_STATE_CANVAS_LIKE_RAW_CANVAS_SHAPE)
+    assert env.last_reset_info["raw_frame_shape"] == [
+        SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
+        SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
+        3,
+    ]
+    assert (
+        f"frame_size={SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE}"
+        in env.last_reset_info["raw_observation_source"]
+    )
+    assert (
+        "render_source_state_canvas_gray64"
+        in env.last_reset_info["grayscale_observation_source"]
+    )
     assert (
         env.last_reset_info["default_trail_render_mode"]
         == SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES
@@ -187,16 +204,33 @@ def test_source_state_visual_survival_reset_shape_and_metadata():
     assert raw is not None
     assert raw_from_render is not None
     assert perspective_raw is not None
-    assert raw.shape == SOURCE_STATE_CANVAS_LIKE_RAW64_SHAPE
+    assert raw.shape == SOURCE_STATE_CANVAS_LIKE_RAW_CANVAS_SHAPE
     assert raw.dtype == np.uint8
     np.testing.assert_array_equal(raw, raw_from_render)
     np.testing.assert_array_equal(raw, env.render("source_state_rgb_canvas_like"))
+    human_rgb = env.human_rgb_observation(frame_size=128)
+    assert human_rgb is not None
+    assert human_rgb.shape == (128, 128, 3)
+    assert human_rgb.dtype == np.uint8
+    np.testing.assert_array_equal(
+        human_rgb,
+        render_source_state_rgb_canvas_like(
+            env._env.state,
+            row=0,
+            frame_size=128,
+            trail_render_mode=SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES,
+        ),
+    )
     np.testing.assert_array_equal(
         env.render("source_state_player_perspective_raw_visual_tensor"),
         perspective_raw,
     )
     np.testing.assert_array_equal(raw, perspective_raw)
     gray64 = rgb_canvas_like_to_gray64(raw)
+    np.testing.assert_array_equal(
+        gray64,
+        render_source_state_canvas_gray64(env._env.state, row=0),
+    )
     np.testing.assert_array_equal(
         env.render("source_state_grayscale64_visual_tensor"),
         gray64,
@@ -227,7 +261,7 @@ def test_source_state_visual_survival_terminal_snapshots_survive_manual_reset():
     assert saved_terminal_raw is not None
     np.testing.assert_array_equal(
         saved_terminal_raw,
-        render_source_state_rgb_canvas_like(env._env.state, row=0, frame_size=64),
+        render_source_state_rgb_canvas_like(env._env.state, row=0),
     )
 
     returned_raw_copy = env.raw_observation()
@@ -310,14 +344,18 @@ def test_source_state_visual_survival_step_and_terminal_telemetry(tmp_path):
     assert terminal_raw is not None
     assert terminal_raw_from_render is not None
     assert terminal_player_perspective_raw is not None
-    assert terminal_raw.shape == SOURCE_STATE_CANVAS_LIKE_RAW64_SHAPE
+    assert terminal_raw.shape == SOURCE_STATE_CANVAS_LIKE_RAW_CANVAS_SHAPE
     assert terminal_raw.dtype == np.uint8
     np.testing.assert_array_equal(terminal_raw, terminal_raw_from_render)
     np.testing.assert_array_equal(
         terminal_raw,
-        render_source_state_rgb_canvas_like(env._env.state, row=0, frame_size=64),
+        render_source_state_rgb_canvas_like(env._env.state, row=0),
     )
     terminal_gray64 = rgb_canvas_like_to_gray64(terminal_player_perspective_raw)
+    np.testing.assert_array_equal(
+        terminal_gray64,
+        render_source_state_canvas_gray64(env._env.state, row=0),
+    )
     np.testing.assert_allclose(
         timestep.info["final_observation"]["observation"][-1],
         terminal_gray64[0].astype(np.float32) / np.float32(255.0),
@@ -331,7 +369,7 @@ def test_source_state_visual_survival_step_and_terminal_telemetry(tmp_path):
         == SOURCE_STATE_CANVAS_LIKE_GRAY64_SCHEMA_HASH
     )
     assert timestep.info["raw_observation_schema_id"] == SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID
-    assert timestep.info["raw_observation_schema_hash"] == SOURCE_STATE_CANVAS_LIKE_RAW64_SCHEMA_HASH
+    assert timestep.info["raw_observation_schema_hash"] == SOURCE_STATE_CANVAS_LIKE_RAW_CANVAS_SCHEMA_HASH
     assert timestep.info["raw_observation_available"] is True
     assert timestep.info["raw_observation_accessors"] == [
         "raw_observation()",
@@ -486,7 +524,7 @@ def test_source_state_visual_survival_allows_explicit_fast_trail_mode_metadata()
     )
     assert env.last_reset_info["trail_renderer_is_approximation"] is True
     assert env.last_reset_info["browser_style_trail_renderer"] is False
-    assert env.raw_observation().shape == SOURCE_STATE_CANVAS_LIKE_RAW64_SHAPE
+    assert env.raw_observation().shape == SOURCE_STATE_CANVAS_LIKE_RAW_CANVAS_SHAPE
     assert timestep.info["trail_render_mode"] == (
         SOURCE_STATE_TRAIL_RENDER_MODE_BODY_CIRCLES_FAST
     )

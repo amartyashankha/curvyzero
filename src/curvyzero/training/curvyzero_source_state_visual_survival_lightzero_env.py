@@ -10,10 +10,13 @@ import numpy as np
 
 from curvyzero.env import vector_runtime
 from curvyzero.env.vector_multiplayer_env import ACTION_COUNT
+from curvyzero.env.vector_multiplayer_env import DEFAULT_DECISION_SOURCE_FRAMES
+from curvyzero.env.vector_multiplayer_env import DEFAULT_SOURCE_FRAME_DECISION_MS
 from curvyzero.env.vector_multiplayer_env import JOINT_ACTION_SCHEMA_ID
 from curvyzero.env.vector_multiplayer_env import NATURAL_BONUS_ENV_IMPL_ID
 from curvyzero.env.vector_multiplayer_env import NATURAL_BONUS_RULESET_ID
 from curvyzero.env.vector_multiplayer_env import PUBLIC_NATURAL_BONUS_ENV_CONTRACT_ID
+from curvyzero.env.vector_multiplayer_env import SOURCE_PHYSICS_STEP_MS
 from curvyzero.env.vector_multiplayer_env import VectorMultiplayerEnv
 from curvyzero.env.trainer_contract import (
     REWARD_SCHEMA_HASH as SPARSE_ROUND_OUTCOME_REWARD_SCHEMA_HASH,
@@ -49,11 +52,14 @@ from curvyzero.env.vector_visual_observation import SOURCE_STATE_CANVAS_GRAY64_U
 from curvyzero.env.vector_visual_observation import (
     SOURCE_STATE_RGB_CANVAS_LIKE_RENDERER_IMPL_ID,
 )
+from curvyzero.env.vector_visual_observation import (
+    SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
+)
 from curvyzero.env.vector_visual_observation import SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID
 from curvyzero.env.vector_visual_observation import (
     SOURCE_STATE_RGB_CANVAS_LIKE_TRUTH_LEVEL,
 )
-from curvyzero.env.vector_visual_observation import rgb_canvas_like_to_gray64
+from curvyzero.env.vector_visual_observation import render_source_state_canvas_gray64
 from curvyzero.env.vector_visual_observation import render_source_state_rgb_canvas_like
 
 try:
@@ -157,9 +163,13 @@ STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID = (
     "curvyzero_source_state_rgb_canvas_like_gray64_stack4/v0"
 )
 STACKED_SOURCE_STATE_GRAY64_SHAPE = (4, 64, 64)
-SOURCE_STATE_CANVAS_LIKE_RAW64_SHAPE = (64, 64, 3)
-SOURCE_STATE_CANVAS_LIKE_RAW64_DTYPE = "uint8"
-SOURCE_STATE_CANVAS_LIKE_RAW64_VALUE_RANGE = (0, 255)
+SOURCE_STATE_CANVAS_LIKE_RAW_CANVAS_SHAPE = (
+    SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
+    SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
+    3,
+)
+SOURCE_STATE_CANVAS_LIKE_RAW_CANVAS_DTYPE = "uint8"
+SOURCE_STATE_CANVAS_LIKE_RAW_CANVAS_VALUE_RANGE = (0, 255)
 SOURCE_STATE_DEFAULT_TRAIL_RENDER_MODE = SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES
 SOURCE_STATE_BROWSER_TRAIL_SEMANTICS = "persistent_background_canvas_round_line_caps"
 SOURCE_STATE_BROWSER_CLIENT_TRAIL_POINT_CAVEAT = (
@@ -167,20 +177,22 @@ SOURCE_STATE_BROWSER_CLIENT_TRAIL_POINT_CAVEAT = (
     "position-event trail points"
 )
 SOURCE_STATE_BROWSER_PIXEL_FIDELITY_CLAIM = "not_validated_against_browser_canvas"
-SOURCE_STATE_CANVAS_LIKE_RAW64_SCHEMA_HASH = stable_contract_hash(
+SOURCE_STATE_CANVAS_LIKE_RAW_CANVAS_SCHEMA_HASH = stable_contract_hash(
     {
         "schema_id": SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID,
         "renderer_impl_id": SOURCE_STATE_RGB_CANVAS_LIKE_RENDERER_IMPL_ID,
         "default_trail_render_mode": SOURCE_STATE_DEFAULT_TRAIL_RENDER_MODE,
         "supported_trail_render_modes": list(SOURCE_STATE_SUPPORTED_TRAIL_RENDER_MODES),
-        "shape": list(SOURCE_STATE_CANVAS_LIKE_RAW64_SHAPE),
-        "dtype": SOURCE_STATE_CANVAS_LIKE_RAW64_DTYPE,
-        "range": list(SOURCE_STATE_CANVAS_LIKE_RAW64_VALUE_RANGE),
-        "frame_size": 64,
+        "shape": list(SOURCE_STATE_CANVAS_LIKE_RAW_CANVAS_SHAPE),
+        "dtype": SOURCE_STATE_CANVAS_LIKE_RAW_CANVAS_DTYPE,
+        "range": list(SOURCE_STATE_CANVAS_LIKE_RAW_CANVAS_VALUE_RANGE),
+        "frame_size": SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
         "source": (
             "render_source_state_rgb_canvas_like("
-            "frame_size=64, trail_render_mode='browser_lines')"
+            f"frame_size={SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE}, "
+            "trail_render_mode='browser_lines')"
         ),
+        "role": "raw_full_frame_rgb_canvas_for_render_and_gray64_downsample_source",
         "truth_level": SOURCE_STATE_RGB_CANVAS_LIKE_TRUTH_LEVEL,
         "browser_pixel_fidelity": False,
         "browser_pixel_fidelity_claim": SOURCE_STATE_BROWSER_PIXEL_FIDELITY_CLAIM,
@@ -201,7 +213,7 @@ SOURCE_BODY_VALUE_BASE = 96
 SOURCE_BODY_VALUE_STEP = 32
 SOURCE_HEAD_VALUE_BASE = 224
 SOURCE_HEAD_VALUE_STEP = 8
-DEFAULT_DECISION_MS = 300.0
+DEFAULT_DECISION_MS = DEFAULT_SOURCE_FRAME_DECISION_MS
 DEFAULT_MAX_TICKS = 2_000
 DEFAULT_POLICY_ACTION_REPEAT_EXTRA_PROBABILITY = 0.0
 DEFAULT_POLICY_ACTION_REPEAT_MAX = 1
@@ -278,16 +290,19 @@ STACKED_SOURCE_STATE_GRAY64_SCHEMA_HASH = stable_contract_hash(
         "single_frame_schema_id": SOURCE_STATE_CANVAS_LIKE_GRAY64_SCHEMA_ID,
         "single_frame_schema_hash": SOURCE_STATE_CANVAS_LIKE_GRAY64_SCHEMA_HASH,
         "raw_observation_schema_id": SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID,
-        "raw_observation_schema_hash": SOURCE_STATE_CANVAS_LIKE_RAW64_SCHEMA_HASH,
+        "raw_observation_schema_hash": SOURCE_STATE_CANVAS_LIKE_RAW_CANVAS_SCHEMA_HASH,
         "default_trail_render_mode": SOURCE_STATE_DEFAULT_TRAIL_RENDER_MODE,
         "supported_trail_render_modes": list(SOURCE_STATE_SUPPORTED_TRAIL_RENDER_MODES),
         "shape": list(STACKED_SOURCE_STATE_GRAY64_SHAPE),
         "dtype": SOURCE_STATE_CANVAS_GRAY64_NORMALIZED_DTYPE,
         "range": list(SOURCE_STATE_CANVAS_GRAY64_NORMALIZED_VALUE_RANGE),
         "frame_stack_owner": "curvyzero_source_state_survival_wrapper",
-        "frame_stack_proof": "wrapper_owned_fifo_stack; not LightZero env-manager stacking",
+        "frame_stack_proof": (
+            "wrapper_owned_raw_canvas_to_downsampled_gray64_fifo_stack; "
+            "not LightZero env-manager stacking"
+        ),
         "source_path": (
-            "source-state canvas-like RGB64 raw frame -> luminance gray64 -> "
+            "source-state canvas-like raw RGB canvas -> area-downsampled gray64 -> "
             "normalized FIFO stack"
         ),
     }
@@ -346,10 +361,15 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         self._seed = int(_cfg_get(cfg, "seed", 0))
         self._episode_seed = self._seed
         self._dynamic_seed = bool(_cfg_get(cfg, "dynamic_seed", False))
-        self._decision_ms = float(_cfg_get(cfg, "decision_ms", DEFAULT_DECISION_MS))
+        (
+            self._decision_source_frames,
+            self._source_physics_step_ms,
+            self._decision_ms,
+        ) = _source_frame_decision_config(cfg)
         self._max_ticks = int(
             _cfg_get(cfg, "max_ticks", _cfg_get(cfg, "source_max_steps", DEFAULT_MAX_TICKS))
         )
+        self._max_source_ticks = self._max_ticks * self._decision_source_frames
         self._source_state_trail_render_mode = _validate_trail_render_mode(
             _cfg_get(
                 cfg,
@@ -435,7 +455,10 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
                 f"{allowed_reward_variants!r}; got {self._reward_variant!r}"
             )
         self._env = self._new_env(self._seed)
-        self._raw_frame = np.zeros(SOURCE_STATE_CANVAS_LIKE_RAW64_SHAPE, dtype=np.uint8)
+        self._raw_frame = np.zeros(
+            SOURCE_STATE_CANVAS_LIKE_RAW_CANVAS_SHAPE,
+            dtype=np.uint8,
+        )
         self._gray64_frame = np.zeros(SOURCE_STATE_CANVAS_GRAY64_SHAPE, dtype=np.uint8)
         self._normalized_frame = np.zeros(SOURCE_STATE_CANVAS_GRAY64_SHAPE, dtype=np.float32)
         self._stack = np.zeros(STACKED_SOURCE_STATE_GRAY64_SHAPE, dtype=np.float32)
@@ -623,6 +646,20 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         _ = player_perspective
         return self._raw_frame.copy()
 
+    def human_rgb_observation(
+        self,
+        *,
+        frame_size: int = SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
+    ) -> np.ndarray | None:
+        if not self._has_reset:
+            return None
+        return render_source_state_rgb_canvas_like(
+            self._env.state,
+            row=0,
+            frame_size=frame_size,
+            trail_render_mode=self._source_state_trail_render_mode,
+        )
+
     def __repr__(self) -> str:
         return (
             "CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv("
@@ -638,7 +675,9 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             player_count=2,
             seed=seed,
             decision_ms=self._decision_ms,
-            max_ticks=self._max_ticks,
+            decision_source_frames=self._decision_source_frames,
+            source_physics_step_ms=self._source_physics_step_ms,
+            max_ticks=self._max_source_ticks,
             death_mode=self._death_mode,
             natural_bonus_spawn=True,
         )
@@ -653,16 +692,12 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         }
 
     def _update_stack(self) -> np.ndarray:
-        render_source_state_rgb_canvas_like(
+        gray64 = render_source_state_canvas_gray64(
             self._env.state,
             row=0,
-            out=self._raw_frame,
-            frame_size=64,
-            trail_render_mode=self._source_state_trail_render_mode,
-        )
-        gray64 = rgb_canvas_like_to_gray64(
-            self._raw_frame,
             out=self._gray64_frame,
+            rgb_out=self._raw_frame,
+            trail_render_mode=self._source_state_trail_render_mode,
         )
         np.multiply(
             gray64,
@@ -927,7 +962,11 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             "ruleset_id": ruleset_id,
             "rules_hash": str(public_info["rules_hash"]),
             "decision_ms": float(self._decision_ms),
+            "decision_source_frames": int(self._decision_source_frames),
+            "source_physics_step_ms": float(self._source_physics_step_ms),
+            "source_frame_decision": True,
             "max_ticks": int(self._max_ticks),
+            "max_source_ticks": int(self._max_source_ticks),
             "player_count": 2,
             "player_ids": ("player_0", "player_1"),
             "observation_schema_id": STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID,
@@ -935,7 +974,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             "single_frame_schema_id": SOURCE_STATE_CANVAS_LIKE_GRAY64_SCHEMA_ID,
             "single_frame_schema_hash": SOURCE_STATE_CANVAS_LIKE_GRAY64_SCHEMA_HASH,
             "raw_observation_schema_id": SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID,
-            "raw_observation_schema_hash": SOURCE_STATE_CANVAS_LIKE_RAW64_SCHEMA_HASH,
+            "raw_observation_schema_hash": SOURCE_STATE_CANVAS_LIKE_RAW_CANVAS_SCHEMA_HASH,
             "raw_observation_available": True,
             "raw_observation_accessors": [
                 "raw_observation()",
@@ -946,7 +985,14 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             "raw_observation_color_space": "RGB",
             "raw_observation_source": (
                 "render_source_state_rgb_canvas_like("
-                f"frame_size=64, trail_render_mode={self._source_state_trail_render_mode!r})"
+                "frame_size="
+                f"{SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE}, "
+                f"trail_render_mode={self._source_state_trail_render_mode!r})"
+            ),
+            "grayscale_observation_source": (
+                "render_source_state_canvas_gray64("
+                "rgb_out=raw_observation_buffer, "
+                f"trail_render_mode={self._source_state_trail_render_mode!r})"
             ),
             "player_perspective_schema_id": None,
             "renderer_impl_id": SOURCE_STATE_CANVAS_LIKE_GRAY64_RENDERER_IMPL_ID,
@@ -973,13 +1019,13 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             "dtype": SOURCE_STATE_CANVAS_GRAY64_NORMALIZED_DTYPE,
             "range": list(SOURCE_STATE_CANVAS_GRAY64_NORMALIZED_VALUE_RANGE),
             "value_range": list(SOURCE_STATE_CANVAS_GRAY64_NORMALIZED_VALUE_RANGE),
-            "raw_frame_shape": list(SOURCE_STATE_CANVAS_LIKE_RAW64_SHAPE),
+            "raw_frame_shape": list(SOURCE_STATE_CANVAS_LIKE_RAW_CANVAS_SHAPE),
             "grayscale_frame_shape": list(SOURCE_STATE_CANVAS_GRAY64_SHAPE),
             "lightzero_payload_shape": list(STACKED_SOURCE_STATE_GRAY64_SHAPE),
             "model_observation_shape": list(STACKED_SOURCE_STATE_GRAY64_SHAPE),
             "frame_stack_owner": "curvyzero_source_state_survival_wrapper",
             "frame_stack_proof": (
-                "wrapper_owned_canvas_like_rgb64_to_gray64_fifo_stack; "
+                "wrapper_owned_raw_canvas_to_downsampled_gray64_fifo_stack; "
                 "not LightZero env-manager stacking"
             ),
             "reward_schema_id": self._reward_schema_id(),
@@ -1621,6 +1667,34 @@ def _validate_trail_render_mode(value: Any) -> str:
     return trail_render_mode
 
 
+def _source_frame_decision_config(cfg: Any) -> tuple[int, float, float]:
+    source_physics_step_ms = float(
+        _cfg_get(cfg, "source_physics_step_ms", SOURCE_PHYSICS_STEP_MS)
+    )
+    if not np.isfinite(source_physics_step_ms) or source_physics_step_ms <= 0.0:
+        raise ValueError("source_physics_step_ms must be positive and finite")
+
+    raw_frames = _cfg_get(cfg, "decision_source_frames", None)
+    if raw_frames is None:
+        raw_decision_ms = _cfg_get(cfg, "decision_ms", None)
+        if raw_decision_ms is None:
+            frames = DEFAULT_DECISION_SOURCE_FRAMES
+        else:
+            ratio = float(raw_decision_ms) / source_physics_step_ms
+            frames = int(round(ratio))
+            if frames < 1 or not np.isclose(ratio, frames, rtol=0.0, atol=1e-6):
+                raise ValueError(
+                    "decision_ms must be a whole number of source physics frames; "
+                    "prefer decision_source_frames"
+                )
+    else:
+        frames = int(raw_frames)
+        if frames < 1:
+            raise ValueError("decision_source_frames must be positive")
+
+    return frames, source_physics_step_ms, frames * source_physics_step_ms
+
+
 def _cfg_get(cfg: Any, key: str, default: Any) -> Any:
     if isinstance(cfg, dict):
         return cfg.get(key, default)
@@ -1668,8 +1742,10 @@ __all__ = [
     "SOURCE_STATE_CANVAS_LIKE_GRAY64_SCHEMA_HASH",
     "SOURCE_STATE_CANVAS_LIKE_GRAY64_SCHEMA_ID",
     "SOURCE_STATE_CANVAS_LIKE_GRAY64_SURFACE",
-    "SOURCE_STATE_CANVAS_LIKE_RAW64_SCHEMA_HASH",
-    "SOURCE_STATE_CANVAS_LIKE_RAW64_SHAPE",
+    "SOURCE_STATE_CANVAS_LIKE_RAW_CANVAS_DTYPE",
+    "SOURCE_STATE_CANVAS_LIKE_RAW_CANVAS_SCHEMA_HASH",
+    "SOURCE_STATE_CANVAS_LIKE_RAW_CANVAS_SHAPE",
+    "SOURCE_STATE_CANVAS_LIKE_RAW_CANVAS_VALUE_RANGE",
     "SOURCE_STATE_DEFAULT_TRAIL_RENDER_MODE",
     "SOURCE_STATE_SUPPORTED_TRAIL_RENDER_MODES",
     "SOURCE_STATE_TRAIL_RENDER_MODE_BODY_CIRCLES_FAST",

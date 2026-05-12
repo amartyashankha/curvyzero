@@ -22,9 +22,127 @@ still using the older direct gray renderer while the launcher looked canonical.
 Local focused validation:
 
 ```text
-uv run pytest tests/test_curvytron_two_seat_render_mode.py tests/test_curvytron_live_checkpoint_eval_plumbing.py -q
-24 passed, 1 skipped
+uv run pytest tests/test_curvytron_live_checkpoint_eval_plumbing.py \
+  tests/test_benchmark_render_lane_microbench.py \
+  tests/test_curvytron_two_seat_render_mode.py -q
+33 passed, 1 skipped
 ```
+
+Tiny canonical Modal smokes also passed with background eval/GIF off and no
+optimizer step:
+
+```text
+browser_lines: opt-two-seat-render-browser-smoke-20260512 /
+  smoke-browser-sim2-c2-steps2, ok=true, cuda:0, 2 collect steps,
+  visual_stack_update_sec=0.006174, policy_search_sec=0.996561
+body_circles_fast: opt-two-seat-render-fast-smoke-20260512 /
+  smoke-fast-sim2-c2-steps2, ok=true, cuda:0, 2 collect steps,
+  visual_stack_update_sec=0.004412, policy_search_sec=0.984035
+browser_lines profile_no_death: opt-two-seat-render-nodeath-smoke-20260512 /
+  smoke-browser-nodeath-sim2-c2-steps2, ok=true, cuda:0, 2 collect steps,
+  death_mode=profile_no_death, visual_stack_update_sec=0.006332,
+  policy_search_sec=1.041592
+```
+
+Fresh 2026-05-12 long-render read: pre-stabilization long no-death two-seat
+profiles now show render redraw as the clear bottleneck once trails grow. For L4/T4,
+`browser_lines`, batch 16, sim 8, 10 outer iterations, 32 collect steps, the
+last iteration spent about `59.1s` in `visual_stack_update_sec` versus `2.34s`
+in policy/search. `body_circles_fast` reduced the same late visual bucket to
+about `27.7s`, but remains an approximation mode. A speculative duplicate
+two-seat render avoidance experiment reduced late L4 browser-lines visual time
+to about `24.0s`; it was intentionally not kept because rich rendering is still
+changing. See
+[render optimization research](render_optimization_research_2026-05-12.md).
+Reprofile after Environment finishes the current browser-lines trail updates.
+Toy direct-render probes already confirm the shape: B16/P2 browser-lines
+`stack.update` was about `2.6ms` at trail length 0, `47ms` at 64, `181ms` at
+256, and `740ms` at 1024. Direct render and stack update were close at nonzero
+trail lengths, so redraw dominates stack/copy for now.
+The local render microbench now lives at
+`scripts/benchmark_render_lane_microbench.py`; focused validation passed:
+
+```text
+uv run pytest tests/test_benchmark_render_lane_microbench.py \
+  tests/test_curvytron_two_seat_render_mode.py -q
+15 passed
+```
+
+Its latest small synthetic probe reports B16/P2 browser-lines stack update
+around `717ms/update` at L1024 and `2714ms/update` at L4096, while
+stack-shift/insert/return-copy-only is only about `0.26ms/update`.
+These older local numbers are direct-64 synthetic shape evidence. They are not
+current optimizer targets now that canvas-gray64 renders 704x704 RGB and
+downsamples to 64x64; reprofile the active 704-to-64 surface before choosing
+render optimizations.
+
+Active 704-to-64 local probe, 2026-05-12: B8/P2/L1024 `browser_lines`
+`stack.update` is about `481ms/update`; `body_circles_fast` is about
+`334ms/update`; gray64 render-only is about `30.2ms` per player-perspective
+call for browser-lines; stack-shift/insert/return-copy-only is only about
+`0.1ms/update`. Plain read: the current bottleneck is full-resolution gray64
+rendering, not FIFO stack copying.
+
+Tiny canonical Modal smoke on the same active path passed:
+`opt-active-render-fullpath-wait-20260512 /
+active-render-b2-sim2-it3-steps4-wait`. It used `gpu-l4-t4`, `cuda:0`,
+`profile_no_death`, `browser_lines`, `batch_size=2`, `num_simulations=2`,
+3 outer iterations, 4 collect steps per iteration, background eval/GIF off,
+and no initial checkpoint. The surface reported `rgb_source_frame_size=704`.
+Final-iteration timing was `visual_stack_update_sec=0.154739`,
+`policy_search_sec=0.046904`, and `env_step_sec=0.006604`; first policy/search
+included warm-up (`0.993303`). It saved a final checkpoint, so use the
+instrumented buckets, not total wall time, for this smoke.
+
+Active 20-iteration no-death profiles on the canonical two-seat path also
+completed, L4/T4, batch 8, sim 4, 16 collect steps per iteration, 320 collected
+steps, background eval/GIF off. Product `browser_lines` took `219.37s` elapsed;
+named buckets were `191.64s` visual stack update, `8.38s` policy/search,
+`0.96s` env step, and `0.21s` replay row build. Approximate
+`body_circles_fast` took `177.74s` elapsed; named buckets were `134.64s`
+visual stack update, `11.99s` policy/search, `1.44s` env step, and `0.30s`
+replay row build. Plain read: the active full-resolution render/downsample path
+is currently the bottleneck; MCTS/search is not the limiter in this small sim4
+long-trail profile.
+
+2026-05-12 render optimization landing: the two-seat stack now uses
+`render_source_state_canvas_gray64_player_perspectives` for `P=2`. It renders
+the shared trail layer once, palette-remaps the full RGB frame for each player
+perspective, draws heads/bonuses, then downsamples. Ambiguous palettes fall back
+to independent renders. Focused validation passed:
+
+```text
+uv run pytest tests/test_benchmark_render_lane_microbench.py \
+  tests/test_curvytron_two_seat_render_mode.py -q
+11 passed
+```
+
+Fresh granular local read, B8/P2 `browser_lines`, active 704-to-64 path:
+
+```text
+L1024:
+  independent gray64 render     29.94ms per player-perspective call
+  perspective reuse             23.83ms per player row
+  full stack update            313.17ms per batch update
+  stack copy only                0.08ms per batch update
+
+L4096:
+  independent gray64 render    113.40ms per player-perspective call
+  perspective reuse             63.00ms per player row
+  full stack update            977.86ms per batch update
+  stack copy only                0.10ms per batch update
+```
+
+Plain read: duplicate perspective redraw is partially fixed, but the remaining
+Amdahl bottleneck is still long trail-history rendering. The next useful
+optimizer target is an incremental/static trail layer or direct-luma renderer,
+not stack FIFO/copy cleanup.
+
+Profiling artifact hygiene: default Coach runs still enable background GIFs and
+write the `show_in_gif_browser.flag` marker. Optimizer profiling runs with
+`--no-background-gif-enabled` now suppress that marker too, so profile runs do
+not clutter the GIF browser website. The two pre-fix profile markers above were
+removed from the Modal volume.
 
 Fresh 2026-05-10 read: active optimizer target is CurvyTron visual, non-ALE,
 wrapper-stacked debug survival profiling. The missing artifact is a bounded

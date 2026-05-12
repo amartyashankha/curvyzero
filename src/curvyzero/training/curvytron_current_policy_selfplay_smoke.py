@@ -21,7 +21,6 @@ from typing import Any
 
 import numpy as np
 
-from curvyzero.env.vector_multiplayer_env import VectorMultiplayerBatch
 from curvyzero.env.vector_multiplayer_env import VectorMultiplayerEnv
 from curvyzero.env.vector_visual_observation import (
     SOURCE_STATE_GRAY64_NORMALIZED_DTYPE,
@@ -29,15 +28,21 @@ from curvyzero.env.vector_visual_observation import (
 from curvyzero.env.vector_visual_observation import (
     SOURCE_STATE_GRAY64_NORMALIZED_VALUE_RANGE,
 )
-from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_SCHEMA_HASH
-from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_SCHEMA_ID
+from curvyzero.env.vector_visual_observation import SOURCE_STATE_CANVAS_GRAY64_SCHEMA_HASH
+from curvyzero.env.vector_visual_observation import SOURCE_STATE_CANVAS_GRAY64_SCHEMA_ID
 from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_SHAPE
+from curvyzero.env.vector_visual_observation import (
+    SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
+)
 from curvyzero.env.vector_visual_observation import TRAIL_RENDER_MODE_BODY_CIRCLES_FAST
 from curvyzero.env.vector_visual_observation import TRAIL_RENDER_MODE_BROWSER_LINES
 from curvyzero.env.vector_visual_observation import TRAIL_RENDER_MODE_DEFAULT
 from curvyzero.env.vector_visual_observation import TRAIL_RENDER_MODE_ORDER
 from curvyzero.env.vector_visual_observation import normalize_source_state_gray64
 from curvyzero.env.vector_visual_observation import render_source_state_canvas_gray64
+from curvyzero.env.vector_visual_observation import (
+    render_source_state_canvas_gray64_player_perspectives,
+)
 from curvyzero.training.policy_row_mapping import build_policy_row_mapping
 from curvyzero.training.policy_row_mapping import policy_rows_to_joint_action
 
@@ -322,7 +327,19 @@ class SourceStateGray64Stack4:
             dtype=np.float32,
         )
         self._raw = np.zeros(SOURCE_STATE_GRAY64_SHAPE, dtype=np.uint8)
-        self._rgb = np.zeros((64, 64, 3), dtype=np.uint8)
+        self._rgb = np.zeros(
+            (
+                SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
+                SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
+                3,
+            ),
+            dtype=np.uint8,
+        )
+        self._rgb_base = np.zeros_like(self._rgb)
+        self._raw_perspectives = np.zeros(
+            (self.player_count, *SOURCE_STATE_GRAY64_SHAPE),
+            dtype=np.uint8,
+        )
         self._normalized = np.zeros(SOURCE_STATE_GRAY64_SHAPE, dtype=np.float32)
 
     def render_metadata(self) -> dict[str, Any]:
@@ -333,6 +350,31 @@ class SourceStateGray64Stack4:
             raise ValueError("env shape changed after stack creation")
         for env_row in range(self.batch_size):
             self.stack[env_row, :, :-1] = self.stack[env_row, :, 1:]
+            if self.player_count == 2:
+                raw_frames = render_source_state_canvas_gray64_player_perspectives(
+                    env.state,
+                    row=env_row,
+                    out=self._raw_perspectives,
+                    rgb_base_out=self._rgb_base,
+                    rgb_work_out=self._rgb,
+                    player_rgbs=[
+                        player_perspective_rgb_palette(
+                            env.state,
+                            row=env_row,
+                            controlled_player=player,
+                            player_count=self.player_count,
+                        )
+                        for player in range(self.player_count)
+                    ],
+                    trail_render_mode=self.trail_render_mode,
+                )
+                for player in range(self.player_count):
+                    frame = normalize_source_state_gray64(
+                        raw_frames[player],
+                        out=self._normalized,
+                    )
+                    self.stack[env_row, player, -1] = frame[0]
+                continue
             for player in range(self.player_count):
                 raw = render_source_state_canvas_gray64(
                     env.state,
@@ -372,7 +414,9 @@ def source_state_gray64_stack4_render_metadata(
         "default_trail_render_mode": TRAIL_RENDER_MODE_DEFAULT,
         "supported_trail_render_modes": list(TRAIL_RENDER_MODE_ORDER),
         "single_frame_render_api": "render_source_state_canvas_gray64",
-        "render_pipeline": "source_state_rgb_canvas_like_64_to_gray64",
+        "render_pipeline": "source_state_rgb_canvas_like_raw_canvas_to_gray64",
+        "rgb_source_frame_size": SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
+        "downsample_target_frame_size": 64,
         "rgb_to_gray64": True,
         "trail_renderer_kind": (
             "connected_rounded_lines"
@@ -771,8 +815,8 @@ def run_curvytron_current_policy_selfplay_smoke(
             "per_policy_row_shape": list(STACKED_SOURCE_STATE_GRAY64_SHAPE),
             "observation_dtype": SOURCE_STATE_GRAY64_NORMALIZED_DTYPE,
             "value_range": list(SOURCE_STATE_GRAY64_NORMALIZED_VALUE_RANGE),
-            "single_frame_schema_id": SOURCE_STATE_GRAY64_SCHEMA_ID,
-            "single_frame_schema_hash": SOURCE_STATE_GRAY64_SCHEMA_HASH,
+            "single_frame_schema_id": SOURCE_STATE_CANVAS_GRAY64_SCHEMA_ID,
+            "single_frame_schema_hash": SOURCE_STATE_CANVAS_GRAY64_SCHEMA_HASH,
             "stack_schema_id": STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID,
             "player_perspective": player_perspective_diagnostics(observation),
             "action_space_size": ACTION_COUNT,

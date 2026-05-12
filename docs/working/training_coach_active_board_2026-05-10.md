@@ -42,6 +42,11 @@ Updated 2026-05-12 00:05 EDT.
   live LightZero MuZero policy chooses both players' actions from the same
   pre-step state; the CurvyTron env advances once with the joint action; learner
   updates mutate that same policy for later collection.
+- Reset starts are already varied by generated reset seeds. Default
+  stochasticity is mild: action repeat `min=1`, `max=3`,
+  `extra_probability=0.20`, which is about `80%` normal, `16%` held one extra
+  step, and `4%` held two extra steps. Add visual Gaussian noise `0.10`, keep
+  random no-op/drop off, and use no warmup schedule.
 - The older `lightzero_curvytron_two_seat_train_smoke.py` Modal wrapper has
   been deleted. Historical commands must be translated to the canonical
   launcher before use.

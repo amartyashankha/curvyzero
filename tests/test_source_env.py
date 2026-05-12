@@ -34,12 +34,10 @@ _MID_ROUND_REMOVE_AVATAR_SCENARIO = (
     _SCENARIO_DIR / "source_lifecycle_mid_round_remove_avatar_2p.json"
 )
 _MID_ROUND_REMOVE_AVATAR_3P_SCENARIO = (
-    _SCENARIO_DIR
-    / "source_lifecycle_mid_round_remove_avatar_3p_continue_round_end.json"
+    _SCENARIO_DIR / "source_lifecycle_mid_round_remove_avatar_3p_continue_round_end.json"
 )
 _MID_ROUND_REMOVE_AVATAR_4P_SCENARIO = (
-    _SCENARIO_DIR
-    / "source_lifecycle_mid_round_remove_avatar_4p_continue_round_end.json"
+    _SCENARIO_DIR / "source_lifecycle_mid_round_remove_avatar_4p_continue_round_end.json"
 )
 
 
@@ -273,6 +271,51 @@ def _seed_source_body(
     game.world_active = game.world.active
     owner.body_count = max(owner.body_count, num + 1)
     return body
+
+
+def test_source_world_body_snapshot_marks_visual_segment_starts():
+    env = _active_source_env()
+    avatar = env.avatar_by_id(1)
+    avatar.printing = True
+    avatar.trail_last_x = None
+    avatar.trail_last_y = None
+
+    env.step({}, elapsed_ms=0)
+    env.set_avatar_state(1, x=21, y=20, angle=0)
+    env.step({}, elapsed_ms=0)
+    avatar.trail_last_x = None
+    avatar.trail_last_y = None
+    env.set_avatar_state(1, x=22, y=20, angle=0)
+    env.step({}, elapsed_ms=0)
+
+    bodies = env.world_bodies_snapshot()
+    assert [body["breakBefore"] for body in bodies] == [True, False, True]
+
+
+def test_source_visual_trail_snapshot_keeps_dense_position_points_separate_from_bodies():
+    env = _active_source_env()
+    avatar = env.avatar_by_id(1)
+    avatar.printing = True
+    avatar.trail_last_x = 20.0
+    avatar.trail_last_y = 20.0
+    avatar.visual_trail_last_x = 20.0
+    avatar.visual_trail_last_y = 20.0
+
+    env.set_avatar_state(1, x=20.25, y=20, angle=0)
+    env.step({}, elapsed_ms=0)
+    env.set_avatar_state(1, x=20.5, y=20, angle=0)
+    env.step({}, elapsed_ms=0)
+
+    assert [body for body in env.world_bodies_snapshot() if body["avatarId"] == 1] == []
+    visual_points = env.visual_trail_snapshot()
+    assert [(point["x"], point["y"]) for point in visual_points if point["avatarId"] == 1] == [
+        (20.25, 20),
+        (20.5, 20),
+    ]
+    assert [point["breakBefore"] for point in visual_points if point["avatarId"] == 1] == [
+        False,
+        False,
+    ]
 
 
 def _die_events(env: CurvyTronSourceEnv) -> list[dict[str, object]]:
@@ -514,9 +557,7 @@ def _run_source_lifecycle_actions(
 
 
 def test_source_env_catches_seeded_active_bonus_self_small_like_js_fixture():
-    env, _scenario, frame = _run_source_bonus_fixture(
-        "source_bonus_self_small_catch_step.json"
-    )
+    env, _scenario, frame = _run_source_bonus_fixture("source_bonus_self_small_catch_step.json")
     avatars = {avatar["name"]: avatar for avatar in frame["avatars"]}
     bonus_data = {
         "id": 1,
@@ -551,26 +592,19 @@ def test_source_env_catches_seeded_active_bonus_self_small_like_js_fixture():
     assert avatars["p1"]["activeBonuses"] == []
     assert _source_event_data(env) == expected_events
 
-    js_payload = _run_js_scenario_oracle(
-        _SCENARIO_DIR / "source_bonus_self_small_catch_step.json"
-    )
+    js_payload = _run_js_scenario_oracle(_SCENARIO_DIR / "source_bonus_self_small_catch_step.json")
     if js_payload is not None:
         js_frame = js_payload["trace"][0]
         js_avatars = {avatar["name"]: avatar for avatar in js_frame["avatars"]}
         assert _source_event_data(env) == js_frame["events"]
         assert frame["game"]["bonusCount"] == js_frame["game"]["bonusCount"]
-        assert (
-            frame["game"]["bonusWorldBodyCount"]
-            == js_frame["game"]["bonusWorldBodyCount"]
-        )
+        assert frame["game"]["bonusWorldBodyCount"] == js_frame["game"]["bonusWorldBodyCount"]
         assert avatars["p0"]["radius"] == js_avatars["p0"]["radius"]
         assert avatars["p0"]["activeBonuses"] == js_avatars["p0"]["activeBonuses"]
 
 
 def test_source_env_bonus_game_clear_immediate_step_matches_js_fixture():
-    env, _scenario, frame = _run_source_bonus_fixture(
-        "source_bonus_game_clear_immediate_step.json"
-    )
+    env, _scenario, frame = _run_source_bonus_fixture("source_bonus_game_clear_immediate_step.json")
     avatars = {avatar["name"]: avatar for avatar in frame["avatars"]}
     expected_events = [
         {"event": "position", "data": {"avatar": 2, "x": 71.6, "y": 70}},
@@ -607,10 +641,7 @@ def test_source_env_bonus_game_clear_immediate_step_matches_js_fixture():
         assert frame["game"]["worldActive"] == js_frame["game"]["worldActive"]
         assert frame["game"]["worldBodyCount"] == js_frame["game"]["worldBodyCount"]
         assert frame["game"]["bonusCount"] == js_frame["game"]["bonusCount"]
-        assert (
-            frame["game"]["bonusWorldBodyCount"]
-            == js_frame["game"]["bonusWorldBodyCount"]
-        )
+        assert frame["game"]["bonusWorldBodyCount"] == js_frame["game"]["bonusWorldBodyCount"]
         assert avatars["p0"]["alive"] == js_avatars["p0"]["alive"]
         assert avatars["p0"]["radius"] == js_avatars["p0"]["radius"]
         assert avatars["p0"]["activeBonuses"] == js_avatars["p0"]["activeBonuses"]
@@ -645,10 +676,7 @@ def test_source_env_bonus_self_small_tangent_does_not_catch_like_js_fixture():
         js_avatars = {avatar["name"]: avatar for avatar in js_frame["avatars"]}
         assert _source_event_data(env) == js_frame["events"]
         assert frame["game"]["bonusCount"] == js_frame["game"]["bonusCount"]
-        assert (
-            frame["game"]["bonusWorldBodyCount"]
-            == js_frame["game"]["bonusWorldBodyCount"]
-        )
+        assert frame["game"]["bonusWorldBodyCount"] == js_frame["game"]["bonusWorldBodyCount"]
         assert avatars["p0"]["radius"] == js_avatars["p0"]["radius"]
         assert avatars["p0"]["activeBonuses"] == js_avatars["p0"]["activeBonuses"]
 
@@ -696,10 +724,7 @@ def test_source_env_bonus_self_small_wall_death_does_not_catch_like_js_fixture()
         assert _source_event_data(env) == js_events_without_non_important_points
         assert frame["game"]["worldBodyCount"] == js_frame["game"]["worldBodyCount"]
         assert frame["game"]["bonusCount"] == js_frame["game"]["bonusCount"]
-        assert (
-            frame["game"]["bonusWorldBodyCount"]
-            == js_frame["game"]["bonusWorldBodyCount"]
-        )
+        assert frame["game"]["bonusWorldBodyCount"] == js_frame["game"]["bonusWorldBodyCount"]
         assert avatars["p0"]["alive"] == js_avatars["p0"]["alive"]
         assert avatars["p0"]["radius"] == js_avatars["p0"]["radius"]
         assert avatars["p0"]["activeBonuses"] == js_avatars["p0"]["activeBonuses"]
@@ -749,9 +774,7 @@ def test_source_env_bonus_self_small_expiry_restores_radius_like_js_fixture():
     )
     if js_payload is not None:
         js_expiry_frame = js_payload["trace"][1]
-        js_expiry_avatars = {
-            avatar["name"]: avatar for avatar in js_expiry_frame["avatars"]
-        }
+        js_expiry_avatars = {avatar["name"]: avatar for avatar in js_expiry_frame["avatars"]}
         assert expiry_frame["events"] == js_expiry_frame["events"]
         assert expiry_frame["game"]["bonusCount"] == js_expiry_frame["game"]["bonusCount"]
         assert (
@@ -759,10 +782,7 @@ def test_source_env_bonus_self_small_expiry_restores_radius_like_js_fixture():
             == js_expiry_frame["game"]["bonusWorldBodyCount"]
         )
         assert expiry_avatars["p0"]["radius"] == js_expiry_avatars["p0"]["radius"]
-        assert (
-            expiry_avatars["p0"]["activeBonuses"]
-            == js_expiry_avatars["p0"]["activeBonuses"]
-        )
+        assert expiry_avatars["p0"]["activeBonuses"] == js_expiry_avatars["p0"]["activeBonuses"]
 
 
 def test_source_env_bonus_self_speed_stack_expiry_restores_prior_velocity():
@@ -793,22 +813,18 @@ def test_source_env_bonus_self_speed_stack_expiry_restores_prior_velocity():
 
     assert avatar.velocity == 8
     assert [bonus.type for bonus in avatar.active_bonuses] == ["BonusSelfSlow"]
-    assert [
-        event["data"]
-        for event in env.events
-        if event["event"] == "property"
-    ] == [{"avatar": 1, "property": "velocity", "value": 8}]
+    assert [event["data"] for event in env.events if event["event"] == "property"] == [
+        {"avatar": 1, "property": "velocity", "value": 8}
+    ]
 
     env.events.clear()
     env.advance_timers(1000)
 
     assert avatar.velocity == 16
     assert avatar.active_bonuses == []
-    assert [
-        event["data"]
-        for event in env.events
-        if event["event"] == "property"
-    ] == [{"avatar": 1, "property": "velocity", "value": 16}]
+    assert [event["data"] for event in env.events if event["event"] == "property"] == [
+        {"avatar": 1, "property": "velocity", "value": 16}
+    ]
 
 
 def test_source_env_bonus_enemy_big_targets_other_alive_avatars_and_expires():
@@ -904,11 +920,9 @@ def test_source_env_bonus_self_master_blocks_body_death_but_not_wall_death():
     env.step({}, elapsed_ms=0)
 
     assert catcher.alive is False
-    assert [
-        event["data"]
-        for event in env.events
-        if event["event"] == "die"
-    ] == [{"avatar": catcher.id, "killer": None, "old": None}]
+    assert [event["data"] for event in env.events if event["event"] == "die"] == [
+        {"avatar": catcher.id, "killer": None, "old": None}
+    ]
 
 
 def test_source_env_bonus_all_color_rotates_alive_colors_and_expires():
@@ -1020,9 +1034,7 @@ def test_source_env_bonus_all_color_overlap_uses_older_stack_until_it_expires():
 
 
 def test_source_env_bonus_game_borderless_expiry_restores_like_js_fixture():
-    scenario_path = (
-        _SCENARIO_DIR / "source_bonus_game_borderless_expiry_restore_step.json"
-    )
+    scenario_path = _SCENARIO_DIR / "source_bonus_game_borderless_expiry_restore_step.json"
     js_payload = _run_js_scenario_oracle(scenario_path)
     if js_payload is not None:
         js_catch_frame, js_expiry_frame = js_payload["trace"]
@@ -1049,9 +1061,7 @@ def test_source_env_bonus_game_borderless_expiry_restores_like_js_fixture():
             {"event": "position", "data": {"avatar": 2, "x": 71.6, "y": 70}},
             {"event": "position", "data": {"avatar": 1, "x": 21.6, "y": 20}},
         ]
-        assert not any(
-            event["event"] == "bonus:clear" for event in js_expiry_frame["events"]
-        )
+        assert not any(event["event"] == "bonus:clear" for event in js_expiry_frame["events"])
 
     env, _scenario, frames = _run_source_bonus_fixture_frames(
         "source_bonus_game_borderless_expiry_restore_step.json"
@@ -1085,10 +1095,7 @@ def test_source_env_bonus_game_borderless_expiry_restores_like_js_fixture():
         assert catch_events_without_stack == js_catch_frame["events"]
         assert expiry_events_without_stack == normalized_js_expiry_events
         assert catch_frame["game"]["borderless"] == js_catch_frame["game"]["borderless"]
-        assert (
-            expiry_frame["game"]["borderless"]
-            == js_expiry_frame["game"]["borderless"]
-        )
+        assert expiry_frame["game"]["borderless"] == js_expiry_frame["game"]["borderless"]
 
 
 def test_source_env_matches_js_oracle_for_natural_bonus_spawn_type_position_rng_fixture():
@@ -1146,10 +1153,7 @@ def test_source_env_matches_js_oracle_for_natural_bonus_spawn_type_position_rng_
     assert frame["game"]["size"] == js_frame["game"]["size"]
     assert frame["game"]["worldBodyCount"] == js_frame["game"]["worldBodyCount"]
     assert frame["game"]["bonusCount"] == js_frame["game"]["bonusCount"]
-    assert (
-        frame["game"]["bonusWorldBodyCount"]
-        == js_frame["game"]["bonusWorldBodyCount"]
-    )
+    assert frame["game"]["bonusWorldBodyCount"] == js_frame["game"]["bonusWorldBodyCount"]
     assert avatars["p0"]["x"] == js_avatars["p0"]["x"]
     assert avatars["p0"]["y"] == js_avatars["p0"]["y"]
     assert avatars["p0"]["activeBonuses"] == js_avatars["p0"]["activeBonuses"]
@@ -1233,10 +1237,7 @@ def test_source_env_matches_js_oracle_for_natural_bonus_spawn_game_world_retry_f
     assert frame["game"]["size"] == js_frame["game"]["size"]
     assert frame["game"]["worldBodyCount"] == js_frame["game"]["worldBodyCount"]
     assert frame["game"]["bonusCount"] == js_frame["game"]["bonusCount"]
-    assert (
-        frame["game"]["bonusWorldBodyCount"]
-        == js_frame["game"]["bonusWorldBodyCount"]
-    )
+    assert frame["game"]["bonusWorldBodyCount"] == js_frame["game"]["bonusWorldBodyCount"]
     assert avatars["p0"]["x"] == js_avatars["p0"]["x"]
     assert avatars["p0"]["y"] == js_avatars["p0"]["y"]
     assert avatars["p0"]["activeBonuses"] == js_avatars["p0"]["activeBonuses"]
@@ -1315,11 +1316,7 @@ def test_source_env_matches_js_oracle_for_natural_bonus_spawn_bonus_world_retry_
     assert frame["game"]["size"] == js_frame["game"]["size"]
     assert frame["game"]["worldBodyCount"] == js_frame["game"]["worldBodyCount"] == 0
     assert frame["game"]["bonusCount"] == js_frame["game"]["bonusCount"] == 2
-    assert (
-        frame["game"]["bonusWorldBodyCount"]
-        == js_frame["game"]["bonusWorldBodyCount"]
-        == 2
-    )
+    assert frame["game"]["bonusWorldBodyCount"] == js_frame["game"]["bonusWorldBodyCount"] == 2
     assert avatars["p0"]["x"] == js_avatars["p0"]["x"]
     assert avatars["p0"]["y"] == js_avatars["p0"]["y"]
     assert avatars["p0"]["activeBonuses"] == js_avatars["p0"]["activeBonuses"]
@@ -1393,17 +1390,11 @@ def test_source_env_matches_js_oracle_for_natural_bonus_spawn_cap_fixture():
     assert frame["game"]["size"] == js_frame["game"]["size"]
     assert frame["game"]["worldBodyCount"] == js_frame["game"]["worldBodyCount"]
     assert frame["game"]["bonusCount"] == js_frame["game"]["bonusCount"] == 20
-    assert (
-        frame["game"]["bonusWorldBodyCount"]
-        == js_frame["game"]["bonusWorldBodyCount"]
-        == 20
-    )
+    assert frame["game"]["bonusWorldBodyCount"] == js_frame["game"]["bonusWorldBodyCount"] == 20
     assert avatars["p0"]["activeBonuses"] == js_avatars["p0"]["activeBonuses"] == []
     assert avatars["p1"]["activeBonuses"] == js_avatars["p1"]["activeBonuses"] == []
     assert len(env.active_bonuses) == 20
-    assert not any(
-        event["event"] == "bonus:pop" for event in _source_gameplay_event_data(env)
-    )
+    assert not any(event["event"] == "bonus:pop" for event in _source_gameplay_event_data(env))
 
 
 def test_source_env_matches_js_oracle_for_default_bonus_weight_type_rng_fixture():
@@ -1454,9 +1445,7 @@ def test_source_env_matches_js_oracle_for_default_bonus_weight_type_rng_fixture(
     )
 
     js_frame = js_payload["trace"][0]
-    js_bonus_event = next(
-        event for event in js_frame["events"] if event["event"] == "bonus:pop"
-    )
+    js_bonus_event = next(event for event in js_frame["events"] if event["event"] == "bonus:pop")
     js_avatars = {avatar["name"]: avatar for avatar in js_frame["avatars"]}
     avatars = {avatar["name"]: avatar for avatar in frame["avatars"]}
 
@@ -1465,10 +1454,7 @@ def test_source_env_matches_js_oracle_for_default_bonus_weight_type_rng_fixture(
     assert frame["game"]["size"] == js_frame["game"]["size"]
     assert frame["game"]["worldBodyCount"] == js_frame["game"]["worldBodyCount"]
     assert frame["game"]["bonusCount"] == js_frame["game"]["bonusCount"]
-    assert (
-        frame["game"]["bonusWorldBodyCount"]
-        == js_frame["game"]["bonusWorldBodyCount"]
-    )
+    assert frame["game"]["bonusWorldBodyCount"] == js_frame["game"]["bonusWorldBodyCount"]
     assert avatars["p0"]["alive"] == js_avatars["p0"]["alive"]
     assert avatars["p1"]["alive"] == js_avatars["p1"]["alive"]
     assert avatars["p2"]["alive"] == js_avatars["p2"]["alive"]
@@ -1478,22 +1464,12 @@ def test_source_env_matches_js_oracle_for_default_bonus_weight_type_rng_fixture(
     assert len(env.active_bonuses) == 1
     bonus = env.active_bonuses[0]
     assert bonus.type == js_bonus_event["data"]["type"] == "BonusAllColor"
-    assert (
-        source_env._source_number(bonus.x)
-        == js_bonus_event["data"]["x"]
-        == 27.255
-    )
-    assert (
-        source_env._source_number(bonus.y)
-        == js_bonus_event["data"]["y"]
-        == 73.745
-    )
+    assert source_env._source_number(bonus.x) == js_bonus_event["data"]["x"] == 27.255
+    assert source_env._source_number(bonus.y) == js_bonus_event["data"]["y"] == 73.745
 
 
 def test_source_env_matches_js_oracle_for_default_bonus_game_clear_type_rng_fixture():
-    scenario_path = (
-        _SCENARIO_DIR / "source_bonus_default_weights_select_game_clear_step.json"
-    )
+    scenario_path = _SCENARIO_DIR / "source_bonus_default_weights_select_game_clear_step.json"
     js_payload = _run_js_scenario_oracle(scenario_path)
     scenario = _load_scenario(scenario_path)
     source_setup = scenario["source_setup"]
@@ -1540,9 +1516,7 @@ def test_source_env_matches_js_oracle_for_default_bonus_game_clear_type_rng_fixt
     )
 
     js_frame = js_payload["trace"][0]
-    js_bonus_event = next(
-        event for event in js_frame["events"] if event["event"] == "bonus:pop"
-    )
+    js_bonus_event = next(event for event in js_frame["events"] if event["event"] == "bonus:pop")
     js_avatars = {avatar["name"]: avatar for avatar in js_frame["avatars"]}
     avatars = {avatar["name"]: avatar for avatar in frame["avatars"]}
 
@@ -1551,10 +1525,7 @@ def test_source_env_matches_js_oracle_for_default_bonus_game_clear_type_rng_fixt
     assert frame["game"]["size"] == js_frame["game"]["size"]
     assert frame["game"]["worldBodyCount"] == js_frame["game"]["worldBodyCount"]
     assert frame["game"]["bonusCount"] == js_frame["game"]["bonusCount"]
-    assert (
-        frame["game"]["bonusWorldBodyCount"]
-        == js_frame["game"]["bonusWorldBodyCount"]
-    )
+    assert frame["game"]["bonusWorldBodyCount"] == js_frame["game"]["bonusWorldBodyCount"]
     assert avatars["p0"]["alive"] == js_avatars["p0"]["alive"]
     assert avatars["p1"]["alive"] == js_avatars["p1"]["alive"]
     assert avatars["p2"]["alive"] == js_avatars["p2"]["alive"]
@@ -1564,22 +1535,13 @@ def test_source_env_matches_js_oracle_for_default_bonus_game_clear_type_rng_fixt
     assert len(env.active_bonuses) == 1
     bonus = env.active_bonuses[0]
     assert bonus.type == js_bonus_event["data"]["type"] == "BonusGameClear"
-    assert (
-        source_env._source_number(bonus.x)
-        == js_bonus_event["data"]["x"]
-        == 27.255
-    )
-    assert (
-        source_env._source_number(bonus.y)
-        == js_bonus_event["data"]["y"]
-        == 73.745
-    )
+    assert source_env._source_number(bonus.x) == js_bonus_event["data"]["x"] == 27.255
+    assert source_env._source_number(bonus.y) == js_bonus_event["data"]["y"] == 73.745
 
 
 def test_source_env_matches_js_oracle_for_default_bonus_game_clear_full_probability_fixture():
     scenario_path = (
-        _SCENARIO_DIR
-        / "source_bonus_default_weights_game_clear_full_probability_step.json"
+        _SCENARIO_DIR / "source_bonus_default_weights_game_clear_full_probability_step.json"
     )
     js_payload = _run_js_scenario_oracle(scenario_path)
     scenario = _load_scenario(scenario_path)
@@ -1627,9 +1589,7 @@ def test_source_env_matches_js_oracle_for_default_bonus_game_clear_full_probabil
     )
 
     js_frame = js_payload["trace"][0]
-    js_bonus_event = next(
-        event for event in js_frame["events"] if event["event"] == "bonus:pop"
-    )
+    js_bonus_event = next(event for event in js_frame["events"] if event["event"] == "bonus:pop")
     js_avatars = {avatar["name"]: avatar for avatar in js_frame["avatars"]}
     avatars = {avatar["name"]: avatar for avatar in frame["avatars"]}
 
@@ -1638,10 +1598,7 @@ def test_source_env_matches_js_oracle_for_default_bonus_game_clear_full_probabil
     assert frame["game"]["size"] == js_frame["game"]["size"]
     assert frame["game"]["worldBodyCount"] == js_frame["game"]["worldBodyCount"]
     assert frame["game"]["bonusCount"] == js_frame["game"]["bonusCount"]
-    assert (
-        frame["game"]["bonusWorldBodyCount"]
-        == js_frame["game"]["bonusWorldBodyCount"]
-    )
+    assert frame["game"]["bonusWorldBodyCount"] == js_frame["game"]["bonusWorldBodyCount"]
     assert avatars["p0"]["alive"] == js_avatars["p0"]["alive"]
     assert avatars["p1"]["alive"] == js_avatars["p1"]["alive"]
     assert avatars["p2"]["alive"] == js_avatars["p2"]["alive"]
@@ -1652,16 +1609,8 @@ def test_source_env_matches_js_oracle_for_default_bonus_game_clear_full_probabil
     assert len(env.active_bonuses) == 1
     bonus = env.active_bonuses[0]
     assert bonus.type == js_bonus_event["data"]["type"] == "BonusGameClear"
-    assert (
-        source_env._source_number(bonus.x)
-        == js_bonus_event["data"]["x"]
-        == 27.255
-    )
-    assert (
-        source_env._source_number(bonus.y)
-        == js_bonus_event["data"]["y"]
-        == 73.745
-    )
+    assert source_env._source_number(bonus.x) == js_bonus_event["data"]["x"] == 27.255
+    assert source_env._source_number(bonus.y) == js_bonus_event["data"]["y"] == 73.745
 
 
 def test_source_env_matches_js_oracle_for_live_movement_angle_position_event_trace():
@@ -1691,9 +1640,7 @@ def test_source_env_matches_js_oracle_for_live_movement_angle_position_event_tra
         ]
 
         position_order = [
-            event["data"]["avatar"]
-            for event in frame["events"]
-            if event["event"] == "position"
+            event["data"]["avatar"] for event in frame["events"] if event["event"] == "position"
         ]
         assert position_order == [2, 1]
 
@@ -1704,9 +1651,7 @@ def test_source_env_matches_js_oracle_for_live_movement_angle_position_event_tra
                 changed_in_reverse_order.append(avatar_id)
             previous_angles[avatar_id] = avatar["angle"]
         assert [
-            event["data"]["avatar"]
-            for event in frame["events"]
-            if event["event"] == "angle"
+            event["data"]["avatar"] for event in frame["events"] if event["event"] == "angle"
         ] == changed_in_reverse_order
 
     assert [
@@ -1933,9 +1878,7 @@ def test_advance_timers_runs_new_round_start_scheduled_by_game_stop():
     env.set_avatar_state(2, x=60, y=60)
     env.step({}, elapsed_ms=0)
 
-    env.advance_timers(
-        env.reference.round_warmdown_ms + env.reference.round_warmup_ms + 1
-    )
+    env.advance_timers(env.reference.round_warmdown_ms + env.reference.round_warmup_ms + 1)
 
     lifecycle_events = [
         (event["event"], event["atMs"])
@@ -2144,9 +2087,7 @@ def test_source_env_matches_js_oracle_for_mid_round_remove_avatar_leave():
 
 def test_source_env_matches_js_oracle_for_3p_mid_round_remove_avatar_continuation():
     js_payload = _run_js_lifecycle_oracle(_MID_ROUND_REMOVE_AVATAR_3P_SCENARIO)
-    env, _scenario, snapshots = _run_source_lifecycle_actions(
-        _MID_ROUND_REMOVE_AVATAR_3P_SCENARIO
-    )
+    env, _scenario, snapshots = _run_source_lifecycle_actions(_MID_ROUND_REMOVE_AVATAR_3P_SCENARIO)
 
     assert js_payload["expectations"]["eventOrder"]["status"] == "pass"
     assert env.events == js_payload["events"]
@@ -2182,9 +2123,7 @@ def test_source_env_matches_js_oracle_for_3p_mid_round_remove_avatar_continuatio
 
 def test_source_env_matches_js_oracle_for_4p_mid_round_remove_avatar_continuation():
     js_payload = _run_js_lifecycle_oracle(_MID_ROUND_REMOVE_AVATAR_4P_SCENARIO)
-    env, _scenario, snapshots = _run_source_lifecycle_actions(
-        _MID_ROUND_REMOVE_AVATAR_4P_SCENARIO
-    )
+    env, _scenario, snapshots = _run_source_lifecycle_actions(_MID_ROUND_REMOVE_AVATAR_4P_SCENARIO)
 
     assert js_payload["expectations"]["eventOrder"]["status"] == "pass"
     assert env.events == js_payload["events"]
@@ -2366,18 +2305,12 @@ def test_source_world_island_corner_lookup_matches_js_source():
             "1:1": island_body_ids("1:1"),
         },
         "lookupHitIds": {
-            "boundary": lookup_id(
-                SourceBodyState(x=44.2, y=40, radius=0.6, avatar_id=1, num=0)
-            ),
-            "edge": lookup_id(
-                SourceBodyState(x=0.2, y=87.8, radius=0.6, avatar_id=1, num=1)
-            ),
+            "boundary": lookup_id(SourceBodyState(x=44.2, y=40, radius=0.6, avatar_id=1, num=0)),
+            "edge": lookup_id(SourceBodyState(x=0.2, y=87.8, radius=0.6, avatar_id=1, num=1)),
             "cornerOnlyFromAdjacentCenter": lookup_id(
                 SourceBodyState(x=44, y=20, radius=0.6, avatar_id=1, num=2)
             ),
-            "outside": lookup_id(
-                SourceBodyState(x=100, y=100, radius=0.6, avatar_id=1, num=3)
-            ),
+            "outside": lookup_id(SourceBodyState(x=100, y=100, radius=0.6, avatar_id=1, num=3)),
         },
     }
     expected = {
@@ -2425,6 +2358,18 @@ def test_source_body_opponent_tangent_is_safe_but_strict_overlap_kills():
 
     assert overlap_env.avatar_by_id(1).alive is False
     assert _die_events(overlap_env)[0]["data"] == {"avatar": 1, "killer": 2, "old": False}
+
+
+def test_source_body_collision_ignores_visual_line_between_stored_body_points():
+    env = _active_source_env()
+    _seed_source_body(env, owner_id=2, x=10, y=20)
+    _seed_source_body(env, owner_id=2, x=30, y=20)
+
+    frame = env.step({}, elapsed_ms=0)
+
+    assert env.avatar_by_id(1).alive is True
+    assert frame["game"]["worldBodyCount"] == 2
+    assert _die_events(env) == []
 
 
 def test_source_body_own_trail_latency_delta3_safe_delta4_kills():

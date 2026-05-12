@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -7,6 +8,23 @@ from curvyzero.infra.modal import lightzero_curvytron_visual_survival_eval as ev
 from curvyzero.infra.modal import (
     lightzero_curvyzero_stacked_debug_visual_survival_train as train_mod,
 )
+
+
+def _modal_image_copy_mount_entries(image):
+    sync_original = next(
+        value
+        for key, value in image.__dict__.items()
+        if key.startswith("_sync_original")
+    )
+    entries = []
+    for cell in sync_original._load.__closure__ or ():
+        value = cell.cell_contents
+        if not callable(value):
+            continue
+        for nested_cell in value.__closure__ or ():
+            mount = nested_cell.cell_contents
+            entries.extend(getattr(mount, "_entries", ()))
+    return entries
 
 
 def _source_state_training_command():
@@ -41,8 +59,17 @@ def test_default_env_variant_stays_fixed_opponent_while_turn_commit_is_profile_o
 
     assert spec["env_type"] == train_mod.LIGHTZERO_SOURCE_STATE_VISUAL_TURN_COMMIT_ENV_TYPE
     assert spec["env_id"] == train_mod.LIGHTZERO_SOURCE_STATE_VISUAL_TURN_COMMIT_ENV_ID
-    assert spec["observation_shape"] == list(train_mod.STACKED_SOURCE_STATE_GRAY64_SHAPE)
-    assert spec["observation_schema_id"] == train_mod.STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID
+    assert spec["observation_shape"] == list(
+        train_mod.TURN_COMMIT_STACKED_SOURCE_STATE_GRAY64_SHAPE
+    )
+    assert (
+        spec["observation_schema_id"]
+        == train_mod.TURN_COMMIT_STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID
+    )
+    assert spec["raw_observation_schema_id"] == train_mod.SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID
+    assert spec["raw_frame_shape"] == list(
+        train_mod.TURN_COMMIT_SOURCE_STATE_CANVAS_LIKE_RAW_SHAPE
+    )
     assert spec["debug_fidelity_only"] is False
     assert spec["source_fidelity_claim"] == "source_state_backed_non_browser_pixel"
     assert spec["single_product_runtime_path"] is True
@@ -73,6 +100,24 @@ def test_background_eval_inspection_and_gif_can_be_explicitly_enabled():
     assert custom_config["selfplay_gif"]["frame_size"] == 512
 
 
+def test_modal_training_image_copies_curvytron_bonus_sprite_sheet():
+    relative_path = Path(
+        train_mod.SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_SPRITE_SHEET_RELATIVE_PATH
+    )
+    expected_local_path = Path.cwd() / relative_path
+    expected_remote_path = train_mod.REMOTE_ROOT / relative_path
+    entries = _modal_image_copy_mount_entries(train_mod.image)
+
+    assert train_mod.CURVYTRON_BONUS_SPRITE_SHEET_LOCAL_PATH == expected_local_path
+    assert train_mod.CURVYTRON_BONUS_SPRITE_SHEET_REMOTE_PATH == expected_remote_path
+    assert expected_local_path.is_file()
+    assert any(
+        Path(entry.local_file) == expected_local_path
+        and str(entry.remote_path) == expected_remote_path.as_posix()
+        for entry in entries
+    )
+
+
 def test_gif_browser_run_marker_is_written_under_run_root(tmp_path, monkeypatch):
     monkeypatch.setattr(train_mod, "RUNS_MOUNT", tmp_path)
 
@@ -94,6 +139,182 @@ def test_gif_browser_run_marker_is_written_under_run_root(tmp_path, monkeypatch)
     assert payload["created_at"] == "2026-05-11T00:00:00Z"
 
 
+def test_two_seat_payload_writes_gif_browser_run_marker(tmp_path, monkeypatch):
+    class FakeVolume:
+        def __init__(self) -> None:
+            self.commit_count = 0
+
+        def commit(self) -> None:
+            self.commit_count += 1
+
+    def fake_two_seat_train(**kwargs):
+        return {
+            "ok": True,
+            "status": "completed",
+            "received_checkpoint_dir": kwargs["checkpoint_dir"] is not None,
+        }
+
+    monkeypatch.setattr(train_mod, "RUNS_MOUNT", tmp_path)
+    monkeypatch.setattr(train_mod, "runs_volume", FakeVolume())
+    monkeypatch.setattr(
+        train_mod,
+        "run_curvytron_two_seat_lightzero_train_smoke",
+        fake_two_seat_train,
+    )
+
+    payload = {
+        "seed": 0,
+        "batch_size": 2,
+        "steps": 4,
+        "outer_iterations": 1,
+        "collect_steps_per_iteration": 1,
+        "updates_per_iteration": 1,
+        "num_simulations": 1,
+        "learner_updates": 1,
+        "allow_optimizer_step": True,
+        "replay_scope": "accumulated",
+        "learner_sample_size": 2,
+        "max_replay_rows": 16,
+        "record_log_limit": 4,
+        "replay_row_log_limit": 4,
+        "max_ticks": 16,
+        "death_mode": "normal",
+        "decision_ms": 300.0,
+        "alive_reward": 1.0,
+        "dead_reward": 0.0,
+        "action_selection_mode": "collect",
+        "collect_temperature": 1.0,
+        "collect_epsilon": 0.25,
+        "action_noop_probability": 0.0,
+        "action_noop_warmup_iterations": 0,
+        "policy_action_repeat_min": 1,
+        "policy_action_repeat_max": 1,
+        "policy_action_repeat_extra_probability": 0.0,
+        "policy_action_repeat_warmup_iterations": 0,
+        "observation_noise_std": 0.0,
+        "trail_render_mode": train_mod.TRAIL_RENDER_MODE_DEFAULT,
+        "checkpoint_every_iterations": 1,
+        "save_initial_checkpoint": True,
+        "progress_every_iterations": 1,
+        "progress_commit_every_iterations": 1,
+        "run_id": "run-two-seat-marker",
+        "attempt_id": "attempt-two-seat-marker",
+    }
+
+    result = train_mod._run_two_seat_selfplay_payload(
+        payload,
+        compute_label="cpu",
+        use_cuda=False,
+    )
+    marker_path = train_mod.runs.volume_path(
+        tmp_path,
+        train_mod.runs.gif_browser_run_marker_ref(
+            train_mod.TASK_ID,
+            "run-two-seat-marker",
+        ),
+    )
+    command_path = train_mod.runs.volume_path(
+        tmp_path,
+        train_mod.runs.attempt_root_ref(
+            train_mod.TASK_ID,
+            "run-two-seat-marker",
+            "attempt-two-seat-marker",
+        )
+        / "command.json",
+    )
+    command = json.loads(command_path.read_text(encoding="utf-8"))
+
+    assert result["ok"] is True
+    assert marker_path.name == train_mod.runs.GIF_BROWSER_RUN_MARKER_FILENAME
+    assert marker_path.exists()
+    assert command["gif_browser_run_marker_ref"].endswith("/show_in_gif_browser.flag")
+
+
+def test_two_seat_payload_can_skip_gif_browser_run_marker(tmp_path, monkeypatch):
+    class FakeVolume:
+        def commit(self) -> None:
+            pass
+
+    def fake_two_seat_train(**_kwargs):
+        return {"ok": True, "status": "completed"}
+
+    monkeypatch.setattr(train_mod, "RUNS_MOUNT", tmp_path)
+    monkeypatch.setattr(train_mod, "runs_volume", FakeVolume())
+    monkeypatch.setattr(
+        train_mod,
+        "run_curvytron_two_seat_lightzero_train_smoke",
+        fake_two_seat_train,
+    )
+
+    payload = {
+        "seed": 0,
+        "batch_size": 2,
+        "steps": 4,
+        "outer_iterations": 1,
+        "collect_steps_per_iteration": 1,
+        "updates_per_iteration": 1,
+        "num_simulations": 1,
+        "learner_updates": 1,
+        "allow_optimizer_step": True,
+        "replay_scope": "accumulated",
+        "learner_sample_size": 2,
+        "max_replay_rows": 16,
+        "record_log_limit": 4,
+        "replay_row_log_limit": 4,
+        "max_ticks": 16,
+        "death_mode": "normal",
+        "decision_ms": 300.0,
+        "alive_reward": 1.0,
+        "dead_reward": 0.0,
+        "action_selection_mode": "collect",
+        "collect_temperature": 1.0,
+        "collect_epsilon": 0.25,
+        "action_noop_probability": 0.0,
+        "action_noop_warmup_iterations": 0,
+        "policy_action_repeat_min": 1,
+        "policy_action_repeat_max": 1,
+        "policy_action_repeat_extra_probability": 0.0,
+        "policy_action_repeat_warmup_iterations": 0,
+        "observation_noise_std": 0.0,
+        "trail_render_mode": train_mod.TRAIL_RENDER_MODE_DEFAULT,
+        "checkpoint_every_iterations": 1,
+        "save_initial_checkpoint": True,
+        "progress_every_iterations": 1,
+        "progress_commit_every_iterations": 1,
+        "run_id": "run-two-seat-no-marker",
+        "attempt_id": "attempt-two-seat-no-marker",
+        "gif_browser_run_marker_enabled": False,
+    }
+
+    result = train_mod._run_two_seat_selfplay_payload(
+        payload,
+        compute_label="cpu",
+        use_cuda=False,
+    )
+    marker_path = train_mod.runs.volume_path(
+        tmp_path,
+        train_mod.runs.gif_browser_run_marker_ref(
+            train_mod.TASK_ID,
+            "run-two-seat-no-marker",
+        ),
+    )
+    command_path = train_mod.runs.volume_path(
+        tmp_path,
+        train_mod.runs.attempt_root_ref(
+            train_mod.TASK_ID,
+            "run-two-seat-no-marker",
+            "attempt-two-seat-no-marker",
+        )
+        / "command.json",
+    )
+    command = json.loads(command_path.read_text(encoding="utf-8"))
+
+    assert result["ok"] is True
+    assert not marker_path.exists()
+    assert command["gif_browser_run_marker_enabled"] is False
+    assert command["gif_browser_run_marker_ref"] is None
+
+
 def test_source_state_fixed_opponent_surface_identity_is_explicit_control_lane():
 
     spec = train_mod._env_variant_spec(train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT)
@@ -107,11 +328,15 @@ def test_source_state_fixed_opponent_surface_identity_is_explicit_control_lane()
     assert spec["single_frame_schema_id"] == wrapper_info["single_frame_schema_id"]
     assert spec["raw_observation_schema_id"] == wrapper_info["raw_observation_schema_id"]
     assert spec["raw_observation_schema_id"] == train_mod.SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID
-    assert spec["raw_frame_shape"] == [64, 64, 3]
+    assert spec["raw_frame_shape"] == [
+        train_mod.SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
+        train_mod.SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
+        3,
+    ]
     assert spec["grayscale_frame_shape"] == [1, 64, 64]
     assert "bonus64" not in spec["observation_schema_id"]
     assert "bonus64" not in spec["frame_stack_proof"]
-    assert "rgb64_to_gray64" in spec["frame_stack_proof"]
+    assert "raw_canvas_to_downsampled_gray64" in spec["frame_stack_proof"]
     assert spec["debug_fidelity_only"] == wrapper_info["debug_fidelity_only"]
     assert spec["source_fidelity_claim"] == wrapper_info["source_fidelity_claim"]
     assert spec["single_product_runtime_path"] is True
@@ -262,10 +487,10 @@ def test_eval_rejects_unknown_env_variant_before_checkpoint_read():
         )
 
 
-def test_copy_source_state_raw_frame_prefers_raw_observation_and_returns_copy():
+def test_copy_source_state_raw_frame_prefers_rgb_raw_observation_and_returns_copy():
     import numpy as np
 
-    raw = (np.arange(64 * 64) % 251).astype(np.uint8).reshape(1, 64, 64)
+    raw = (np.arange(32 * 48 * 3) % 251).astype(np.uint8).reshape(32, 48, 3)
 
     class Env:
         raw_calls = 0
@@ -285,16 +510,16 @@ def test_copy_source_state_raw_frame_prefers_raw_observation_and_returns_copy():
 
     assert env.raw_calls == 1
     assert env.render_calls == 0
-    assert frame.shape == (64, 64)
+    assert frame.shape == (32, 48, 3)
     assert frame.dtype == np.uint8
-    assert np.array_equal(frame, raw.astype(np.uint8)[0])
+    assert np.array_equal(frame, raw.astype(np.uint8))
     assert not np.shares_memory(frame, raw)
-    frame[0, 0] = 123
+    frame[0, 0, 0] = 123
     assert raw[0, 0, 0] == 0
 
 
 def test_checkpoint_gif_rgb_frame_helper_prefers_rgb_raw_observation():
-    raw_rgb = np.zeros((64, 64, 3), dtype=np.uint8)
+    raw_rgb = np.zeros((128, 128, 3), dtype=np.uint8)
     raw_rgb[:, :] = np.asarray([3, 17, 241], dtype=np.uint8)
 
     class Env:
@@ -319,16 +544,17 @@ def test_checkpoint_gif_rgb_frame_helper_prefers_rgb_raw_observation():
     assert env.raw_calls == 1
     assert env.human_calls == 0
     assert source["source"] == "raw_observation"
-    assert source["input_shape"] == [64, 64, 3]
+    assert source["input_shape"] == [128, 128, 3]
     assert source["output_shape"] == [128, 128, 3]
-    assert source["resized_nearest"] is True
+    assert source["resize_method"] == "none"
+    assert source["resized_nearest"] is False
     assert frame.shape == (128, 128, 3)
     assert frame.dtype == np.uint8
     assert np.array_equal(frame[0, 0], np.asarray([3, 17, 241], dtype=np.uint8))
     assert not np.shares_memory(frame, raw_rgb)
 
 
-def test_checkpoint_gif_frame_helper_skips_turn_commit_gray_raw_for_rgb_canvas_like():
+def test_checkpoint_gif_frame_helper_skips_legacy_gray_raw_for_rgb_canvas_like():
     old_gray_raw = np.full((1, 64, 64), 199, dtype=np.uint8)
     canvas_rgb = np.zeros((96, 96, 3), dtype=np.uint8)
     canvas_rgb[:, :] = np.asarray([0, 255, 0], dtype=np.uint8)
@@ -376,7 +602,7 @@ def test_checkpoint_gif_frame_helper_skips_turn_commit_gray_raw_for_rgb_canvas_l
     assert not np.all(frame[:, :, 0] == frame[:, :, 1])
 
 
-def test_checkpoint_gif_turn_commit_capture_uses_human_rgb_after_trail_points():
+def test_checkpoint_gif_turn_commit_capture_uses_rgb_raw_after_trail_points():
     from curvyzero.env.vector_visual_observation import (
         SOURCE_STATE_RGB_CANVAS_LIKE_PLAYER_RGB,
     )
@@ -402,6 +628,7 @@ def test_checkpoint_gif_turn_commit_capture_uses_human_rgb_after_trail_points():
             env,
             frame_size=64,
         )
+        raw_frame = env.raw_observation()
         state = env._env.state
         body_cursor = int(state["body_write_cursor"][0])
         map_size = float(state["map_size"][0])
@@ -416,14 +643,20 @@ def test_checkpoint_gif_turn_commit_capture_uses_human_rgb_after_trail_points():
             head_distance = np.linalg.norm(state["pos"][0] - position, axis=1).min()
             if head_distance <= 2.5:
                 continue
-            px = int(np.clip(np.rint((float(position[0]) / map_size) * 63.0), 0, 63))
-            py = int(np.clip(np.rint((float(position[1]) / map_size) * 63.0), 0, 63))
-            if np.array_equal(frame[py, px], player_colors[owner]):
+            raw_max = train_mod.TURN_COMMIT_SOURCE_STATE_CANVAS_LIKE_RAW_SHAPE[0] - 1
+            px = int(np.clip(np.rint((float(position[0]) / map_size) * raw_max), 0, raw_max))
+            py = int(np.clip(np.rint((float(position[1]) / map_size) * raw_max), 0, raw_max))
+            if np.array_equal(raw_frame[py, px], player_colors[owner]):
                 visible_trail_pixels.append((slot, owner))
 
-        assert source["source"] == "human_rgb_observation"
-        assert source["skipped_prior_sources"][0]["source"] == "raw_observation"
-        assert source["skipped_prior_sources"][0]["shape"] == [1, 64, 64]
+        assert source["source"] == "raw_observation"
+        assert source["skipped_prior_sources"] == []
+        assert source["input_shape"] == list(
+            train_mod.TURN_COMMIT_SOURCE_STATE_CANVAS_LIKE_RAW_SHAPE
+        )
+        assert source["output_shape"] == [64, 64, 3]
+        assert source["resize_method"] == "area_average"
+        assert source["resized_nearest"] is False
         assert body_cursor > 2
         assert visible_trail_pixels
     finally:
@@ -1050,6 +1283,44 @@ def test_local_two_seat_launcher_passes_trail_render_mode(capsys, monkeypatch):
         train_mod.TRAIL_RENDER_MODE_BODY_CIRCLES_FAST
     )
     assert printed["command"]["death_mode"] == "profile_no_death"
+
+
+def test_local_two_seat_launcher_defaults_gif_browser_marker_enabled(
+    capsys, monkeypatch
+):
+    class FakeCall:
+        object_id = "fc-two-seat"
+
+    class FakeFunction:
+        def __init__(self) -> None:
+            self.payloads = []
+
+        def spawn(self, payload):
+            self.payloads.append(payload)
+            return FakeCall()
+
+    fake_train = FakeFunction()
+    monkeypatch.setattr(
+        train_mod,
+        "lightzero_curvytron_two_seat_selfplay_cpu",
+        fake_train,
+    )
+
+    train_mod.main(
+        mode=train_mod.TWO_SEAT_SELFPLAY_MODE,
+        compute=train_mod.COMPUTE_CPU,
+        run_id="two-seat-default-gif-marker",
+        attempt_id="attempt-default-gif-marker",
+        wait_for_train=False,
+        background_eval_enabled=False,
+    )
+
+    payload = fake_train.payloads[0]
+    printed = json.loads(capsys.readouterr().out)
+
+    assert payload["gif_browser_run_marker_enabled"] is True
+    assert printed["command"]["gif_browser_run_marker_enabled"] is True
+    assert printed["background_eval"]["selfplay_gif"]["enabled"] is True
 
 
 def test_local_two_seat_launcher_rejects_unknown_trail_render_mode(monkeypatch):

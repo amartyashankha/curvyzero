@@ -39,19 +39,19 @@ RULESET_ID = "curvytron_no_bonus/v0"
 SEEDED_BONUS_RULESET_ID = "curvytron_seeded_bonus_subset/v0"
 NATURAL_BONUS_RULESET_ID = "curvytron_natural_bonus_source_default_spawn_subset/v0"
 SEEDED_BONUS_SUPPORT_POLICY_ID = "curvyzero_public_seeded_bonus_fixture_support/v0"
-SEEDED_BONUS_SUPPORT_CLAIM = (
-    "seeded public runtime-backed bonus effects; "
-    "no natural bonus spawn"
-)
-NATURAL_BONUS_SUPPORT_POLICY_ID = (
-    "curvyzero_public_natural_bonus_source_default_spawn_support/v0"
-)
+SEEDED_BONUS_SUPPORT_CLAIM = "seeded public runtime-backed bonus effects; no natural bonus spawn"
+NATURAL_BONUS_SUPPORT_POLICY_ID = "curvyzero_public_natural_bonus_source_default_spawn_support/v0"
 NATURAL_BONUS_SUPPORT_CLAIM = (
     "opt-in natural source-default timer/random/type/position spawn accounting; "
     "catch/effects remain limited to runtime-supported bonus effect types"
 )
-NATURAL_BONUS_RANDOM_LABEL_POLICY_ID = (
-    "source_named_bonus_spawn_random_tape_labels/v0"
+NATURAL_BONUS_RANDOM_LABEL_POLICY_ID = "source_named_bonus_spawn_random_tape_labels/v0"
+SOURCE_FRAME_DECISION_POLICY_ID = "source_frame_substeps_under_trainer_decision/v0"
+SOURCE_PHYSICS_STEP_POLICY_ID = "curvytron_source_basegame_framerate_60hz/v0"
+SOURCE_PHYSICS_STEP_MS = CurvyTronReferenceDefaults().tick_ms
+DEFAULT_DECISION_SOURCE_FRAMES = 12
+DEFAULT_SOURCE_FRAME_DECISION_MS = (
+    SOURCE_PHYSICS_STEP_MS * DEFAULT_DECISION_SOURCE_FRAMES
 )
 LIFECYCLE_POLICY_ID = "curvyzero_public_explicit_reset_warmdown_bridge/v0"
 RESET_EPISODE_ID_POLICY = "vector_reset_episode_id_increments_on_explicit_reset_only/v0"
@@ -65,20 +65,14 @@ JOINT_ACTION_SCHEMA_ID = "curvyzero_external_joint_action_player_major/v0"
 PUBLIC_JOINT_ACTION_SIDECAR_SCHEMA_ID = "curvyzero_public_joint_action_sidecar/v0"
 PUBLIC_RESET_POLICY_SCHEMA_ID = "curvyzero_public_multiplayer_masked_reset_policy/v0"
 RESET_PROVENANCE_POLICY_ID = "reset_seed_source_random_tape_cursor_ref/v0"
-PUBLIC_ACTIVE_ROUND_LEAVE_POLICY_ID = (
-    "curvyzero_public_active_round_leave_metadata_only/v0"
-)
-PUBLIC_WARMDOWN_LEAVE_POLICY_ID = (
-    "curvyzero_public_round_warmdown_leave_metadata_only/v0"
-)
+PUBLIC_ACTIVE_ROUND_LEAVE_POLICY_ID = "curvyzero_public_active_round_leave_metadata_only/v0"
+PUBLIC_WARMDOWN_LEAVE_POLICY_ID = "curvyzero_public_round_warmdown_leave_metadata_only/v0"
 EPISODE_END_MODE_ROUND = "round"
 EPISODE_END_MODE_MATCH = "match"
 EPISODE_END_MODES = (EPISODE_END_MODE_ROUND, EPISODE_END_MODE_MATCH)
 SUPPORTED_PLAYER_COUNTS = (2, 3, 4)
 RANDOM_TAPE_SOURCE_UNINITIALIZED = "uninitialized"
-RANDOM_TAPE_SOURCE_SEED_GENERATED = (
-    vector_source_random.RANDOM_TAPE_SOURCE_SEED_GENERATED
-)
+RANDOM_TAPE_SOURCE_SEED_GENERATED = vector_source_random.RANDOM_TAPE_SOURCE_SEED_GENERATED
 RANDOM_TAPE_SOURCE_SOURCE_FIXTURE = "source_fixture_random_tape_values"
 RANDOM_TAPE_SOURCE_DIRECT_STATE = "direct_vector_runtime_state"
 RNG_IMPL_ID_UNINITIALIZED = "uninitialized"
@@ -114,9 +108,7 @@ SOURCE_DEFAULT_NATURAL_BONUS_TYPE_CODES = {
     for code in vector_runtime.SOURCE_DEFAULT_BONUS_TYPE_CODES
 }
 SOURCE_DEFAULT_NATURAL_BONUS_TYPE_NAMES = tuple(SOURCE_DEFAULT_NATURAL_BONUS_TYPE_CODES)
-SOURCE_REFERENCE_DEFAULT_BONUS_TYPE_NAMES = (
-    CurvyTronReferenceDefaults().default_bonus_types
-)
+SOURCE_REFERENCE_DEFAULT_BONUS_TYPE_NAMES = CurvyTronReferenceDefaults().default_bonus_types
 
 
 def _public_runtime_bonus_effect_type_codes() -> dict[str, int]:
@@ -148,9 +140,7 @@ NATURAL_BONUS_UNSUPPORTED_TYPE_NAMES = tuple(
     if name not in NATURAL_BONUS_TYPE_CODES
 )
 NATURAL_BONUS_UNSUPPORTED_EFFECT_TYPE_NAMES = tuple(
-    name
-    for name in NATURAL_BONUS_TYPE_NAMES
-    if name not in NATURAL_BONUS_EFFECT_TYPE_CODES
+    name for name in NATURAL_BONUS_TYPE_NAMES if name not in NATURAL_BONUS_EFFECT_TYPE_CODES
 )
 
 
@@ -190,9 +180,7 @@ NATURAL_BONUS_RULES_HASH = stable_contract_hash(
         "supported_natural_bonus_types": NATURAL_BONUS_TYPE_NAMES,
         "supported_natural_bonus_effect_types": NATURAL_BONUS_EFFECT_TYPE_NAMES,
         "unsupported_natural_bonus_types": NATURAL_BONUS_UNSUPPORTED_TYPE_NAMES,
-        "unsupported_natural_bonus_effects": (
-            NATURAL_BONUS_UNSUPPORTED_EFFECT_TYPE_NAMES
-        ),
+        "unsupported_natural_bonus_effects": (NATURAL_BONUS_UNSUPPORTED_EFFECT_TYPE_NAMES),
         "player_counts": SUPPORTED_PLAYER_COUNTS,
         "spawn_runtime": "curvyzero.env.vector_runtime.bonus_spawn_due_rows",
         "runtime": "curvyzero.env.vector_runtime.step_many",
@@ -255,7 +243,9 @@ class VectorMultiplayerEnv:
         *,
         player_count: int = 2,
         seed: int | None = None,
-        decision_ms: float = 300.0,
+        decision_ms: float | None = None,
+        decision_source_frames: int | None = None,
+        source_physics_step_ms: float | None = None,
         max_ticks: int = 2_000,
         map_size: float | None = None,
         max_score: int | None = None,
@@ -280,7 +270,36 @@ class VectorMultiplayerEnv:
         if episode_end_mode not in EPISODE_END_MODES:
             raise VectorMultiplayerEnvError("episode_end_mode must be 'round' or 'match'")
         self.episode_end_mode = episode_end_mode
-        self.decision_ms = _positive_finite(decision_ms, "decision_ms")
+        self.source_physics_step_ms = _positive_finite(
+            SOURCE_PHYSICS_STEP_MS
+            if source_physics_step_ms is None
+            else source_physics_step_ms,
+            "source_physics_step_ms",
+        )
+        self.decision_source_frames = _optional_positive_int(
+            decision_source_frames,
+            "decision_source_frames",
+        )
+        if self.decision_source_frames is None:
+            self.decision_ms = _positive_finite(
+                300.0 if decision_ms is None else decision_ms,
+                "decision_ms",
+            )
+            self.source_frame_decision = False
+        else:
+            derived_decision_ms = self.decision_source_frames * self.source_physics_step_ms
+            if decision_ms is not None and not np.isclose(
+                float(decision_ms),
+                derived_decision_ms,
+                rtol=0.0,
+                atol=1e-6,
+            ):
+                raise VectorMultiplayerEnvError(
+                    "decision_ms must equal decision_source_frames * "
+                    "source_physics_step_ms when decision_source_frames is set"
+                )
+            self.decision_ms = float(derived_decision_ms)
+            self.source_frame_decision = True
         self.max_ticks = _nonnegative_int(max_ticks, "max_ticks")
         self.body_capacity = _positive_int(body_capacity, "body_capacity")
         self.event_capacity = _positive_int(event_capacity, "event_capacity")
@@ -316,9 +335,7 @@ class VectorMultiplayerEnv:
             "natural_bonus_position_attempt_capacity",
         )
         if death_mode not in vector_runtime.DEATH_MODES:
-            raise VectorMultiplayerEnvError(
-                "death_mode must be 'normal' or 'profile_no_death'"
-            )
+            raise VectorMultiplayerEnvError("death_mode must be 'normal' or 'profile_no_death'")
         self.death_mode = death_mode
 
         reference = CurvyTronReferenceDefaults()
@@ -438,20 +455,16 @@ class VectorMultiplayerEnv:
             dtype=np.float64,
         )
         self.state["bonus_radius"][row_int, slot_value] = radius_value
-        self.state["bonus_count"][row_int] = int(
-            self.state["bonus_active"][row_int].sum()
-        )
-        self.state["bonus_world_body_count"][row_int] = int(
-            self.state["bonus_count"][row_int]
-        )
+        self.state["bonus_count"][row_int] = int(self.state["bonus_active"][row_int].sum())
+        self.state["bonus_world_body_count"][row_int] = int(self.state["bonus_count"][row_int])
         self.state["base_radius"][row_int] = self.state["radius"][row_int]
         self.state["base_speed"][row_int] = self.state["speed"][row_int]
         self.state["base_inverse"][row_int] = self.state["inverse"][row_int]
         self.state["base_invincible"][row_int] = self.state["invincible"][row_int]
         self.state["base_avatar_color"][row_int] = self.state["avatar_color"][row_int]
-        self.state["base_angular_velocity_per_ms"][row_int] = self.state[
-            "angular_velocity_per_ms"
-        ][row_int]
+        self.state["base_angular_velocity_per_ms"][row_int] = self.state["angular_velocity_per_ms"][
+            row_int
+        ]
         self.state["radius_power"][row_int] = 0
         self._seeded_bonus_enabled[row_int] = True
         return {
@@ -859,30 +872,25 @@ class VectorMultiplayerEnv:
                 f"warmdown rows={rows.tolist()}"
             )
 
-        terminal_rows = (
-            mask
-            & (
-                self.state["done"]
-                | self.state["terminated"]
-                | self.state["truncated"]
-                | self._needs_reset
-                | (round_done & ~warmdown_rows)
-                | match_done
-            )
+        terminal_rows = mask & (
+            self.state["done"]
+            | self.state["terminated"]
+            | self.state["truncated"]
+            | self._needs_reset
+            | (round_done & ~warmdown_rows)
+            | match_done
         )
         if bool(terminal_rows.any()):
             rows = np.flatnonzero(terminal_rows).astype(np.int32)
             raise RuntimeError(
-                "remove_player cannot run on terminal rows; "
-                f"terminal rows={rows.tolist()}"
+                f"remove_player cannot run on terminal rows; terminal rows={rows.tolist()}"
             )
 
         inactive_round_rows = mask & ~warmdown_rows & ~self.state["in_round"]
         if bool(inactive_round_rows.any()):
             rows = np.flatnonzero(inactive_round_rows).astype(np.int32)
             raise RuntimeError(
-                "remove_player requires active in-round rows; "
-                f"inactive rows={rows.tolist()}"
+                f"remove_player requires active in-round rows; inactive rows={rows.tolist()}"
             )
 
         rows = np.flatnonzero(mask).astype(np.int32)
@@ -902,14 +910,12 @@ class VectorMultiplayerEnv:
         if bool(absent_rows.any()):
             invalid = np.flatnonzero(absent_rows).astype(np.int32)
             raise VectorMultiplayerEnvError(
-                "remove_player selected players must be present; "
-                f"absent rows={invalid.tolist()}"
+                f"remove_player selected players must be present; absent rows={invalid.tolist()}"
             )
         if bool(dead_rows.any()):
             invalid = np.flatnonzero(dead_rows).astype(np.int32)
             raise VectorMultiplayerEnvError(
-                "remove_player selected players must be alive; "
-                f"dead rows={invalid.tolist()}"
+                f"remove_player selected players must be alive; dead rows={invalid.tolist()}"
             )
 
         live_present_after = present & alive
@@ -1016,46 +1022,32 @@ class VectorMultiplayerEnv:
             batch_size=self.batch_size,
         )
         action_sidecar["timer_advance_ms"] = timer_advance.copy()
-        natural_bonus_info = self._advance_natural_bonus_spawn_timers(
-            pre_active,
-            advance_ms=timer_advance,
-            phase="step",
-        )
         self._ensure_seed_generated_random_tape_headroom(
             pre_active,
-            min_available=max(16, self.player_count * 4),
+            min_available=max(
+                16,
+                self.player_count * 4 * max(1, self.decision_source_frames or 1),
+            ),
         )
-        counters = vector_runtime.step_many(
-            vector_runtime.VectorStepInput(
-                state=self._runtime_step_state(),
-                step_ms=np.full(self.batch_size, self.decision_ms, dtype=np.float64),
-                source_moves=source_moves,
-                player_count=self.player_count,
-                print_manager_mode=np.full(
-                    self.batch_size,
-                    "natural_toggle",
-                    dtype=object,
-                ),
-                event_mode=self.event_mode,
-                timer_advance_ms=timer_advance,
-                death_mode=self.death_mode,
-            )
+        runtime_result = self._advance_runtime_for_public_step(
+            pre_active=pre_active,
+            source_moves=source_moves,
+            timer_advance=timer_advance,
         )
+        counters = runtime_result["step_counters"]
+        natural_bonus_info = runtime_result["natural_bonus_info"]
         self._correct_leave_adjusted_death_scores(
             pre_alive=pre_alive,
             pre_death_count=pre_death_count,
         )
         self._append_new_deaths(pre_alive)
         self.state["episode_step"][pre_active] += 1
-        self.state["elapsed_ms"][pre_active] += self.decision_ms
         self._mark_overflow_truncations(pre_active)
         self._mark_timeout_truncations(pre_active)
 
         transition_mask = self.state["done"].copy()
         round_transition_mask = (
-            transition_mask
-            & self.state["terminated"]
-            & ~self.state["truncated"]
+            transition_mask & self.state["terminated"] & ~self.state["truncated"]
         )
         if bool(round_transition_mask.any()):
             if self.episode_end_mode == EPISODE_END_MODE_MATCH:
@@ -1080,6 +1072,13 @@ class VectorMultiplayerEnv:
             "source_moves": source_moves.copy(),
             "action_sidecar": action_sidecar,
             "natural_bonus_info": natural_bonus_info,
+            "source_frame_decision": self.source_frame_decision,
+            "decision_source_frames": self.decision_source_frames,
+            "source_physics_step_ms": self.source_physics_step_ms,
+            "source_physics_substeps_executed": runtime_result[
+                "source_physics_substeps_executed"
+            ],
+            "source_physics_elapsed_ms": runtime_result["source_physics_elapsed_ms"],
             "terminal_rows": terminal_rows.copy(),
             "final_observation": final_observation,
             "final_reward_map": final_reward,
@@ -1097,6 +1096,140 @@ class VectorMultiplayerEnv:
         )
         self.last_step_info = batch.info
         return batch
+
+    def _advance_runtime_for_public_step(
+        self,
+        *,
+        pre_active: np.ndarray,
+        source_moves: np.ndarray,
+        timer_advance: np.ndarray,
+    ) -> dict[str, Any]:
+        if not self.source_frame_decision:
+            natural_bonus_info = self._advance_natural_bonus_spawn_timers(
+                pre_active,
+                advance_ms=timer_advance,
+                phase="step",
+            )
+            counters = vector_runtime.step_many(
+                vector_runtime.VectorStepInput(
+                    state=self._runtime_step_state(),
+                    step_ms=np.full(self.batch_size, self.decision_ms, dtype=np.float64),
+                    source_moves=source_moves,
+                    player_count=self.player_count,
+                    print_manager_mode=np.full(
+                        self.batch_size,
+                        "natural_toggle",
+                        dtype=object,
+                    ),
+                    event_mode=self.event_mode,
+                    timer_advance_ms=timer_advance,
+                    death_mode=self.death_mode,
+                )
+            )
+            elapsed = np.where(pre_active, self.decision_ms, 0.0).astype(np.float64)
+            self.state["elapsed_ms"] += elapsed
+            return {
+                "step_counters": counters,
+                "natural_bonus_info": natural_bonus_info,
+                "source_physics_substeps_executed": pre_active.astype(np.int32),
+                "source_physics_elapsed_ms": elapsed,
+            }
+
+        assert self.decision_source_frames is not None
+        total_counters = vector_runtime.empty_step_counters()
+        natural_bonus_infos: list[dict[str, Any]] = []
+        substeps_executed = np.zeros(self.batch_size, dtype=np.int32)
+        elapsed = np.zeros(self.batch_size, dtype=np.float64)
+        remaining_timer_advance = timer_advance.astype(np.float64, copy=True)
+        print_manager_mode = np.full(self.batch_size, "natural_toggle", dtype=object)
+
+        for substep_index in range(self.decision_source_frames):
+            active = pre_active & ~self.state["done"] & ~self.state["overflow"]
+            if not bool(active.any()):
+                break
+            frame_ms = np.where(active, self.source_physics_step_ms, 0.0).astype(
+                np.float64,
+            )
+            frame_timer_advance = np.minimum(remaining_timer_advance, frame_ms)
+            frame_timer_advance = np.where(active, frame_timer_advance, 0.0).astype(
+                np.float64,
+            )
+            natural_bonus_infos.append(
+                self._advance_natural_bonus_spawn_timers(
+                    active,
+                    advance_ms=frame_timer_advance,
+                    phase=f"step_source_frame_{substep_index}",
+                )
+            )
+            counters = vector_runtime.step_many(
+                vector_runtime.VectorStepInput(
+                    state=self._runtime_step_state(),
+                    step_ms=frame_ms,
+                    source_moves=source_moves,
+                    player_count=self.player_count,
+                    print_manager_mode=print_manager_mode,
+                    event_mode=self.event_mode,
+                    timer_advance_ms=frame_timer_advance,
+                    death_mode=self.death_mode,
+                )
+            )
+            for name in total_counters:
+                total_counters[name] += int(counters.get(name, 0))
+            substeps_executed[active] += 1
+            elapsed[active] += frame_ms[active]
+            self.state["elapsed_ms"] += frame_ms
+            remaining_timer_advance = np.maximum(
+                remaining_timer_advance - frame_timer_advance,
+                0.0,
+            )
+
+        return {
+            "step_counters": total_counters,
+            "natural_bonus_info": self._natural_bonus_substep_info(
+                natural_bonus_infos,
+                timer_advance=timer_advance,
+                remaining_timer_advance=remaining_timer_advance,
+            ),
+            "source_physics_substeps_executed": substeps_executed,
+            "source_physics_elapsed_ms": elapsed,
+        }
+
+    def _natural_bonus_substep_info(
+        self,
+        infos: list[dict[str, Any]],
+        *,
+        timer_advance: np.ndarray,
+        remaining_timer_advance: np.ndarray,
+    ) -> dict[str, Any]:
+        spawn_infos: list[dict[str, Any]] = []
+        random_calls: list[dict[str, Any]] = []
+        schedule_calls: list[dict[str, Any]] = []
+        random_tape_draws = 0
+        for info in infos:
+            spawn_infos.extend(info.get("spawn_infos", ()))
+            random_calls.extend(info.get("random_calls", ()))
+            schedule_calls.extend(info.get("schedule_calls", ()))
+            random_tape_draws += int(info.get("random_tape_draws", 0))
+        return {
+            "schema": "curvyzero_public_natural_bonus_spawn_source_frame_advance/v0",
+            "phase": "step_source_frame_substeps",
+            "enabled": bool(self._natural_bonus_spawn_enabled.any()),
+            "substep_count": len(infos),
+            "source_physics_step_ms": float(self.source_physics_step_ms),
+            "decision_source_frames": self.decision_source_frames,
+            "advance_ms": timer_advance.copy(),
+            "unspent_advance_ms": remaining_timer_advance.copy(),
+            "spawn_infos": spawn_infos,
+            "schedule_calls": schedule_calls,
+            "random_calls": random_calls,
+            "random_tape_draws": random_tape_draws,
+            "remaining_ms": self._natural_bonus_timer_remaining_ms.copy(),
+            "next_due_elapsed_ms": self._natural_bonus_next_due_elapsed_ms.copy(),
+            "pop_count": self._natural_bonus_pop_count.copy(),
+            "substep_infos": infos,
+            "source_bonus_poping_time_ms": SOURCE_BONUS_POPING_TIME_MS,
+            "random_label_policy_id": NATURAL_BONUS_RANDOM_LABEL_POLICY_ID,
+        }
 
     def advance_warmdown(
         self,
@@ -1277,9 +1410,7 @@ class VectorMultiplayerEnv:
                 raise RuntimeError(
                     "advance_warmdown_frame requires a scheduled warmdown game:stop timer"
                 )
-            remaining_ms = float(
-                self.state["timer_remaining_ms"][row_int, warmdown_slots].min()
-            )
+            remaining_ms = float(self.state["timer_remaining_ms"][row_int, warmdown_slots].min())
             if float(frame_ms[row_int]) >= remaining_ms:
                 raise RuntimeError(
                     "advance_warmdown_frame elapsed_ms must stay before game:stop; "
@@ -1537,9 +1668,7 @@ class VectorMultiplayerEnv:
 
             remaining_ms = float(self._natural_bonus_timer_remaining_ms[row_int])
             if remaining_ms > budget_ms:
-                self._natural_bonus_timer_remaining_ms[row_int] = (
-                    remaining_ms - budget_ms
-                )
+                self._natural_bonus_timer_remaining_ms[row_int] = remaining_ms - budget_ms
                 self._natural_bonus_next_due_elapsed_ms[row_int] = (
                     float(self.state["elapsed_ms"][row_int])
                     + float(advance[row_int])
@@ -1829,11 +1958,11 @@ class VectorMultiplayerEnv:
         bonus_capacity: int,
         stack_capacity: int,
     ) -> None:
-        current_capacity = int(self.state["bonus_active"].shape[1]) if "bonus_active" in self.state else 0
+        current_capacity = (
+            int(self.state["bonus_active"].shape[1]) if "bonus_active" in self.state else 0
+        )
         current_stack_capacity = (
-            int(self.state["bonus_stack_id"].shape[2])
-            if "bonus_stack_id" in self.state
-            else 0
+            int(self.state["bonus_stack_id"].shape[2]) if "bonus_stack_id" in self.state else 0
         )
         current_game_stack_capacity = (
             int(self.state["bonus_game_stack_id"].shape[1])
@@ -1934,9 +2063,7 @@ class VectorMultiplayerEnv:
             stack_count[:, :] = old_state["bonus_stack_count"]
             stack_id[:, :, :current_stack_capacity] = old_state["bonus_stack_id"]
             stack_type[:, :, :current_stack_capacity] = old_state["bonus_stack_type"]
-            stack_duration_ms[:, :, :current_stack_capacity] = old_state[
-                "bonus_stack_duration_ms"
-            ]
+            stack_duration_ms[:, :, :current_stack_capacity] = old_state["bonus_stack_duration_ms"]
             stack_radius_power[:, :, :current_stack_capacity] = old_state[
                 "bonus_stack_radius_power"
             ]
@@ -1961,9 +2088,7 @@ class VectorMultiplayerEnv:
                     "bonus_stack_printing_delta"
                 ]
             if "bonus_stack_color" in old_state:
-                stack_color[:, :, :current_stack_capacity] = old_state[
-                    "bonus_stack_color"
-                ]
+                stack_color[:, :, :current_stack_capacity] = old_state["bonus_stack_color"]
 
         game_stack_count = np.zeros(row_count, dtype=np.int16)
         game_stack_id = np.full(
@@ -1986,12 +2111,8 @@ class VectorMultiplayerEnv:
         )
         if current_game_stack_capacity:
             game_stack_count[:] = old_state["bonus_game_stack_count"]
-            game_stack_id[:, :current_game_stack_capacity] = old_state[
-                "bonus_game_stack_id"
-            ]
-            game_stack_type[:, :current_game_stack_capacity] = old_state[
-                "bonus_game_stack_type"
-            ]
+            game_stack_id[:, :current_game_stack_capacity] = old_state["bonus_game_stack_id"]
+            game_stack_type[:, :current_game_stack_capacity] = old_state["bonus_game_stack_type"]
             game_stack_duration_ms[:, :current_game_stack_capacity] = old_state[
                 "bonus_game_stack_duration_ms"
             ]
@@ -2064,9 +2185,7 @@ class VectorMultiplayerEnv:
         self.state["bonus_stack_radius_power"] = stack_radius_power
         self.state["bonus_stack_velocity_delta"] = stack_velocity_delta
         self.state["bonus_stack_inverse_delta"] = stack_inverse_delta
-        self.state["bonus_stack_angular_velocity_per_ms"] = (
-            stack_angular_velocity_per_ms
-        )
+        self.state["bonus_stack_angular_velocity_per_ms"] = stack_angular_velocity_per_ms
         self.state["bonus_stack_invincible_delta"] = stack_invincible_delta
         self.state["bonus_stack_printing_delta"] = stack_printing_delta
         self.state["bonus_stack_color"] = stack_color
@@ -2088,14 +2207,10 @@ class VectorMultiplayerEnv:
     ) -> None:
         template = self.reset_template
         current_capacity = (
-            int(template["bonus_active"].shape[1])
-            if "bonus_active" in template
-            else 0
+            int(template["bonus_active"].shape[1]) if "bonus_active" in template else 0
         )
         current_stack_capacity = (
-            int(template["bonus_stack_id"].shape[2])
-            if "bonus_stack_id" in template
-            else 0
+            int(template["bonus_stack_id"].shape[2]) if "bonus_stack_id" in template else 0
         )
         current_game_stack_capacity = (
             int(template["bonus_game_stack_id"].shape[1])
@@ -2188,12 +2303,8 @@ class VectorMultiplayerEnv:
             stack_count[:, :] = template["bonus_stack_count"]
             stack_id[:, :, :current_stack_capacity] = template["bonus_stack_id"]
             stack_type[:, :, :current_stack_capacity] = template["bonus_stack_type"]
-            stack_duration_ms[:, :, :current_stack_capacity] = template[
-                "bonus_stack_duration_ms"
-            ]
-            stack_radius_power[:, :, :current_stack_capacity] = template[
-                "bonus_stack_radius_power"
-            ]
+            stack_duration_ms[:, :, :current_stack_capacity] = template["bonus_stack_duration_ms"]
+            stack_radius_power[:, :, :current_stack_capacity] = template["bonus_stack_radius_power"]
             if "bonus_stack_velocity_delta" in template:
                 stack_velocity_delta[:, :, :current_stack_capacity] = template[
                     "bonus_stack_velocity_delta"
@@ -2215,9 +2326,7 @@ class VectorMultiplayerEnv:
                     "bonus_stack_printing_delta"
                 ]
             if "bonus_stack_color" in template:
-                stack_color[:, :, :current_stack_capacity] = template[
-                    "bonus_stack_color"
-                ]
+                stack_color[:, :, :current_stack_capacity] = template["bonus_stack_color"]
 
         game_stack_count = np.zeros(row_count, dtype=np.int16)
         game_stack_id = np.full(
@@ -2240,12 +2349,8 @@ class VectorMultiplayerEnv:
         )
         if current_game_stack_capacity:
             game_stack_count[:] = template["bonus_game_stack_count"]
-            game_stack_id[:, :current_game_stack_capacity] = template[
-                "bonus_game_stack_id"
-            ]
-            game_stack_type[:, :current_game_stack_capacity] = template[
-                "bonus_game_stack_type"
-            ]
+            game_stack_id[:, :current_game_stack_capacity] = template["bonus_game_stack_id"]
+            game_stack_type[:, :current_game_stack_capacity] = template["bonus_game_stack_type"]
             game_stack_duration_ms[:, :current_game_stack_capacity] = template[
                 "bonus_game_stack_duration_ms"
             ]
@@ -2264,9 +2369,7 @@ class VectorMultiplayerEnv:
         template["bonus_world_body_count"] = np.zeros(row_count, dtype=np.int32)
         template["base_radius"] = template["radius"].copy()
         template["base_speed"] = template["speed"].copy()
-        template["base_angular_velocity_per_ms"] = template[
-            "angular_velocity_per_ms"
-        ].copy()
+        template["base_angular_velocity_per_ms"] = template["angular_velocity_per_ms"].copy()
         template["base_inverse"] = template["inverse"].copy()
         template["invincible"] = np.zeros((row_count, player_count), dtype=bool)
         template["base_invincible"] = template["invincible"].copy()
@@ -2287,9 +2390,7 @@ class VectorMultiplayerEnv:
         template["bonus_stack_radius_power"] = stack_radius_power
         template["bonus_stack_velocity_delta"] = stack_velocity_delta
         template["bonus_stack_inverse_delta"] = stack_inverse_delta
-        template["bonus_stack_angular_velocity_per_ms"] = (
-            stack_angular_velocity_per_ms
-        )
+        template["bonus_stack_angular_velocity_per_ms"] = stack_angular_velocity_per_ms
         template["bonus_stack_invincible_delta"] = stack_invincible_delta
         template["bonus_stack_printing_delta"] = stack_printing_delta
         template["bonus_stack_color"] = stack_color
@@ -2326,12 +2427,8 @@ class VectorMultiplayerEnv:
         self.state["base_inverse"][row_mask] = self.state["inverse"][row_mask]
         self.state["invincible"][row_mask] = self.state["base_invincible"][row_mask]
         self.state["base_invincible"][row_mask] = self.state["invincible"][row_mask]
-        self.state["avatar_color"][row_mask] = self.state["base_avatar_color"][
-            row_mask
-        ]
-        self.state["base_avatar_color"][row_mask] = self.state["avatar_color"][
-            row_mask
-        ]
+        self.state["avatar_color"][row_mask] = self.state["base_avatar_color"][row_mask]
+        self.state["base_avatar_color"][row_mask] = self.state["avatar_color"][row_mask]
         self.state["radius_power"][row_mask, :] = 0
         self.state["bonus_stack_count"][row_mask, :] = 0
         self.state["bonus_stack_id"][row_mask, :, :] = -1
@@ -2403,9 +2500,7 @@ class VectorMultiplayerEnv:
             self.state["timer_seq"][row_int, :] = 0
             self.state["timer_overflow"][row_int] = False
             self.state["timer_active"][row_int, 0] = True
-            self.state["timer_remaining_ms"][row_int, 0] = (
-                vector_lifecycle.SOURCE_ROUND_WARMDOWN_MS
-            )
+            self.state["timer_remaining_ms"][row_int, 0] = vector_lifecycle.SOURCE_ROUND_WARMDOWN_MS
             self.state["timer_kind"][row_int, 0] = vector_runtime.TIMER_KIND_WARMDOWN_END
             self.state["timer_player"][row_int, 0] = vector_runtime.TIMER_PLAYER_NONE
             self.state["timer_seq"][row_int, 0] = 0
@@ -2436,9 +2531,7 @@ class VectorMultiplayerEnv:
                     self.state["overflow"][row_int] = True
                     break
                 self.state["death_player"][row_int, count] = player
-                self.state["death_cause"][row_int, count] = (
-                    vector_runtime.DEATH_CAUSE_BODY_UNKNOWN
-                )
+                self.state["death_cause"][row_int, count] = vector_runtime.DEATH_CAUSE_BODY_UNKNOWN
                 self.state["death_hit_owner"][row_int, count] = -1
                 count += 1
                 existing.add(player)
@@ -2481,9 +2574,9 @@ class VectorMultiplayerEnv:
                     self.player_count - 1,
                     1,
                 )
-            self.state["score"][row_int, : self.player_count] += self.state[
-                "round_score"
-            ][row_int, : self.player_count]
+            self.state["score"][row_int, : self.player_count] += self.state["round_score"][
+                row_int, : self.player_count
+            ]
             self.state["round_score"][row_int, : self.player_count] = 0
             self.state["done"][row_int] = True
             self.state["terminated"][row_int] = True
@@ -2795,6 +2888,15 @@ class VectorMultiplayerEnv:
         template["visible_trail_last_pos"][mask, ...] = 0.0
         template["has_draw_cursor"][mask, ...] = False
         template["draw_cursor_pos"][mask, ...] = 0.0
+        template["visual_trail_active"][mask, ...] = False
+        template["visual_trail_pos"][mask, ...] = 0.0
+        template["visual_trail_radius"][mask, ...] = 0.0
+        template["visual_trail_owner"][mask, ...] = -1
+        template["visual_trail_break_before"][mask, ...] = False
+        template["visual_trail_write_cursor"][mask] = 0
+        template["visual_trail_overflow"][mask] = False
+        template["has_visual_trail_last"][mask, ...] = False
+        template["visual_trail_last_pos"][mask, ...] = 0.0
         template["body_active"][mask, ...] = False
         template["body_pos"][mask, ...] = 0.0
         template["body_radius"][mask, ...] = 0.0
@@ -2802,6 +2904,7 @@ class VectorMultiplayerEnv:
         template["body_num"][mask, ...] = -1
         template["body_insert_tick"][mask, ...] = -1
         template["body_insert_kind"][mask, ...] = -1
+        template["body_break_before"][mask, ...] = False
         template["body_write_cursor"][mask] = 0
         template["body_count"][mask, ...] = 0
         template["event_count"][mask] = 0
@@ -2826,9 +2929,9 @@ class VectorMultiplayerEnv:
             template["bonus_world_body_count"][mask] = 0
             template["base_radius"][mask] = template["radius"][mask]
             template["base_speed"][mask] = template["speed"][mask]
-            template["base_angular_velocity_per_ms"][mask] = template[
-                "angular_velocity_per_ms"
-            ][mask]
+            template["base_angular_velocity_per_ms"][mask] = template["angular_velocity_per_ms"][
+                mask
+            ]
             template["inverse"][mask] = False
             template["base_inverse"][mask] = False
             template["invincible"][mask] = False
@@ -2949,6 +3052,11 @@ class VectorMultiplayerEnv:
             "native_control_model_id": NATIVE_CONTROL_MODEL_ID,
             "trainer_control_wrapper_id": TRAINER_CONTROL_WRAPPER_ID,
             "decision_ms": self.decision_ms,
+            "source_frame_decision": self.source_frame_decision,
+            "decision_source_frames": self.decision_source_frames,
+            "source_physics_step_ms": self.source_physics_step_ms,
+            "source_frame_decision_policy_id": SOURCE_FRAME_DECISION_POLICY_ID,
+            "source_physics_step_policy_id": SOURCE_PHYSICS_STEP_POLICY_ID,
             "lifecycle_policy_id": LIFECYCLE_POLICY_ID,
             "reset_episode_id": self.state["episode_id"].copy(),
             "reset_episode_id_policy": RESET_EPISODE_ID_POLICY,
@@ -2991,12 +3099,8 @@ class VectorMultiplayerEnv:
             "random_tape_source": self._random_tape_source.copy(),
             "random_tape_length": self.state["random_tape_length"].copy(),
             "natural_bonus_timer_active": self._natural_bonus_timer_active.copy(),
-            "natural_bonus_timer_remaining_ms": (
-                self._natural_bonus_timer_remaining_ms.copy()
-            ),
-            "natural_bonus_next_due_elapsed_ms": (
-                self._natural_bonus_next_due_elapsed_ms.copy()
-            ),
+            "natural_bonus_timer_remaining_ms": (self._natural_bonus_timer_remaining_ms.copy()),
+            "natural_bonus_next_due_elapsed_ms": (self._natural_bonus_next_due_elapsed_ms.copy()),
             "natural_bonus_pop_count": self._natural_bonus_pop_count.copy(),
             "rng_impl_id": self._rng_impl_id.copy(),
             "rng_history_ref": self._rng_impl_id.copy(),
@@ -3020,9 +3124,7 @@ class VectorMultiplayerEnv:
             "trainer_observation_schema_id": None,
             "public_observation_claim": "debug_metadata_only_not_trainer_observation/v0",
             "warmdown_waited": False,
-            "natural_multiplayer_reset_claim": bool(
-                self._natural_multiplayer_reset_claim.all()
-            ),
+            "natural_multiplayer_reset_claim": bool(self._natural_multiplayer_reset_claim.all()),
             "natural_multiplayer_reset_claim_by_row": (
                 self._natural_multiplayer_reset_claim.copy()
             ),
@@ -3100,9 +3202,7 @@ class VectorMultiplayerEnv:
                 else SEEDED_BONUS_SUPPORT_POLICY_ID
             ),
             "mode": (
-                "natural_spawn"
-                if natural_enabled
-                else ("seeded" if seeded_enabled else "disabled")
+                "natural_spawn" if natural_enabled else ("seeded" if seeded_enabled else "disabled")
             ),
             "public_env_contract_id": PUBLIC_ENV_CONTRACT_ID,
             "env_impl_id": ENV_IMPL_ID,
@@ -3114,16 +3214,12 @@ class VectorMultiplayerEnv:
             "seeded_enabled_by_row": self._seeded_bonus_enabled.copy(),
             "natural_enabled_by_row": self._natural_bonus_spawn_enabled.copy(),
             "claim": (
-                NATURAL_BONUS_SUPPORT_CLAIM
-                if natural_enabled
-                else SEEDED_BONUS_SUPPORT_CLAIM
+                NATURAL_BONUS_SUPPORT_CLAIM if natural_enabled else SEEDED_BONUS_SUPPORT_CLAIM
             ),
             "natural_bonus_spawn": natural_enabled,
             "natural_bonus_spawn_default": self.natural_bonus_spawn_default,
             "natural_bonus_policy_id": NATURAL_BONUS_SUPPORT_POLICY_ID,
-            "natural_bonus_random_label_policy_id": (
-                NATURAL_BONUS_RANDOM_LABEL_POLICY_ID
-            ),
+            "natural_bonus_random_label_policy_id": (NATURAL_BONUS_RANDOM_LABEL_POLICY_ID),
             "source_bonus_poping_time_ms": SOURCE_BONUS_POPING_TIME_MS,
             "supported_seeded_bonus_types": SEEDED_BONUS_TYPE_NAMES,
             "source_default_natural_bonus_types": SOURCE_DEFAULT_NATURAL_BONUS_TYPE_NAMES,
@@ -3131,9 +3227,7 @@ class VectorMultiplayerEnv:
             "supported_natural_bonus_effect_types": NATURAL_BONUS_EFFECT_TYPE_NAMES,
             "enabled_natural_bonus_type_codes": self.natural_bonus_type_codes.copy(),
             "unsupported_natural_bonus_types": NATURAL_BONUS_UNSUPPORTED_TYPE_NAMES,
-            "unsupported_natural_bonus_effects": (
-                NATURAL_BONUS_UNSUPPORTED_EFFECT_TYPE_NAMES
-            ),
+            "unsupported_natural_bonus_effects": (NATURAL_BONUS_UNSUPPORTED_EFFECT_TYPE_NAMES),
             "source_default_gap_claims": _source_default_gap_claims(natural_enabled),
             "active_count": active_count,
             "stack_count": stack_count,
@@ -3386,6 +3480,8 @@ class VectorMultiplayerEnv:
         self.state["visible_trail_last_pos"][row, player] = 0.0
         self.state["has_draw_cursor"][row, player] = False
         self.state["draw_cursor_pos"][row, player] = 0.0
+        self.state["has_visual_trail_last"][row, player] = False
+        self.state["visual_trail_last_pos"][row, player] = 0.0
 
     def _present_array(self, present: np.ndarray | None, mask: np.ndarray) -> np.ndarray:
         present_array = self.state["present"][:, : self.player_count].copy()
@@ -3533,6 +3629,18 @@ def _make_state_arrays(
         ),
         "has_draw_cursor": np.zeros((batch_size, player_count), dtype=bool),
         "draw_cursor_pos": np.zeros((batch_size, player_count, 2), dtype=np.float64),
+        "visual_trail_active": np.zeros((batch_size, body_capacity), dtype=bool),
+        "visual_trail_pos": np.zeros((batch_size, body_capacity, 2), dtype=np.float64),
+        "visual_trail_radius": np.zeros((batch_size, body_capacity), dtype=np.float64),
+        "visual_trail_owner": np.full((batch_size, body_capacity), -1, dtype=np.int16),
+        "visual_trail_break_before": np.zeros((batch_size, body_capacity), dtype=bool),
+        "visual_trail_write_cursor": np.zeros(batch_size, dtype=np.int32),
+        "visual_trail_overflow": np.zeros(batch_size, dtype=bool),
+        "has_visual_trail_last": np.zeros((batch_size, player_count), dtype=bool),
+        "visual_trail_last_pos": np.zeros(
+            (batch_size, player_count, 2),
+            dtype=np.float64,
+        ),
         "body_active": np.zeros((batch_size, body_capacity), dtype=bool),
         "body_pos": np.zeros((batch_size, body_capacity, 2), dtype=np.float64),
         "body_radius": np.zeros((batch_size, body_capacity), dtype=np.float64),
@@ -3540,6 +3648,7 @@ def _make_state_arrays(
         "body_num": np.full((batch_size, body_capacity), -1, dtype=np.int32),
         "body_insert_tick": np.full((batch_size, body_capacity), -1, dtype=np.int32),
         "body_insert_kind": np.full((batch_size, body_capacity), -1, dtype=np.int16),
+        "body_break_before": np.zeros((batch_size, body_capacity), dtype=bool),
         "body_write_cursor": np.zeros(batch_size, dtype=np.int32),
         "body_count": np.zeros((batch_size, player_count), dtype=np.int32),
         "event_count": np.zeros(batch_size, dtype=np.int16),
@@ -3714,9 +3823,7 @@ def _warmdown_frame_elapsed_ms(
     if array.shape != (batch_size,):
         raise VectorMultiplayerEnvError("warmdown frame elapsed_ms must be a scalar or shape [B]")
     if not bool(np.isfinite(array).all()) or bool((array < 0.0).any()):
-        raise VectorMultiplayerEnvError(
-            "warmdown frame elapsed_ms must be finite and nonnegative"
-        )
+        raise VectorMultiplayerEnvError("warmdown frame elapsed_ms must be finite and nonnegative")
     return array.copy()
 
 
