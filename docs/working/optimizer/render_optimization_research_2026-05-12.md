@@ -78,10 +78,11 @@ bonus to one gray value. It also falls back to `body_*` trails when
 `visual_trail_*` arrays exist but have no active slots. Focused tests include
 semantic pixel checks and a loose mask-level comparison against `browser_lines`.
 
-Current recommendation: use `browser_lines` for fidelity/control runs. Use
-`fast_gray64_direct` for speed-first training canaries only if Coach accepts the
-declared approximation: isolated 64x64 trail circles instead of connected
-browser lines, bonus type luma circles instead of sprites, and no edge
+Current recommendation: use `fast_gray64_direct` for the overnight speed-first
+training canary if Coach accepts the declared approximation. Keep a smaller
+`browser_lines` run as the fidelity/control lane. The approximation is strong
+semantically but not pixel-fidelity: isolated 64x64 trail circles instead of
+connected browser lines, bonus type luma circles instead of sprites, and no edge
 antialias/downsample coverage.
 
 ## Responsibility Boundary
