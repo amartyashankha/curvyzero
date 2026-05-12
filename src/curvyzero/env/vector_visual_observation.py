@@ -48,9 +48,6 @@ SOURCE_STATE_GRAY64_PIXEL_FIDELITY_BLOCKER = (
 SOURCE_STATE_GRAY64_SOURCE_STATE_BACKED = True
 SOURCE_STATE_GRAY64_USES_ALE = False
 SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID = "curvyzero_source_state_rgb_canvas_like/v0"
-SOURCE_STATE_RGB_CANVAS_LIKE_RENDERER_IMPL_ID = (
-    "curvyzero_source_state_rgb_canvas_like_numpy/v0"
-)
 SOURCE_STATE_RGB_CANVAS_LIKE_TRUTH_LEVEL = "source_state_backed_browser_like_non_pixel_parity"
 SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE = 704
 SOURCE_STATE_RGB_CANVAS_LIKE_BACKGROUND_RGB = (34, 34, 34)
@@ -62,9 +59,34 @@ SOURCE_STATE_RGB_CANVAS_LIKE_PLAYER_RGB = (
     (0, 80, 255),
     (255, 240, 0),
 )
+TRAIL_RENDER_MODE_BROWSER_LINES = "browser_lines"
+TRAIL_RENDER_MODE_BODY_CIRCLES_FAST = "body_circles_fast"
+TRAIL_RENDER_MODES = frozenset(
+    (TRAIL_RENDER_MODE_BROWSER_LINES, TRAIL_RENDER_MODE_BODY_CIRCLES_FAST)
+)
+TRAIL_RENDER_MODE_ORDER = (
+    TRAIL_RENDER_MODE_BROWSER_LINES,
+    TRAIL_RENDER_MODE_BODY_CIRCLES_FAST,
+)
+TRAIL_RENDER_MODE_DEFAULT = TRAIL_RENDER_MODE_BROWSER_LINES
+SOURCE_STATE_RGB_BROWSER_LINES_RENDERER_IMPL_ID = (
+    "curvyzero_source_state_rgb_canvas_like_browser_lines_numpy/v0"
+)
+SOURCE_STATE_RGB_BODY_CIRCLES_FAST_RENDERER_IMPL_ID = (
+    "curvyzero_source_state_rgb_canvas_like_body_circles_fast_numpy/v0"
+)
+SOURCE_STATE_RGB_CANVAS_LIKE_RENDERER_IMPL_ID = (
+    SOURCE_STATE_RGB_BROWSER_LINES_RENDERER_IMPL_ID
+)
 SOURCE_STATE_CANVAS_GRAY64_SCHEMA_ID = "curvyzero_source_state_canvas_gray64/v0"
+SOURCE_STATE_CANVAS_GRAY64_BROWSER_LINES_RENDERER_IMPL_ID = (
+    "curvyzero_source_state_canvas_gray64_browser_lines_numpy/v0"
+)
+SOURCE_STATE_CANVAS_GRAY64_BODY_CIRCLES_FAST_RENDERER_IMPL_ID = (
+    "curvyzero_source_state_canvas_gray64_body_circles_fast_numpy/v0"
+)
 SOURCE_STATE_CANVAS_GRAY64_RENDERER_IMPL_ID = (
-    "curvyzero_source_state_rgb_canvas_like_to_gray64_numpy/v0"
+    SOURCE_STATE_CANVAS_GRAY64_BROWSER_LINES_RENDERER_IMPL_ID
 )
 SOURCE_STATE_CANVAS_GRAY64_SOURCE_CLAIM_ID = (
     "curvyzero_vector_runtime_source_state_canvas_gray64/v0"
@@ -297,15 +319,17 @@ def render_source_state_rgb_canvas_like(
     frame_size: int = SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
     player_rgb: Sequence[Sequence[int]] | None = None,
     background_rgb: Sequence[int] = SOURCE_STATE_RGB_CANVAS_LIKE_BACKGROUND_RGB,
+    trail_render_mode: str = TRAIL_RENDER_MODE_DEFAULT,
 ) -> np.ndarray:
     """Render one vector runtime row into a browser-like RGB frame.
 
     This is for human inspection, not model input. It uses the source-state arrays,
-    the browser's dark background, player colors, visible trail bodies, live heads,
-    and active bonus circles. It is intentionally separate from the 64x64 gray
-    learning tensor.
+    the browser's dark background, player colors, visible trail bodies or browser-style
+    trail lines, live heads, and active bonus circles. It is intentionally separate
+    from the 64x64 gray learning tensor.
     """
 
+    mode = _validated_trail_render_mode(trail_render_mode)
     arrays = _trusted_arrays(state)
     row_index = _row_index(row, arrays["tick"].shape[0])
     size = _rgb_frame_size(frame_size)
@@ -319,16 +343,22 @@ def render_source_state_rgb_canvas_like(
     map_size = float(arrays["map_size"][row_index])
     colors = _player_rgb_values(arrays, row_index, player_rgb=player_rgb)
 
-    body_limit = _body_slot_limit(arrays, row_index)
-    active_slots = np.flatnonzero(arrays["body_active"][row_index, :body_limit])
-    _draw_body_circles_rgb(
-        frame,
-        arrays["body_pos"][row_index, active_slots],
-        arrays["body_radius"][row_index, active_slots],
-        arrays["body_owner"][row_index, active_slots],
-        map_size,
-        colors=colors,
-    )
+    if mode == TRAIL_RENDER_MODE_BROWSER_LINES:
+        _render_source_state_rgb_browser_lines(
+            frame,
+            arrays,
+            row_index,
+            map_size,
+            colors=colors,
+        )
+    else:
+        _render_source_state_rgb_body_circles_fast(
+            frame,
+            arrays,
+            row_index,
+            map_size,
+            colors=colors,
+        )
 
     if "bonus_active" in arrays:
         bonus_slots = np.flatnonzero(arrays["bonus_active"][row_index])
@@ -364,6 +394,7 @@ def render_source_state_canvas_gray64(
     rgb_out: np.ndarray | None = None,
     player_rgb: Sequence[Sequence[int]] | None = None,
     background_rgb: Sequence[int] = SOURCE_STATE_RGB_CANVAS_LIKE_BACKGROUND_RGB,
+    trail_render_mode: str = TRAIL_RENDER_MODE_DEFAULT,
 ) -> np.ndarray:
     """Render browser-like source-state RGB, then convert it to gray64.
 
@@ -372,6 +403,7 @@ def render_source_state_canvas_gray64(
     a DOM/browser canvas pixel-parity claim.
     """
 
+    mode = _validated_trail_render_mode(trail_render_mode)
     rgb = render_source_state_rgb_canvas_like(
         state,
         row=row,
@@ -379,6 +411,7 @@ def render_source_state_canvas_gray64(
         frame_size=SOURCE_STATE_CANVAS_GRAY64_SHAPE[1],
         player_rgb=player_rgb,
         background_rgb=background_rgb,
+        trail_render_mode=mode,
     )
     return rgb_canvas_like_to_gray64(rgb, out=out)
 
@@ -394,9 +427,11 @@ def render_source_snapshot_rgb_canvas_like(
     player_rgb: Sequence[Sequence[int]] | None = None,
     background_rgb: Sequence[int] = SOURCE_STATE_RGB_CANVAS_LIKE_BACKGROUND_RGB,
     default_avatar_radius: float = SOURCE_STATE_GRAY64_DEFAULT_AVATAR_RADIUS,
+    trail_render_mode: str = TRAIL_RENDER_MODE_DEFAULT,
 ) -> np.ndarray:
     """Render a source-env snapshot into the browser-like RGB frame."""
 
+    mode = _validated_trail_render_mode(trail_render_mode)
     size = _rgb_frame_size(frame_size)
     frame = (
         np.empty((size, size, 3), dtype=np.uint8)
@@ -415,30 +450,15 @@ def render_source_snapshot_rgb_canvas_like(
     avatar_radius_by_id = _source_avatar_radius_by_id(avatar_body_metadata)
 
     body_records = _source_mapping_sequence(world_bodies, name="world_bodies")
-    if body_records:
-        body_positions = np.asarray(
-            [[float(body["x"]), float(body["y"])] for body in body_records],
-            dtype=np.float64,
-        )
-        body_radii = np.asarray(
-            [float(body.get("radius", default_avatar_radius)) for body in body_records],
-            dtype=np.float64,
-        )
-        body_owners = np.asarray(
-            [
-                _source_body_owner_index(body.get("avatarId"), player_index_by_avatar_id)
-                for body in body_records
-            ],
-            dtype=np.int16,
-        )
-        _draw_body_circles_rgb(
-            frame,
-            body_positions,
-            body_radii,
-            body_owners,
-            map_size,
-            colors=colors,
-        )
+    _render_source_snapshot_rgb_trails(
+        frame,
+        body_records,
+        player_index_by_avatar_id,
+        map_size,
+        colors=colors,
+        default_avatar_radius=default_avatar_radius,
+        trail_render_mode=mode,
+    )
 
     bonus_records = _source_mapping_sequence(bonus_bodies, name="bonus_bodies")
     if bonus_records:
@@ -487,7 +507,9 @@ def render_source_snapshot_canvas_gray64(
     player_rgb: Sequence[Sequence[int]] | None = None,
     background_rgb: Sequence[int] = SOURCE_STATE_RGB_CANVAS_LIKE_BACKGROUND_RGB,
     default_avatar_radius: float = SOURCE_STATE_GRAY64_DEFAULT_AVATAR_RADIUS,
+    trail_render_mode: str = TRAIL_RENDER_MODE_DEFAULT,
 ) -> np.ndarray:
+    mode = _validated_trail_render_mode(trail_render_mode)
     rgb = render_source_snapshot_rgb_canvas_like(
         snapshot,
         world_bodies=world_bodies,
@@ -498,6 +520,7 @@ def render_source_snapshot_canvas_gray64(
         player_rgb=player_rgb,
         background_rgb=background_rgb,
         default_avatar_radius=default_avatar_radius,
+        trail_render_mode=mode,
     )
     return rgb_canvas_like_to_gray64(rgb, out=out)
 
@@ -681,12 +704,25 @@ def source_state_canvas_gray64_schema() -> dict[str, Any]:
         "optional_state_fields": [
             *SOURCE_STATE_GRAY64_OPTIONAL_STATE_FIELDS,
             "state.avatar_color",
+            "state.body_num",
         ],
         "perspective": SOURCE_STATE_CANVAS_GRAY64_PERSPECTIVE,
         "comparison_target": SOURCE_STATE_CANVAS_GRAY64_COMPARISON_TARGET,
         "browser_pixel_fidelity": SOURCE_STATE_CANVAS_GRAY64_BROWSER_PIXEL_FIDELITY,
         "browser_pixel_fidelity_claim": SOURCE_STATE_CANVAS_GRAY64_BROWSER_PIXEL_FIDELITY_CLAIM,
         "browser_pixel_fidelity_blocker": SOURCE_STATE_CANVAS_GRAY64_PIXEL_FIDELITY_BLOCKER,
+        "default_trail_render_mode": TRAIL_RENDER_MODE_DEFAULT,
+        "supported_trail_render_modes": list(TRAIL_RENDER_MODE_ORDER),
+        "trail_render_mode": TRAIL_RENDER_MODE_DEFAULT,
+        "trail_renderer_kind": "connected_rounded_lines",
+        "trail_renderer_truth_level": "source_state_browser_style_lines_non_pixel_parity",
+        "trail_renderer_is_approximation": False,
+        "browser_trail_semantics": "persistent_background_canvas_round_line_caps",
+        "browser_client_trail_point_caveat": (
+            "vector/source snapshots expose persisted body points, not all client "
+            "position-event trail points"
+        ),
+        "trail_raster_antialiasing": "binary_numpy_coverage_no_browser_antialiasing",
         "uses_ale": SOURCE_STATE_CANVAS_GRAY64_USES_ALE,
         "grayscale_conversion": "round(0.299*r + 0.587*g + 0.114*b)",
     }
@@ -881,6 +917,11 @@ def _validated_arrays(state: Mapping[str, np.ndarray]) -> dict[str, np.ndarray]:
     body_pos = _numeric_array(state, "body_pos", shape=(batch_size, body_capacity, 2))
     body_radius = _numeric_array(state, "body_radius", shape=body_shape)
     body_owner = _integer_array(state, "body_owner", shape=body_shape)
+    body_num = (
+        _integer_array(state, "body_num", shape=body_shape)
+        if "body_num" in state
+        else None
+    )
     body_write_cursor = _integer_array(state, "body_write_cursor", shape=(batch_size,))
     if bool(((body_write_cursor < 0) | (body_write_cursor > body_capacity)).any()):
         raise VectorVisualObservationError(
@@ -914,6 +955,8 @@ def _validated_arrays(state: Mapping[str, np.ndarray]) -> dict[str, np.ndarray]:
         "truncated": truncated,
         "terminal_reason": terminal_reason,
     }
+    if body_num is not None:
+        arrays["body_num"] = body_num
     arrays.update(_optional_bonus_arrays(state, batch_size=batch_size))
     return arrays
 
@@ -925,6 +968,8 @@ def _trusted_arrays(state: Mapping[str, np.ndarray]) -> dict[str, np.ndarray]:
             arrays[name] = np.asarray(state[name])
     if "avatar_color" in state:
         arrays["avatar_color"] = np.asarray(state["avatar_color"])
+    if "body_num" in state:
+        arrays["body_num"] = np.asarray(state["body_num"])
     return arrays
 
 
@@ -1388,6 +1433,44 @@ def _first_other_player(controlled: int, player_count: int) -> int:
     return controlled
 
 
+def _validated_trail_render_mode(value: str) -> str:
+    mode = str(value)
+    if mode not in TRAIL_RENDER_MODES:
+        supported = ", ".join(TRAIL_RENDER_MODE_ORDER)
+        raise VectorVisualObservationError(
+            f"trail_render_mode must be one of [{supported}], got {value!r}"
+        )
+    return mode
+
+
+def _trail_renderer_kind(mode: str) -> str:
+    if mode == TRAIL_RENDER_MODE_BROWSER_LINES:
+        return "connected_rounded_lines"
+    return "circle_per_body"
+
+
+def _trail_renderer_truth_level(mode: str) -> str:
+    if mode == TRAIL_RENDER_MODE_BROWSER_LINES:
+        return "source_state_browser_style_lines_non_pixel_parity"
+    return "source_state_fast_body_circle_approximation"
+
+
+def _trail_renderer_is_approximation(mode: str) -> bool:
+    return mode == TRAIL_RENDER_MODE_BODY_CIRCLES_FAST
+
+
+def _rgb_renderer_impl_id(mode: str) -> str:
+    if mode == TRAIL_RENDER_MODE_BROWSER_LINES:
+        return SOURCE_STATE_RGB_BROWSER_LINES_RENDERER_IMPL_ID
+    return SOURCE_STATE_RGB_BODY_CIRCLES_FAST_RENDERER_IMPL_ID
+
+
+def _canvas_gray64_renderer_impl_id(mode: str) -> str:
+    if mode == TRAIL_RENDER_MODE_BROWSER_LINES:
+        return SOURCE_STATE_CANVAS_GRAY64_BROWSER_LINES_RENDERER_IMPL_ID
+    return SOURCE_STATE_CANVAS_GRAY64_BODY_CIRCLES_FAST_RENDERER_IMPL_ID
+
+
 def _body_slot_limit(arrays: Mapping[str, np.ndarray], row: int) -> int:
     capacity = arrays["body_active"].shape[1]
     cursor = int(arrays["body_write_cursor"][row])
@@ -1403,6 +1486,304 @@ def _body_value(owner: Any) -> int:
 
 def _head_value(player: int) -> int:
     return int(min(255, 224 + int(player) * 8))
+
+
+def _render_source_state_rgb_body_circles_fast(
+    frame: np.ndarray,
+    arrays: Mapping[str, np.ndarray],
+    row: int,
+    map_size: float,
+    *,
+    colors: np.ndarray,
+) -> None:
+    body_limit = _body_slot_limit(arrays, row)
+    active_slots = np.flatnonzero(arrays["body_active"][row, :body_limit])
+    _draw_body_circles_rgb(
+        frame,
+        arrays["body_pos"][row, active_slots],
+        arrays["body_radius"][row, active_slots],
+        arrays["body_owner"][row, active_slots],
+        map_size,
+        colors=colors,
+    )
+
+
+def _render_source_state_rgb_browser_lines(
+    frame: np.ndarray,
+    arrays: Mapping[str, np.ndarray],
+    row: int,
+    map_size: float,
+    *,
+    colors: np.ndarray,
+) -> None:
+    body_limit = _body_slot_limit(arrays, row)
+    active_slots = np.flatnonzero(arrays["body_active"][row, :body_limit])
+    body_num = arrays.get("body_num")
+    _draw_browser_line_trails_rgb(
+        frame,
+        arrays["body_pos"][row, active_slots],
+        arrays["body_radius"][row, active_slots],
+        arrays["body_owner"][row, active_slots],
+        map_size,
+        colors=colors,
+        slots=active_slots,
+        body_nums=None if body_num is None else body_num[row, active_slots],
+    )
+
+
+def _render_source_snapshot_rgb_trails(
+    frame: np.ndarray,
+    body_records: Sequence[Mapping[str, Any]],
+    player_index_by_avatar_id: Mapping[int, int],
+    map_size: float,
+    *,
+    colors: np.ndarray,
+    default_avatar_radius: float,
+    trail_render_mode: str,
+) -> None:
+    if not body_records:
+        return
+    body_positions = np.asarray(
+        [[float(body["x"]), float(body["y"])] for body in body_records],
+        dtype=np.float64,
+    )
+    body_radii = np.asarray(
+        [float(body.get("radius", default_avatar_radius)) for body in body_records],
+        dtype=np.float64,
+    )
+    body_owners = np.asarray(
+        [
+            _source_body_owner_index(body.get("avatarId"), player_index_by_avatar_id)
+            for body in body_records
+        ],
+        dtype=np.int16,
+    )
+    if trail_render_mode == TRAIL_RENDER_MODE_BODY_CIRCLES_FAST:
+        _draw_body_circles_rgb(
+            frame,
+            body_positions,
+            body_radii,
+            body_owners,
+            map_size,
+            colors=colors,
+        )
+        return
+    body_nums = _source_body_nums(body_records)
+    _draw_browser_line_trails_rgb(
+        frame,
+        body_positions,
+        body_radii,
+        body_owners,
+        map_size,
+        colors=colors,
+        slots=np.arange(len(body_records), dtype=np.int32),
+        body_nums=body_nums,
+    )
+
+
+def _source_body_nums(body_records: Sequence[Mapping[str, Any]]) -> np.ndarray | None:
+    values: list[int] = []
+    for body in body_records:
+        if "num" not in body:
+            return None
+        try:
+            values.append(int(body["num"]))
+        except (TypeError, ValueError):
+            return None
+    return np.asarray(values, dtype=np.int32)
+
+
+def _draw_browser_line_trails_rgb(
+    canvas: np.ndarray,
+    positions: np.ndarray,
+    radii: np.ndarray,
+    owners: np.ndarray,
+    map_size: float,
+    *,
+    colors: np.ndarray,
+    slots: np.ndarray,
+    body_nums: np.ndarray | None,
+) -> None:
+    if positions.size == 0:
+        return
+    x = positions[:, 0].astype(np.float64, copy=False)
+    y = positions[:, 1].astype(np.float64, copy=False)
+    radius = radii.astype(np.float64, copy=False)
+    finite = np.isfinite(x) & np.isfinite(y) & np.isfinite(radius) & (radius >= 0.0)
+    if not bool(finite.any()):
+        return
+    positions = positions[finite].astype(np.float64, copy=False)
+    radii = radius[finite]
+    owners = owners[finite].astype(np.int64, copy=False)
+    slots = slots[finite].astype(np.int64, copy=False)
+    if body_nums is not None:
+        body_nums = body_nums[finite].astype(np.int64, copy=False)
+
+    for owner in _browser_line_owner_draw_order(owners):
+        owner_mask = owners == owner
+        owner_positions = positions[owner_mask]
+        owner_radii = radii[owner_mask]
+        owner_slots = slots[owner_mask]
+        order = _browser_line_body_order(owner_slots, None if body_nums is None else body_nums[owner_mask])
+        color = _body_owner_rgb(owner, colors)
+        _draw_ordered_browser_line_path_rgb(
+            canvas,
+            owner_positions[order],
+            owner_radii[order],
+            map_size,
+            color=color,
+        )
+
+
+def _browser_line_owner_draw_order(owners: np.ndarray) -> tuple[int, ...]:
+    unique = tuple(int(owner) for owner in np.unique(owners))
+    invalid = tuple(sorted(owner for owner in unique if owner < 0))
+    players = tuple(sorted((owner for owner in unique if owner >= 0), reverse=True))
+    return (*invalid, *players)
+
+
+def _browser_line_body_order(slots: np.ndarray, body_nums: np.ndarray | None) -> np.ndarray:
+    if body_nums is None:
+        return np.argsort(slots, kind="stable")
+    return np.lexsort((slots, body_nums))
+
+
+def _body_owner_rgb(owner: int, colors: np.ndarray) -> np.ndarray | tuple[int, int, int]:
+    return (120, 120, 120) if owner < 0 else colors[owner % len(colors)]
+
+
+def _draw_ordered_browser_line_path_rgb(
+    canvas: np.ndarray,
+    positions: np.ndarray,
+    radii: np.ndarray,
+    map_size: float,
+    *,
+    color: Sequence[int] | np.ndarray,
+) -> None:
+    if positions.size == 0:
+        return
+    start = 0
+    for index in range(1, positions.shape[0]):
+        prev = positions[index - 1]
+        current = positions[index]
+        radius_changed = not np.isclose(radii[index], radii[start], rtol=0.0, atol=1e-9)
+        gap = abs(float(current[0]) - float(prev[0])) > 1.0 or abs(
+            float(current[1]) - float(prev[1])
+        ) > 1.0
+        if gap or radius_changed:
+            _draw_rounded_world_polyline_rgb(
+                canvas,
+                positions[start:index],
+                float(radii[start]),
+                map_size,
+                color=color,
+            )
+            start = index
+    _draw_rounded_world_polyline_rgb(
+        canvas,
+        positions[start:],
+        float(radii[start]),
+        map_size,
+        color=color,
+    )
+
+
+def _draw_rounded_world_polyline_rgb(
+    canvas: np.ndarray,
+    points: np.ndarray,
+    radius: float,
+    map_size: float,
+    *,
+    color: Sequence[int] | np.ndarray,
+) -> None:
+    if points.size == 0 or not np.isfinite(radius) or radius < 0.0:
+        return
+    size = int(canvas.shape[0])
+    scale = float(size) / float(map_size)
+    xy = points.astype(np.float64, copy=False) * scale
+    radius_px = float(radius) * scale
+    rgb = _rgb_triplet(color)
+    if xy.shape[0] == 1:
+        _draw_rounded_pixel_cap_rgb(canvas, xy[0, 0], xy[0, 1], radius_px, rgb)
+        return
+    for start, end in zip(xy[:-1], xy[1:], strict=True):
+        _draw_rounded_pixel_segment_rgb(
+            canvas,
+            float(start[0]),
+            float(start[1]),
+            float(end[0]),
+            float(end[1]),
+            radius_px,
+            rgb,
+        )
+
+
+def _draw_rounded_pixel_cap_rgb(
+    canvas: np.ndarray,
+    x: float,
+    y: float,
+    radius_px: float,
+    rgb: np.ndarray,
+) -> None:
+    if not np.isfinite(x) or not np.isfinite(y) or not np.isfinite(radius_px):
+        return
+    size = int(canvas.shape[0])
+    if x + radius_px < 0.0 or x - radius_px > float(size - 1):
+        return
+    if y + radius_px < 0.0 or y - radius_px > float(size - 1):
+        return
+    x0 = max(0, int(np.floor(x - radius_px - 1.0)))
+    x1 = min(size - 1, int(np.ceil(x + radius_px + 1.0)))
+    y0 = max(0, int(np.floor(y - radius_px - 1.0)))
+    y1 = min(size - 1, int(np.ceil(y + radius_px + 1.0)))
+    yy, xx = np.ogrid[y0 : y1 + 1, x0 : x1 + 1]
+    mask = (xx.astype(np.float64) - x) ** 2 + (yy.astype(np.float64) - y) ** 2 <= (
+        radius_px * radius_px
+    )
+    if bool(mask.any()):
+        canvas[y0 : y1 + 1, x0 : x1 + 1][mask] = rgb
+
+
+def _draw_rounded_pixel_segment_rgb(
+    canvas: np.ndarray,
+    x0: float,
+    y0: float,
+    x1: float,
+    y1: float,
+    radius_px: float,
+    rgb: np.ndarray,
+) -> None:
+    if not all(np.isfinite(value) for value in (x0, y0, x1, y1, radius_px)):
+        return
+    dx = x1 - x0
+    dy = y1 - y0
+    length_sq = dx * dx + dy * dy
+    if length_sq <= 1e-12:
+        _draw_rounded_pixel_cap_rgb(canvas, x0, y0, radius_px, rgb)
+        return
+    size = int(canvas.shape[0])
+    min_x = min(x0, x1) - radius_px
+    max_x = max(x0, x1) + radius_px
+    min_y = min(y0, y1) - radius_px
+    max_y = max(y0, y1) + radius_px
+    if max_x < 0.0 or min_x > float(size - 1) or max_y < 0.0 or min_y > float(size - 1):
+        return
+    px0 = max(0, int(np.floor(min_x - 1.0)))
+    px1 = min(size - 1, int(np.ceil(max_x + 1.0)))
+    py0 = max(0, int(np.floor(min_y - 1.0)))
+    py1 = min(size - 1, int(np.ceil(max_y + 1.0)))
+    yy, xx = np.ogrid[py0 : py1 + 1, px0 : px1 + 1]
+    rel_x = xx.astype(np.float64) - x0
+    rel_y = yy.astype(np.float64) - y0
+    projection = np.clip((rel_x * dx + rel_y * dy) / length_sq, 0.0, 1.0)
+    closest_x = x0 + projection * dx
+    closest_y = y0 + projection * dy
+    distance_sq = (xx.astype(np.float64) - closest_x) ** 2 + (
+        yy.astype(np.float64) - closest_y
+    ) ** 2
+    mask = distance_sq <= radius_px * radius_px
+    if bool(mask.any()):
+        canvas[py0 : py1 + 1, px0 : px1 + 1][mask] = rgb
 
 
 def _draw_world_circle(
@@ -1730,6 +2111,8 @@ __all__ = [
     "SOURCE_STATE_CANVAS_GRAY64_NORMALIZED_VALUE_RANGE",
     "SOURCE_STATE_CANVAS_GRAY64_PERSPECTIVE",
     "SOURCE_STATE_CANVAS_GRAY64_PIXEL_FIDELITY_BLOCKER",
+    "SOURCE_STATE_CANVAS_GRAY64_BODY_CIRCLES_FAST_RENDERER_IMPL_ID",
+    "SOURCE_STATE_CANVAS_GRAY64_BROWSER_LINES_RENDERER_IMPL_ID",
     "SOURCE_STATE_CANVAS_GRAY64_RENDERER_IMPL_ID",
     "SOURCE_STATE_CANVAS_GRAY64_SCHEMA_HASH",
     "SOURCE_STATE_CANVAS_GRAY64_SCHEMA_ID",
@@ -1780,6 +2163,14 @@ __all__ = [
     "SOURCE_STATE_GRAY64_TRUTH_LEVEL",
     "SOURCE_STATE_GRAY64_USES_ALE",
     "SOURCE_STATE_GRAY64_VALUE_RANGE",
+    "SOURCE_STATE_RGB_BODY_CIRCLES_FAST_RENDERER_IMPL_ID",
+    "SOURCE_STATE_RGB_BROWSER_LINES_RENDERER_IMPL_ID",
+    "SOURCE_STATE_RGB_CANVAS_LIKE_RENDERER_IMPL_ID",
+    "TRAIL_RENDER_MODE_BODY_CIRCLES_FAST",
+    "TRAIL_RENDER_MODE_BROWSER_LINES",
+    "TRAIL_RENDER_MODE_DEFAULT",
+    "TRAIL_RENDER_MODE_ORDER",
+    "TRAIL_RENDER_MODES",
     "SourceStateGray64Renderer",
     "VectorVisualObservationError",
     "normalize_source_state_gray64",

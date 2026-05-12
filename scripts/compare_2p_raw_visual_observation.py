@@ -170,6 +170,7 @@ PROGRAMMATIC_2P_STRESS_SCENARIO_IDS = (
     "source_lifecycle_survivor_score_2p_warmdown_visual_stress",
     "source_bonus_self_master_body_block_then_wall_death_visual_stress",
     "source_bonus_game_borderless_expiry_then_wall_death_visual_stress",
+    "source_bonus_game_borderless_same_frame_expiry_wall_death_visual_stress",
     "source_bonus_game_clear_clears_future_collision_body_visual_stress",
 )
 VISUAL_MISMATCH_CANARY_IDS = (
@@ -177,6 +178,9 @@ VISUAL_MISMATCH_CANARY_IDS = (
     "missing_visible_map_bonus",
 )
 TYPED_BONUS_VISUAL_STATUS_GATE_ID = "source_default_bonus64_type_status_planes_2p"
+FINAL_OBSERVATION_AUTORESET_GATE_ID = (
+    "source_state_canvas_gray64_final_observation_before_reset_2p"
+)
 FULL_2P_VISUAL_GATE_ID = "full_2p_source_state_visual_gate"
 TYPED_BONUS_VISUAL_STATUS_GATE_TYPES = tuple(
     vector_runtime.BONUS_TYPE_NAME_BY_CODE[int(code)]
@@ -463,6 +467,11 @@ def run_programmatic_stress_comparison(
             max_steps=max_steps,
             out_dir=out_dir,
         )
+    if scenario_id == "source_bonus_game_borderless_same_frame_expiry_wall_death_visual_stress":
+        return _run_bonus_game_borderless_same_frame_expiry_wall_death_visual_stress(
+            max_steps=max_steps,
+            out_dir=out_dir,
+        )
     if scenario_id == "source_bonus_game_clear_clears_future_collision_body_visual_stress":
         return _run_bonus_game_clear_clears_future_collision_body_visual_stress(
             max_steps=max_steps,
@@ -567,6 +576,158 @@ def run_typed_bonus_visual_status_gate() -> dict[str, Any]:
     }
 
 
+def run_final_observation_autoreset_visual_gate(
+    *,
+    terminal_seed: int = 21,
+    reset_seed: int = 22,
+) -> dict[str, Any]:
+    """Prove the source-state visual final observation is copied before reset.
+
+    The public vector env exposes debug metadata as its native observation; the
+    model-facing source-state visual adapter owns the canvas-gray64 stack. This
+    gate keeps the adapter's terminal stack tied to the terminal source-state
+    render and verifies a later reset does not mutate the copied final payload.
+    """
+
+    from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (  # noqa: E501
+        CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv,
+    )
+    from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
+        STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID,
+    )
+    from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
+        STACKED_SOURCE_STATE_GRAY64_SHAPE,
+    )
+
+    env = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
+        {
+            "seed": int(terminal_seed),
+            "source_max_steps": 1,
+        }
+    )
+    reset_observation = env.reset(seed=int(terminal_seed))
+    timestep = env.step(0)
+    final_observation = timestep.info.get("final_observation")
+    terminal_gray64 = env.render("source_state_grayscale64_visual_tensor")
+    if terminal_gray64 is None:
+        raise RuntimeError("source-state visual env did not expose terminal gray64 render")
+
+    final_stack = (
+        None
+        if not isinstance(final_observation, Mapping)
+        else np.asarray(final_observation.get("observation"), dtype=np.float32)
+    )
+    final_action_mask = (
+        None
+        if not isinstance(final_observation, Mapping)
+        else np.asarray(final_observation.get("action_mask"))
+    )
+    returned_stack = np.asarray(timestep.obs["observation"], dtype=np.float32)
+    expected_terminal_frame = (
+        terminal_gray64[0].astype(np.float32) * np.float32(1.0 / 255.0)
+    )
+    if final_stack is None:
+        terminal_frame_diff = np.ones((64, 64), dtype=np.float32)
+        returned_stack_diff = np.ones(STACKED_SOURCE_STATE_GRAY64_SHAPE, dtype=np.float32)
+        final_stack_before_reset = None
+    else:
+        terminal_frame_diff = np.abs(final_stack[-1] - expected_terminal_frame)
+        returned_stack_diff = np.abs(final_stack - returned_stack)
+        final_stack_before_reset = final_stack.copy()
+
+    post_reset_gray64 = terminal_gray64.copy()
+    post_reset_observation = reset_observation
+    post_reset_seed = int(reset_seed)
+    post_reset_frame_diff_pixels = 0
+    for candidate_seed in range(int(reset_seed), int(reset_seed) + 8):
+        post_reset_seed = candidate_seed
+        post_reset_observation = env.reset(seed=candidate_seed)
+        rendered = env.render("source_state_grayscale64_visual_tensor")
+        if rendered is None:
+            raise RuntimeError("source-state visual env did not expose reset gray64 render")
+        post_reset_gray64 = rendered
+        post_reset_frame_diff_pixels = int(np.count_nonzero(post_reset_gray64 != terminal_gray64))
+        if post_reset_frame_diff_pixels:
+            break
+
+    final_stack_after_reset = (
+        None
+        if not isinstance(final_observation, Mapping)
+        else np.asarray(final_observation.get("observation"), dtype=np.float32)
+    )
+    final_stack_survived_reset = (
+        final_stack_before_reset is not None
+        and final_stack_after_reset is not None
+        and np.array_equal(final_stack_before_reset, final_stack_after_reset)
+    )
+    action_mask_terminal = (
+        final_action_mask is not None
+        and np.array_equal(final_action_mask, np.zeros(3, dtype=np.int8))
+    )
+    terminal_frame_max_abs_diff = float(terminal_frame_diff.max())
+    terminal_frame_mismatch_pixels = int(np.count_nonzero(terminal_frame_diff > 1e-7))
+    returned_stack_max_abs_diff = float(returned_stack_diff.max())
+    returned_stack_mismatch_pixels = int(np.count_nonzero(returned_stack_diff > 1e-7))
+    mismatch_pixels = terminal_frame_mismatch_pixels + returned_stack_mismatch_pixels
+    match = (
+        bool(timestep.done)
+        and isinstance(final_observation, Mapping)
+        and final_stack is not None
+        and tuple(final_stack.shape) == STACKED_SOURCE_STATE_GRAY64_SHAPE
+        and action_mask_terminal
+        and terminal_frame_mismatch_pixels == 0
+        and returned_stack_mismatch_pixels == 0
+        and final_stack_survived_reset
+        and post_reset_frame_diff_pixels > 0
+    )
+    return {
+        "schema_id": f"{SCHEMA_ID}_final_observation_autoreset_gate",
+        "gate_id": FINAL_OBSERVATION_AUTORESET_GATE_ID,
+        "comparison_kind": "source_state_canvas_gray64_final_observation_autoreset_gate",
+        "visual_observation_schema_id": STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID,
+        "single_frame_schema_id": SOURCE_STATE_GRAY64_SCHEMA_ID,
+        "raw_observation_schema_id": SOURCE_STATE_GRAY64_SCHEMA_ID,
+        "source_state_canvas_gray64_schema_id": SOURCE_STATE_GRAY64_SCHEMA_ID,
+        "source_runner": "CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv",
+        "source_runner_claim": (
+            "model-facing source-state canvas-gray64 adapter over VectorMultiplayerEnv; "
+            "not browser canvas"
+        ),
+        "terminal_seed": int(terminal_seed),
+        "post_reset_seed": int(post_reset_seed),
+        "reset_after_terminal_api": "reset(seed=...)",
+        "autoreset_claim": (
+            "final_observation is copied from the terminal visual stack before "
+            "any reset/autoreset mutates current source-state visuals"
+        ),
+        "terminal_seen": bool(timestep.done),
+        "terminal_reason": str(timestep.info.get("terminal_reason")),
+        "final_observation_present": isinstance(final_observation, Mapping),
+        "final_observation_shape": (
+            None if final_stack is None else list(final_stack.shape)
+        ),
+        "expected_final_observation_shape": list(STACKED_SOURCE_STATE_GRAY64_SHAPE),
+        "final_action_mask_terminal": action_mask_terminal,
+        "terminal_frame_max_abs_diff": terminal_frame_max_abs_diff,
+        "terminal_frame_mismatch_pixels": terminal_frame_mismatch_pixels,
+        "returned_stack_max_abs_diff": returned_stack_max_abs_diff,
+        "returned_stack_mismatch_pixels": returned_stack_mismatch_pixels,
+        "final_stack_survived_reset": final_stack_survived_reset,
+        "post_reset_frame_mismatch_pixels": post_reset_frame_diff_pixels,
+        "post_reset_current_observation_shape": list(
+            np.asarray(post_reset_observation["observation"]).shape
+        ),
+        "match": match,
+        "max_abs_diff": max(terminal_frame_max_abs_diff, returned_stack_max_abs_diff),
+        "mismatch_pixels": mismatch_pixels,
+        "browser_canvas_pixel_fidelity": SOURCE_STATE_GRAY64_BROWSER_PIXEL_FIDELITY,
+        "visual_limits": (
+            "covers source-state canvas-gray64 final-observation copy semantics; "
+            "does not prove replay serialization or real browser canvas pixels"
+        ),
+    }
+
+
 def run_full_2p_visual_gate(*, max_steps: int | None = None) -> dict[str, Any]:
     """Run the full current 2P model-facing visual gate.
 
@@ -577,6 +738,7 @@ def run_full_2p_visual_gate(*, max_steps: int | None = None) -> dict[str, Any]:
 
     gray64 = run_suite_comparison(max_steps=max_steps)
     typed_bonus = run_typed_bonus_visual_status_gate()
+    final_observation = run_final_observation_autoreset_visual_gate()
     canaries = [run_visual_mismatch_canary(canary_id) for canary_id in VISUAL_MISMATCH_CANARY_IDS]
     canary_passes = [
         (not report["match"])
@@ -589,6 +751,8 @@ def run_full_2p_visual_gate(*, max_steps: int | None = None) -> dict[str, Any]:
         failed_gates.append("gray64_source_state")
     if not typed_bonus["match"]:
         failed_gates.append("bonus64_typed_status")
+    if not final_observation["match"]:
+        failed_gates.append("final_observation_autoreset")
     if not all(canary_passes):
         failed_gates.append("visual_expected_failure_canaries")
 
@@ -601,21 +765,24 @@ def run_full_2p_visual_gate(*, max_steps: int | None = None) -> dict[str, Any]:
         "remaining_training_work": [
             "use one product path: source-state browser-like RGB64 raw frame -> grayscale64 -> stack",
             "keep bonus64 v1 as a diagnostic/proof tensor, not a training observation path",
-            "prove the canvas-gray64 observation survives wrapper, replay, and final-observation paths",
+            "prove the canvas-gray64 observation survives replay serialization paths",
             "add source/original fixtures for programmatic bonus stack/death stress probes",
         ],
         "match": not failed_gates,
         "failed_gates": failed_gates,
         "gray64": gray64,
         "typed_bonus": typed_bonus,
+        "final_observation": final_observation,
         "visual_canaries": canaries,
         "visual_canary_count": len(canaries),
         "visual_canaries_passed": sum(1 for passed in canary_passes if passed),
         "mismatch_pixels": int(gray64["mismatch_pixels"])
-        + int(typed_bonus["mismatch_pixels"]),
+        + int(typed_bonus["mismatch_pixels"])
+        + int(final_observation["mismatch_pixels"]),
         "max_abs_diff": max(
             float(gray64["max_abs_diff"]),
             float(typed_bonus["max_abs_diff"]),
+            float(final_observation["max_abs_diff"]),
         ),
         "expected_canary_mismatch_pixels": sum(
             int(report["mismatch_pixels"]) for report in canaries
@@ -1158,6 +1325,58 @@ def _run_bonus_game_borderless_expiry_then_wall_death_visual_stress(
             "gray64 does not encode the game borderless flag or game bonus "
             "stack; it only exposes the later normal-wall death once the "
             "source/vector states have applied expiry"
+        ),
+    )
+
+
+def _run_bonus_game_borderless_same_frame_expiry_wall_death_visual_stress(
+    *,
+    max_steps: int | None,
+    out_dir: Path | None,
+) -> dict[str, Any]:
+    source_env, vector_env = _manual_2p_stress_env(
+        positions=((20.0, 20.0), (70.0, 70.0)),
+        headings=(0.0, 0.0),
+        active_bonus={"type": "BonusGameBorderless", "x": 20.0, "y": 20.0},
+    )
+
+    def catch_bonus() -> tuple[Mapping[str, Any], Any]:
+        return _step_stress_pair(source_env, vector_env, step_ms=0.0)
+
+    def expire_borderless_and_die_on_wall() -> tuple[Mapping[str, Any], Any]:
+        _set_stress_avatar_state(
+            source_env,
+            vector_env,
+            player_index=0,
+            x=0.3,
+            y=20.0,
+            angle=np.pi,
+        )
+        return _step_stress_pair(
+            source_env,
+            vector_env,
+            step_ms=0.0,
+            timer_advance_ms=10_000.0,
+        )
+
+    return _run_programmatic_stress_case(
+        scenario_id="source_bonus_game_borderless_same_frame_expiry_wall_death_visual_stress",
+        source_env=source_env,
+        vector_env=vector_env,
+        steps=(
+            ("after_bonus_game_borderless_catch", catch_bonus),
+            (
+                "after_same_frame_borderless_expiry_wall_death",
+                expire_borderless_and_die_on_wall,
+            ),
+        ),
+        max_steps=max_steps,
+        out_dir=out_dir,
+        expected_terminal=True,
+        visual_limits=(
+            "gray64 sees the terminal wall-death geometry after borderless "
+            "expires in the same simulated frame; the expiry event/TTL is "
+            "covered by source/vector state, not a separate gray64 channel"
         ),
     )
 
@@ -2590,10 +2809,12 @@ def main() -> None:
         status = "PASS" if report["match"] else "FAIL"
         gray64 = report["gray64"]
         typed = report["typed_bonus"]
+        final_observation = report["final_observation"]
         print(
             f"{status} {report['gate_id']} "
             f"canvas_gray64={gray64['passed']}/{gray64['scenario_count']} "
             f"typed_bonus={typed['passed']}/{typed['case_count']} "
+            f"final_obs={'pass' if final_observation['match'] else 'fail'} "
             f"canaries={report['visual_canaries_passed']}/{report['visual_canary_count']} "
             f"mismatch_pixels={report['mismatch_pixels']} "
             f"max_abs_diff={report['max_abs_diff']} "

@@ -32,8 +32,12 @@ from curvyzero.env.vector_visual_observation import (
 from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_SCHEMA_HASH
 from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_SCHEMA_ID
 from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_SHAPE
-from curvyzero.env.vector_visual_observation import SourceStateGray64Renderer
+from curvyzero.env.vector_visual_observation import TRAIL_RENDER_MODE_BODY_CIRCLES_FAST
+from curvyzero.env.vector_visual_observation import TRAIL_RENDER_MODE_BROWSER_LINES
+from curvyzero.env.vector_visual_observation import TRAIL_RENDER_MODE_DEFAULT
+from curvyzero.env.vector_visual_observation import TRAIL_RENDER_MODE_ORDER
 from curvyzero.env.vector_visual_observation import normalize_source_state_gray64
+from curvyzero.env.vector_visual_observation import render_source_state_canvas_gray64
 from curvyzero.training.policy_row_mapping import build_policy_row_mapping
 from curvyzero.training.policy_row_mapping import policy_rows_to_joint_action
 
@@ -65,6 +69,8 @@ SELF_BODY_VALUE = 96
 OTHER_BODY_VALUE = 128
 SELF_HEAD_VALUE = 224
 OTHER_HEAD_VALUE = 232
+PERSPECTIVE_SELF_RGB = (SELF_BODY_VALUE, SELF_BODY_VALUE, SELF_BODY_VALUE)
+PERSPECTIVE_OTHER_RGB = (OTHER_BODY_VALUE, OTHER_BODY_VALUE, OTHER_BODY_VALUE)
 ACTION_COUNT = 3
 NOOP_ACTION_ID = 1
 LINEAR_FEATURE_DIM = 7
@@ -301,37 +307,125 @@ class SharedLinearSurvivalCurrentPolicy:
 class SourceStateGray64Stack4:
     """Render vector env rows and keep a player-perspective FIFO stack per slot."""
 
-    def __init__(self, *, batch_size: int, player_count: int) -> None:
+    def __init__(
+        self,
+        *,
+        batch_size: int,
+        player_count: int,
+        trail_render_mode: str = TRAIL_RENDER_MODE_DEFAULT,
+    ) -> None:
         self.batch_size = int(batch_size)
         self.player_count = int(player_count)
+        self.trail_render_mode = validate_stack_trail_render_mode(trail_render_mode)
         self.stack = np.zeros(
             (self.batch_size, self.player_count, *STACKED_SOURCE_STATE_GRAY64_SHAPE),
             dtype=np.float32,
         )
-        self._renderer = SourceStateGray64Renderer()
         self._raw = np.zeros(SOURCE_STATE_GRAY64_SHAPE, dtype=np.uint8)
-        self._perspective_raw = np.zeros(SOURCE_STATE_GRAY64_SHAPE, dtype=np.uint8)
+        self._rgb = np.zeros((64, 64, 3), dtype=np.uint8)
         self._normalized = np.zeros(SOURCE_STATE_GRAY64_SHAPE, dtype=np.float32)
+
+    def render_metadata(self) -> dict[str, Any]:
+        return source_state_gray64_stack4_render_metadata(self.trail_render_mode)
 
     def update(self, env: VectorMultiplayerEnv) -> np.ndarray:
         if env.batch_size != self.batch_size or env.player_count != self.player_count:
             raise ValueError("env shape changed after stack creation")
         for env_row in range(self.batch_size):
-            raw = self._renderer.render(env.state, row=env_row, out=self._raw)
             self.stack[env_row, :, :-1] = self.stack[env_row, :, 1:]
             for player in range(self.player_count):
-                perspective_raw = normalize_source_state_player_perspective(
-                    raw,
-                    controlled_player=player,
-                    player_count=self.player_count,
-                    out=self._perspective_raw,
+                raw = render_source_state_canvas_gray64(
+                    env.state,
+                    row=env_row,
+                    out=self._raw,
+                    rgb_out=self._rgb,
+                    player_rgb=player_perspective_rgb_palette(
+                        env.state,
+                        row=env_row,
+                        controlled_player=player,
+                        player_count=self.player_count,
+                    ),
+                    trail_render_mode=self.trail_render_mode,
                 )
                 frame = normalize_source_state_gray64(
-                    perspective_raw,
+                    raw,
                     out=self._normalized,
                 )
                 self.stack[env_row, player, -1] = frame[0]
         return self.stack.copy()
+
+
+def validate_stack_trail_render_mode(value: str) -> str:
+    mode = str(value)
+    if mode not in TRAIL_RENDER_MODE_ORDER:
+        supported = ", ".join(TRAIL_RENDER_MODE_ORDER)
+        raise ValueError(f"trail_render_mode must be one of [{supported}], got {value!r}")
+    return mode
+
+
+def source_state_gray64_stack4_render_metadata(
+    trail_render_mode: str = TRAIL_RENDER_MODE_DEFAULT,
+) -> dict[str, Any]:
+    mode = validate_stack_trail_render_mode(trail_render_mode)
+    return {
+        "trail_render_mode": mode,
+        "default_trail_render_mode": TRAIL_RENDER_MODE_DEFAULT,
+        "supported_trail_render_modes": list(TRAIL_RENDER_MODE_ORDER),
+        "single_frame_render_api": "render_source_state_canvas_gray64",
+        "render_pipeline": "source_state_rgb_canvas_like_64_to_gray64",
+        "rgb_to_gray64": True,
+        "trail_renderer_kind": (
+            "connected_rounded_lines"
+            if mode == TRAIL_RENDER_MODE_BROWSER_LINES
+            else "circle_per_body"
+        ),
+        "trail_renderer_is_approximation": (
+            mode == TRAIL_RENDER_MODE_BODY_CIRCLES_FAST
+        ),
+        "player_perspective_palette": {
+            "semantics": (
+                "controlled player color index is rendered with self grayscale RGB; "
+                "other visible player color indices are rendered with other grayscale RGB"
+            ),
+            "self_rgb": list(PERSPECTIVE_SELF_RGB),
+            "other_rgb": list(PERSPECTIVE_OTHER_RGB),
+            "policy_reason": (
+                "single-channel model input still needs seat-relative self/other "
+                "contrast after the RGB browser-style render path"
+            ),
+        },
+    }
+
+
+def player_perspective_rgb_palette(
+    state: dict[str, np.ndarray] | Any,
+    *,
+    row: int,
+    controlled_player: int,
+    player_count: int,
+) -> tuple[tuple[int, int, int], ...]:
+    player = int(controlled_player)
+    total_players = int(player_count)
+    if player < 0 or player >= total_players:
+        raise ValueError("controlled_player must be in [0, player_count)")
+
+    color_indices = np.arange(total_players, dtype=np.int64)
+    if "avatar_color" in state:
+        avatar_color = np.asarray(state["avatar_color"])
+        if avatar_color.ndim >= 2:
+            color_indices = np.asarray(
+                avatar_color[int(row), :total_players],
+                dtype=np.int64,
+            )
+    if bool((color_indices < 0).any()):
+        raise ValueError("avatar_color indices must be non-negative")
+    max_color_index = int(color_indices.max()) if color_indices.size else total_players - 1
+    palette = [
+        PERSPECTIVE_OTHER_RGB
+        for _ in range(max(total_players, max_color_index + 1))
+    ]
+    palette[int(color_indices[player])] = PERSPECTIVE_SELF_RGB
+    return tuple(palette)
 
 
 def normalize_source_state_player_perspective(
@@ -932,7 +1026,10 @@ __all__ = [
     "SourceStateGray64Stack4",
     "normalize_source_state_player_perspective",
     "player_perspective_diagnostics",
+    "player_perspective_rgb_palette",
     "player_perspective_value_map",
     "probe_curvytron_two_seat_player_perspective",
     "run_curvytron_current_policy_selfplay_smoke",
+    "source_state_gray64_stack4_render_metadata",
+    "validate_stack_trail_render_mode",
 ]

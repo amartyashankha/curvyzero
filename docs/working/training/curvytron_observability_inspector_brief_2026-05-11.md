@@ -134,9 +134,9 @@ wrong?"
 - `src/curvyzero/env/vector_trainer_env.py`
 - `src/curvyzero/env/vector_runtime.py`
 - `src/curvyzero/env/trainer_observation.py`
-- `docs/working/training/coach_current_state_2026-05-10.md`
+- `docs/working/training/archive_2026-05-12_two_seat_purge/coach_current_state_2026-05-10.md`
 - `docs/working/training/curvytron_no_learning_investigation_2026-05-11.md`
-- `docs/working/training/curvytron_background_training_ledger_2026-05-10.md`
+- `docs/working/training/archive_2026-05-12_two_seat_purge/curvytron_background_training_ledger_2026-05-10.md`
 
 ## Non-Claims
 

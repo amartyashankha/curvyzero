@@ -60,6 +60,9 @@ from curvyzero.env.vector_visual_observation import SOURCE_STATE_RGB_CANVAS_LIKE
 from curvyzero.env.vector_visual_observation import (
     SOURCE_STATE_RGB_CANVAS_LIKE_TRUTH_LEVEL,
 )
+from curvyzero.env.vector_visual_observation import TRAIL_RENDER_MODE_BODY_CIRCLES_FAST
+from curvyzero.env.vector_visual_observation import TRAIL_RENDER_MODE_DEFAULT
+from curvyzero.env.vector_visual_observation import TRAIL_RENDER_MODE_ORDER
 from curvyzero.infra.modal import run_management as runs
 from curvyzero.training.curvyzero_stacked_debug_visual_survival_lightzero_env import (
     LIGHTZERO_STACKED_DEBUG_VISUAL_SURVIVAL_ENV_ID,
@@ -177,6 +180,36 @@ from curvyzero.training.curvyzero_survival_time_lightzero_smoke import (
 from curvyzero.training.curvytron_visual_observation import (
     DEBUG_OCCUPANCY_GRAY64_STACK_SHAPE,
 )
+from curvyzero.training.curvytron_two_seat_lightzero_train import (
+    DEFAULT_CHECKPOINT_EVERY_ITERATIONS as TWO_SEAT_DEFAULT_CHECKPOINT_EVERY_ITERATIONS,
+)
+from curvyzero.training.curvytron_two_seat_lightzero_train import (
+    DEFAULT_DEATH_MODE as TWO_SEAT_DEFAULT_DEATH_MODE,
+)
+from curvyzero.training.curvytron_two_seat_lightzero_train import (
+    DEFAULT_POLICY_ACTION_REPEAT_EXTRA_PROBABILITY as TWO_SEAT_DEFAULT_POLICY_ACTION_REPEAT_EXTRA_PROBABILITY,
+)
+from curvyzero.training.curvytron_two_seat_lightzero_train import (
+    DEFAULT_POLICY_ACTION_REPEAT_MAX as TWO_SEAT_DEFAULT_POLICY_ACTION_REPEAT_MAX,
+)
+from curvyzero.training.curvytron_two_seat_lightzero_train import (
+    DEFAULT_POLICY_ACTION_REPEAT_MIN as TWO_SEAT_DEFAULT_POLICY_ACTION_REPEAT_MIN,
+)
+from curvyzero.training.curvytron_two_seat_lightzero_train import (
+    DEFAULT_POLICY_ACTION_REPEAT_WARMUP_ITERATIONS as TWO_SEAT_DEFAULT_POLICY_ACTION_REPEAT_WARMUP_ITERATIONS,
+)
+from curvyzero.training.curvytron_two_seat_lightzero_train import (
+    DEFAULT_PROGRESS_COMMIT_EVERY_ITERATIONS as TWO_SEAT_DEFAULT_PROGRESS_COMMIT_EVERY_ITERATIONS,
+)
+from curvyzero.training.curvytron_two_seat_lightzero_train import (
+    DEFAULT_PROGRESS_EVERY_ITERATIONS as TWO_SEAT_DEFAULT_PROGRESS_EVERY_ITERATIONS,
+)
+from curvyzero.training.curvytron_two_seat_lightzero_train import (
+    compact_curvytron_two_seat_lightzero_train_smoke_summary,
+)
+from curvyzero.training.curvytron_two_seat_lightzero_train import (
+    run_curvytron_two_seat_lightzero_train_smoke,
+)
 
 
 APP_NAME = "curvyzero-lightzero-curvytron-visual-survival-train"
@@ -186,8 +219,8 @@ LIGHTZERO_VERSION = "0.2.0"
 REMOTE_ROOT = Path("/repo")
 RUNS_MOUNT = Path("/runs")
 
-DEFAULT_MODE = "dry"
-DEFAULT_COMPUTE = "cpu"
+DEFAULT_MODE = "two-seat-selfplay"
+DEFAULT_COMPUTE = "gpu-l4-t4"
 DEFAULT_SEED = 0
 DEFAULT_MAX_ENV_STEP = 8192
 DEFAULT_MAX_TRAIN_ITER = 64
@@ -201,16 +234,18 @@ DEFAULT_BATCH_SIZE = 16
 DEFAULT_LIGHTZERO_EVAL_FREQ = 0
 DEFAULT_SKIP_LIGHTZERO_EVAL_IN_PROFILE = True
 DEFAULT_LIGHTZERO_MULTI_GPU = False
-# Keep checkpointing explicit for long CurvyTron runs. The default is smoke-friendly;
-# overnight launches should override this upward and run checkpoint evals manually.
-DEFAULT_SAVE_CKPT_AFTER_ITER = 1
+DEFAULT_PROFILE_CUDA_SYNC_ENABLED = False
+DEFAULT_PROFILE_ALLOW_AUTO_RESUME = False
+# Checkpoint cadence also controls automatic checkpoint eval/inspection/GIF work.
+# Keep this frequent enough to observe progress but not every loop.
+DEFAULT_SAVE_CKPT_AFTER_ITER = 100
 DEFAULT_STOP_AFTER_LEARNER_TRAIN_CALLS = 0
 DEFAULT_DECISION_MS = SOURCE_STATE_DEFAULT_DECISION_MS
 DEFAULT_ENV_TELEMETRY_STRIDE = 1
 DEFAULT_ENV_MANAGER_TYPE = "subprocess"
 ENV_MANAGER_TYPE_CHOICES = ("base", "subprocess")
-DEFAULT_RUN_ID = "curvytron-source-state-visual-survival-lz-s0"
-DEFAULT_ATTEMPT_ID = "attempt-initial-source-state-visual-survival"
+DEFAULT_RUN_ID = "curvytron-two-seat-selfplay-canonical-s0"
+DEFAULT_ATTEMPT_ID = "two-seat-current-policy-selfplay"
 ENV_VARIANT_FIXED_OPPONENT = "fixed_opponent"
 ENV_VARIANT_TURN_COMMIT = "turn_commit"
 ENV_VARIANT_SOURCE_STATE_TURN_COMMIT = "source_state_turn_commit"
@@ -244,7 +279,7 @@ OPPONENT_POLICY_KIND_CHOICES = (
     OPPONENT_POLICY_KIND_FROZEN_LIGHTZERO_CHECKPOINT,
     OPPONENT_POLICY_KIND_NONE_CENTRALIZED_JOINT_ACTION,
 )
-DEFAULT_BACKGROUND_EVAL_ENABLED = False
+DEFAULT_BACKGROUND_EVAL_ENABLED = True
 DEFAULT_BACKGROUND_EVAL_COMPUTE = "cpu"
 DEFAULT_BACKGROUND_EVAL_ID_PREFIX = "live_checkpoint"
 DEFAULT_BACKGROUND_EVAL_SEED_COUNT = 4
@@ -253,7 +288,7 @@ DEFAULT_BACKGROUND_EVAL_MAX_STEPS = 256
 DEFAULT_BACKGROUND_EVAL_STEP_DETAIL_LIMIT = 4
 DEFAULT_BACKGROUND_EVAL_NUM_SIMULATIONS = DEFAULT_NUM_SIMULATIONS
 DEFAULT_BACKGROUND_EVAL_BATCH_SIZE = 64
-DEFAULT_BACKGROUND_GIF_ENABLED = False
+DEFAULT_BACKGROUND_GIF_ENABLED = True
 DEFAULT_BACKGROUND_GIF_SEED_OFFSET = 10_000
 DEFAULT_BACKGROUND_GIF_MAX_STEPS = 256
 DEFAULT_BACKGROUND_GIF_FRAME_STRIDE = 1
@@ -273,6 +308,14 @@ DEFAULT_BACKGROUND_EVAL_POLL_INTERVAL_SEC = 10.0
 DEFAULT_BACKGROUND_EVAL_POLL_STABLE_POLLS = 1
 DEFAULT_BACKGROUND_EVAL_POLLER_MAX_RUNTIME_SEC = 8 * 60 * 60
 DEFAULT_BACKGROUND_EVAL_POLLER_IDLE_AFTER_DONE_SEC = 60.0
+DEFAULT_TWO_SEAT_COLLECT_STEPS_PER_ITERATION = 64
+DEFAULT_TWO_SEAT_UPDATES_PER_ITERATION = 4
+DEFAULT_TWO_SEAT_MAX_TICKS = 16_384
+DEFAULT_TWO_SEAT_MAX_REPLAY_ROWS = 65_536
+DEFAULT_TWO_SEAT_SAVE_INITIAL_CHECKPOINT = True
+DEFAULT_TWO_SEAT_PROGRESS_EVERY_ITERATIONS = 10
+DEFAULT_TWO_SEAT_PROGRESS_COMMIT_EVERY_ITERATIONS = 10
+DEFAULT_TWO_SEAT_LEARNER_SAMPLE_SIZE = 128
 
 
 def _normalize_opponent_policy_kind_for_env(
@@ -425,6 +468,8 @@ COMPUTE_CHOICES = (
 )
 BACKGROUND_EVAL_COMPUTE_CHOICES = ("cpu",)
 MODE_CHOICES = ("dry", "train", "profile")
+TWO_SEAT_SELFPLAY_MODE = "two-seat-selfplay"
+MAIN_MODE_CHOICES = (*MODE_CHOICES, TWO_SEAT_SELFPLAY_MODE)
 OPPONENT_SMOKE_MODE = "opponent-smoke"
 OUTPUT_DETAIL_COMPACT = "compact"
 OUTPUT_DETAIL_FULL = "full"
@@ -520,9 +565,9 @@ class _PhaseTimer:
 class _LightZeroPhaseProfiler:
     """Tiny opt-in profiler for LightZero single-process phase timings."""
 
-    def __init__(self, *, enabled: bool):
+    def __init__(self, *, enabled: bool, cuda_sync_enabled: bool = False):
         self.enabled = enabled
-        self.cuda_sync_enabled = enabled
+        self.cuda_sync_enabled = bool(enabled and cuda_sync_enabled)
         self.gpu_sample_interval_sec = 1.0 if enabled else 0.0
         self.started = time.perf_counter()
         self.timers: dict[str, float] = {}
@@ -2517,6 +2562,8 @@ def _run_visual_survival_train(
     batch_size: int,
     lightzero_eval_freq: int,
     skip_lightzero_eval_in_profile: bool,
+    profile_cuda_sync_enabled: bool,
+    profile_allow_auto_resume: bool,
     save_ckpt_after_iter: int,
     stop_after_learner_train_calls: int,
     env_variant: str,
@@ -2708,6 +2755,8 @@ def _run_visual_survival_train(
         "batch_size": int(batch_size),
         "lightzero_eval_freq": int(lightzero_eval_freq),
         "skip_lightzero_eval_in_profile": bool(skip_lightzero_eval_in_profile),
+        "profile_cuda_sync_enabled": bool(profile_cuda_sync_enabled),
+        "profile_allow_auto_resume": bool(profile_allow_auto_resume),
         "lightzero_multi_gpu": bool(lightzero_multi_gpu),
         "save_ckpt_after_iter": int(save_ckpt_after_iter),
         "stop_after_learner_train_calls": int(stop_after_learner_train_calls),
@@ -2877,6 +2926,11 @@ def _run_visual_survival_train(
         "resume_state_source_kind": auto_resume.get("resume_state_source_kind"),
         "state_scope": auto_resume.get("state_scope"),
     }
+    if mode == "profile" and auto_resume.get("found") and not profile_allow_auto_resume:
+        problems.append(
+            "profile auto-resume found an existing checkpoint; use a fresh run_id "
+            "or set --profile-allow-auto-resume to profile resumed state intentionally"
+        )
     _write_attempt_state(
         run_id=run_id,
         attempt_id=attempt_id,
@@ -2925,7 +2979,10 @@ def _run_visual_survival_train(
     called_train_muzero = False
     stdout_text = ""
     stderr_text = ""
-    profiler = _LightZeroPhaseProfiler(enabled=mode == "profile")
+    profiler = _LightZeroPhaseProfiler(
+        enabled=mode == "profile",
+        cuda_sync_enabled=profile_cuda_sync_enabled,
+    )
     target_audit = _LightZeroTargetAudit(mode=mode, env_variant=command["env_variant"])
     if mode in {"train", "profile"} and not problems:
         os.chdir(RUNS_MOUNT)
@@ -5730,21 +5787,124 @@ def _copy_source_state_raw_frame(env: Any) -> Any:
     raise ValueError(f"raw source-state frame shape {frame.shape!r}; expected (1, 64, 64)")
 
 
-def _copy_source_state_human_rgb_frame(env: Any, *, frame_size: int) -> Any:
+def _resize_rgb_frame_nearest(frame: Any, *, frame_size: int) -> Any:
     import numpy as np
 
-    frame = None
-    if hasattr(env, "human_rgb_observation"):
-        frame = env.human_rgb_observation(frame_size=int(frame_size))
-    if frame is None and hasattr(env, "render"):
-        frame = env.render("source_state_rgb_canvas_like")
-    if frame is None:
-        raise RuntimeError("self-play env did not expose source_state_rgb_canvas_like")
     rgb = np.asarray(frame, dtype=np.uint8)
-    expected = (int(frame_size), int(frame_size), 3)
-    if rgb.shape != expected:
-        raise ValueError(f"human RGB frame shape {rgb.shape!r}; expected {expected!r}")
-    return rgb.copy()
+    if rgb.ndim != 3 or rgb.shape[-1] != 3:
+        raise ValueError(f"RGB frame shape {rgb.shape!r}; expected [H, W, 3]")
+    target_size = int(frame_size)
+    if target_size < 1:
+        raise ValueError("background_gif_frame_size must be positive")
+    if rgb.shape[:2] == (target_size, target_size):
+        return rgb.copy()
+    height, width = int(rgb.shape[0]), int(rgb.shape[1])
+    if height < 1 or width < 1:
+        raise ValueError(f"RGB frame shape {rgb.shape!r}; expected non-empty height/width")
+    y_index = np.minimum(
+        np.arange(target_size, dtype=np.int64) * height // target_size,
+        height - 1,
+    )
+    x_index = np.minimum(
+        np.arange(target_size, dtype=np.int64) * width // target_size,
+        width - 1,
+    )
+    return rgb[y_index[:, None], x_index[None, :]].copy()
+
+
+def _source_state_rgb_frame_candidate(
+    frame: Any,
+    *,
+    source: str,
+    frame_size: int,
+) -> tuple[Any, dict[str, Any]] | None:
+    import numpy as np
+
+    if frame is None:
+        return None
+    array = np.asarray(frame)
+    input_shape = [int(item) for item in array.shape]
+    if array.ndim != 3 or array.shape[-1] != 3:
+        return None
+    rgb = _resize_rgb_frame_nearest(array, frame_size=int(frame_size))
+    return rgb, {
+        "source": source,
+        "input_shape": input_shape,
+        "input_dtype": str(array.dtype),
+        "output_shape": [int(item) for item in rgb.shape],
+        "resized_nearest": input_shape != [int(frame_size), int(frame_size), 3],
+    }
+
+
+def _copy_source_state_human_rgb_frame_with_source(
+    env: Any,
+    *,
+    frame_size: int,
+) -> tuple[Any, dict[str, Any]]:
+    skipped: list[dict[str, Any]] = []
+
+    def candidate(source: str, producer: Any) -> tuple[Any, dict[str, Any]] | None:
+        try:
+            frame = producer()
+        except Exception as exc:
+            skipped.append(
+                {
+                    "source": source,
+                    "status": "error",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                }
+            )
+            return None
+        result = _source_state_rgb_frame_candidate(
+            frame,
+            source=source,
+            frame_size=int(frame_size),
+        )
+        if result is None:
+            shape = [int(item) for item in getattr(frame, "shape", [])]
+            skipped.append(
+                {
+                    "source": source,
+                    "status": "non_rgb",
+                    "shape": shape,
+                    "dtype": str(getattr(frame, "dtype", "missing")),
+                }
+            )
+            return None
+        result[1]["skipped_prior_sources"] = skipped.copy()
+        return result
+
+    if hasattr(env, "raw_observation"):
+        raw_result = candidate("raw_observation", env.raw_observation)
+        if raw_result is not None:
+            return raw_result
+    if hasattr(env, "human_rgb_observation"):
+        human_result = candidate(
+            "human_rgb_observation",
+            lambda: env.human_rgb_observation(frame_size=int(frame_size)),
+        )
+        if human_result is not None:
+            return human_result
+    if hasattr(env, "render"):
+        render_result = candidate(
+            "render(source_state_rgb_canvas_like)",
+            lambda: env.render("source_state_rgb_canvas_like"),
+        )
+        if render_result is not None:
+            return render_result
+    raise RuntimeError(
+        "self-play env did not expose an RGB source_state_rgb_canvas_like frame; "
+        f"skipped_sources={skipped!r}"
+    )
+
+
+def _copy_source_state_human_rgb_frame(env: Any, *, frame_size: int) -> Any:
+    frame, _source = _copy_source_state_human_rgb_frame_with_source(
+        env,
+        frame_size=int(frame_size),
+    )
+    return frame
 
 
 def _save_raw_frames_gif(
@@ -5906,9 +6066,12 @@ def _run_checkpoint_selfplay_gif(
         )
 
         observation = env.reset(seed=int(seed))
-        frames: list[Any] = [
-            _copy_source_state_human_rgb_frame(env, frame_size=int(frame_size))
-        ]
+        first_frame, first_frame_capture = _copy_source_state_human_rgb_frame_with_source(
+            env,
+            frame_size=int(frame_size),
+        )
+        frames: list[Any] = [first_frame]
+        frame_captures: list[dict[str, Any]] = [first_frame_capture]
         scalar_actions: list[dict[str, Any]] = []
         joint_actions: list[dict[str, Any]] = []
         physical_steps = 0
@@ -5949,19 +6112,36 @@ def _run_checkpoint_selfplay_gif(
                     }
                 )
                 if physical_steps % frame_stride == 0 or done:
-                    frames.append(
-                        _copy_source_state_human_rgb_frame(env, frame_size=int(frame_size))
+                    frame, frame_capture = _copy_source_state_human_rgb_frame_with_source(
+                        env,
+                        frame_size=int(frame_size),
                     )
+                    frames.append(frame)
+                    frame_captures.append(frame_capture)
 
         raw_frames = np.stack(frames, axis=0).astype(np.uint8, copy=False)
+        frame_capture_method_counts = dict(
+            Counter(str(item.get("source", "unknown")) for item in frame_captures)
+        )
+        frame_capture_method = str(frame_captures[0].get("source", "unknown"))
         artifact_metadata = {
             "schema_id": "curvyzero_lightzero_curvytron_checkpoint_selfplay_rgb_frames/v0",
             "frame_source": "source_state_rgb_canvas_like",
             "frame_schema_id": SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID,
             "frame_truth_level": SOURCE_STATE_RGB_CANVAS_LIKE_TRUTH_LEVEL,
             "browser_pixel_fidelity": False,
+            "frame_capture_method": frame_capture_method,
+            "frame_capture_method_counts": frame_capture_method_counts,
+            "frame_capture_details_sample": frame_captures[:4],
             "frame_shape": [int(frame_size), int(frame_size), 3],
             "saved_frame_shape": [int(frame_size), int(frame_size), 3],
+            "gif_filename": "raw.gif",
+            "gif_content_kind": "source_state_rgb_canvas_like_rgb_frames",
+            "gif_filename_role": "legacy_selfplay_artifact_name",
+            "gif_filename_note": (
+                "raw.gif is a legacy artifact name; these frames are RGB "
+                "source-state canvas-like visuals, not the old raw gray tensor."
+            ),
             "frame_count": int(raw_frames.shape[0]),
             "frame_stride_physical_steps": int(frame_stride),
             "seed": int(seed),
@@ -6001,10 +6181,20 @@ def _run_checkpoint_selfplay_gif(
             "frame_schema_id": SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID,
             "frame_truth_level": SOURCE_STATE_RGB_CANVAS_LIKE_TRUTH_LEVEL,
             "browser_pixel_fidelity": False,
+            "frame_capture_method": frame_capture_method,
+            "frame_capture_method_counts": frame_capture_method_counts,
+            "frame_capture_details_sample": frame_captures[:4],
             "raw_frame_source": "source_state_rgb_canvas_like",
             "raw_frame_is_browser_pixel": False,
             "raw_frame_shape": [int(frame_size), int(frame_size), 3],
             "saved_frame_shape": [int(frame_size), int(frame_size), 3],
+            "gif_filename": "raw.gif",
+            "gif_content_kind": "source_state_rgb_canvas_like_rgb_frames",
+            "gif_filename_role": "legacy_selfplay_artifact_name",
+            "gif_filename_note": (
+                "raw.gif is a legacy artifact name; these frames are RGB "
+                "source-state canvas-like visuals, not the old raw gray tensor."
+            ),
             "gif_ref": runs.file_ref(gif_path, mount=RUNS_MOUNT),
             "raw_frames_ref": runs.file_ref(frames_path, mount=RUNS_MOUNT),
             "telemetry_ref": (
@@ -6054,6 +6244,13 @@ def _run_checkpoint_selfplay_gif(
             "frame_truth_level": SOURCE_STATE_RGB_CANVAS_LIKE_TRUTH_LEVEL,
             "browser_pixel_fidelity": False,
             "raw_frame_source": "source_state_rgb_canvas_like",
+            "gif_filename": "raw.gif",
+            "gif_content_kind": "source_state_rgb_canvas_like_rgb_frames",
+            "gif_filename_role": "legacy_selfplay_artifact_name",
+            "gif_filename_note": (
+                "raw.gif is a legacy artifact name; these frames are RGB "
+                "source-state canvas-like visuals, not the old raw gray tensor."
+            ),
             "error": _exception_result(exc),
         }
 
@@ -6401,6 +6598,349 @@ def _cfg_get(mapping: Any, key: str, default: Any) -> Any:
     return getattr(mapping, key, default)
 
 
+def _runs_volume_commit_callback() -> None:
+    if hasattr(runs_volume, "commit"):
+        runs_volume.commit()
+
+
+def _two_seat_checkpoint_ref(run_id: str) -> Path:
+    return runs.checkpoints_root_ref(TASK_ID, run_id) / "lightzero"
+
+
+def _two_seat_call_refs(run_id: str, attempt_id: str) -> dict[str, Any]:
+    train_ref = runs.attempt_train_ref(TASK_ID, run_id, attempt_id)
+    checkpoint_ref = _two_seat_checkpoint_ref(run_id)
+    return {
+        "run_id": run_id,
+        "attempt_id": attempt_id,
+        "progress_ref": (train_ref / "progress.jsonl").as_posix(),
+        "progress_latest_ref": (train_ref / "progress_latest.json").as_posix(),
+        "summary_ref": (train_ref / "summary.json").as_posix(),
+        "command_ref": (
+            runs.attempt_root_ref(TASK_ID, run_id, attempt_id) / "command.json"
+        ).as_posix(),
+        "checkpoint_root_ref": checkpoint_ref.as_posix(),
+    }
+
+
+def _two_seat_background_eval_config(
+    *,
+    payload: dict[str, Any],
+    background_eval_enabled: bool,
+    background_eval_launch_kind: str,
+    background_eval_compute: str,
+    background_eval_id_prefix: str,
+    background_eval_seed_count: int,
+    background_eval_seed_rng_seed: int | None,
+    background_eval_max_steps: int,
+    background_eval_step_detail_limit: int | None,
+    background_eval_num_simulations: int,
+    background_eval_batch_size: int,
+    background_eval_poll_interval_sec: float,
+    background_eval_poll_stable_polls: int,
+    background_eval_poller_max_runtime_sec: float,
+    background_eval_poller_idle_after_done_sec: float,
+    background_gif_enabled: bool,
+    background_gif_seed_offset: int,
+    background_gif_max_steps: int,
+    background_gif_frame_stride: int,
+    background_gif_fps: float,
+    background_gif_scale: int,
+    background_gif_frame_size: int,
+) -> dict[str, Any]:
+    return {
+        "enabled": bool(background_eval_enabled),
+        "launch_kind": background_eval_launch_kind,
+        "compute": background_eval_compute,
+        "eval_id_prefix": background_eval_id_prefix,
+        "seed_count": int(background_eval_seed_count),
+        "seed_rng_seed": background_eval_seed_rng_seed,
+        "max_eval_steps": int(background_eval_max_steps),
+        "step_detail_limit": background_eval_step_detail_limit,
+        "num_simulations": int(background_eval_num_simulations),
+        "batch_size": int(background_eval_batch_size),
+        "poll_interval_sec": float(background_eval_poll_interval_sec),
+        "stable_polls": int(background_eval_poll_stable_polls),
+        "max_runtime_sec": float(background_eval_poller_max_runtime_sec),
+        "idle_after_train_done_sec": float(background_eval_poller_idle_after_done_sec),
+        "selfplay_gif": {
+            "enabled": bool(background_gif_enabled),
+            "seed_offset": int(background_gif_seed_offset),
+            "max_steps": int(background_gif_max_steps),
+            "frame_stride": int(background_gif_frame_stride),
+            "fps": float(background_gif_fps),
+            "scale": int(background_gif_scale),
+            "frame_size": int(background_gif_frame_size),
+        },
+        "eval_env_variant": ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT,
+        "eval_reward_variant": REWARD_VARIANT_SPARSE_OUTCOME,
+        "eval_opponent_policy_kind": OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
+        "note": (
+            "two-seat checkpoints are evaluated with the existing fixed-opponent "
+            "survival reader until a two-seat eval surface replaces it"
+        ),
+        "checkpoint_root_ref": _two_seat_checkpoint_ref(str(payload["run_id"])).as_posix(),
+    }
+
+
+def _spawn_two_seat_checkpoint_poller(
+    *,
+    payload: dict[str, Any],
+    background: dict[str, Any],
+) -> tuple[Any | None, str | None]:
+    if not background["enabled"]:
+        return None, None
+    if background["launch_kind"] != BACKGROUND_EVAL_LAUNCH_POLLER:
+        raise ValueError("two-seat self-play currently supports poller background eval only")
+    if not bool(payload["allow_optimizer_step"]):
+        raise ValueError("two-seat background eval needs allow_optimizer_step=True")
+    checkpoint_ref = _two_seat_checkpoint_ref(str(payload["run_id"]))
+    call = lightzero_curvytron_visual_survival_checkpoint_eval_poller.spawn(
+        run_id=str(payload["run_id"]),
+        attempt_id=str(payload["attempt_id"]),
+        exp_name_ref=checkpoint_ref.as_posix(),
+        seed=int(payload["seed"]),
+        source_max_steps=max(
+            int(payload.get("max_ticks") or 0),
+            int(background["max_eval_steps"]),
+            DEFAULT_SOURCE_MAX_STEPS,
+        ),
+        env_variant=background["eval_env_variant"],
+        reward_variant=background["eval_reward_variant"],
+        opponent_policy_kind=background["eval_opponent_policy_kind"],
+        opponent_checkpoint_ref=None,
+        opponent_snapshot_ref=None,
+        opponent_checkpoint_state_key=None,
+        background_eval_compute=str(background["compute"]),
+        background_eval_id_prefix=str(background["eval_id_prefix"]),
+        background_eval_seed_count=int(background["seed_count"]),
+        background_eval_seed_rng_seed=background["seed_rng_seed"],
+        background_eval_max_steps=int(background["max_eval_steps"]),
+        background_eval_step_detail_limit=background["step_detail_limit"],
+        background_eval_num_simulations=int(background["num_simulations"]),
+        background_eval_batch_size=int(background["batch_size"]),
+        background_gif_enabled=bool(background["selfplay_gif"]["enabled"]),
+        background_gif_seed_offset=int(background["selfplay_gif"]["seed_offset"]),
+        background_gif_max_steps=int(background["selfplay_gif"]["max_steps"]),
+        background_gif_frame_stride=int(background["selfplay_gif"]["frame_stride"]),
+        background_gif_fps=float(background["selfplay_gif"]["fps"]),
+        background_gif_scale=int(background["selfplay_gif"]["scale"]),
+        background_gif_frame_size=int(background["selfplay_gif"]["frame_size"]),
+        poll_interval_sec=float(background["poll_interval_sec"]),
+        stable_polls=int(background["stable_polls"]),
+        max_runtime_sec=float(background["max_runtime_sec"]),
+        idle_after_train_done_sec=float(background["idle_after_train_done_sec"]),
+    )
+    return call, getattr(call, "object_id", None) or getattr(call, "id", None)
+
+
+def _run_two_seat_selfplay_payload(
+    payload: dict[str, Any],
+    *,
+    compute_label: str,
+    use_cuda: bool,
+) -> dict[str, Any]:
+    started_at = runs.utc_timestamp()
+    run_id = str(payload["run_id"])
+    attempt_id = str(payload["attempt_id"])
+    checkpoint_ref = _two_seat_checkpoint_ref(run_id)
+    checkpoint_dir = runs.volume_path(RUNS_MOUNT, checkpoint_ref)
+    train_ref = runs.attempt_train_ref(TASK_ID, run_id, attempt_id)
+    attempt_root = runs.volume_path(RUNS_MOUNT, runs.attempt_root_ref(TASK_ID, run_id, attempt_id))
+    train_root = runs.volume_path(RUNS_MOUNT, train_ref)
+    progress_path = runs.volume_path(RUNS_MOUNT, train_ref / "progress.jsonl")
+    summary_path = train_root / "summary.json"
+    command_path = attempt_root / "command.json"
+    attempt_path = runs.volume_path(
+        RUNS_MOUNT,
+        runs.attempt_manifest_ref(TASK_ID, run_id, attempt_id),
+    )
+    latest_attempt_path = runs.volume_path(
+        RUNS_MOUNT,
+        runs.latest_attempt_ref(TASK_ID, run_id),
+    )
+    command = {
+        "schema_id": "curvyzero_canonical_two_seat_selfplay_command/v0",
+        "mode": TWO_SEAT_SELFPLAY_MODE,
+        "canonical_launcher": (
+            "curvyzero.infra.modal.lightzero_curvyzero_stacked_debug_visual_survival_train"
+        ),
+        "launcher_status": "canonical_two_seat_selfplay",
+        "compute": compute_label,
+        "use_cuda": bool(use_cuda),
+        **payload,
+    }
+    runs.write_json(command_path, _to_plain(command))
+    runs.write_json(
+        attempt_path,
+        runs.attempt_manifest(
+            task_id=TASK_ID,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            status="running",
+            started_at=started_at,
+            config=command,
+        ),
+    )
+    runs.write_json(
+        latest_attempt_path,
+        runs.latest_attempt_pointer(
+            task_id=TASK_ID,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            status="running",
+            started_at=started_at,
+        ),
+    )
+    if hasattr(runs_volume, "commit"):
+        runs_volume.commit()
+
+    result = run_curvytron_two_seat_lightzero_train_smoke(
+        seed=int(payload["seed"]),
+        batch_size=int(payload["batch_size"]),
+        steps=int(payload["steps"]),
+        outer_iterations=int(payload["outer_iterations"]),
+        collect_steps_per_iteration=payload["collect_steps_per_iteration"],
+        updates_per_iteration=payload["updates_per_iteration"],
+        num_simulations=int(payload["num_simulations"]),
+        learner_updates=int(payload["learner_updates"]),
+        allow_optimizer_step=bool(payload["allow_optimizer_step"]),
+        replay_scope=str(payload["replay_scope"]),
+        learner_sample_size=payload["learner_sample_size"],
+        max_replay_rows=payload["max_replay_rows"],
+        record_log_limit=int(payload["record_log_limit"]),
+        replay_row_log_limit=int(payload["replay_row_log_limit"]),
+        max_ticks=payload["max_ticks"],
+        death_mode=str(payload["death_mode"]),
+        decision_ms=float(payload["decision_ms"]),
+        alive_reward=float(payload["alive_reward"]),
+        dead_reward=float(payload["dead_reward"]),
+        action_selection_mode=str(payload["action_selection_mode"]),
+        collect_temperature=float(payload["collect_temperature"]),
+        collect_epsilon=float(payload["collect_epsilon"]),
+        action_noop_probability=float(payload["action_noop_probability"]),
+        action_noop_warmup_iterations=int(payload["action_noop_warmup_iterations"]),
+        policy_action_repeat_min=int(payload["policy_action_repeat_min"]),
+        policy_action_repeat_max=int(payload["policy_action_repeat_max"]),
+        policy_action_repeat_extra_probability=float(
+            payload["policy_action_repeat_extra_probability"]
+        ),
+        policy_action_repeat_warmup_iterations=int(
+            payload["policy_action_repeat_warmup_iterations"]
+        ),
+        observation_noise_std=float(payload["observation_noise_std"]),
+        trail_render_mode=str(payload["trail_render_mode"]),
+        use_cuda=bool(use_cuda),
+        checkpoint_every_iterations=int(payload["checkpoint_every_iterations"]),
+        save_initial_checkpoint=bool(payload["save_initial_checkpoint"]),
+        progress_path=progress_path,
+        progress_every_iterations=int(payload["progress_every_iterations"]),
+        progress_commit_every_iterations=int(payload["progress_commit_every_iterations"]),
+        progress_commit_callback=_runs_volume_commit_callback,
+        progress_print=True,
+        checkpoint_dir=checkpoint_dir if bool(payload["allow_optimizer_step"]) else None,
+        checkpoint_metadata={
+            "task_id": TASK_ID,
+            "run_id": run_id,
+            "attempt_id": attempt_id,
+            "checkpoint_root_ref": checkpoint_ref.as_posix(),
+            "modal_app": APP_NAME,
+            "compute": compute_label,
+            "canonical_launcher": command["canonical_launcher"],
+            "two_seat_current_policy_selfplay": True,
+            "trail_render_mode": payload["trail_render_mode"],
+            "death_mode": payload["death_mode"],
+        },
+        require_installed_lightzero=True,
+    )
+    result["summary_ref"] = runs.file_ref(summary_path, mount=RUNS_MOUNT)
+    result["progress_ref"] = (train_ref / "progress.jsonl").as_posix()
+    result["progress_latest_ref"] = (train_ref / "progress_latest.json").as_posix()
+    result["checkpoint_root_ref"] = checkpoint_ref.as_posix()
+    result["command_ref"] = runs.file_ref(command_path, mount=RUNS_MOUNT)
+    result["volume_name"] = VOLUME_NAME
+    result["canonical_launcher"] = command["canonical_launcher"]
+    runs.write_json(summary_path, _to_plain(result))
+    status = "completed" if bool(result.get("ok")) else "failed"
+    ended_at = runs.utc_timestamp()
+    summary_ref = runs.file_ref(summary_path, mount=RUNS_MOUNT)
+    runs.write_json(
+        attempt_path,
+        runs.attempt_manifest(
+            task_id=TASK_ID,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            status=status,
+            started_at=started_at,
+            ended_at=ended_at,
+            summary_ref=summary_ref,
+            config=command,
+        ),
+    )
+    runs.write_json(
+        latest_attempt_path,
+        runs.latest_attempt_pointer(
+            task_id=TASK_ID,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            status=status,
+            started_at=started_at,
+            ended_at=ended_at,
+            summary_ref=summary_ref,
+        ),
+    )
+    if hasattr(runs_volume, "commit"):
+        runs_volume.commit()
+    return _to_plain(result)
+
+
+@app.function(
+    image=image,
+    volumes={str(RUNS_MOUNT): runs_volume},
+    timeout=12 * 60 * 60,
+    cpu=40.0,
+    memory=65536,
+)
+def lightzero_curvytron_two_seat_selfplay_cpu(payload: dict[str, Any]) -> dict[str, Any]:
+    return _run_two_seat_selfplay_payload(
+        payload,
+        compute_label=COMPUTE_CPU,
+        use_cuda=False,
+    )
+
+
+@app.function(
+    image=image,
+    volumes={str(RUNS_MOUNT): runs_volume},
+    timeout=12 * 60 * 60,
+    cpu=40.0,
+    memory=65536,
+    gpu=CHEAP_GPU_RESOURCE,
+)
+def lightzero_curvytron_two_seat_selfplay_gpu(payload: dict[str, Any]) -> dict[str, Any]:
+    return _run_two_seat_selfplay_payload(
+        payload,
+        compute_label=COMPUTE_GPU_L4_T4,
+        use_cuda=True,
+    )
+
+
+@app.function(
+    image=image,
+    volumes={str(RUNS_MOUNT): runs_volume},
+    timeout=12 * 60 * 60,
+    cpu=40.0,
+    memory=65536,
+    gpu=H100_GPU_RESOURCE,
+)
+def lightzero_curvytron_two_seat_selfplay_h100(payload: dict[str, Any]) -> dict[str, Any]:
+    return _run_two_seat_selfplay_payload(
+        payload,
+        compute_label=COMPUTE_GPU_H100_CPU40,
+        use_cuda=True,
+    )
+
+
 def _to_plain(value: Any) -> Any:
     if isinstance(value, dict):
         return {str(key): _to_plain(item) for key, item in value.items()}
@@ -6593,6 +7133,8 @@ def lightzero_curvytron_visual_survival_cpu(
     batch_size: int = DEFAULT_BATCH_SIZE,
     lightzero_eval_freq: int = DEFAULT_LIGHTZERO_EVAL_FREQ,
     skip_lightzero_eval_in_profile: bool = DEFAULT_SKIP_LIGHTZERO_EVAL_IN_PROFILE,
+    profile_cuda_sync_enabled: bool = DEFAULT_PROFILE_CUDA_SYNC_ENABLED,
+    profile_allow_auto_resume: bool = DEFAULT_PROFILE_ALLOW_AUTO_RESUME,
     lightzero_multi_gpu: bool = DEFAULT_LIGHTZERO_MULTI_GPU,
     save_ckpt_after_iter: int = DEFAULT_SAVE_CKPT_AFTER_ITER,
     stop_after_learner_train_calls: int = DEFAULT_STOP_AFTER_LEARNER_TRAIN_CALLS,
@@ -6646,6 +7188,8 @@ def lightzero_curvytron_visual_survival_cpu(
         batch_size=batch_size,
         lightzero_eval_freq=lightzero_eval_freq,
         skip_lightzero_eval_in_profile=skip_lightzero_eval_in_profile,
+        profile_cuda_sync_enabled=profile_cuda_sync_enabled,
+        profile_allow_auto_resume=profile_allow_auto_resume,
         lightzero_multi_gpu=lightzero_multi_gpu,
         save_ckpt_after_iter=save_ckpt_after_iter,
         stop_after_learner_train_calls=stop_after_learner_train_calls,
@@ -6721,6 +7265,8 @@ def lightzero_curvytron_visual_survival_gpu(
     batch_size: int = DEFAULT_BATCH_SIZE,
     lightzero_eval_freq: int = DEFAULT_LIGHTZERO_EVAL_FREQ,
     skip_lightzero_eval_in_profile: bool = DEFAULT_SKIP_LIGHTZERO_EVAL_IN_PROFILE,
+    profile_cuda_sync_enabled: bool = DEFAULT_PROFILE_CUDA_SYNC_ENABLED,
+    profile_allow_auto_resume: bool = DEFAULT_PROFILE_ALLOW_AUTO_RESUME,
     lightzero_multi_gpu: bool = DEFAULT_LIGHTZERO_MULTI_GPU,
     save_ckpt_after_iter: int = DEFAULT_SAVE_CKPT_AFTER_ITER,
     stop_after_learner_train_calls: int = DEFAULT_STOP_AFTER_LEARNER_TRAIN_CALLS,
@@ -6774,6 +7320,8 @@ def lightzero_curvytron_visual_survival_gpu(
         batch_size=batch_size,
         lightzero_eval_freq=lightzero_eval_freq,
         skip_lightzero_eval_in_profile=skip_lightzero_eval_in_profile,
+        profile_cuda_sync_enabled=profile_cuda_sync_enabled,
+        profile_allow_auto_resume=profile_allow_auto_resume,
         lightzero_multi_gpu=lightzero_multi_gpu,
         save_ckpt_after_iter=save_ckpt_after_iter,
         stop_after_learner_train_calls=stop_after_learner_train_calls,
@@ -6941,6 +7489,8 @@ def _compact_train_result_for_output(result: Any) -> Any:
             "batch_size": command.get("batch_size"),
             "lightzero_eval_freq": command.get("lightzero_eval_freq"),
             "skip_lightzero_eval_in_profile": command.get("skip_lightzero_eval_in_profile"),
+            "profile_cuda_sync_enabled": command.get("profile_cuda_sync_enabled"),
+            "profile_allow_auto_resume": command.get("profile_allow_auto_resume"),
             "lightzero_multi_gpu": command.get("lightzero_multi_gpu"),
             "source_max_steps": command.get("source_max_steps"),
             "disable_death_for_profile": command.get("disable_death_for_profile"),
@@ -7016,6 +7566,8 @@ def main(
     batch_size: int = DEFAULT_BATCH_SIZE,
     lightzero_eval_freq: int = DEFAULT_LIGHTZERO_EVAL_FREQ,
     skip_lightzero_eval_in_profile: bool = DEFAULT_SKIP_LIGHTZERO_EVAL_IN_PROFILE,
+    profile_cuda_sync_enabled: bool = DEFAULT_PROFILE_CUDA_SYNC_ENABLED,
+    profile_allow_auto_resume: bool = DEFAULT_PROFILE_ALLOW_AUTO_RESUME,
     lightzero_multi_gpu: bool = DEFAULT_LIGHTZERO_MULTI_GPU,
     save_ckpt_after_iter: int = DEFAULT_SAVE_CKPT_AFTER_ITER,
     stop_after_learner_train_calls: int = DEFAULT_STOP_AFTER_LEARNER_TRAIN_CALLS,
@@ -7036,6 +7588,42 @@ def main(
     state_key: str | None = None,
     ego_action_id: int = 0,
     fake_action_id: int = 1,
+    two_seat_steps: int = DEFAULT_TWO_SEAT_COLLECT_STEPS_PER_ITERATION,
+    two_seat_outer_iterations: int | None = None,
+    two_seat_collect_steps_per_iteration: int | None = None,
+    two_seat_updates_per_iteration: int | None = None,
+    two_seat_learner_updates: int = 1,
+    two_seat_allow_optimizer_step: bool = True,
+    two_seat_replay_scope: str = "accumulated",
+    two_seat_learner_sample_size: int | None = DEFAULT_TWO_SEAT_LEARNER_SAMPLE_SIZE,
+    two_seat_max_replay_rows: int | None = DEFAULT_TWO_SEAT_MAX_REPLAY_ROWS,
+    two_seat_record_log_limit: int = 512,
+    two_seat_replay_row_log_limit: int = 256,
+    two_seat_max_ticks: int | None = DEFAULT_TWO_SEAT_MAX_TICKS,
+    two_seat_death_mode: str = TWO_SEAT_DEFAULT_DEATH_MODE,
+    two_seat_alive_reward: float = 1.0,
+    two_seat_dead_reward: float = 0.0,
+    two_seat_action_selection_mode: str = "collect",
+    two_seat_collect_temperature: float = 1.0,
+    two_seat_collect_epsilon: float = 0.25,
+    two_seat_action_noop_probability: float = 0.0,
+    two_seat_action_noop_warmup_iterations: int = 0,
+    two_seat_policy_action_repeat_min: int = TWO_SEAT_DEFAULT_POLICY_ACTION_REPEAT_MIN,
+    two_seat_policy_action_repeat_max: int = TWO_SEAT_DEFAULT_POLICY_ACTION_REPEAT_MAX,
+    two_seat_policy_action_repeat_extra_probability: float = (
+        TWO_SEAT_DEFAULT_POLICY_ACTION_REPEAT_EXTRA_PROBABILITY
+    ),
+    two_seat_policy_action_repeat_warmup_iterations: int = (
+        TWO_SEAT_DEFAULT_POLICY_ACTION_REPEAT_WARMUP_ITERATIONS
+    ),
+    two_seat_observation_noise_std: float = 0.0,
+    two_seat_trail_render_mode: str = TRAIL_RENDER_MODE_DEFAULT,
+    two_seat_checkpoint_every_iterations: int | None = None,
+    two_seat_save_initial_checkpoint: bool = DEFAULT_TWO_SEAT_SAVE_INITIAL_CHECKPOINT,
+    two_seat_progress_every_iterations: int = DEFAULT_TWO_SEAT_PROGRESS_EVERY_ITERATIONS,
+    two_seat_progress_commit_every_iterations: int = (
+        DEFAULT_TWO_SEAT_PROGRESS_COMMIT_EVERY_ITERATIONS
+    ),
     background_eval_enabled: bool = DEFAULT_BACKGROUND_EVAL_ENABLED,
     background_eval_launch_kind: str = DEFAULT_BACKGROUND_EVAL_LAUNCH_KIND,
     background_eval_compute: str = DEFAULT_BACKGROUND_EVAL_COMPUTE,
@@ -7079,6 +7667,165 @@ def main(
         )
         print(json.dumps(result, indent=2, sort_keys=True))
         return
+    if mode == TWO_SEAT_SELFPLAY_MODE:
+        if compute == COMPUTE_CPU:
+            two_seat_fn = lightzero_curvytron_two_seat_selfplay_cpu
+        elif compute == COMPUTE_GPU_L4_T4:
+            two_seat_fn = lightzero_curvytron_two_seat_selfplay_gpu
+        elif compute == COMPUTE_GPU_H100_CPU40:
+            two_seat_fn = lightzero_curvytron_two_seat_selfplay_h100
+        else:
+            raise ValueError(
+                "two-seat self-play supports compute='cpu', 'gpu-l4-t4', "
+                "or 'gpu-h100-cpu40'"
+            )
+        if two_seat_trail_render_mode not in TRAIL_RENDER_MODE_ORDER:
+            raise ValueError(
+                "two-seat self-play trail render mode must be one of "
+                f"{TRAIL_RENDER_MODE_ORDER!r}; got {two_seat_trail_render_mode!r}"
+            )
+        two_seat_payload = {
+            "seed": seed,
+            "batch_size": batch_size,
+            "steps": two_seat_steps,
+            "outer_iterations": (
+                max_train_iter
+                if two_seat_outer_iterations is None
+                else int(two_seat_outer_iterations)
+            ),
+            "collect_steps_per_iteration": (
+                DEFAULT_TWO_SEAT_COLLECT_STEPS_PER_ITERATION
+                if two_seat_collect_steps_per_iteration is None
+                else int(two_seat_collect_steps_per_iteration)
+            ),
+            "updates_per_iteration": (
+                DEFAULT_TWO_SEAT_UPDATES_PER_ITERATION
+                if two_seat_updates_per_iteration is None
+                else int(two_seat_updates_per_iteration)
+            ),
+            "num_simulations": num_simulations,
+            "learner_updates": two_seat_learner_updates,
+            "allow_optimizer_step": two_seat_allow_optimizer_step,
+            "replay_scope": two_seat_replay_scope,
+            "learner_sample_size": two_seat_learner_sample_size,
+            "max_replay_rows": two_seat_max_replay_rows,
+            "record_log_limit": two_seat_record_log_limit,
+            "replay_row_log_limit": two_seat_replay_row_log_limit,
+            "max_ticks": two_seat_max_ticks,
+            "death_mode": two_seat_death_mode,
+            "decision_ms": decision_ms,
+            "alive_reward": two_seat_alive_reward,
+            "dead_reward": two_seat_dead_reward,
+            "action_selection_mode": two_seat_action_selection_mode,
+            "collect_temperature": two_seat_collect_temperature,
+            "collect_epsilon": two_seat_collect_epsilon,
+            "action_noop_probability": two_seat_action_noop_probability,
+            "action_noop_warmup_iterations": two_seat_action_noop_warmup_iterations,
+            "policy_action_repeat_min": two_seat_policy_action_repeat_min,
+            "policy_action_repeat_max": two_seat_policy_action_repeat_max,
+            "policy_action_repeat_extra_probability": (
+                two_seat_policy_action_repeat_extra_probability
+            ),
+            "policy_action_repeat_warmup_iterations": (
+                two_seat_policy_action_repeat_warmup_iterations
+            ),
+            "observation_noise_std": two_seat_observation_noise_std,
+            "trail_render_mode": two_seat_trail_render_mode,
+            "checkpoint_every_iterations": (
+                save_ckpt_after_iter
+                if two_seat_checkpoint_every_iterations is None
+                else int(two_seat_checkpoint_every_iterations)
+            ),
+            "save_initial_checkpoint": two_seat_save_initial_checkpoint,
+            "progress_every_iterations": two_seat_progress_every_iterations,
+            "progress_commit_every_iterations": two_seat_progress_commit_every_iterations,
+            "run_id": run_id,
+            "attempt_id": attempt_id,
+        }
+        background = _two_seat_background_eval_config(
+            payload=two_seat_payload,
+            background_eval_enabled=background_eval_enabled,
+            background_eval_launch_kind=background_eval_launch_kind,
+            background_eval_compute=background_eval_compute,
+            background_eval_id_prefix=background_eval_id_prefix,
+            background_eval_seed_count=background_eval_seed_count,
+            background_eval_seed_rng_seed=background_eval_seed_rng_seed,
+            background_eval_max_steps=background_eval_max_steps,
+            background_eval_step_detail_limit=background_eval_step_detail_limit,
+            background_eval_num_simulations=background_eval_num_simulations,
+            background_eval_batch_size=background_eval_batch_size,
+            background_eval_poll_interval_sec=background_eval_poll_interval_sec,
+            background_eval_poll_stable_polls=background_eval_poll_stable_polls,
+            background_eval_poller_max_runtime_sec=background_eval_poller_max_runtime_sec,
+            background_eval_poller_idle_after_done_sec=(
+                background_eval_poller_idle_after_done_sec
+            ),
+            background_gif_enabled=background_gif_enabled,
+            background_gif_seed_offset=background_gif_seed_offset,
+            background_gif_max_steps=background_gif_max_steps,
+            background_gif_frame_stride=background_gif_frame_stride,
+            background_gif_fps=background_gif_fps,
+            background_gif_scale=background_gif_scale,
+            background_gif_frame_size=background_gif_frame_size,
+        )
+        poller_call = None
+        poller_call_id = None
+        if background["enabled"]:
+            poller_call, poller_call_id = _spawn_two_seat_checkpoint_poller(
+                payload=two_seat_payload,
+                background=background,
+            )
+        if not wait_for_train:
+            call = two_seat_fn.spawn(two_seat_payload)
+            call_id = getattr(call, "object_id", None) or getattr(call, "id", None)
+            print(
+                json.dumps(
+                    {
+                        "schema_id": "curvyzero_canonical_two_seat_selfplay_background_launch/v0",
+                        "status": "spawned",
+                        "mode": TWO_SEAT_SELFPLAY_MODE,
+                        "compute": compute,
+                        "seed": seed,
+                        "refs": _two_seat_call_refs(run_id, attempt_id),
+                        "function_call_id": call_id,
+                        "background_eval": {
+                            **background,
+                            "poller_function_call_id": poller_call_id,
+                            "status_ref": (
+                                runs.attempt_train_ref(TASK_ID, run_id, attempt_id)
+                                / "checkpoint_eval_poller.json"
+                            ).as_posix()
+                            if poller_call_id
+                            else None,
+                        },
+                        "command": two_seat_payload,
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return
+        result = two_seat_fn.remote(two_seat_payload)
+        if poller_call is not None:
+            result = {
+                "train": result,
+                "background_eval": {
+                    **background,
+                    "poller_function_call_id": poller_call_id,
+                    "poller": poller_call.get(),
+                },
+            }
+        if output_detail == OUTPUT_DETAIL_COMPACT and isinstance(result, dict):
+            train_result = result.get("train") if "train" in result else result
+            if isinstance(train_result, dict):
+                compact = compact_curvytron_two_seat_lightzero_train_smoke_summary(
+                    train_result
+                )
+                if "background_eval" in result:
+                    compact["background_eval"] = result["background_eval"]
+                result = compact
+        print(json.dumps(_to_plain(result), indent=2, sort_keys=True))
+        return
     if compute == COMPUTE_CPU:
         train_fn = lightzero_curvytron_visual_survival_cpu
     elif compute == COMPUTE_CPU64:
@@ -7115,6 +7862,8 @@ def main(
         "batch_size": batch_size,
         "lightzero_eval_freq": lightzero_eval_freq,
         "skip_lightzero_eval_in_profile": skip_lightzero_eval_in_profile,
+        "profile_cuda_sync_enabled": profile_cuda_sync_enabled,
+        "profile_allow_auto_resume": profile_allow_auto_resume,
         "lightzero_multi_gpu": lightzero_multi_gpu,
         "save_ckpt_after_iter": save_ckpt_after_iter,
         "stop_after_learner_train_calls": stop_after_learner_train_calls,

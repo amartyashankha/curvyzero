@@ -14,6 +14,9 @@ _SPEC.loader.exec_module(_MODULE)
 run_comparison = _MODULE.run_comparison
 run_suite_comparison = _MODULE.run_suite_comparison
 run_full_2p_visual_gate = _MODULE.run_full_2p_visual_gate
+run_final_observation_autoreset_visual_gate = (
+    _MODULE.run_final_observation_autoreset_visual_gate
+)
 run_programmatic_stress_comparison = _MODULE.run_programmatic_stress_comparison
 run_typed_bonus_visual_status_gate = _MODULE.run_typed_bonus_visual_status_gate
 run_visual_mismatch_canary = _MODULE.run_visual_mismatch_canary
@@ -49,7 +52,7 @@ def test_compare_2p_raw_visual_observation_core_suite_matches():
     report = run_suite_comparison()
 
     assert report["suite_id"] == "core_2p_source_state_canvas_gray64"
-    assert report["scenario_count"] == 34
+    assert report["scenario_count"] == 35
     assert report["match"] is True
     assert report["max_abs_diff"] == 0
     assert report["mismatch_pixels"] == 0
@@ -60,8 +63,9 @@ def test_compare_2p_raw_visual_observation_full_visual_gate_matches():
 
     assert report["gate_id"] == "full_2p_source_state_visual_gate"
     assert report["match"] is True
-    assert report["gray64"]["scenario_count"] == 34
+    assert report["gray64"]["scenario_count"] == 35
     assert report["typed_bonus"]["case_count"] == 12
+    assert report["final_observation"]["match"] is True
     assert report["visual_canaries_passed"] == len(VISUAL_MISMATCH_CANARY_IDS)
     assert report["mismatch_pixels"] == 0
     assert report["max_abs_diff"] == 0.0
@@ -78,6 +82,7 @@ def test_compare_2p_raw_visual_observation_programmatic_stress_scenarios_match()
         "source_lifecycle_survivor_score_2p_warmdown_visual_stress": False,
         "source_bonus_self_master_body_block_then_wall_death_visual_stress": True,
         "source_bonus_game_borderless_expiry_then_wall_death_visual_stress": True,
+        "source_bonus_game_borderless_same_frame_expiry_wall_death_visual_stress": True,
         "source_bonus_game_clear_clears_future_collision_body_visual_stress": False,
     }
 
@@ -91,6 +96,23 @@ def test_compare_2p_raw_visual_observation_programmatic_stress_scenarios_match()
         assert report["terminal_seen"] is expected_terminal[scenario_id]
         assert report["expected_terminal"] is expected_terminal[scenario_id]
         assert report["visual_limits"]
+
+
+def test_compare_2p_raw_visual_observation_final_observation_autoreset_gate():
+    report = run_final_observation_autoreset_visual_gate()
+
+    assert (
+        report["comparison_kind"]
+        == "source_state_canvas_gray64_final_observation_autoreset_gate"
+    )
+    assert report["match"] is True
+    assert report["terminal_seen"] is True
+    assert report["final_observation_present"] is True
+    assert report["final_action_mask_terminal"] is True
+    assert report["terminal_frame_mismatch_pixels"] == 0
+    assert report["returned_stack_mismatch_pixels"] == 0
+    assert report["final_stack_survived_reset"] is True
+    assert report["post_reset_frame_mismatch_pixels"] > 0
 
 
 def test_compare_2p_raw_visual_observation_mismatch_canaries_fail_when_visible_fact_missing():

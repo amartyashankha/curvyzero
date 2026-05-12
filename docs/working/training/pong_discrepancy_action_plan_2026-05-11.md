@@ -22,14 +22,13 @@ learn at all.
 - We judged sparse-reward Pong too early. Many early `1k` or `5k` reads were
   not enough.
 - We let score hide survival signal. Survival moved before score looked good.
-- We mixed proof lanes with custom/debug lanes. Custom Pong, shaped reward
-  runs, and CurvyTron adapter smokes are useful, but they are not stock Pong
-  replication.
+- We mixed proof lanes with custom/debug lanes. Custom Pong and shaped reward
+  runs are useful context, but they are not stock Pong replication.
 - Some Modal launches produced no visible Volume root. That is a run-lifecycle
   problem, not a policy result.
-- Custom CurvyTron/two-seat code skipped parts of the native LightZero
-  `train_muzero` path. Direct `learn_mode.forward` is not the same as the
-  stock collector/replay/learner loop.
+- Historical CurvyTron/two-seat wrappers skipped parts of the native LightZero
+  path. New CurvyTron two-seat work should start from the canonical Coach
+  launcher, not the archived wrapper commands.
 - Slow or serial evals delayed decisions and made us argue from stale data.
 
 ## Active Questions
@@ -38,10 +37,11 @@ learn at all.
 - Do the weaker stock rows keep improving by `20k/50k`, or plateau early?
 - Is the current GitHub upstream segment path learning when evaluated with a
   proper cap and parallel seed panel?
-- Which custom CurvyTron path pieces are safe diagnostics, and which must be
-  replaced by native-compatible GameSegment/replay/learner behavior?
-- What is the minimum CurvyTron training surface that preserves the stock
-  LightZero contract while using survival reward?
+- Does the canonical CurvyTron two-seat Coach path preserve the training
+  signal discipline learned from Pong: same-run baselines, survival curves,
+  checkpoint refs, and explicit non-claims?
+- What CurvyTron eval panels best separate survival improvement from
+  fixed-opponent or setup-only artifacts?
 
 ## Near-Term Work
 
@@ -52,8 +52,8 @@ learn at all.
   stronger claim about which stock rows work.
 - Use the failure audit to retire no-evidence runs rather than re-litigating
   them.
-- Use the custom-vs-stock contract autopsy to decide which CurvyTron code path
-  can be trusted.
+- Use the canonical two-seat handoff and active board for CurvyTron launch
+  guidance.
 - Record every claim as: same-run baseline, survival curve, score, checkpoint
   refs, eval settings, and non-claim.
 
@@ -61,6 +61,7 @@ learn at all.
 
 - [Pong replication failure audit](pong_replication_failure_audit_2026-05-11.md)
 - [Stock64 signal comparison](pong_stock64_signal_comparison_2026-05-11.md)
-- [MuZero training footguns](muzero_training_footguns_2026-05-11.md)
+- [Archived MuZero training footguns](archive_2026-05-12_two_seat_purge/muzero_training_footguns_2026-05-11.md)
+- [Canonical two-seat handoff](curvytron_canonical_two_seat_handoff_2026-05-12.md)
 - [LightZero Pong replication monitor](../lightzero_pong_replication_monitor_2026-05-11.md)
 - [Active board](../training_coach_active_board_2026-05-10.md)

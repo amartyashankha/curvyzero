@@ -10,6 +10,15 @@ The JavaScript oracle and `CurvyTronSourceEnv` are source-truth tools.
 product env. Optimizer and Coach should consume explicit runtime surfaces; they
 should not patch environment truth.
 
+Observation-path guardrail: the active 2P product visual path is source-state
+browser-like RGB64 raw frame -> deterministic gray64 -> frame stack. Bonus64 and
+rich tensors are diagnostics only. Browser/canvas pixels are not P0, and trainer
+wrapper/replay propagation remains open unless an exact proof is named.
+Renderer direction for that path is now explicit: `browser_lines` is the default
+browser-style source-state renderer, and `body_circles_fast` remains an
+explicitly selected circle-per-body approximation. This is still
+native/source-state rendering, not a browser pixel parity claim.
+
 ## Plain Answer
 
 Halley's capacity audit changes the current risk map. Seed-generated public
@@ -45,7 +54,7 @@ Speed-changing bonuses now also update turn rate with the source formula and
 restore it on expiry; this was a concrete 2P fidelity hole found during the
 visual/coverage audit.
 
-The source-state visual training path uses `VectorMultiplayerEnv` with
+The source-state visual profile path uses `VectorMultiplayerEnv` with
 `natural_bonus_spawn=True`. That means the runtime can naturally spawn any
 source-default bonus. The old optimizer profile failed when type code `11`
 (`BonusAllColor`) spawned and was caught before table support had landed. That
@@ -86,7 +95,7 @@ must be true in `VectorMultiplayerEnv`:
 | B1 | Capacity-audit policy | Halley's audit found long-survival traps and fixed-array guards that must be named honestly. | Generated tape/position retries extend deterministically; public natural bonus timer advancement has no artificial callback cap; fixture/direct finite tapes and `vector_runtime` finite helpers remain strict by design; artificial/manual stack overflow is documented as a fixed-array guard; a fully blocked generated map has an explicit policy if needed. |
 | B1 | Bonus replay/final-state facts | Metadata currently preserves audit fields, not full bonus replay/final surfaces. | Public info/replay/final rows expose spawned bonus identity, catch, clear, expiry, stack, random cursor, and source refs without pretending to be browser replay. |
 | B2 | Stack/timer/death interactions | AllColor overlap and SelfMaster wall/body parity are now guarded, but this does not prove every same-timestamp expiry, overlapping stack family, or death while boosted. | Focused source fixtures and public/runtime tests cover overlap, expiry ordering, wall/body deaths, and clear/borderless interactions. |
-| B3 | Broader multiplayer replay, observations, pixel parity | Not today's crash, but needed before broad env claims. | Public replay/final observations and later browser/source pixel comparison have separate source-backed gates. Raw 64x64 source-state raster parity is not browser/canvas pixel parity. |
+| B3 | Trainer propagation, replay/final observations, browser pixels | Not today's crash, but needed before broad env claims. The source-state renderer has default `browser_lines` plus explicit approximate `body_circles_fast`, but that is not browser canvas parity. | Public replay/final observations and later browser/source pixel comparison have separate source-backed gates. Raw 64x64 source-state raster parity is not browser/canvas pixel parity and does not prove trainer wrapper/replay propagation. |
 
 ## Done Enough
 
@@ -108,11 +117,15 @@ These should stay as regression guards, not as distractions:
   `BonusSelfMaster`, `BonusAllColor`, and `BonusGameClear`.
 - Public seeded and focused natural stack capacity now uses
   `SOURCE_MAX_ACTIVE_BONUSES`.
-- Source-state visual tensors are Environment-owned source-state geometry
-  rasters. The source 2P arena is 88 units from
+- Source-state gray64 frames are Environment-owned source-state geometry rasters
+  for the active image path: RGB64 raw frame -> gray64 -> stack. The source 2P
+  arena is 88 units from
   `CurvyTronReferenceDefaults.arena_size_for_players(2)`; 64x64 is only the
-  learned raw observation raster size. These tensors are not ALE, not
-  browser/canvas pixel truth, and not Coach learning evidence.
+  learned raw observation raster size. Bonus64/rich tensors are diagnostic only.
+  These tensors are not ALE, not browser/canvas pixel truth, not trainer
+  propagation proof, and not Coach learning evidence. The trail renderer default
+  for this path is `browser_lines`; `body_circles_fast` remains an explicit
+  approximation.
 - Latest 2P source-state visual gate:
   `scripts/compare_2p_raw_visual_observation.py --suite core2p --format plain`
   passes 34 core source-vs-vector gray64 scenarios with exact
@@ -127,9 +140,11 @@ These should stay as regression guards, not as distractions:
   expiry/wall, and GameClear clear/collision. Two intentional mismatch canaries
   prove the harness fails when a visible world body or visible map bonus is
   missing. This is model-observation raster evidence only.
+- Renderer-status caveat: this latest gate is under the native source-state
+  renderer. It is not evidence that real browser canvas pixels are matched.
 - Use `scripts/compare_2p_raw_visual_observation.py --suite full2p --format plain`
   for the combined current visual proof. Latest result:
-  `PASS full_2p_source_state_visual_gate canvas_gray64=34/34 typed_bonus=12/12 canaries=2/2 mismatch_pixels=0 max_abs_diff=0.0 expected_canary_mismatch_pixels=81`.
+  `PASS full_2p_source_state_visual_gate canvas_gray64=35/35 typed_bonus=12/12 final_obs=pass canaries=2/2 mismatch_pixels=0 max_abs_diff=0.0 expected_canary_mismatch_pixels=78`.
   This still does not claim browser pixels, trainer wrapper/replay propagation,
   or final training readiness.
 - Gray64 v0 keeps 2P player trails and heads distinct, but it draws every active
@@ -151,7 +166,7 @@ These should stay as regression guards, not as distractions:
 | --- | --- | --- |
 | Source defaults include `BonusSelfMaster` and `BonusAllColor`. | `tests/test_env_reference_defaults.py`; `src/curvyzero/env/config.py`; `vector_runtime.SOURCE_DEFAULT_BONUS_TYPE_CODES`. | None for the default list unless defaults change. |
 | Public natural bonus metadata keeps the full source-default list and marks no implemented default effect as unsupported. | `tests/test_vector_multiplayer_env.py -k public_natural_bonus_metadata_keeps_source_defaults`; `tests/test_multiplayer_replay_contract.py -k bonus_audit`. | Replay/final-state and long-run stress checks remain. |
-| The live source-state visual path uses `VectorMultiplayerEnv(..., natural_bonus_spawn=True)`. | `src/curvyzero/training/curvyzero_source_state_visual_survival_lightzero_env.py`; `tests/test_curvyzero_source_state_visual_survival_lightzero_env.py -k natural_bonus`. | Optimizer profile rerun remains separate route evidence. Browser/canvas pixel parity still waits. |
+| The source-state visual profile path uses `VectorMultiplayerEnv(..., natural_bonus_spawn=True)`. | `src/curvyzero/training/curvyzero_source_state_visual_survival_lightzero_env.py`; `tests/test_curvyzero_source_state_visual_survival_lightzero_env.py -k natural_bonus`. | Optimizer profile rerun remains separate route evidence. Trainer/replay propagation and browser/canvas pixel parity still wait. |
 | `BonusAllColor` source behavior is known and runtime/public supported. | `tests/test_source_env.py -k bonus_all_color`; default-weight source scenarios in `tests/test_env_scenarios.py -k bonus`; focused public seeded/natural bonus checks. | Replay/audit, final-state, and broader stack stress checks remain. |
 | `BonusSelfMaster` source behavior is available in `CurvyTronSourceEnv` and runtime/public supported. | `src/curvyzero/env/source_env.py` models invincible plus printing stack behavior; focused public seeded/natural bonus checks. | Replay/audit, final-state, and broader death/stack stress checks remain. |
 | Runtime supports source-default bonus effects. | `tests/test_vector_runtime.py -k bonus` covers forced catches/expiry for small, slow/fast velocity, master, enemy big, inverse, straight-angle, all color, clear, and borderless slices. | Overlap/death/expiry-order stress where source rules differ. |
@@ -161,7 +176,7 @@ These should stay as regression guards, not as distractions:
 | `BonusSelfMaster` wall-death parity is fixed. | Source update checks wall death before body collision invincibility; runtime now keeps wall death unmasked by `invincible`. `tests/test_source_env.py -k "self_master and wall"` and `tests/test_vector_multiplayer_env.py -k "self_master and wall"` pass. | Keep this as a regression guard while stack/death interactions broaden. |
 | `BonusAllColor` multi-target order and overlap precedence are fixed. | Source/public tests prove reverse target event order and older-wins color stack behavior until the older stack expires. | Extend the same source-order/precedence treatment to other multi-target and non-additive stacks where needed. |
 | No-bonus core is strong enough to protect while bonus work proceeds. | `tests/test_vector_runtime.py`; `tests/test_vector_multiplayer_env.py`; `tests/test_source_lifecycle_runner.py`; `tests/test_lifecycle_oracle.py`; focused body/trail/collision/source-env tests. | Broader lifecycle/replay/observation gaps remain, but they should not block fixing source-default bonus crashes. |
-| Source-state visual route is a valid plumbing surface. | `tests/test_curvyzero_source_state_visual_survival_lightzero_env.py`; `tests/test_vector_visual_observation.py`; `tests/test_compare_2p_raw_visual_observation.py`; current raw uint8 source-state access and source-vs-vector raw 64x64 parity work. The `core2p` suite covers 34 source-vs-vector gray64 scenarios with exact `max_abs_diff=0`, `mismatch_pixels=0`, including the four natural bonus spawn/retry/cap fixtures and eight programmatic source-snapshot stress cases. It also has intentional mismatch canaries for missing visible body/bonus geometry. The bonus64 v1 gate covers typed active bonus identity and core status planes for all 12 source-default bonus types. | This proves the model-observation raster from source state for the covered fixtures. Browser/canvas pixel parity is optional later human/debug evidence, not the current blocker. Existing JS reference tooling under `tools/reference_oracle` and `tools/js_reuse_probe` can produce golden source-state snapshots. `source_print_manager_random_call_order_step` remains intentionally outside gray64 because it verifies RNG/event order, not a distinct rendered state. Bonus64 v1 still does not encode `BonusAllColor` color rotation or a post-catch `BonusGameClear` status plane. |
+| Source-state visual route is a valid plumbing surface. | `tests/test_curvyzero_source_state_visual_survival_lightzero_env.py`; `tests/test_vector_visual_observation.py`; `tests/test_compare_2p_raw_visual_observation.py`; current raw uint8 source-state access and source-vs-vector raw 64x64 parity work. The `core2p` suite covers 34 source-vs-vector gray64 scenarios with exact `max_abs_diff=0`, `mismatch_pixels=0`, including the four natural bonus spawn/retry/cap fixtures and eight programmatic source-snapshot stress cases. It also has intentional mismatch canaries for missing visible body/bonus geometry. The bonus64 v1 gate covers typed active bonus identity and core status planes for all 12 source-default bonus types. | This proves the model-observation raster from source state for the covered fixtures. It does not prove trainer wrapper/replay propagation. Browser/canvas pixel parity is optional later human/debug evidence, not the current blocker. Existing JS reference tooling under `tools/reference_oracle` and `tools/js_reuse_probe` can produce golden source-state snapshots. `source_print_manager_random_call_order_step` remains intentionally outside gray64 because it verifies RNG/event order, not a distinct rendered state. Bonus64 v1 still does not encode `BonusAllColor` color rotation or a post-catch `BonusGameClear` status plane. |
 
 ## Execution Checklist
 

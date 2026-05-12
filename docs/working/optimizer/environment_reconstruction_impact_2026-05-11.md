@@ -5,10 +5,16 @@ Date: 2026-05-11
 Status: optimizer working note after reviewing the live Environment docs and
 the current CurvyTron LightZero trainer imports.
 
+Current launcher correction, 2026-05-11 late: Coach canonical CurvyZero
+training uses
+`src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py --mode two-seat-selfplay`.
+The fixed/frozen-opponent source-state stock `train_muzero` path described here
+is controls/profiling evidence only.
+
 ## Plain Answer
 
-The current CurvyTron LightZero training path is not isolated from Environment
-Reconstruction.
+The fixed/frozen-opponent CurvyTron LightZero stock-control/profile path is not
+isolated from Environment Reconstruction.
 
 It uses:
 
@@ -23,7 +29,7 @@ env_variant=source_state_fixed_opponent
 
 So background changes to `VectorMultiplayerEnv` reset, step, terminal
 state, source-state arrays, or source-state visual rendering can affect
-optimizer profiles and coach training runs.
+optimizer profiles and stock-control runs.
 
 ## What This Is Not
 
@@ -34,7 +40,7 @@ source-backed 2P behavior than the old toy/debug paths, and it now has a
 source-state visual LightZero route proof, but the Optimizer should still report
 the exact runtime surface instead of claiming broad game fidelity. Known limits:
 
-- fixed-opponent single-ego for the current LightZero trainer;
+- fixed-opponent single-ego for the stock-control LightZero trainer;
 - not two-seat current-policy self-play;
 - not browser/canvas pixel fidelity;
 - natural source-default bonus spawn is enabled in the current source-state

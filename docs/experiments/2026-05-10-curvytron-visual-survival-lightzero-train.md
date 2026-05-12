@@ -1,5 +1,11 @@
 # CurvyTron Visual Survival LightZero Train - 2026-05-10
 
+Historical note, updated 2026-05-12: this experiment log preserves old commands,
+including references to the deleted
+`lightzero_curvytron_two_seat_train_smoke.py` wrapper. Do not run those commands
+directly. Translate them to the canonical launcher:
+`src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py --mode two-seat-selfplay`.
+
 Purpose: first real LightZero `train_muzero` run for CurvyTron stacked
 debug-visual survival. This is a debug-fidelity training plumbing run, not a
 source-fidelity visual CurvyTron or policy-quality claim.

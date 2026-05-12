@@ -55,6 +55,26 @@ from curvyzero.env.vector_visual_observation import (
 )
 from curvyzero.env.vector_visual_observation import rgb_canvas_like_to_gray64
 from curvyzero.env.vector_visual_observation import render_source_state_rgb_canvas_like
+
+try:
+    from curvyzero.env.vector_visual_observation import (
+        TRAIL_RENDER_MODE_BODY_CIRCLES_FAST,
+    )
+    from curvyzero.env.vector_visual_observation import (
+        TRAIL_RENDER_MODE_BROWSER_LINES,
+    )
+    from curvyzero.env.vector_visual_observation import TRAIL_RENDER_MODE_ORDER
+except ImportError:  # Renderer trail-mode API may land in a sibling patch.
+    SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES = "browser_lines"
+    SOURCE_STATE_TRAIL_RENDER_MODE_BODY_CIRCLES_FAST = "body_circles_fast"
+    SOURCE_STATE_SUPPORTED_TRAIL_RENDER_MODES = (
+        SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES,
+        SOURCE_STATE_TRAIL_RENDER_MODE_BODY_CIRCLES_FAST,
+    )
+else:
+    SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES = TRAIL_RENDER_MODE_BROWSER_LINES
+    SOURCE_STATE_TRAIL_RENDER_MODE_BODY_CIRCLES_FAST = TRAIL_RENDER_MODE_BODY_CIRCLES_FAST
+    SOURCE_STATE_SUPPORTED_TRAIL_RENDER_MODES = TRAIL_RENDER_MODE_ORDER
 from curvyzero.training.curvyzero_debug_visual_lightzero_smoke import (
     LocalDebugVisualLightZeroTimestep,
 )
@@ -140,17 +160,30 @@ STACKED_SOURCE_STATE_GRAY64_SHAPE = (4, 64, 64)
 SOURCE_STATE_CANVAS_LIKE_RAW64_SHAPE = (64, 64, 3)
 SOURCE_STATE_CANVAS_LIKE_RAW64_DTYPE = "uint8"
 SOURCE_STATE_CANVAS_LIKE_RAW64_VALUE_RANGE = (0, 255)
+SOURCE_STATE_DEFAULT_TRAIL_RENDER_MODE = SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES
+SOURCE_STATE_BROWSER_TRAIL_SEMANTICS = "persistent_background_canvas_round_line_caps"
+SOURCE_STATE_BROWSER_CLIENT_TRAIL_POINT_CAVEAT = (
+    "vector/source snapshots expose persisted body points, not all client "
+    "position-event trail points"
+)
+SOURCE_STATE_BROWSER_PIXEL_FIDELITY_CLAIM = "not_validated_against_browser_canvas"
 SOURCE_STATE_CANVAS_LIKE_RAW64_SCHEMA_HASH = stable_contract_hash(
     {
         "schema_id": SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID,
         "renderer_impl_id": SOURCE_STATE_RGB_CANVAS_LIKE_RENDERER_IMPL_ID,
+        "default_trail_render_mode": SOURCE_STATE_DEFAULT_TRAIL_RENDER_MODE,
+        "supported_trail_render_modes": list(SOURCE_STATE_SUPPORTED_TRAIL_RENDER_MODES),
         "shape": list(SOURCE_STATE_CANVAS_LIKE_RAW64_SHAPE),
         "dtype": SOURCE_STATE_CANVAS_LIKE_RAW64_DTYPE,
         "range": list(SOURCE_STATE_CANVAS_LIKE_RAW64_VALUE_RANGE),
         "frame_size": 64,
-        "source": "render_source_state_rgb_canvas_like(frame_size=64)",
+        "source": (
+            "render_source_state_rgb_canvas_like("
+            "frame_size=64, trail_render_mode='browser_lines')"
+        ),
         "truth_level": SOURCE_STATE_RGB_CANVAS_LIKE_TRUTH_LEVEL,
         "browser_pixel_fidelity": False,
+        "browser_pixel_fidelity_claim": SOURCE_STATE_BROWSER_PIXEL_FIDELITY_CLAIM,
     }
 )
 SOURCE_STATE_CANVAS_LIKE_GRAY64_SCHEMA_ID = SOURCE_STATE_CANVAS_GRAY64_SCHEMA_ID
@@ -246,6 +279,8 @@ STACKED_SOURCE_STATE_GRAY64_SCHEMA_HASH = stable_contract_hash(
         "single_frame_schema_hash": SOURCE_STATE_CANVAS_LIKE_GRAY64_SCHEMA_HASH,
         "raw_observation_schema_id": SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID,
         "raw_observation_schema_hash": SOURCE_STATE_CANVAS_LIKE_RAW64_SCHEMA_HASH,
+        "default_trail_render_mode": SOURCE_STATE_DEFAULT_TRAIL_RENDER_MODE,
+        "supported_trail_render_modes": list(SOURCE_STATE_SUPPORTED_TRAIL_RENDER_MODES),
         "shape": list(STACKED_SOURCE_STATE_GRAY64_SHAPE),
         "dtype": SOURCE_STATE_CANVAS_GRAY64_NORMALIZED_DTYPE,
         "range": list(SOURCE_STATE_CANVAS_GRAY64_NORMALIZED_VALUE_RANGE),
@@ -286,6 +321,9 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         "disable_death_for_profile": False,
         "control_stochasticity_schema_id": CONTROL_STOCHASTICITY_SCHEMA_ID,
         "reward_variant": REWARD_VARIANT_SPARSE_OUTCOME,
+        "source_state_trail_render_mode": SOURCE_STATE_DEFAULT_TRAIL_RENDER_MODE,
+        "default_trail_render_mode": SOURCE_STATE_DEFAULT_TRAIL_RENDER_MODE,
+        "supported_trail_render_modes": SOURCE_STATE_SUPPORTED_TRAIL_RENDER_MODES,
         "policy_action_repeat_min": DEFAULT_POLICY_ACTION_REPEAT_MIN,
         "policy_action_repeat_max": DEFAULT_POLICY_ACTION_REPEAT_MAX,
         "policy_action_repeat_extra_probability": (
@@ -311,6 +349,13 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         self._decision_ms = float(_cfg_get(cfg, "decision_ms", DEFAULT_DECISION_MS))
         self._max_ticks = int(
             _cfg_get(cfg, "max_ticks", _cfg_get(cfg, "source_max_steps", DEFAULT_MAX_TICKS))
+        )
+        self._source_state_trail_render_mode = _validate_trail_render_mode(
+            _cfg_get(
+                cfg,
+                "source_state_trail_render_mode",
+                SOURCE_STATE_DEFAULT_TRAIL_RENDER_MODE,
+            )
         )
         disable_death_for_profile = bool(_cfg_get(cfg, "disable_death_for_profile", False))
         configured_death_mode = str(
@@ -613,6 +658,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             row=0,
             out=self._raw_frame,
             frame_size=64,
+            trail_render_mode=self._source_state_trail_render_mode,
         )
         gray64 = rgb_canvas_like_to_gray64(
             self._raw_frame,
@@ -898,7 +944,10 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             ],
             "raw_observation_dtype": "uint8",
             "raw_observation_color_space": "RGB",
-            "raw_observation_source": "render_source_state_rgb_canvas_like(frame_size=64)",
+            "raw_observation_source": (
+                "render_source_state_rgb_canvas_like("
+                f"frame_size=64, trail_render_mode={self._source_state_trail_render_mode!r})"
+            ),
             "player_perspective_schema_id": None,
             "renderer_impl_id": SOURCE_STATE_CANVAS_LIKE_GRAY64_RENDERER_IMPL_ID,
             "raw_renderer_impl_id": SOURCE_STATE_RGB_CANVAS_LIKE_RENDERER_IMPL_ID,
@@ -910,8 +959,16 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             "visual_source_state_backed": SOURCE_STATE_CANVAS_GRAY64_SOURCE_STATE_BACKED,
             "debug_fidelity_only": False,
             "browser_pixel_fidelity": SOURCE_STATE_CANVAS_GRAY64_BROWSER_PIXEL_FIDELITY,
+            "browser_pixel_fidelity_claim": SOURCE_STATE_BROWSER_PIXEL_FIDELITY_CLAIM,
             "uses_ale": SOURCE_STATE_CANVAS_GRAY64_USES_ALE,
             "ale_usage": "none",
+            "default_trail_render_mode": SOURCE_STATE_DEFAULT_TRAIL_RENDER_MODE,
+            "supported_trail_render_modes": list(SOURCE_STATE_SUPPORTED_TRAIL_RENDER_MODES),
+            "browser_trail_semantics": SOURCE_STATE_BROWSER_TRAIL_SEMANTICS,
+            "browser_client_trail_point_caveat": (
+                SOURCE_STATE_BROWSER_CLIENT_TRAIL_POINT_CAVEAT
+            ),
+            **_trail_render_metadata(self._source_state_trail_render_mode),
             "shape": list(STACKED_SOURCE_STATE_GRAY64_SHAPE),
             "dtype": SOURCE_STATE_CANVAS_GRAY64_NORMALIZED_DTYPE,
             "range": list(SOURCE_STATE_CANVAS_GRAY64_NORMALIZED_VALUE_RANGE),
@@ -1135,6 +1192,20 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             "visual_surface": info.get("visual_surface"),
             "visual_truth_level": info.get("visual_truth_level"),
             "visual_source_state_backed": info.get("visual_source_state_backed"),
+            "default_trail_render_mode": info.get("default_trail_render_mode"),
+            "supported_trail_render_modes": info.get("supported_trail_render_modes"),
+            "trail_render_mode": info.get("trail_render_mode"),
+            "trail_renderer_kind": info.get("trail_renderer_kind"),
+            "trail_renderer_truth_level": info.get("trail_renderer_truth_level"),
+            "trail_renderer_is_approximation": info.get(
+                "trail_renderer_is_approximation"
+            ),
+            "browser_style_trail_renderer": info.get("browser_style_trail_renderer"),
+            "browser_trail_semantics": info.get("browser_trail_semantics"),
+            "browser_client_trail_point_caveat": info.get(
+                "browser_client_trail_point_caveat"
+            ),
+            "browser_pixel_fidelity_claim": info.get("browser_pixel_fidelity_claim"),
             "source_fidelity_claim": info.get("source_fidelity_claim"),
             "debug_fidelity_only": info.get("debug_fidelity_only"),
             "uses_ale": info.get("uses_ale"),
@@ -1519,6 +1590,37 @@ def _copy_lightzero_observation(observation: dict[str, Any]) -> dict[str, Any]:
     return copied
 
 
+def _trail_render_metadata(trail_render_mode: str) -> dict[str, Any]:
+    if trail_render_mode == SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES:
+        return {
+            "trail_render_mode": trail_render_mode,
+            "trail_renderer_kind": "connected_rounded_lines",
+            "trail_renderer_truth_level": (
+                "source_state_browser_style_lines_non_pixel_parity"
+            ),
+            "trail_renderer_is_approximation": False,
+            "browser_style_trail_renderer": True,
+        }
+    if trail_render_mode == SOURCE_STATE_TRAIL_RENDER_MODE_BODY_CIRCLES_FAST:
+        return {
+            "trail_render_mode": trail_render_mode,
+            "trail_renderer_kind": "circle_per_body",
+            "trail_renderer_truth_level": "source_state_fast_body_circle_approximation",
+            "trail_renderer_is_approximation": True,
+            "browser_style_trail_renderer": False,
+        }
+    raise ValueError(
+        "source_state_trail_render_mode must be one of "
+        f"{SOURCE_STATE_SUPPORTED_TRAIL_RENDER_MODES!r}; got {trail_render_mode!r}"
+    )
+
+
+def _validate_trail_render_mode(value: Any) -> str:
+    trail_render_mode = str(value)
+    _trail_render_metadata(trail_render_mode)
+    return trail_render_mode
+
+
 def _cfg_get(cfg: Any, key: str, default: Any) -> Any:
     if isinstance(cfg, dict):
         return cfg.get(key, default)
@@ -1568,6 +1670,10 @@ __all__ = [
     "SOURCE_STATE_CANVAS_LIKE_GRAY64_SURFACE",
     "SOURCE_STATE_CANVAS_LIKE_RAW64_SCHEMA_HASH",
     "SOURCE_STATE_CANVAS_LIKE_RAW64_SHAPE",
+    "SOURCE_STATE_DEFAULT_TRAIL_RENDER_MODE",
+    "SOURCE_STATE_SUPPORTED_TRAIL_RENDER_MODES",
+    "SOURCE_STATE_TRAIL_RENDER_MODE_BODY_CIRCLES_FAST",
+    "SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES",
     "STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID",
     "STACKED_SOURCE_STATE_GRAY64_SHAPE",
 ]

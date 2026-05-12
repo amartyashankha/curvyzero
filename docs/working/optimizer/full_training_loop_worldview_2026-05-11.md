@@ -11,13 +11,13 @@ Related replication-control backlog:
 
 ## One-Line Goal
 
-Current baseline: stock LightZero `train_muzero` on
-`source_state_fixed_opponent`, source-state `[4,64,64]`, fixed/frozen opponent,
-and the repo trainer
-`src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py`.
-This is not true current-policy two-seat self-play. Future goal: if the stock
-loop is too slow, test coarse synchronous fanout of searched trajectory
-collection before designing any continuous actor/replay service.
+Current Coach baseline:
+`src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py --mode two-seat-selfplay`.
+Stock LightZero `train_muzero` on `source_state_fixed_opponent`, source-state
+`[4,64,64]`, and fixed/frozen opponents is controls/profiling only. Future
+goal: if the stock/control loop is too slow, test coarse synchronous fanout of
+searched trajectory collection before designing any continuous actor/replay
+service.
 
 Plain English: we need actors to play games, search to choose good actions,
 replay to store those games, a learner to update the model, checkpoints to move

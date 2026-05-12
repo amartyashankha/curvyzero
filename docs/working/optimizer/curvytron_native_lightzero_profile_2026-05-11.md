@@ -6,10 +6,23 @@ Status: optimizer evidence note. This is about speed/setup, not learning
 quality. Timers below are debug profiler timers and can be nested; do not add
 phase buckets together as exclusive wall time.
 
+Current launcher truth, added after this profile was written: Coach canonical
+CurvyZero training uses
+`src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py --mode two-seat-selfplay`.
+The fixed/frozen-opponent stock `train_muzero` path described here is a
+controls/profiling lane only. Stock LightZero in-loop eval is separate from
+CurvyZero checkpoint eval/inspection/GIF.
+
+Current render truth, 2026-05-12: the canonical two-seat lane has its own
+render-mode knob. Default `browser_lines` now goes through source-state
+RGB-to-gray rendering before the `[B,2,4,64,64]` stack. `body_circles_fast` is
+an explicit comparison mode. Any profiles below this note that predate the
+change may have measured a different visual stack.
+
 ## Plain Read
 
-The current CurvyTron native LightZero path is the coach-facing trainer path to
-use for CurvyTron work unless a new decision replaces it:
+This CurvyTron native LightZero path is the fixed/frozen-opponent
+stock-control/profile path:
 
 ```text
 source_state_fixed_opponent
@@ -18,8 +31,9 @@ source_state_fixed_opponent
 -> collector/search, replay, learner, evaluator, checkpoint hooks
 ```
 
-It is still fixed-opponent single-ego training, not simultaneous current-policy
-self-play. The env metadata says that explicitly.
+It is fixed-opponent single-ego stock training for controls/profiles, not the
+Coach main lane and not simultaneous current-policy self-play. The env metadata
+says that explicitly.
 
 `source_state_turn_commit` should be read as stock LightZero plumbing
 smoke/profile only,
@@ -232,9 +246,10 @@ c32:
 ```
 
 Plain read: the full profile path is now being exercised. This is still not a
-learning proof and it is still fixed-opponent single-ego training, but it is the
-right loop for optimizer timing: source-state visual env, LightZero collector,
-MCTS/search, replay, learner, evaluator, and sparse checkpoint hooks.
+learning proof and it is still fixed-opponent single-ego stock control, but it
+is the right loop for stock-control optimizer timing: source-state visual env,
+LightZero collector, MCTS/search, replay, learner, evaluator, and sparse
+checkpoint hooks.
 
 Matched base-env-manager timing:
 
@@ -697,7 +712,7 @@ Near term:
 - Keep background eval/GIF off in speed profiles, and keep stock LightZero
   in-loop eval sparse or skipped for profile mode.
 - Keep `save_ckpt_after_iter` sparse for profiling and long runs.
-- For Coach-facing native CurvyTron runs, use the subprocess manager,
+- For fixed/frozen-opponent stock-control runs, use the subprocess manager,
   `collector_env_num=128`, `n_episode=128` for throughput, and `64/64` as the
   fallback if capacity or stability says so.
 - Use `num_simulations=50` for serious MuZero-style proof lanes and `16` for
@@ -722,9 +737,9 @@ Bigger picture:
 - Do not change the MuZero algorithm to get speed. Lowering simulations is a
   profiling/quality knob, not a silent optimization.
 
-## Coach-Facing Defaults
+## Archived Stock-Control Defaults
 
-For current native source-state CurvyTron profiles:
+For native source-state CurvyTron fixed/frozen-opponent profiles:
 
 ```bash
 uv run --extra modal modal run \

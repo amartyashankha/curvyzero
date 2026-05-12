@@ -23,7 +23,9 @@ Implementation guardrail: the main CurvyTron learning gate is actual
 current-policy self-play. Fixed-opponent, turn-commit, and centralized
 joint-action stock LightZero runs are controls/profile paths unless they also
 prove honest two-player current-policy self-play. The active full self-play
-lane is the two-seat adapter path.
+lane is the canonical Coach launcher
+`src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py`
+with `--mode two-seat-selfplay`.
 
 Eval guardrail: survival progress is measured from episode length. Eval may
 need `model_reward_variant` only to reconstruct a checkpoint's LightZero
@@ -31,7 +33,33 @@ support/model shape; that is not the eval score.
 
 ## Current State
 
-Updated 2026-05-11 19:12 EDT.
+Updated 2026-05-12 00:05 EDT.
+
+- Canonical CurvyTron Coach launcher is now:
+  `src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py`
+  with `--mode two-seat-selfplay`.
+- Default Coach path is current-policy two-seat self-play on GPU L4/T4. One
+  live LightZero MuZero policy chooses both players' actions from the same
+  pre-step state; the CurvyTron env advances once with the joint action; learner
+  updates mutate that same policy for later collection.
+- The older `lightzero_curvytron_two_seat_train_smoke.py` Modal wrapper has
+  been deleted. Historical commands must be translated to the canonical
+  launcher before use.
+- Tiny canonical wrapup smoke passed:
+  `curvytron-canonical-two-seat-wrapup-smoke-20260512` /
+  `wrapup-smoke`. It ran on Modal GPU, used `cuda:0`, collected both seats,
+  changed model weights, wrote `iteration_0` and `iteration_1`, and wrote
+  progress/summary/checkpoint artifacts.
+- Canonical observability smoke passed:
+  `curvytron-canonical-two-seat-observability-smoke-20260512` / `obs-smoke`.
+  It kept stock LightZero in-training eval off, spawned CurvyZero checkpoint
+  eval/inspection and GIF jobs, completed 2 eval/inspection jobs and 2 GIF jobs,
+  and loaded two-seat checkpoints by inferring the 601-wide support heads.
+- Background checkpoint eval, inspection, and GIF spawning are on by default.
+  The loader now infers the checkpoint model support-head size before loading,
+  so two-seat checkpoints with the LightZero Atari-style 601-wide heads can be
+  inspected. The eval is still a fixed-opponent survival read, so use it as
+  observability, not as proof of two-seat self-play strength.
 
 - Pong replication has passed the basic learning-signal gate. Stock-like visual
   LightZero Pong learned to survive longer across several same-run checkpoint
@@ -49,9 +77,8 @@ Updated 2026-05-11 19:12 EDT.
   reward. Stock LightZero stores both scalar steps as normal GameSegment
   transitions, so value targets may give player 0 states credit for player 1
   survival. Treat this as a reward-credit risk.
-- The old custom two-seat trainer is now diagnostic only. Do not scale it as
-  the main answer unless the next explicit task is to design/prove the missing
-  joint-action collection semantics.
+- The old separate two-seat Modal wrapper has been deleted. The canonical
+  launcher above owns the two-seat self-play entrypoint.
 - Two-seat repeat/dropout plumbing smoke passed on Modal:
   `curvytron-two-seat-repeat-smoke-s6101-20260511` /
   `repeat-smoke-s6101`. It ran on GPU, used one live LightZero policy for both
@@ -118,8 +145,8 @@ Updated 2026-05-11 19:12 EDT.
   observability. It was only a launch/artifact canary, not a learning run.
 - Eval-cadence fix: `lightzero_eval_freq=0` now means "skip stock LightZero
   eval during the training run" by setting the internal eval interval beyond
-  `max_train_iter`. Background checkpoint survival eval and background GIFs
-  default off for long runs.
+  `max_train_iter`. Background CurvyZero checkpoint survival eval, inspection,
+  and GIF spawning are separate from stock LightZero eval and are on by default.
 - Eval harness fix: standalone CurvyTron survival eval now passes the new
   `lightzero_eval_freq` argument into the shared config builder. The earlier
   `steps=0` eval rows in the `waitlong` runs were setup failures, not survival
@@ -220,7 +247,10 @@ and not a competitive self-play objective. Do not apply two-seat
 winner/loser-return shaping to this wrapper unless it grows an honest per-player
 target surface.
 
-Related cleanup ref: [native reuse critique](training/curvytron_lightzero_native_reuse_critique_2026-05-10.md).
+Current launcher ref:
+[canonical two-seat handoff](training/curvytron_canonical_two_seat_handoff_2026-05-12.md).
+Older cleanup notes that predate the canonical launcher were moved to
+`training/archive_2026-05-12_two_seat_purge/`.
 
 Reward-shaping note: run the next comparison as explicit trainer reward
 variants, not as a single blended claim. Test both `sparse_outcome` and
@@ -259,11 +289,13 @@ Current launched two-seat run refs:
 | `curvytron-two-seat-selfplay-live14-repeat-observable-20260511` | `live14-repeat-progress1` | `fc-01KRCM72SP02E32QNTQK033B4A` | repeat max `3`, extra probability ramps to `0.10` over `1000` iterations |
 | `curvytron-two-seat-selfplay-live14-strong-sim8-20260511` | `live14-strong-sim8-progress1` | `fc-01KRCMQDT933KQXQ7RB1XCFFVZ` | stronger search/update run, temp `1.5`, epsilon `0.25`, sims `8`, updates `8` |
 
-Live14 shared knobs for `clean`/`explore`/`repeat`: GPU L4/T4,
+Historical live14 shared knobs for `clean`/`explore`/`repeat`: GPU L4/T4,
 `batch_size=16`, `collect_steps_per_iteration=64`,
 `updates_per_iteration=4`, `num_simulations=4`, accumulated replay,
-`learner_sample_size=128`, `max_ticks=16384`, checkpoint every `500`
-iterations, progress every iteration, initial checkpoint saved.
+`learner_sample_size=128`, `max_ticks=16384`,
+`checkpoint_every_iterations=500` as an explicit run override, progress every
+iteration, initial checkpoint saved. Current canonical checkpoint cadence
+defaults to `100` iterations.
 
 Live14 `strong` uses the same main shape but raises search/update pressure:
 `num_simulations=8`, `updates_per_iteration=8`, and
@@ -367,14 +399,10 @@ Validation:
 ## Eval Cadence
 
 - Current default for long CurvyTron training runs: stock LightZero eval off
-  unless explicitly requested, background checkpoint survival eval off, and no
-  background selfplay GIFs.
-- For overnight runs, prefer checkpointing every `500` to `1000` iterations and
-  run the standalone checkpoint survival eval only on selected checkpoints such
-  as `iteration_0`, sparse milestones, and the latest/best checkpoint.
-- Avoid `background_eval_enabled=true` while the checkpoint eval harness is
-  changing. It schedules survival eval per visible checkpoint through the hook
-  or poller path and can waste time when checkpoint cadence is high.
+  unless explicitly requested; CurvyZero checkpoint eval, inspection, and GIF
+  spawning on; checkpoint cadence `100` iterations by default.
+- If checkpoint cadence is made much faster for debugging, remember that each
+  checkpoint can spawn CurvyZero observability work.
 
 ## Current Gates
 

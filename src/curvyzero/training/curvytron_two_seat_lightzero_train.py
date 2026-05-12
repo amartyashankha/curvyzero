@@ -20,6 +20,7 @@ from typing import Any, Callable, Mapping
 
 import numpy as np
 
+from curvyzero.env import vector_runtime
 from curvyzero.env.vector_multiplayer_env import VectorMultiplayerEnv
 from curvyzero.env.vector_visual_observation import (
     SOURCE_STATE_GRAY64_NORMALIZED_DTYPE,
@@ -29,6 +30,8 @@ from curvyzero.env.vector_visual_observation import (
 )
 from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_SCHEMA_HASH
 from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_SCHEMA_ID
+from curvyzero.env.vector_visual_observation import TRAIL_RENDER_MODE_DEFAULT
+from curvyzero.env.vector_visual_observation import TRAIL_RENDER_MODE_ORDER
 from curvyzero.env.trainer_contract import stable_contract_hash
 from curvyzero.training.curvytron_current_policy_selfplay_smoke import (
     ACTION_COUNT,
@@ -38,6 +41,8 @@ from curvyzero.training.curvytron_current_policy_selfplay_smoke import (
     STACKED_SOURCE_STATE_GRAY64_SHAPE,
     SourceStateGray64Stack4,
     player_perspective_value_map,
+    source_state_gray64_stack4_render_metadata,
+    validate_stack_trail_render_mode,
 )
 from curvyzero.training.curvyzero_stacked_debug_visual_survival_profile import (
     _action_weights,
@@ -91,6 +96,7 @@ REPLAY_SCOPE_CHOICES = (REPLAY_SCOPE_CURRENT_ITERATION, REPLAY_SCOPE_ACCUMULATED
 DEFAULT_ALIVE_REWARD = 1.0
 DEFAULT_DEAD_REWARD = 0.0
 DEFAULT_ENV_MAX_TICKS = 2_000
+DEFAULT_DEATH_MODE = vector_runtime.DEATH_MODE_NORMAL
 DEFAULT_CHECKPOINT_EVERY_ITERATIONS = 100
 DEFAULT_PROGRESS_EVERY_ITERATIONS = 100
 DEFAULT_PROGRESS_COMMIT_EVERY_ITERATIONS = 100
@@ -129,6 +135,7 @@ def run_curvytron_two_seat_lightzero_train_smoke(
     progress_commit_callback: Callable[[], None] | None = None,
     progress_print: bool = True,
     max_ticks: int | None = None,
+    death_mode: str = DEFAULT_DEATH_MODE,
     decision_ms: float = 300.0,
     replay_scope: str = REPLAY_SCOPE_CURRENT_ITERATION,
     learner_sample_size: int | None = None,
@@ -151,6 +158,7 @@ def run_curvytron_two_seat_lightzero_train_smoke(
         DEFAULT_POLICY_ACTION_REPEAT_WARMUP_ITERATIONS
     ),
     observation_noise_std: float = 0.0,
+    trail_render_mode: str = TRAIL_RENDER_MODE_DEFAULT,
     use_cuda: bool = False,
     require_installed_lightzero: bool = True,
 ) -> dict[str, Any]:
@@ -201,6 +209,12 @@ def run_curvytron_two_seat_lightzero_train_smoke(
     resolved_max_ticks = DEFAULT_ENV_MAX_TICKS if max_ticks is None else int(max_ticks)
     if resolved_max_ticks < 0:
         raise ValueError("max_ticks must be >= 0")
+    resolved_death_mode = str(death_mode)
+    if resolved_death_mode not in vector_runtime.DEATH_MODES:
+        raise ValueError(
+            f"death_mode must be one of {tuple(vector_runtime.DEATH_MODES)!r}; "
+            f"got {death_mode!r}"
+        )
     resolved_action_noop_probability = float(action_noop_probability)
     if not 0.0 <= resolved_action_noop_probability <= 1.0:
         raise ValueError("action_noop_probability must be in [0, 1]")
@@ -224,6 +238,7 @@ def run_curvytron_two_seat_lightzero_train_smoke(
     resolved_observation_noise_std = float(observation_noise_std)
     if resolved_observation_noise_std < 0.0:
         raise ValueError("observation_noise_std must be >= 0")
+    resolved_trail_render_mode = validate_stack_trail_render_mode(trail_render_mode)
     resolved_alive_reward = float(alive_reward)
     resolved_dead_reward = float(dead_reward)
     if action_selection_mode not in ACTION_SELECTION_MODE_CHOICES:
@@ -295,11 +310,13 @@ def run_curvytron_two_seat_lightzero_train_smoke(
                     resolved_policy_action_repeat_warmup_iterations
                 ),
                 observation_noise_std=resolved_observation_noise_std,
+                trail_render_mode=resolved_trail_render_mode,
                 use_cuda=use_cuda,
                 elapsed_sec=time.perf_counter() - run_started,
                 checkpoint_every_iterations=resolved_checkpoint_every_iterations,
                 save_initial_checkpoint=save_initial_checkpoint,
                 env_max_ticks=resolved_max_ticks,
+                death_mode=resolved_death_mode,
                 policy_context=policy_context,
                 problems=problems,
                 records=[],
@@ -347,6 +364,8 @@ def run_curvytron_two_seat_lightzero_train_smoke(
                     "action_selection_mode": action_selection_mode,
                     "collect_temperature": float(resolved_collect_temperature),
                     "collect_epsilon": float(resolved_collect_epsilon),
+                    "death_mode": resolved_death_mode,
+                    "trail_render_mode": resolved_trail_render_mode,
                     "policy_action_repeat_min": int(resolved_policy_action_repeat_min),
                     "policy_action_repeat_max": int(resolved_policy_action_repeat_max),
                     "policy_action_repeat_extra_probability": float(
@@ -377,9 +396,11 @@ def run_curvytron_two_seat_lightzero_train_smoke(
                 "progress_every_iterations": int(resolved_progress_every_iterations),
                 "requested_max_ticks": None if max_ticks is None else int(max_ticks),
                 "env_max_ticks": int(resolved_max_ticks),
+                "death_mode": resolved_death_mode,
                 "action_selection_mode": action_selection_mode,
                 "collect_temperature": float(resolved_collect_temperature),
                 "collect_epsilon": float(resolved_collect_epsilon),
+                "trail_render_mode": resolved_trail_render_mode,
             },
             print_line=progress_print,
         )
@@ -392,8 +413,13 @@ def run_curvytron_two_seat_lightzero_train_smoke(
         seed=seed,
         decision_ms=decision_ms,
         max_ticks=resolved_max_ticks,
+        death_mode=resolved_death_mode,
     )
-    visual_stack = SourceStateGray64Stack4(batch_size=batch_size, player_count=2)
+    visual_stack = SourceStateGray64Stack4(
+        batch_size=batch_size,
+        player_count=2,
+        trail_render_mode=resolved_trail_render_mode,
+    )
 
     # The run seed initializes the RNG, but each row reset gets its own generated
     # reset seed. This keeps training starts varied while remaining reproducible.
@@ -721,43 +747,45 @@ def run_curvytron_two_seat_lightzero_train_smoke(
             num_simulations=num_simulations,
             learner_updates=learner_updates,
             allow_optimizer_step=allow_optimizer_step,
-                replay_scope=replay_scope,
-                learner_sample_size=resolved_learner_sample_size,
-                max_replay_rows=resolved_max_replay_rows,
-                record_log_limit=int(record_log_limit),
-                replay_row_log_limit=int(replay_row_log_limit),
-                alive_reward=resolved_alive_reward,
-                dead_reward=resolved_dead_reward,
-                action_selection_mode=action_selection_mode,
-                collect_temperature=resolved_collect_temperature,
-                collect_epsilon=resolved_collect_epsilon,
-                action_noop_probability=resolved_action_noop_probability,
-                action_noop_warmup_iterations=(
-                    resolved_action_noop_warmup_iterations
-                ),
-                policy_action_repeat_min=resolved_policy_action_repeat_min,
-                policy_action_repeat_max=resolved_policy_action_repeat_max,
-                policy_action_repeat_extra_probability=(
-                    resolved_policy_action_repeat_extra_probability
-                ),
-                policy_action_repeat_warmup_iterations=(
-                    resolved_policy_action_repeat_warmup_iterations
-                ),
-                observation_noise_std=resolved_observation_noise_std,
-                use_cuda=use_cuda,
-                elapsed_sec=time.perf_counter() - run_started,
-                checkpoint_every_iterations=resolved_checkpoint_every_iterations,
-                save_initial_checkpoint=save_initial_checkpoint,
-                env_max_ticks=resolved_max_ticks,
-                policy_context=policy_context,
-                problems=problems,
-                records=records,
-                replay_rows=replay_rows_for_output,
-                learner_replay_rows=final_learner_replay_rows,
-                total_steps_collected=total_steps_collected,
-                total_replay_rows_collected=total_replay_rows_collected,
-                iteration_summaries=iteration_summaries,
-                learner_forwards=learner_forwards,
+            replay_scope=replay_scope,
+            learner_sample_size=resolved_learner_sample_size,
+            max_replay_rows=resolved_max_replay_rows,
+            record_log_limit=int(record_log_limit),
+            replay_row_log_limit=int(replay_row_log_limit),
+            alive_reward=resolved_alive_reward,
+            dead_reward=resolved_dead_reward,
+            action_selection_mode=action_selection_mode,
+            collect_temperature=resolved_collect_temperature,
+            collect_epsilon=resolved_collect_epsilon,
+            action_noop_probability=resolved_action_noop_probability,
+            action_noop_warmup_iterations=(
+                resolved_action_noop_warmup_iterations
+            ),
+            policy_action_repeat_min=resolved_policy_action_repeat_min,
+            policy_action_repeat_max=resolved_policy_action_repeat_max,
+            policy_action_repeat_extra_probability=(
+                resolved_policy_action_repeat_extra_probability
+            ),
+            policy_action_repeat_warmup_iterations=(
+                resolved_policy_action_repeat_warmup_iterations
+            ),
+            observation_noise_std=resolved_observation_noise_std,
+            trail_render_mode=resolved_trail_render_mode,
+            use_cuda=use_cuda,
+            elapsed_sec=time.perf_counter() - run_started,
+            checkpoint_every_iterations=resolved_checkpoint_every_iterations,
+            save_initial_checkpoint=save_initial_checkpoint,
+            env_max_ticks=resolved_max_ticks,
+            death_mode=resolved_death_mode,
+            policy_context=policy_context,
+            problems=problems,
+            records=records,
+            replay_rows=replay_rows_for_output,
+            learner_replay_rows=final_learner_replay_rows,
+            total_steps_collected=total_steps_collected,
+            total_replay_rows_collected=total_replay_rows_collected,
+            iteration_summaries=iteration_summaries,
+            learner_forwards=learner_forwards,
             learner_forward=learner_forward,
             final_observation_shape=list(observation.shape),
             action_counts=action_counts,
@@ -793,6 +821,10 @@ def compact_curvytron_two_seat_lightzero_train_smoke_summary(
                 "env_max_ticks": inputs.get("env_max_ticks"),
                 "replay_scope": inputs.get("replay_scope"),
                 "learner_sample_size": inputs.get("learner_sample_size"),
+                "death_mode": inputs.get("death_mode"),
+                "death_suppression_for_profile": inputs.get(
+                    "death_suppression_for_profile"
+                ),
                 "action_noop_probability": inputs.get("action_noop_probability"),
                 "action_noop_warmup_iterations": inputs.get(
                     "action_noop_warmup_iterations"
@@ -805,6 +837,7 @@ def compact_curvytron_two_seat_lightzero_train_smoke_summary(
                 "policy_action_repeat_warmup_iterations": inputs.get(
                     "policy_action_repeat_warmup_iterations"
                 ),
+                "trail_render_mode": inputs.get("trail_render_mode"),
                 "use_cuda": inputs.get("use_cuda"),
                 "checkpoint_every_iterations": inputs.get(
                     "checkpoint_every_iterations"
@@ -818,6 +851,13 @@ def compact_curvytron_two_seat_lightzero_train_smoke_summary(
             "steps_survived": result.get("steps_survived"),
             "collect_timing_summary": result.get("collect_timing_summary"),
             "episode_duration_summary": result.get("episode_duration_summary"),
+            "surface": {
+                "render": result.get("surface", {}).get("render"),
+                "stack_schema_id": result.get("surface", {}).get("stack_schema_id"),
+                "player_perspective_schema_id": result.get("surface", {}).get(
+                    "player_perspective_schema_id"
+                ),
+            },
             "iteration_count": len(result.get("iterations", []))
             if isinstance(result.get("iterations"), list)
             else None,
@@ -910,11 +950,13 @@ def _result_payload(
     policy_action_repeat_extra_probability: float,
     policy_action_repeat_warmup_iterations: int,
     observation_noise_std: float,
+    trail_render_mode: str,
     use_cuda: bool,
     elapsed_sec: float,
     checkpoint_every_iterations: int,
     save_initial_checkpoint: bool,
     env_max_ticks: int | None = None,
+    death_mode: str = DEFAULT_DEATH_MODE,
     policy_context: Mapping[str, Any],
     problems: list[str],
     records: list[dict[str, Any]],
@@ -930,6 +972,7 @@ def _result_payload(
     per_player_action_counts: dict[str, Counter[int]],
     checkpoint_records: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    render_metadata = source_state_gray64_stack4_render_metadata(trail_render_mode)
     resolved_learner_replay_rows = (
         replay_rows if learner_replay_rows is None else learner_replay_rows
     )
@@ -1008,6 +1051,15 @@ def _result_payload(
             "initial_reset_seed_policy": "generated_from_env_rng",
             "autoreset_seed_policy": "generated_from_env_rng",
             "env_max_ticks": None if env_max_ticks is None else int(env_max_ticks),
+            "death_mode": death_mode,
+            "death_suppression_for_profile": (
+                death_mode == vector_runtime.DEATH_MODE_PROFILE_NO_DEATH
+            ),
+            "death_suppression_claim": (
+                "profile_only_not_source_fidelity"
+                if death_mode == vector_runtime.DEATH_MODE_PROFILE_NO_DEATH
+                else None
+            ),
             "max_ticks_default_policy": (
                 "DEFAULT_ENV_MAX_TICKS when --max-ticks is omitted; independent "
                 "from collect_steps_per_iteration"
@@ -1036,6 +1088,11 @@ def _result_payload(
                 "search on that physical env step"
             ),
             "observation_noise_std": float(observation_noise_std),
+            "trail_render_mode": render_metadata["trail_render_mode"],
+            "default_trail_render_mode": render_metadata["default_trail_render_mode"],
+            "supported_trail_render_modes": render_metadata[
+                "supported_trail_render_modes"
+            ],
             "use_cuda": bool(use_cuda),
             "checkpoint_every_iterations": int(checkpoint_every_iterations),
             "save_initial_checkpoint": bool(save_initial_checkpoint),
@@ -1048,11 +1105,15 @@ def _result_payload(
             "value_range": list(SOURCE_STATE_GRAY64_NORMALIZED_VALUE_RANGE),
             "single_frame_schema_id": SOURCE_STATE_GRAY64_SCHEMA_ID,
             "single_frame_schema_hash": SOURCE_STATE_GRAY64_SCHEMA_HASH,
+            "render": render_metadata,
             "stack_schema_id": STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID,
             "player_perspective_schema_id": PLAYER_PERSPECTIVE_SCHEMA_ID,
             "player_perspective": {
                 "shape_preserved": list(STACKED_SOURCE_STATE_GRAY64_SHAPE),
-                "semantics": "controlled player pixels become self; all other player pixels become other",
+                "semantics": (
+                    "controlled player color becomes self grayscale before RGB-to-gray; "
+                    "other visible player colors become other grayscale"
+                ),
                 "value_map": player_perspective_value_map(),
             },
             "action_space_size": ACTION_COUNT,
@@ -1105,11 +1166,14 @@ def _result_payload(
         "learner_forward": _strip_large_arrays(learner_forward),
         "blocker": LEARN_BATCH_BLOCKER,
         "next_command": (
-            "uv run python -m curvyzero.training.curvytron_two_seat_lightzero_train_smoke "
-            "--seed 0 --batch-size 1 --outer-iterations 2 "
-            "--collect-steps-per-iteration 4 --updates-per-iteration 1 "
-            "--num-simulations 2 --replay-scope accumulated "
-            "--learner-sample-size 32 --allow-optimizer-step"
+            "uv run --extra modal modal run "
+            "-m curvyzero.infra.modal.lightzero_curvyzero_stacked_debug_visual_survival_train "
+            "--mode two-seat-selfplay --compute gpu-l4-t4 --seed 0 "
+            "--batch-size 1 --outer-iterations 2 --collect-steps-per-iteration 4 "
+            "--updates-per-iteration 1 --num-simulations 2 --replay-scope accumulated "
+            "--learner-sample-size 32 --allow-optimizer-step "
+            f"--two-seat-death-mode {death_mode} "
+            f"--two-seat-trail-render-mode {render_metadata['trail_render_mode']}"
         ),
     }
 
@@ -2645,6 +2709,7 @@ def _refresh_reset_rows_in_visual_stack(
     reset_stack = SourceStateGray64Stack4(
         batch_size=env.batch_size,
         player_count=env.player_count,
+        trail_render_mode=visual_stack.trail_render_mode,
     )
     reset_observation = reset_stack.update(env)
     visual_stack.stack[mask] = reset_observation[mask]
@@ -2842,6 +2907,18 @@ def main() -> None:
         help="Gaussian noise added to policy visual inputs and replay frames, clipped to [0, 1].",
     )
     parser.add_argument(
+        "--trail-render-mode",
+        choices=TRAIL_RENDER_MODE_ORDER,
+        default=TRAIL_RENDER_MODE_DEFAULT,
+        help="Visual stack renderer. browser_lines is the canonical RGB-to-gray path.",
+    )
+    parser.add_argument(
+        "--death-mode",
+        choices=tuple(vector_runtime.DEATH_MODES),
+        default=DEFAULT_DEATH_MODE,
+        help="Use profile_no_death only for optimizer long-survival profiling.",
+    )
+    parser.add_argument(
         "--checkpoint-every-iterations",
         type=int,
         default=DEFAULT_CHECKPOINT_EVERY_ITERATIONS,
@@ -2913,6 +2990,8 @@ def main() -> None:
             args.policy_action_repeat_warmup_iterations
         ),
         observation_noise_std=args.observation_noise_std,
+        trail_render_mode=args.trail_render_mode,
+        death_mode=args.death_mode,
         checkpoint_every_iterations=args.checkpoint_every_iterations,
         save_initial_checkpoint=args.save_initial_checkpoint,
         progress_path=args.progress_path,

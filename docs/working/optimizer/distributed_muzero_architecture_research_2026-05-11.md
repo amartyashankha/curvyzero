@@ -5,6 +5,11 @@ Date: 2026-05-11
 Status: optimizer correction note. This replaces the weaker assumption that the
 main CurvyTron speed path is mostly single-loop micro-optimization.
 
+Current launcher truth, 2026-05-11 late: Coach canonical CurvyZero launcher is
+`src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py --mode two-seat-selfplay`.
+The fixed/frozen-opponent stock `train_muzero` path discussed here is
+controls/profiling evidence, not the Coach main lane.
+
 Related framework comparison and simultaneous-action modeling note:
 `docs/working/optimizer/framework_reassessment_2026-05-11.md`.
 
@@ -13,9 +18,10 @@ Related component checklist for the full training loop:
 
 ## Plain Verdict
 
-The current native CurvyTron LightZero loop is useful as the first
-coach-facing trainer surface, but it is not structurally close to the training
-systems that made AlphaZero/MuZero fast.
+The current native CurvyTron LightZero stock loop is useful as
+fixed/frozen-opponent control/profile evidence, but it is not the Coach
+canonical launcher and is not structurally close to the training systems that
+made AlphaZero/MuZero fast.
 
 Important correction: the current stock `train_muzero` path is synchronous
 inside one trainer container. It collects, pushes to local replay, samples, and
@@ -153,10 +159,11 @@ There are three separate regimes:
    replay age, and checkpoint refresh cadence; do not treat them as blockers.
 ```
 
-The current native LightZero path should be treated as the baseline trainer and
-profile surface. A future distributed actor loop may reuse the same env/config
-surface, but should be designed as actor chunks plus replay/learner/checkpoint
-handoff rather than endless single-process polish.
+The current native stock LightZero path should be treated as a control/profile
+surface. The Coach baseline is the two-seat self-play launcher. A future
+distributed actor loop may reuse the same env/config surface, but should be
+designed as actor chunks plus replay/learner/checkpoint handoff rather than
+endless single-process stock-loop polish.
 
 ## CurvyTron-Specific Issues
 
@@ -165,9 +172,9 @@ handoff rather than endless single-process polish.
   would multiply action space by player count. For `3` actions and `2` players,
   joint action is only `9`, so this may be tractable for 2-player CurvyTron, but
   the semantics must be explicit.
-- The current native trainer is fixed-opponent single-ego, not true
-  current-policy self-play. It is useful because it stays close to the working
-  LightZero/Pong pattern.
+- The current native stock trainer is fixed-opponent single-ego, not true
+  current-policy self-play and not the Coach canonical launcher. It is useful
+  because it stays close to the working LightZero/Pong control pattern.
 - `source_state_turn_commit` is smoke/profile only. Target audit showed fake
   pending rows and bad reward credit, so train mode is blocked.
 - Turing recommendation, candidate/control only until tested: a 9-action
@@ -198,8 +205,8 @@ Every profile should report:
 
 ## Near-Term Plan
 
-1. Keep the current CurvyTron native LightZero loop as the baseline trainer and
-   profile surface.
+1. Keep the two-seat self-play launcher as the Coach baseline, and keep the
+   current CurvyTron native stock LightZero loop as a control/profile surface.
 2. Build a collect-only actor chunk function that loads one frozen checkpoint,
    collects searched source-state visual chunks on the current fixed-opponent
    path, and writes compact chunks with checkpoint id, schema, seed, and search

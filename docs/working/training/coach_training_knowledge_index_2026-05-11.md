@@ -8,6 +8,11 @@ No pytest was run for this docs-only index.
 
 ## Start Here
 
+- 2026-05-12 canonical CurvyTron Coach launcher:
+  `src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py`
+  with `--mode two-seat-selfplay`. Stock LightZero in-training eval stays off;
+  CurvyZero checkpoint eval, inspection, and GIF generation stay on; checkpoint
+  cadence defaults to `100` iterations.
 - Current read at 2026-05-11 14:08 EDT: stock-like visual Pong has real
   survival learning across multiple rows. `s122` is strongest, but `s114`,
   `s120`, `s121`, `s142`, and exact controls `s113/s123` all show later
@@ -54,10 +59,10 @@ No pytest was run for this docs-only index.
   trainer-layer action repeat/dropout, per-seat/per-row schedules, and logging
   requirements.
 - [Active board](../training_coach_active_board_2026-05-10.md): current
-  decision, live gates, and reporting rules. As of the 14:48 EDT update,
-  CurvyTron native source-state visual training is the active Coach lane; Pong
-  remains a control/background reference. Survival steps remain the lead
-  metric.
+  decision, live gates, reporting rules, and the canonical two-seat self-play
+  entrypoint. Survival steps remain the lead metric.
+- [Canonical two-seat handoff](curvytron_canonical_two_seat_handoff_2026-05-12.md):
+  current launcher, old-wrapper deletion note, and observability defaults.
 - [LightZero Pong replication monitor](../lightzero_pong_replication_monitor_2026-05-11.md):
   live Pong control status, stock64 survival curves, and next eval cadence.
 - [Eval speed investigation](eval_speed_investigation_2026-05-11.md):
@@ -79,18 +84,12 @@ No pytest was run for this docs-only index.
 - [Pong discrepancy action plan](pong_discrepancy_action_plan_2026-05-11.md):
   short action plan for why older stock-ish runs failed or were inconclusive,
   and what must be checked before CurvyTron.
-- [MuZero training footguns](muzero_training_footguns_2026-05-11.md)
-  (in progress): compact list of recurring MuZero/LightZero traps that should
-  be checked before new claims.
 - [Stock64 signal comparison](pong_stock64_signal_comparison_2026-05-11.md):
   short survival-first comparison of installed 0.2.0 stock64 runs such as
   `s114`, `s120`, `s121`, `s122`, and repeats.
-- [Custom-vs-stock contract autopsy](custom_vs_stock_muzero_contract_autopsy_2026-05-11.md)
-  (in progress): concrete table of native `train_muzero` behavior versus
-  custom CurvyTron/two-seat trainer behavior.
-- [CurvyTron LightZero native reuse critique](curvytron_lightzero_native_reuse_critique_2026-05-10.md):
-  correction that turn-commit is stock plumbing smoke/profile only; train mode
-  is blocked after target audit.
+- [Archived two-seat purge notes](archive_2026-05-12_two_seat_purge/README.md):
+  historical May 10/11 notes that predate the canonical launcher. Use them only
+  as context, not as launch guidance.
 - [Modal training lifecycle footguns](modal_training_run_lifecycle_footguns_2026-05-11.md)
   (in progress): safe launch, Volume, and checkpoint verification pattern for
   long Modal training jobs.

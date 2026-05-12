@@ -7,9 +7,11 @@ Date: 2026-05-09
 - Keep the optimizer [world model](world_model_2026-05-09.md) current as other
   lanes produce evidence.
 - Use [CurvyTron native LightZero profile](curvytron_native_lightzero_profile_2026-05-11.md)
-  as the current optimizer timing source for the source-state visual
-  `train_muzero` path. Old debug visual and scalar-ray profiles are historical
-  or diagnostic unless reopened.
+  as the current optimizer timing source for the source-state visual stock
+  `train_muzero` control/profile path. Coach canonical launcher is
+  `lightzero_curvyzero_stacked_debug_visual_survival_train.py --mode two-seat-selfplay`.
+  Old debug visual and scalar-ray profiles are historical or diagnostic unless
+  reopened.
 - Requested no-death long-survival rerun is now unblocked for optimizer timing.
   The old natural-bonus blocker is historical/resolved:
   [environment handoff: natural bonus runtime blocker](environment_handoff_bonus_runtime_blocker_2026-05-11.md).
@@ -17,12 +19,14 @@ Date: 2026-05-09
   c32/sim16 collected `7680` steps in `74.76s`; both reached replay and `5`
   learner train calls. Keep death suppression labeled
   `profile_only_not_source_fidelity`.
-- LightZero env manager optimization is now active: default
+- LightZero env manager optimization is now active for stock-control profiles:
+  default
   `env_manager_type=subprocess`. Matched long no-death throughput:
   base c16/c32/c64 = `67.5`, `102.7`, `140.3` steps/s; subprocess
   c16/c32/c64 = `79.7`, `146.3`, `225.7` steps/s. Use `base` for detailed env
-  timers only; use `subprocess` for Coach-facing training speed.
-- Current simple speed knobs for native CurvyTron runs: `collector_env_num` and
+  timers only; use `subprocess` for stock-control throughput.
+- Current simple speed knobs for native stock-control CurvyTron runs:
+  `collector_env_num` and
   `n_episode` together (`128/128` for throughput, `64/64` as fallback), sparse
   checkpointing, sparse stock LightZero eval, and `--env-telemetry-stride 10000`
   or similarly sparse when dense per-step action JSONL is not needed. Do not
@@ -54,13 +58,14 @@ Date: 2026-05-09
 - Keep the compact [runtime verdict](runtime_verdict_2026-05-10.md) current
   when source profile numbers, CPU/GPU boundary evidence, or full-GPU rewrite
   stance changes.
-- Reorientation: visual CurvyTron is the main training path. The optimizer
-  target is LightZero-style visual input and conv-stack plumbing, not the
-  source-backed `[B,2,106]` scalar-ray path. Keep scalar-ray as a sidecar
-  diagnostic and timing comparison only.
+- Reorientation: visual CurvyTron is the main training path. The Coach launcher
+  is now `--mode two-seat-selfplay`; fixed/frozen-opponent stock `train_muzero`
+  stays as controls/profiling. The optimizer target is LightZero-style visual
+  input and conv-stack plumbing, not the source-backed `[B,2,106]` scalar-ray
+  path. Keep scalar-ray as a sidecar diagnostic and timing comparison only.
 - Historical note: the old `debug_visual_tensor` /
   `curvyzero_debug_occupancy_gray64/v0` surface was a smoke target only. The
-  active trainer/profile surface is now source-state visual stack
+  stock-control/profile surface is now source-state visual stack
   `curvyzero_source_state_gray64_stack4_player_perspective/v1`.
 - Current visual profiler now advances source lifecycle before timing the loop.
   Keep `startup_advance_ms`, source random mode, density, and stage-inclusion
@@ -95,14 +100,16 @@ Date: 2026-05-09
 - Current measured source-backed baseline should use
   `source_setup_mode=controlled_trail` when timing body/ray geometry. Default
   source setup can produce zero body circles and overstate ray-path throughput.
-- Next full-loop measurement is the native source-state visual LightZero
-  `train_muzero` path. Report env step, render, stack/normalize, policy/search,
-  replay, reset, learner, checkpoint, and checkpoint/policy-version metadata
-  when using actor chunks. The current stock loop is synchronous; actor-fleet
-  freshness only applies to future split collection.
+- Next full-loop measurement is the canonical two-seat self-play launcher. Keep
+  native source-state visual LightZero `train_muzero` as a stock-control
+  comparison. Report env step, render, stack/normalize, policy/search, replay,
+  reset, learner, checkpoint, and checkpoint/policy-version metadata when using
+  actor chunks. The current stock loop is synchronous; actor-fleet freshness
+  only applies to future split collection.
 - Current post-reorientation order for CurvyTron optimizer work:
-  1. Keep the native source-state `train_muzero` path as the active trainer and
-     profile surface.
+  1. Keep `lightzero_curvyzero_stacked_debug_visual_survival_train.py --mode
+     two-seat-selfplay` as the Coach canonical launcher, and keep the native
+     source-state `train_muzero` path as stock controls/profiling.
   2. Use subprocess env manager and collector batches `128/128` for throughput,
      with `64/64` as the fallback if capacity or stability requires it.
   3. Use `num_simulations=50` for serious MuZero-style proof lanes and `16` for
@@ -123,9 +130,11 @@ Date: 2026-05-09
 - Preserve the Coach boundary: Pong is historical/control context only from the
   optimizer lane. Do not run or post-process Pong unless the user explicitly
   reopens that lane.
-- Build CurvyTron-only LightZero-shaped timing next: native source-state
-  `train_muzero` timing is now the active baseline. Next useful timing is either
-  a long-survival profile-only stress run or a collect/search fanout probe.
+- Build CurvyTron-only LightZero-shaped timing next: canonical two-seat
+  self-play timing is now the active Coach baseline; native source-state
+  `train_muzero` timing is the stock-control comparison. Next useful timing is
+  either a long-survival profile-only stress run or a collect/search fanout
+  probe.
   Preserve provenance/version metadata and keep it labeled setup/profile, not
   learning evidence.
 - Keep old hook-stopped stock Pong profile numbers only as archived evidence for
@@ -134,7 +143,7 @@ Date: 2026-05-09
   replay push/remove, replay sample/target construction, learner update,
   checkpoint save if included, artifact scan/Volume commit, envstep/sec,
   train_iter/sec, update count, checkpoint bytes, and GPU sampled utilization.
-- Keep the one-Modal-function stance for Coach-facing stock-loop runs until a
+- Keep the one-Modal-function stance for stock-loop control runs until a
   profile shows a concrete reason to split actor, learner, inference/search,
   replay, or eval. Candidate future splits need explicit latency,
   queue/Volume transfer cost, checkpoint-freshness metadata, and failure-mode
@@ -198,8 +207,9 @@ Date: 2026-05-09
   (`[B,2,106]`), not Atari/ALE/LightZero and not the primary visual target.
   Keep phase timers and `source_body_trail`/sidecar metadata visible in every
   report. Score quality remains explicitly out of scope.
-- Keep the CurvyTron interface stance explicit: primary optimizer work is the
-  native source-state visual LightZero trainer; old non-ALE
+- Keep the CurvyTron interface stance explicit: primary Coach work is the
+  two-seat self-play launcher; native source-state visual LightZero
+  `train_muzero` is controls/profiling; old non-ALE
   `debug_visual_tensor` smoke/profiler and source-backed `[B,2,106]` trainer
   rows are diagnostics. Those scalar rows are wrapper observations over source
   state, not native source objects.

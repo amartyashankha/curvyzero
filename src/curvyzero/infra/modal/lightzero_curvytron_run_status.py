@@ -13,7 +13,7 @@ from typing import Any
 import modal
 
 from curvyzero.infra.modal import run_management as runs
-from curvyzero.infra.modal.lightzero_curvytron_two_seat_train_smoke import (
+from curvyzero.infra.modal.lightzero_curvyzero_stacked_debug_visual_survival_train import (
     RUNS_MOUNT,
     TASK_ID,
     VOLUME_NAME,

@@ -2,9 +2,28 @@
 
 Date: 2026-05-11
 
+Status: archived optimizer handoff. This file records the fixed/frozen-opponent
+stock `train_muzero` profiling lane. It is not the current Coach launch
+instruction.
+
+Current truth: Coach canonical launcher is
+`src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py --mode two-seat-selfplay`.
+Fixed/frozen-opponent native stock `train_muzero` runs are controls/profiling
+only. Stock LightZero in-loop eval is separate from CurvyZero checkpoint
+eval/inspection/GIF.
+
+Current 2026-05-12 addition: Optimizer wired the canonical two-seat path to the
+new visual render surface. Use
+`--two-seat-trail-render-mode browser_lines` for the default full-ish
+source-state RGB-to-gray path. Use `body_circles_fast` only for an explicit
+speed comparison. The old direct gray renderer should no longer be the silent
+two-seat default. Optimizer also exposed `--two-seat-death-mode`; keep it
+`normal` for training and use `profile_no_death` only when profiling
+long-survival cost.
+
 ## Plain Version
 
-Use the native CurvyTron LightZero trainer path for CurvyTron work:
+Historical/control path profiled by Optimizer:
 
 ```text
 src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py
@@ -21,10 +40,8 @@ lzero.entry.train_muzero
 LightZero collector / MCTS / replay / learner / checkpoint path
 ```
 
-This is the path the optimizer has been profiling. It is the right starting
-point for Coach. It may still have bugs and it is not a learning proof, but it
-is the repo path closest to the promising Pong-style LightZero runs. It is not
-true current-policy two-seat self-play.
+This is the path the optimizer had been profiling as a stock-LightZero control.
+It is not the Coach main lane and not true current-policy two-seat self-play.
 
 ## What Changed
 
@@ -126,9 +143,9 @@ time stayed similar; the win is from not serializing all env work through the
 base manager. In subprocess mode, detailed env timers are missing because the
 env methods run in worker processes.
 
-## Suggested Coach Command Shape
+## Archived Fixed-Opponent Control Command
 
-For the next stock-loop fixed-opponent CurvyTron run:
+For stock-loop fixed-opponent CurvyTron controls/profiles only:
 
 ```bash
 uv run --extra modal modal run \
@@ -162,9 +179,9 @@ For optimizer profiling, use `--mode profile`; that installs debug timing hooks
 and stops after a small number of learner calls. Do not treat profile-mode
 output as a learning run.
 
-## Short Coach Handoff - 2026-05-11 Late
+## Archived Short Handoff - 2026-05-11 Late
 
-Use the stock LightZero CurvyTron path as the baseline trainer/profile surface:
+Use this only as the stock LightZero CurvyTron control/profile surface:
 `env_variant=source_state_fixed_opponent`, subprocess env manager, source-state
 visual `[4,64,64]`, fixed/frozen opponent, `lzero.entry.train_muzero`.
 
@@ -182,7 +199,7 @@ big buckets are search/model/collector; learner and replay are small. GPU is
 used for model calls, but MCTS tree orchestration, replay, and CurvyTron env
 work are CPU-side today.
 
-For current Coach runs, the conservative fast shape is:
+For fixed/frozen-opponent stock-control runs, the conservative fast shape is:
 
 ```text
 --env-manager-type subprocess
@@ -205,7 +222,7 @@ the cheap GPU+CPU40 path by default. H100+CPU40 gives c128/sim16 `540.99`
 steps/s and c128/sim50 `241.46` steps/s; use it when convenient or for fast
 sim16 sweeps, but do not require it for serious sim50 runs.
 
-Current concrete Coach shape:
+Current fixed/frozen-opponent stock-control shape:
 
 ```text
 --compute gpu-l4-t4-cpu40
@@ -328,8 +345,8 @@ uv run pytest \
   survival improves.
 - Environment owns source fidelity and any promotion of visual tensor semantics.
 - Optimizer owns speed/setup/profile evidence and recommended runtime knobs.
-- This native path is fixed-opponent single-ego training today, not true
-  current-policy self-play.
+- This native stock path is fixed-opponent single-ego control/profiling today,
+  not the Coach canonical two-seat self-play launcher.
 - `source_state_turn_commit` is stock LightZero plumbing smoke/profile only.
   Its pending/player0 scalar step gets reward `0`, while the commit/player1
   scalar step advances physics and gets survival reward; normal GameSegment

@@ -29,7 +29,7 @@ Source audit:
 | survival-shaped Pong: `s30`-`s37`, `s60`-`s61`, `s80`-`s82` | ignore for stock proof; archive as side telemetry | Reward shaping changes the claim. Useful for intuition, not for stock-reward Pong replication. |
 | LightZero board controls: `s200`-`s203` | archive | TicTacToe/Connect4 controls prove framework plumbing, not visual Atari Pong. |
 | custom dummy Pong | ignore | It was a custom/debug wrapper bridge by design, not stock Atari Pong. |
-| custom CurvyTron accumulated replay / two-seat loop | archive as custom diagnostic | It mechanically ran but stayed weak/flat and bypassed native `train_muzero`, collector, replay, and learner lifecycle. |
+| historical CurvyTron accumulated replay / old two-seat wrapper | archived | Superseded by the canonical two-seat Coach launcher; do not use the old wrapper commands for new work. |
 | non-LightZero controls: OpenSpiel, MCTX, MiniZero | ignore for this queue | External controls can help broader confidence, but they do not decide whether LightZero stock visual Pong learned. |
 
 ## Operating Rule

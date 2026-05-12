@@ -447,5 +447,5 @@ and the exact blocker text. This is checkpoint-pool refresh, not self-play.
 Details:
 
 ```text
-docs/working/training/curvytron_current_policy_selfplay_reality_2026-05-10.md
+docs/working/training/archive_2026-05-12_two_seat_purge/curvytron_current_policy_selfplay_reality_2026-05-10.md
 ```

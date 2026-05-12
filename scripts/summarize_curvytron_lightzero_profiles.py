@@ -122,6 +122,7 @@ def summarize_summary(path: Path) -> dict[str, Any]:
     summary = json.loads(path.read_text(encoding="utf-8"))
     phase = _as_dict(summary.get("phase_profile"))
     command = _as_dict(summary.get("command"))
+    auto_resume = _as_dict(command.get("auto_resume"))
     counts = _as_dict(phase.get("counts"))
     timers = _as_dict(phase.get("timers_sec"))
     derived = _as_dict(phase.get("derived_stats"))
@@ -165,6 +166,9 @@ def summarize_summary(path: Path) -> dict[str, Any]:
         "sims": command.get("num_simulations"),
         "batch": command.get("batch_size"),
         "lightzero_multi_gpu": command.get("lightzero_multi_gpu"),
+        "profile_cuda_sync_enabled": command.get("profile_cuda_sync_enabled"),
+        "profile_allow_auto_resume": command.get("profile_allow_auto_resume"),
+        "auto_resume_found": auto_resume.get("found"),
         "source_max_steps": command.get("source_max_steps"),
         "telemetry_stride": command.get("env_telemetry_stride"),
         "steps": steps,
@@ -182,6 +186,7 @@ def summarize_summary(path: Path) -> dict[str, Any]:
         "replay_sec": _float(timers.get("replay_sample_sec")),
         "eval_sec": _float(timers.get("evaluator_eval_sec")),
         "checkpoint_sec": _float(timers.get("learner_save_checkpoint_sec")),
+        "cuda_sync_sec": _float(timers.get("cuda_sync_sec")),
         "telemetry_sec": telemetry_sec,
         "telemetry_pct": telemetry_pct,
         "telemetry_rows": action.get("row_count"),
@@ -207,6 +212,8 @@ TABLE_COLUMNS = [
     ("sims", "sim"),
     ("source_max_steps", "src"),
     ("lightzero_multi_gpu", "lz_mgpu"),
+    ("profile_cuda_sync_enabled", "cuda_sync"),
+    ("auto_resume_found", "resume"),
     ("cuda_device_count", "cuda_n"),
     ("steps", "steps"),
     ("wall_sec", "wall"),
@@ -218,6 +225,7 @@ TABLE_COLUMNS = [
     ("learner_sec", "learner"),
     ("replay_sec", "replay"),
     ("eval_sec", "eval"),
+    ("cuda_sync_sec", "cuda_sync_s"),
     ("telemetry_stride", "tel_stride"),
     ("telemetry_rows", "tel_rows"),
     ("telemetry_pct", "tel_%"),

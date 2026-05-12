@@ -4,6 +4,20 @@ Date: 2026-05-10
 
 Status: active optimizer lane front door.
 
+Current launcher truth, 2026-05-11 late: Coach canonical CurvyZero training
+uses
+`src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py --mode two-seat-selfplay`.
+Fixed/frozen-opponent stock `train_muzero` runs are controls/profiling lanes
+only. Stock LightZero in-loop eval is separate from CurvyZero checkpoint
+eval/inspection/GIF jobs.
+
+Current render truth, 2026-05-12: canonical two-seat self-play defaults to
+`two_seat_trail_render_mode=browser_lines`. That route renders source-state RGB
+browser-style lines at 64x64 and converts to gray64 for the stacked policy
+tensor. `body_circles_fast` is an explicit speed comparison mode. The same
+two-seat runner exposes `two_seat_death_mode=profile_no_death` for optimizer
+long-survival profiles only.
+
 This lane owns speed/training-loop setup synthesis: how CurvyTron visual
 LightZero-style stacked-frame rollouts, sidecar scalar diagnostics,
 policy/search, replay, reset/autoreset, Modal jobs, and learner boundaries
@@ -19,8 +33,9 @@ Training and policy-quality claims stay in the [training state index](../trainin
   between Optimizer, Coach, and Environment/RAM reconstruction.
 - [Current status](current_status_2026-05-09.md) - short optimizer read.
 - [CurvyTron native LightZero profile](curvytron_native_lightzero_profile_2026-05-11.md) -
-  latest source-state visual `train_muzero` timing, renderer fix, telemetry
-  stride, MCTS/search read, and next bottlenecks.
+  archived/current-control source-state visual `train_muzero` timing, renderer
+  fix, telemetry stride, MCTS/search read, and next bottlenecks. It is not the
+  Coach canonical launcher.
 - [Runtime verdict](runtime_verdict_2026-05-10.md) - compact CurvyTron source
   path, CPU/GPU boundary, current profile, Modal Mctx evidence, and near-term
   architecture stance.
@@ -64,9 +79,11 @@ Training and policy-quality claims stay in the [training state index](../trainin
 - Primary CurvyTron training target is visual LightZero-style stacked frames.
   Do not treat scalar-ray `[B,2,106]` rows as the main coach-facing optimizer
   target unless new evidence explicitly justifies that switch.
-- CurvyTron visual profiling is non-ALE. The active coach-facing surface is now
-  `env_variant=source_state_fixed_opponent` with the source-state visual stack
-  `curvyzero_source_state_gray64_stack4_player_perspective/v1`. It is a
+- CurvyTron visual profiling is non-ALE. The canonical Coach launcher is
+  `lightzero_curvyzero_stacked_debug_visual_survival_train.py --mode two-seat-selfplay`.
+  The `env_variant=source_state_fixed_opponent` stock `train_muzero` surface is
+  now controls/profiling only. Its source-state visual stack
+  `curvyzero_source_state_gray64_stack4_player_perspective/v1` is a
   source-state geometry tensor, not an ALE path and not a browser/canvas pixel
   claim. The old `debug_visual_tensor` /
   `curvyzero_debug_occupancy_gray64/v0` surface is historical smoke plumbing.

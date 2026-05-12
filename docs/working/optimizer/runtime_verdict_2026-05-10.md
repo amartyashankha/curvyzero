@@ -10,6 +10,12 @@ searched self-play actor throughput feeding replay and a learner, not from a
 single local trainer loop. See
 `docs/working/optimizer/distributed_muzero_architecture_research_2026-05-11.md`.
 
+Current launcher truth, 2026-05-11 late: Coach canonical CurvyZero launcher is
+`src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py --mode two-seat-selfplay`.
+The older two-seat smoke wrappers below are historical optimizer evidence, not
+the live launcher. Fixed/frozen-opponent stock `train_muzero` is
+controls/profiling only.
+
 ## Scope Boundary
 
 - Optimizer owns setup, measurement, profiling, speed, Amdahl reads, CPU/GPU
@@ -78,6 +84,10 @@ trainer frame-stack consumption, policy/search, replay, learner, and eval.
 
 ## Two-Seat LightZero Runtime Update - 2026-05-11
 
+Archived context: this section describes old two-seat smoke-wrapper work. The
+live Coach launcher is now
+`lightzero_curvyzero_stacked_debug_visual_survival_train.py --mode two-seat-selfplay`.
+
 The custom two-seat CurvyTron path exists because LightZero has current-policy
 self-play for normal/alternating collector shapes, but stock `train_muzero`
 does not expose a simultaneous `joint_action[B,P]` collector boundary. The
@@ -86,16 +96,19 @@ policy/MCTS/learner pieces, not a slow private reinvention.
 
 Current code state:
 
-- `curvytron_two_seat_lightzero_train_smoke.py` now batches all active seat rows
-  into one `MuZeroPolicy.collect_mode.forward` call per decision step when
-  possible. The old one-row call remains as fallback and records the fallback
-  reason.
+- The current two-seat self-play bridge is launched through
+  `src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py --mode two-seat-selfplay`.
+  The old `lightzero_curvytron_two_seat_train_smoke.py` Modal wrapper has been
+  deleted.
+- The underlying trainer batches all active seat rows into one
+  `MuZeroPolicy.collect_mode.forward` call per decision step when possible. The
+  old one-row call remains as fallback and records the fallback reason.
 - Collection records `collect_timing_sec`, `policy_batching_counts`,
   `policy_search_call_count`, and `policy_search_row_count`.
-- `lightzero_curvytron_two_seat_train_smoke.py` has explicit `--compute cpu`
-  and `--compute gpu-l4-t4` routes. GPU requests CUDA and the summary reports
+- The canonical launcher has explicit `--compute cpu` and `--compute gpu-l4-t4`
+  routes. GPU requests CUDA and the summary reports
   `lightzero_policy_model_device`; validated value was `cuda:0`.
-- The wrapper no longer explicitly commits the Modal Volume during progress or
+- The path no longer explicitly commits the Modal Volume during progress or
   summary writes. Defaults are now sparse: progress every `100` iterations and
   checkpoints every `100` iterations. Final checkpoints still save for
   `allow_optimizer_step=True`.

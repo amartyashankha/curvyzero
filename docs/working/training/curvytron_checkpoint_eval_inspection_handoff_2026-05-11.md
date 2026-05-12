@@ -73,9 +73,13 @@ This proves the plumbing works. It does not prove learning.
 ## Operational Notes
 
 Background checkpoint eval, inspection, and self-play GIF generation are on by
-default for the current trainer. The default launch kind is the separate poller.
-Use `--no-background-eval-enabled` only when deliberately disabling this
-observability.
+default for the current two-seat Coach path. The fixed-opponent eval is useful
+plumbing, but it is not the right proof for current-policy two-seat self-play.
+
+Current caveat: the eval/GIF loader now infers the checkpoint model support-head
+size before loading, so two-seat checkpoints with the LightZero Atari-style
+601-wide heads can be inspected. The read is still fixed-opponent survival
+observability, not a self-play strength claim.
 
 If launching a background training run without `--wait-for-train`, use Modal
 detached mode so spawned background work survives:

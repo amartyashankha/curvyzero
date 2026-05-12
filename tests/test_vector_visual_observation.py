@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from curvyzero.env import vector_runtime
 from curvyzero.env.vector_visual_observation import (
@@ -24,7 +25,10 @@ from curvyzero.env.vector_visual_observation import (
     SOURCE_STATE_GRAY64_SOURCE_CLAIM_ID,
     SOURCE_STATE_GRAY64_STATE_FIELDS,
     SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_RGB,
+    SOURCE_STATE_RGB_CANVAS_LIKE_BACKGROUND_RGB,
     SOURCE_STATE_RGB_CANVAS_LIKE_PLAYER_RGB,
+    TRAIL_RENDER_MODE_BODY_CIRCLES_FAST,
+    TRAIL_RENDER_MODE_BROWSER_LINES,
     SourceStateGray64Renderer,
     VectorVisualObservationError,
     normalize_source_state_gray64,
@@ -66,6 +70,36 @@ def _small_source_state() -> dict[str, np.ndarray]:
         "terminal_reason": np.asarray([0], dtype=np.int16),
     }
     return state
+
+
+def _trail_only_source_state(
+    points: list[tuple[float, float]],
+    *,
+    radii: float | list[float] = 0.0,
+    owners: int | list[int] = 0,
+) -> dict[str, np.ndarray]:
+    state = _small_source_state()
+    state["present"][:, :] = False
+    state["alive"][:, :] = False
+    state["body_active"][:, :] = False
+    point_count = len(points)
+    assert point_count <= state["body_active"].shape[1]
+    state["body_write_cursor"][0] = point_count
+    state["body_active"][0, :point_count] = True
+    state["body_pos"][0, :point_count] = np.asarray(points, dtype=np.float64)
+    if isinstance(radii, list):
+        state["body_radius"][0, :point_count] = np.asarray(radii, dtype=np.float64)
+    else:
+        state["body_radius"][0, :point_count] = float(radii)
+    if isinstance(owners, list):
+        state["body_owner"][0, :point_count] = np.asarray(owners, dtype=np.int16)
+    else:
+        state["body_owner"][0, :point_count] = int(owners)
+    return state
+
+
+def _rgb_triplet(value: tuple[int, int, int]) -> np.ndarray:
+    return np.asarray(value, dtype=np.uint8)
 
 
 def _reference_draw_world_circle(
@@ -302,21 +336,87 @@ def test_source_state_rgb_canvas_like_renders_full_size_color_players_and_bonus(
     assert bool(np.any(np.all(flat == bonus_rgb, axis=1)))
 
 
-def test_source_state_canvas_gray64_is_luminance_of_browser_like_rgb64():
+def test_source_state_rgb_canvas_like_defaults_to_browser_lines_and_connects_straight_trail():
+    state = _trail_only_source_state([(32.0, 32.0), (33.0, 32.0)])
+    player_rgb = _rgb_triplet(SOURCE_STATE_RGB_CANVAS_LIKE_PLAYER_RGB[0])
+    background_rgb = _rgb_triplet(SOURCE_STATE_RGB_CANVAS_LIKE_BACKGROUND_RGB)
+
+    default_frame = render_source_state_rgb_canvas_like(state, frame_size=64)
+    browser_lines_frame = render_source_state_rgb_canvas_like(
+        state,
+        frame_size=64,
+        trail_render_mode=TRAIL_RENDER_MODE_BROWSER_LINES,
+    )
+    body_circles_frame = render_source_state_rgb_canvas_like(
+        state,
+        frame_size=64,
+        trail_render_mode=TRAIL_RENDER_MODE_BODY_CIRCLES_FAST,
+    )
+
+    np.testing.assert_array_equal(default_frame, browser_lines_frame)
+    np.testing.assert_array_equal(default_frame[32, 32], player_rgb)
+    np.testing.assert_array_equal(default_frame[32, 33], player_rgb)
+    np.testing.assert_array_equal(body_circles_frame[32, 33], background_rgb)
+
+
+def test_source_state_rgb_canvas_like_body_circles_fast_preserves_old_bead_behavior():
+    state = _trail_only_source_state([(32.0, 32.0), (33.0, 32.0)])
+    player_rgb = _rgb_triplet(SOURCE_STATE_RGB_CANVAS_LIKE_PLAYER_RGB[0])
+    background_rgb = _rgb_triplet(SOURCE_STATE_RGB_CANVAS_LIKE_BACKGROUND_RGB)
+
+    frame = render_source_state_rgb_canvas_like(
+        state,
+        frame_size=64,
+        trail_render_mode=TRAIL_RENDER_MODE_BODY_CIRCLES_FAST,
+    )
+    player_pixels = np.all(frame == player_rgb, axis=2)
+
+    np.testing.assert_array_equal(frame[32, 32], player_rgb)
+    np.testing.assert_array_equal(frame[32, 33], background_rgb)
+    assert int(np.count_nonzero(player_pixels)) == 1
+
+
+def test_source_state_rgb_canvas_like_browser_lines_breaks_on_same_owner_jump():
+    state = _trail_only_source_state(
+        [(32.0, 32.0), (33.0, 32.0), (35.0, 32.0)]
+    )
+    player_rgb = _rgb_triplet(SOURCE_STATE_RGB_CANVAS_LIKE_PLAYER_RGB[0])
+    background_rgb = _rgb_triplet(SOURCE_STATE_RGB_CANVAS_LIKE_BACKGROUND_RGB)
+
+    frame = render_source_state_rgb_canvas_like(
+        state,
+        frame_size=64,
+        trail_render_mode=TRAIL_RENDER_MODE_BROWSER_LINES,
+    )
+
+    np.testing.assert_array_equal(frame[32, 32], player_rgb)
+    np.testing.assert_array_equal(frame[32, 33], player_rgb)
+    np.testing.assert_array_equal(frame[32, 34], background_rgb)
+    np.testing.assert_array_equal(frame[32, 35], player_rgb)
+
+
+def test_source_state_canvas_gray64_is_luminance_of_browser_like_rgb64_for_both_trail_modes():
     state = _small_source_state()
     state["avatar_color"] = np.asarray([[1, 0]], dtype=np.int16)
-    rgb = render_source_state_rgb_canvas_like(state, frame_size=64)
-    frame = render_source_state_canvas_gray64(state)
     schema = source_state_canvas_gray64_schema()
 
-    assert frame.shape == SOURCE_STATE_CANVAS_GRAY64_SHAPE
-    assert frame.dtype == np.uint8
     assert schema["schema_id"] == SOURCE_STATE_CANVAS_GRAY64_SCHEMA_ID
     assert schema["renderer_impl_id"] == SOURCE_STATE_CANVAS_GRAY64_RENDERER_IMPL_ID
-    np.testing.assert_array_equal(frame, rgb_canvas_like_to_gray64(rgb))
-    px = int(np.rint((10.0 / 64.0) * 63.0))
-    py = int(np.rint((10.0 / 64.0) * 63.0))
-    assert int(frame[0, py, px]) == int(round(255.0 * 0.587))
+
+    for mode in (TRAIL_RENDER_MODE_BROWSER_LINES, TRAIL_RENDER_MODE_BODY_CIRCLES_FAST):
+        rgb = render_source_state_rgb_canvas_like(
+            state,
+            frame_size=64,
+            trail_render_mode=mode,
+        )
+        frame = render_source_state_canvas_gray64(state, trail_render_mode=mode)
+
+        assert frame.shape == SOURCE_STATE_CANVAS_GRAY64_SHAPE
+        assert frame.dtype == np.uint8
+        np.testing.assert_array_equal(frame, rgb_canvas_like_to_gray64(rgb))
+        px = int(np.rint((10.0 / 64.0) * 63.0))
+        py = int(np.rint((10.0 / 64.0) * 63.0))
+        assert int(frame[0, py, px]) == int(round(255.0 * 0.587))
 
 
 def test_source_snapshot_gray64_matches_equivalent_vector_state_with_bonus_body():
@@ -424,6 +524,50 @@ def test_source_snapshot_canvas_gray64_matches_equivalent_vector_state_with_colo
         ),
         render_source_state_canvas_gray64(state),
     )
+
+
+def test_source_snapshot_canvas_like_renderers_support_both_trail_modes():
+    state = _trail_only_source_state([(32.0, 32.0), (33.0, 32.0)])
+    snapshot = {
+        "game": {"size": 64},
+        "avatars": [
+            {
+                "id": 1,
+                "x": 0.0,
+                "y": 0.0,
+                "alive": False,
+                "present": False,
+                "color": "#ff0000",
+            },
+        ],
+    }
+    world_bodies = (
+        {"x": 32.0, "y": 32.0, "radius": 0.0, "avatarId": 1},
+        {"x": 33.0, "y": 32.0, "radius": 0.0, "avatarId": 1},
+    )
+
+    for mode in (TRAIL_RENDER_MODE_BROWSER_LINES, TRAIL_RENDER_MODE_BODY_CIRCLES_FAST):
+        np.testing.assert_array_equal(
+            render_source_snapshot_rgb_canvas_like(
+                snapshot,
+                world_bodies=world_bodies,
+                frame_size=64,
+                trail_render_mode=mode,
+            ),
+            render_source_state_rgb_canvas_like(
+                state,
+                frame_size=64,
+                trail_render_mode=mode,
+            ),
+        )
+        np.testing.assert_array_equal(
+            render_source_snapshot_canvas_gray64(
+                snapshot,
+                world_bodies=world_bodies,
+                trail_render_mode=mode,
+            ),
+            render_source_state_canvas_gray64(state, trail_render_mode=mode),
+        )
 
 
 def test_source_state_gray64_skips_circles_fully_outside_source_arena():
@@ -581,3 +725,18 @@ def test_source_state_gray64_render_rejects_invalid_body_write_cursor():
         assert "body_write_cursor" in str(exc)
     else:
         raise AssertionError("expected invalid body_write_cursor to be rejected")
+
+
+def test_canvas_like_renderers_reject_invalid_trail_render_mode():
+    state = _small_source_state()
+    snapshot = {
+        "game": {"size": 64},
+        "avatars": [{"id": 1, "x": 0.0, "y": 0.0}],
+    }
+
+    with pytest.raises(VectorVisualObservationError, match="trail_render_mode"):
+        render_source_state_rgb_canvas_like(state, trail_render_mode="not-a-mode")
+    with pytest.raises(VectorVisualObservationError, match="trail_render_mode"):
+        render_source_state_canvas_gray64(state, trail_render_mode="not-a-mode")
+    with pytest.raises(VectorVisualObservationError, match="trail_render_mode"):
+        render_source_snapshot_rgb_canvas_like(snapshot, trail_render_mode="not-a-mode")

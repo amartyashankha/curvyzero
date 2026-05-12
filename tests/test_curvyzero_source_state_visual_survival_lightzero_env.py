@@ -1,6 +1,7 @@
 import json
 
 import numpy as np
+import pytest
 
 from curvyzero.env import vector_runtime
 from curvyzero.env.trainer_contract import ACTION_ID_TO_SOURCE_MOVE
@@ -27,10 +28,14 @@ from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env imp
     SOURCE_STATE_CANVAS_LIKE_GRAY64_SURFACE,
     SOURCE_STATE_CANVAS_LIKE_RAW64_SCHEMA_HASH,
     SOURCE_STATE_CANVAS_LIKE_RAW64_SHAPE,
+    SOURCE_STATE_DEFAULT_TRAIL_RENDER_MODE,
     SOURCE_STATE_FIXED_OPPONENT_ENV_VARIANT,
     SOURCE_STATE_FIXED_OPPONENT_RUNTIME_TOPOLOGY,
     SOURCE_STATE_FIXED_OPPONENT_TWO_SEAT_STATUS,
     SOURCE_STATE_FIXED_OPPONENT_UNDERLYING_ENV_CLASS,
+    SOURCE_STATE_SUPPORTED_TRAIL_RENDER_MODES,
+    SOURCE_STATE_TRAIL_RENDER_MODE_BODY_CIRCLES_FAST,
+    SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES,
     STACKED_SOURCE_STATE_GRAY64_SCHEMA_HASH,
     STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID,
     STACKED_SOURCE_STATE_GRAY64_SHAPE,
@@ -73,6 +78,38 @@ def test_source_state_visual_survival_reset_shape_and_metadata():
     assert env.last_reset_info["raw_observation_dtype"] == "uint8"
     assert env.last_reset_info["raw_observation_color_space"] == "RGB"
     assert env.last_reset_info["raw_frame_shape"] == list(SOURCE_STATE_CANVAS_LIKE_RAW64_SHAPE)
+    assert (
+        env.last_reset_info["default_trail_render_mode"]
+        == SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES
+    )
+    assert env.last_reset_info["default_trail_render_mode"] == (
+        SOURCE_STATE_DEFAULT_TRAIL_RENDER_MODE
+    )
+    assert env.last_reset_info["supported_trail_render_modes"] == list(
+        SOURCE_STATE_SUPPORTED_TRAIL_RENDER_MODES
+    )
+    assert (
+        env.last_reset_info["trail_render_mode"]
+        == SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES
+    )
+    assert env.last_reset_info["trail_renderer_kind"] == "connected_rounded_lines"
+    assert (
+        env.last_reset_info["trail_renderer_truth_level"]
+        == "source_state_browser_style_lines_non_pixel_parity"
+    )
+    assert env.last_reset_info["trail_renderer_is_approximation"] is False
+    assert env.last_reset_info["browser_style_trail_renderer"] is True
+    assert (
+        env.last_reset_info["browser_trail_semantics"]
+        == "persistent_background_canvas_round_line_caps"
+    )
+    assert "persisted body points" in env.last_reset_info[
+        "browser_client_trail_point_caveat"
+    ]
+    assert (
+        env.last_reset_info["browser_pixel_fidelity_claim"]
+        == "not_validated_against_browser_canvas"
+    )
     assert env.last_reset_info["debug_fidelity_only"] is False
     assert env.last_reset_info["source_fidelity_claim"] == "source_state_backed_non_browser_pixel"
     assert env.last_reset_info["visual_surface"] == SOURCE_STATE_CANVAS_LIKE_GRAY64_SURFACE
@@ -172,6 +209,50 @@ def test_source_state_visual_survival_reset_shape_and_metadata():
     )
 
 
+def test_source_state_visual_survival_terminal_snapshots_survive_manual_reset():
+    env = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
+        {"seed": 19, "source_max_steps": 1}
+    )
+    env.reset(seed=19)
+
+    timestep = env.step(2)
+
+    assert timestep.done is True
+    assert timestep.info["needs_reset"] is True
+    terminal_final_observation = timestep.info["final_observation"]
+    assert terminal_final_observation is not None
+    assert terminal_final_observation["observation"] is not timestep.obs["observation"]
+    saved_final_stack = terminal_final_observation["observation"].copy()
+    saved_terminal_raw = env.raw_observation()
+    assert saved_terminal_raw is not None
+    np.testing.assert_array_equal(
+        saved_terminal_raw,
+        render_source_state_rgb_canvas_like(env._env.state, row=0, frame_size=64),
+    )
+
+    returned_raw_copy = env.raw_observation()
+    assert returned_raw_copy is not None
+    returned_raw_copy.fill(0)
+    np.testing.assert_array_equal(
+        env.raw_observation(),
+        saved_terminal_raw,
+    )
+
+    with pytest.raises(RuntimeError, match="reset must be called before stepping after done"):
+        env.step(1)
+    np.testing.assert_array_equal(
+        env.raw_observation(),
+        saved_terminal_raw,
+    )
+
+    env.reset(seed=20)
+
+    np.testing.assert_array_equal(
+        terminal_final_observation["observation"],
+        saved_final_stack,
+    )
+
+
 def test_source_state_visual_survival_step_and_terminal_telemetry(tmp_path):
     telemetry_path = tmp_path / "source_state_steps.jsonl"
     env = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
@@ -260,7 +341,26 @@ def test_source_state_visual_survival_step_and_terminal_telemetry(tmp_path):
     assert timestep.info["raw_observation_dtype"] == "uint8"
     assert timestep.info["raw_observation_color_space"] == "RGB"
     assert timestep.info["raw_renderer_impl_id"] == SOURCE_STATE_RGB_CANVAS_LIKE_RENDERER_IMPL_ID
+    assert (
+        timestep.info["default_trail_render_mode"]
+        == SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES
+    )
+    assert timestep.info["supported_trail_render_modes"] == list(
+        SOURCE_STATE_SUPPORTED_TRAIL_RENDER_MODES
+    )
+    assert timestep.info["trail_render_mode"] == SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES
+    assert timestep.info["trail_renderer_kind"] == "connected_rounded_lines"
+    assert (
+        timestep.info["trail_renderer_truth_level"]
+        == "source_state_browser_style_lines_non_pixel_parity"
+    )
+    assert timestep.info["trail_renderer_is_approximation"] is False
+    assert timestep.info["browser_style_trail_renderer"] is True
     assert timestep.info["browser_pixel_fidelity"] is False
+    assert (
+        timestep.info["browser_pixel_fidelity_claim"]
+        == "not_validated_against_browser_canvas"
+    )
     assert timestep.info["uses_ale"] is False
     assert timestep.info["ale_usage"] == "none"
 
@@ -308,6 +408,16 @@ def test_source_state_visual_survival_step_and_terminal_telemetry(tmp_path):
     assert rows[0]["visual_surface"] == SOURCE_STATE_CANVAS_LIKE_GRAY64_SURFACE
     assert rows[0]["visual_truth_level"] == "source_state_backed_browser_like_non_pixel_parity"
     assert rows[0]["visual_source_state_backed"] is True
+    assert rows[0]["default_trail_render_mode"] == SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES
+    assert rows[0]["trail_render_mode"] == SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES
+    assert rows[0]["trail_renderer_kind"] == "connected_rounded_lines"
+    assert (
+        rows[0]["trail_renderer_truth_level"]
+        == "source_state_browser_style_lines_non_pixel_parity"
+    )
+    assert rows[0]["trail_renderer_is_approximation"] is False
+    assert rows[0]["browser_style_trail_renderer"] is True
+    assert rows[0]["browser_pixel_fidelity_claim"] == "not_validated_against_browser_canvas"
     assert rows[0]["uses_ale"] is False
     assert rows[0]["env_variant"] == SOURCE_STATE_FIXED_OPPONENT_ENV_VARIANT
     assert rows[0]["runtime_topology"] == SOURCE_STATE_FIXED_OPPONENT_RUNTIME_TOPOLOGY
@@ -339,9 +449,56 @@ def test_source_state_fixed_opponent_config_names_non_self_play_runtime_contract
     assert config["runtime_topology"] == SOURCE_STATE_FIXED_OPPONENT_RUNTIME_TOPOLOGY
     assert config["underlying_env_class"] == SOURCE_STATE_FIXED_OPPONENT_UNDERLYING_ENV_CLASS
     assert config["source_fidelity_claim"] == "source_state_backed_non_browser_pixel"
+    assert config["source_state_trail_render_mode"] == (
+        SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES
+    )
+    assert config["default_trail_render_mode"] == SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES
+    assert config["supported_trail_render_modes"] == SOURCE_STATE_SUPPORTED_TRAIL_RENDER_MODES
     assert config["two_seat_self_play"] is False
     assert config["two_seat_self_play_status"] == SOURCE_STATE_FIXED_OPPONENT_TWO_SEAT_STATUS
     assert config["fixed_opponent_is_two_seat_self_play"] is False
+
+
+def test_source_state_visual_survival_allows_explicit_fast_trail_mode_metadata():
+    env = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
+        {
+            "seed": 23,
+            "source_max_steps": 1,
+            "source_state_trail_render_mode": SOURCE_STATE_TRAIL_RENDER_MODE_BODY_CIRCLES_FAST,
+        }
+    )
+
+    env.reset(seed=23)
+    timestep = env.step(1)
+
+    assert (
+        env.last_reset_info["default_trail_render_mode"]
+        == SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES
+    )
+    assert (
+        env.last_reset_info["trail_render_mode"]
+        == SOURCE_STATE_TRAIL_RENDER_MODE_BODY_CIRCLES_FAST
+    )
+    assert env.last_reset_info["trail_renderer_kind"] == "circle_per_body"
+    assert (
+        env.last_reset_info["trail_renderer_truth_level"]
+        == "source_state_fast_body_circle_approximation"
+    )
+    assert env.last_reset_info["trail_renderer_is_approximation"] is True
+    assert env.last_reset_info["browser_style_trail_renderer"] is False
+    assert env.raw_observation().shape == SOURCE_STATE_CANVAS_LIKE_RAW64_SHAPE
+    assert timestep.info["trail_render_mode"] == (
+        SOURCE_STATE_TRAIL_RENDER_MODE_BODY_CIRCLES_FAST
+    )
+    assert timestep.info["trail_renderer_is_approximation"] is True
+    assert timestep.info["final_observation"] is not None
+
+
+def test_source_state_visual_survival_rejects_unknown_trail_mode():
+    with pytest.raises(ValueError, match="source_state_trail_render_mode"):
+        CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
+            {"source_state_trail_render_mode": "mystery_trails"}
+        )
 
 
 def test_source_state_visual_survival_profile_no_death_exercises_natural_bonus_timer():

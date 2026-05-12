@@ -577,6 +577,45 @@ def _summarize_observation(observation: Any) -> dict[str, Any]:
     }
 
 
+def _infer_model_support_config_from_state_dict(
+    state_dict: Mapping[str, Any],
+) -> dict[str, Any]:
+    def first_output_size(suffixes: tuple[str, ...]) -> int | None:
+        for key, value in state_dict.items():
+            key_text = str(key)
+            if not any(key_text.endswith(suffix) for suffix in suffixes):
+                continue
+            shape = getattr(value, "shape", None)
+            if shape is None or len(shape) < 1:
+                continue
+            return int(shape[0])
+        return None
+
+    reward_size = first_output_size(
+        (
+            "dynamics_network.fc_reward_head.3.weight",
+            "dynamics_network.reward_head.3.weight",
+            "reward_head.3.weight",
+        )
+    )
+    value_size = first_output_size(
+        (
+            "prediction_network.fc_value.3.weight",
+            "prediction_network.value_head.3.weight",
+            "value_head.3.weight",
+        )
+    )
+    config: dict[str, Any] = {}
+    if reward_size is not None:
+        config["model_reward_support_size"] = reward_size
+    if value_size is not None:
+        config["model_value_support_size"] = value_size
+    sizes = [size for size in (reward_size, value_size) if size is not None]
+    if sizes and all(size == sizes[0] for size in sizes) and sizes[0] % 2 == 1:
+        config["model_support_scale"] = (sizes[0] - 1) // 2
+    return config
+
+
 def _make_policy_and_env(
     *,
     state_dict: dict[str, Any],
@@ -632,6 +671,7 @@ def _make_policy_and_env(
     model_env_variant = model_env_variant or env_variant
     # Only used to rebuild the checkpoint model shape; survival scoring stays steps-based.
     model_reward_variant = model_reward_variant or reward_variant
+    model_target_patches: list[dict[str, Any]] = []
     if model_env_variant != env_variant or model_reward_variant != reward_variant:
         from curvyzero.infra.modal.lightzero_curvyzero_stacked_debug_visual_survival_train import (
             _lightzero_target_config_for_reward,
@@ -643,16 +683,28 @@ def _make_policy_and_env(
             reward_variant=model_reward_variant,
             source_max_steps=source_max_steps,
         )
-        for patch in _target_config_patches(
+        model_target_patches.extend(_target_config_patches(
             patched["main_config"],
             model_target_config,
-        ):
-            patched["surface"].setdefault("model_target_config_patches", []).append(
-                patch
-            )
+        ))
         patched["surface"]["model_env_variant"] = model_env_variant
         patched["surface"]["model_reward_variant"] = model_reward_variant
         patched["surface"]["model_lightzero_target_config"] = model_target_config
+    inferred_support_config = _infer_model_support_config_from_state_dict(state_dict)
+    if inferred_support_config:
+        from curvyzero.infra.modal.lightzero_curvyzero_stacked_debug_visual_survival_train import (
+            _target_config_patches,
+        )
+
+        model_target_patches.extend(_target_config_patches(
+            patched["main_config"],
+            inferred_support_config,
+        ))
+        patched["surface"]["checkpoint_inferred_model_support_config"] = (
+            inferred_support_config
+        )
+    if model_target_patches:
+        patched["surface"]["model_target_config_patches"] = model_target_patches
     cfg = compile_config(
         copy.deepcopy(patched["main_config"]),
         seed=seed,

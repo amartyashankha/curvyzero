@@ -6,12 +6,19 @@ the full 2P gap catalog.
 
 ## Plain Answer
 
+Status: active source-state/native visual consistency gate. The active product
+path is source-state RGB renderer -> gray64 -> frame stack. `browser_lines` is
+the default browser-style source-state renderer, and `body_circles_fast` is an
+explicit circle-per-body approximation for speed and legacy profiling. This is
+still not a browser pixel parity claim.
+
 `scripts/compare_2p_raw_visual_observation.py` checks whether the source-shaped
-2P state and the fast vector runtime produce the same trainer visual frame.
-The product path is one clean image path: source-state browser-like RGB64 raw
-frame -> deterministic grayscale `uint8[1,64,64]` -> normalized stack
-`float32[4,64,64]`. This is still not a real browser/DOM canvas pixel-parity
-claim.
+2P state and the fast vector runtime produce the same source-state/native
+product image frame. The active product path is one clean image path:
+source-state browser-style RGB64 raw frame -> deterministic gray64
+`uint8[1,64,64]` -> normalized frame stack. The harness directly compares
+gray64; trainer wrapper/replay propagation must be proven separately. This is
+not a real browser/DOM canvas pixel-parity claim.
 
 For each covered scenario, the harness renders:
 
@@ -22,18 +29,13 @@ It compares the two frames at reset/setup and after each scripted step until
 the scenario ends or `--max-steps` stops it. A clean pass means exact pixel
 equality: `max_abs_diff=0` and `mismatch_pixels=0`.
 
-Current working-doc state: `core2p` is the active 2P canvas-gray64 gate and is
-reported as exact across 34 scenarios. That includes the long no-bonus wall
-terminal, movement, normal-wall/draw, collision-order, borderless,
-`BonusSelfSmall`, `BonusGameClear`, `BonusGameBorderless`, four natural bonus
-spawn/retry/cap fixtures, and eight programmatic source-snapshot stress cases,
-including printing trail emission, opponent/own body collision edges,
-PrintManager trail-gap boundary emission, and explicit 2P survivor
-warmdown-frame movement/death.
-The harness also has two intentional mismatch canaries that remove a visible
-world body or a visible map bonus and must fail. The PrintManager
-random-call-order fixture stays outside gray64 because it proves RNG/event
-order, not a different rendered frame.
+Current working-doc state: `core2p` is an active source-vs-vector native render
+gate. It was reported exact across 35 scenarios under the shared source-state
+renderer. Keep that result as source-state raster regression evidence only, not
+browser canvas pixel evidence. The harness also has two intentional mismatch
+canaries that remove a visible world body or a visible map bonus and must fail.
+The PrintManager random-call-order fixture stays outside gray64 because it
+proves RNG/event order, not a different rendered frame.
 
 There is also a separate bonus64 v1 typed/status gate. It does not replace
 gray64. It checks active map bonus mask/type planes for all 12 source-default
@@ -42,27 +44,29 @@ values. Treat bonus64/rich tensors as diagnostic/proof surfaces for hidden
 bonus facts, not as the product trainer default and not as a parallel rich
 observation path.
 
-Use `--suite full2p` when you want the current one-line visual answer. On
-2026-05-11 it passed:
+Use `--suite full2p` as the current combined source-state/native visual
+consistency command. The recorded 2026-05-11 result was:
 
 ```bash
 uv run python scripts/compare_2p_raw_visual_observation.py --suite full2p --format plain
-# PASS full_2p_source_state_visual_gate canvas_gray64=34/34 typed_bonus=12/12 canaries=2/2 mismatch_pixels=0 max_abs_diff=0.0 expected_canary_mismatch_pixels=81
+# PASS full_2p_source_state_visual_gate canvas_gray64=35/35 typed_bonus=12/12 final_obs=pass canaries=2/2 mismatch_pixels=0 max_abs_diff=0.0 expected_canary_mismatch_pixels=78
 ```
 
-Read that line carefully: it means the current 2P canvas-gray64 visual gate and
-the separate diagnostic bonus64 gate pass. It does not mean real browser canvas
-parity, wrapper/replay propagation, or a full trainer-ready environment has
-been proven. It also does not mean the trainer consumes bonus64; the
-source-state training wrapper consumes stacked canvas-gray64.
+Read that line carefully: it means only that source and vector matched through
+the source-state/native render path and that the separate diagnostic bonus64
+gate passed. It does not mean real browser canvas parity, wrapper/replay
+propagation, or a full trainer-ready environment has been proven. It also does
+not mean the trainer consumes bonus64. The intended product path stacks gray64,
+and trainer/replay propagation remains open until a direct proof names it.
 
 Raw pictures or debug renders may look grayscale by design when they are showing
 the gray64 tensor. That says nothing about the browser canvas palette. Keep the
-model-facing tensor surface separate from the browser/canvas render surface.
+candidate model-observation tensor surface separate from the browser/canvas
+render surface.
 
 ## Why It Is Useful
 
-- It catches mistakes in the actual model-facing raster, not just simulator
+- It catches mistakes in the candidate model-observation raster, not just simulator
   state.
 - It exposes missing vector geometry: heads, trails, bodies, wall deaths,
   bonus bodies, cleared bodies, terminal frames, and reset/setup placement.
@@ -70,7 +74,7 @@ model-facing tensor surface separate from the browser/canvas render surface.
   value, vector value, nonzero pixel counts, and optional PGM diff images.
 - It has intentional failure canaries, so we know the alarm fires when a visible
   source fact is missing.
-- It keeps the LightZero visual path honest: the tensor can be source-state
+- It keeps the candidate LightZero visual path honest: the tensor can be source-state
   faithful before anyone claims learning quality.
 - It separates source-state observation fidelity from browser/render fidelity,
   which should be a later human/debug check.
@@ -79,9 +83,12 @@ model-facing tensor surface separate from the browser/canvas render surface.
 
 - Browser/canvas pixels, antialiasing, palette, viewport scaling, sprite style,
   browser timing, or network render payloads.
+- Real browser trail-shape parity. `browser_lines` is the default browser-style
+  source-state renderer, but it is still a native/source-state implementation.
+  `body_circles_fast` must stay labeled approximate and should not be cited as
+  browser-style fidelity evidence.
 - Hidden state that a grayscale screenshot-like observation does not encode.
-  Bonus type and active stack timers are not separate channels in the trainer
-  image.
+  Bonus type and active stack timers are not separate channels in gray64.
 - Bonus stack/status facts. The bonus64 v1 companion gate covers the first
   typed/status slice, but it still does not encode `BonusAllColor` post-catch
   color rotation or a typed post-catch `BonusGameClear` status plane. It is a
@@ -91,7 +98,7 @@ model-facing tensor surface separate from the browser/canvas render surface.
 - Replay completeness, reward correctness, two-seat self-play policy mapping,
   or final observation propagation through trainer/replay wrappers.
 - 3P/4P behavior. This harness is intentionally 2P-only.
-- Bugs shared by both canvas-gray64 renderers, or state differences that
+- Bugs shared by both source-state gray64 renderers, or state differences that
   quantize to the same 64x64 pixels.
 
 Also keep the size wording straight: the source 2P arena is 88 source units.
@@ -143,12 +150,14 @@ RNG starts at `BonusManager` setup, not the ordinary forced-state seeding path.
 
 ## Next Best 2P Scenarios
 
-Add canvas-gray64 cases only when the visual geometry should actually change.
+Add source-state gray64 cases only when the visual geometry should actually change.
 Expand bonus64 v1 only when source-fidelity proof needs hidden bonus facts that
 are still not represented.
 
 Best next additions:
 
+- Build a real browser/canvas pixel harness with golden browser frames. The
+  existing `full2p` gate is source-state/native visual consistency only.
 - JS/original fixture parity for the programmatic bonus stress cases:
   SelfMaster body-hit protection, borderless expiry before wall death, and
   GameClear before body collision.

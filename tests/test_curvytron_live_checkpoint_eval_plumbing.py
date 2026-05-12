@@ -293,6 +293,143 @@ def test_copy_source_state_raw_frame_prefers_raw_observation_and_returns_copy():
     assert raw[0, 0, 0] == 0
 
 
+def test_checkpoint_gif_rgb_frame_helper_prefers_rgb_raw_observation():
+    raw_rgb = np.zeros((64, 64, 3), dtype=np.uint8)
+    raw_rgb[:, :] = np.asarray([3, 17, 241], dtype=np.uint8)
+
+    class Env:
+        raw_calls = 0
+        human_calls = 0
+
+        def raw_observation(self):
+            self.raw_calls += 1
+            return raw_rgb
+
+        def human_rgb_observation(self, *, frame_size):
+            self.human_calls += 1
+            raise AssertionError("RGB raw_observation should win")
+
+    env = Env()
+
+    frame, source = train_mod._copy_source_state_human_rgb_frame_with_source(
+        env,
+        frame_size=128,
+    )
+
+    assert env.raw_calls == 1
+    assert env.human_calls == 0
+    assert source["source"] == "raw_observation"
+    assert source["input_shape"] == [64, 64, 3]
+    assert source["output_shape"] == [128, 128, 3]
+    assert source["resized_nearest"] is True
+    assert frame.shape == (128, 128, 3)
+    assert frame.dtype == np.uint8
+    assert np.array_equal(frame[0, 0], np.asarray([3, 17, 241], dtype=np.uint8))
+    assert not np.shares_memory(frame, raw_rgb)
+
+
+def test_checkpoint_gif_frame_helper_skips_turn_commit_gray_raw_for_rgb_canvas_like():
+    old_gray_raw = np.full((1, 64, 64), 199, dtype=np.uint8)
+    canvas_rgb = np.zeros((96, 96, 3), dtype=np.uint8)
+    canvas_rgb[:, :] = np.asarray([0, 255, 0], dtype=np.uint8)
+    canvas_rgb[10, 20] = np.asarray([255, 0, 0], dtype=np.uint8)
+
+    class Env:
+        raw_calls = 0
+        human_calls = 0
+        render_calls = 0
+
+        def raw_observation(self):
+            self.raw_calls += 1
+            return old_gray_raw
+
+        def human_rgb_observation(self, *, frame_size):
+            self.human_calls += 1
+            assert frame_size == 96
+            return canvas_rgb
+
+        def render(self, mode):
+            self.render_calls += 1
+            raise AssertionError(f"human_rgb_observation should be enough for {mode}")
+
+    env = Env()
+
+    frame, source = train_mod._copy_source_state_human_rgb_frame_with_source(
+        env,
+        frame_size=96,
+    )
+
+    assert env.raw_calls == 1
+    assert env.human_calls == 1
+    assert env.render_calls == 0
+    assert source["source"] == "human_rgb_observation"
+    assert source["skipped_prior_sources"] == [
+        {
+            "source": "raw_observation",
+            "status": "non_rgb",
+            "shape": [1, 64, 64],
+            "dtype": "uint8",
+        }
+    ]
+    assert frame.shape == (96, 96, 3)
+    assert np.array_equal(frame[10, 20], np.asarray([255, 0, 0], dtype=np.uint8))
+    assert not np.all(frame[:, :, 0] == frame[:, :, 1])
+
+
+def test_checkpoint_gif_turn_commit_capture_uses_human_rgb_after_trail_points():
+    from curvyzero.env.vector_visual_observation import (
+        SOURCE_STATE_RGB_CANVAS_LIKE_PLAYER_RGB,
+    )
+    from curvyzero.training.curvyzero_source_state_visual_turn_commit_lightzero_env import (
+        CurvyZeroSourceStateVisualTurnCommitLightZeroLocalEnv,
+    )
+
+    env = CurvyZeroSourceStateVisualTurnCommitLightZeroLocalEnv(
+        {
+            "source_max_steps": 64,
+            "max_ticks": 64,
+            "disable_death_for_profile": True,
+        }
+    )
+    try:
+        env.reset(seed=0)
+        for _step in range(12):
+            env.step(1)
+            timestep = env.step(1)
+            assert timestep.info["physical_env_advanced"] is True
+
+        frame, source = train_mod._copy_source_state_human_rgb_frame_with_source(
+            env,
+            frame_size=64,
+        )
+        state = env._env.state
+        body_cursor = int(state["body_write_cursor"][0])
+        map_size = float(state["map_size"][0])
+        player_colors = np.asarray(SOURCE_STATE_RGB_CANVAS_LIKE_PLAYER_RGB, dtype=np.uint8)
+
+        visible_trail_pixels = []
+        for slot in range(body_cursor):
+            if not bool(state["body_active"][0, slot]):
+                continue
+            position = state["body_pos"][0, slot]
+            owner = int(state["body_owner"][0, slot])
+            head_distance = np.linalg.norm(state["pos"][0] - position, axis=1).min()
+            if head_distance <= 2.5:
+                continue
+            px = int(np.clip(np.rint((float(position[0]) / map_size) * 63.0), 0, 63))
+            py = int(np.clip(np.rint((float(position[1]) / map_size) * 63.0), 0, 63))
+            if np.array_equal(frame[py, px], player_colors[owner]):
+                visible_trail_pixels.append((slot, owner))
+
+        assert source["source"] == "human_rgb_observation"
+        assert source["skipped_prior_sources"][0]["source"] == "raw_observation"
+        assert source["skipped_prior_sources"][0]["shape"] == [1, 64, 64]
+        assert body_cursor > 2
+        assert visible_trail_pixels
+    finally:
+        env.close()
+
+
 def test_live_checkpoint_trigger_spawns_eval_and_selfplay_gif_without_volume_commit(
     tmp_path, monkeypatch
 ):
@@ -871,8 +1008,69 @@ def test_local_launcher_passes_gif_config_to_poller_and_prints_enabled(
     assert fake_poller.calls[0]["background_gif_frame_stride"] == 3
     assert fake_poller.calls[0]["background_gif_fps"] == 12.5
     assert fake_poller.calls[0]["background_gif_scale"] == 2
-    printed = capsys.readouterr().out
-    assert '"function_call_id": "fc-train"' in printed
-    assert '"poller_function_call_id": "fc-poller"' in printed
-    assert '"launch_kind": "poller"' in printed
-    assert '"selfplay_gif_enabled": true' in printed
+
+
+def test_local_two_seat_launcher_passes_trail_render_mode(capsys, monkeypatch):
+    class FakeCall:
+        object_id = "fc-two-seat"
+
+    class FakeFunction:
+        def __init__(self) -> None:
+            self.payloads = []
+
+        def spawn(self, payload):
+            self.payloads.append(payload)
+            return FakeCall()
+
+    fake_train = FakeFunction()
+    monkeypatch.setattr(
+        train_mod,
+        "lightzero_curvytron_two_seat_selfplay_cpu",
+        fake_train,
+    )
+
+    train_mod.main(
+        mode=train_mod.TWO_SEAT_SELFPLAY_MODE,
+        compute=train_mod.COMPUTE_CPU,
+        run_id="two-seat-render-mode",
+        attempt_id="attempt-render-mode",
+        wait_for_train=False,
+        background_eval_enabled=False,
+        background_gif_enabled=False,
+        two_seat_death_mode="profile_no_death",
+        two_seat_trail_render_mode=train_mod.TRAIL_RENDER_MODE_BODY_CIRCLES_FAST,
+    )
+
+    payload = fake_train.payloads[0]
+    printed = json.loads(capsys.readouterr().out)
+
+    assert payload["trail_render_mode"] == train_mod.TRAIL_RENDER_MODE_BODY_CIRCLES_FAST
+    assert payload["death_mode"] == "profile_no_death"
+    assert printed["command"]["trail_render_mode"] == (
+        train_mod.TRAIL_RENDER_MODE_BODY_CIRCLES_FAST
+    )
+    assert printed["command"]["death_mode"] == "profile_no_death"
+
+
+def test_local_two_seat_launcher_rejects_unknown_trail_render_mode(monkeypatch):
+    class FakeFunction:
+        def spawn(self, payload):
+            raise AssertionError("train should not launch")
+
+    monkeypatch.setattr(
+        train_mod,
+        "lightzero_curvytron_two_seat_selfplay_cpu",
+        FakeFunction(),
+    )
+
+    with pytest.raises(ValueError, match="trail render mode"):
+        train_mod.main(
+            mode=train_mod.TWO_SEAT_SELFPLAY_MODE,
+            compute=train_mod.COMPUTE_CPU,
+            run_id="two-seat-render-mode-bad",
+            attempt_id="attempt-render-mode-bad",
+            wait_for_train=False,
+            background_eval_enabled=False,
+            background_gif_enabled=False,
+            two_seat_trail_render_mode="mystery",
+        )

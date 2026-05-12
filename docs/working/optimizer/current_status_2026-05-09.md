@@ -5,6 +5,27 @@ Date: 2026-05-09
 Optimizer scope: synthesize speed and training-loop setup. Do not claim
 environment fidelity or policy quality from this lane.
 
+Fresh 2026-05-11 late correction: Coach canonical CurvyZero launcher is
+`src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py --mode two-seat-selfplay`.
+The fixed/frozen-opponent native stock `train_muzero` path is controls/profile
+evidence only. Stock LightZero in-loop eval is separate from CurvyZero
+checkpoint eval/inspection/GIF.
+
+Fresh 2026-05-12 render-path correction: canonical two-seat self-play now has
+an explicit `two_seat_trail_render_mode` knob. Default is `browser_lines`, and
+the two-seat stack now uses the full source-state RGB-to-gray path
+`render_source_state_canvas_gray64(...)` before stacking. `body_circles_fast`
+is an explicit profiling comparison mode, not the default. The two-seat runner
+also exposes `two_seat_death_mode`; use `profile_no_death` only for optimizer
+long-survival profiling. This matters because the previous two-seat stack was
+still using the older direct gray renderer while the launcher looked canonical.
+Local focused validation:
+
+```text
+uv run pytest tests/test_curvytron_two_seat_render_mode.py tests/test_curvytron_live_checkpoint_eval_plumbing.py -q
+24 passed, 1 skipped
+```
+
 Fresh 2026-05-10 read: active optimizer target is CurvyTron visual, non-ALE,
 wrapper-stacked debug survival profiling. The missing artifact is a bounded
 `[4,64,64]` collect -> MCTS/search -> replay -> sample -> learner profile.
@@ -12,9 +33,9 @@ Scalar/ray rows and old Pong profiles are diagnostics/history unless explicitly
 reopened; Pong eval-speed work is a separate optimizer side task about runtime
 architecture, not CurvyTron readiness.
 
-Fresh 2026-05-11 read: active profile and coach-facing CurvyTron trainer target
-is now the source-state visual native LightZero path, not the old debug visual
-surface: `env_variant=source_state_fixed_opponent`, non-ALE `[4,64,64]`,
+Fresh 2026-05-11 read: active fixed/frozen-opponent stock profile target is now
+the source-state visual native LightZero path, not the old debug visual surface:
+`env_variant=source_state_fixed_opponent`, non-ALE `[4,64,64]`,
 `train_muzero`, fixed/frozen opponent. The latest evidence is in
 [CurvyTron native LightZero profile](curvytron_native_lightzero_profile_2026-05-11.md).
 Renderer/stack/obs packing was a real long-trail bottleneck and has been
@@ -74,25 +95,20 @@ subprocess teardown.
 `iteration_35`, and `ckpt_best`. This proves the normal trainer path runs; it
 is not a learning-quality claim.
 
-2026-05-11 coach-usage check: Coach should use the native source-state trainer
-path for CurvyTron unless a newer decision replaces it. Native single-ego runs
-go through
-`src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py`
-with `env_variant=source_state_fixed_opponent`, source-state `[4,64,64]`
-visual observations, fixed/frozen opponent support, and
-stock LightZero `train_muzero`. The `--mode profile` / `phase_profile` hook is
-available there, but normal `--mode train` runs do not install profiler stop
-hooks. Separate two-seat custom-loop runs use
-`lightzero_curvytron_two_seat_train_smoke.py`; those are not the native
-`train_muzero` profile path, but they reuse optimizer profile helpers for
-LightZero policy/search/learn-mode plumbing. Treat the two lanes separately in
-speed reports.
+2026-05-11 coach-usage correction: Coach should use
+`src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py --mode two-seat-selfplay`.
+Native single-ego fixed/frozen-opponent runs through stock LightZero
+`train_muzero` are controls/profiling only. The older
+`lightzero_curvytron_two_seat_train_smoke.py` wrapper has been deleted.
+Historical results from that wrapper are smoke evidence only, not live launch
+instructions. Treat these lanes separately in speed reports.
 
 MCTS/collector clarity: native single-ego runs call stock LightZero
 `train_muzero`, so collector, GameBuffer, learner loop, and MuZero MCTS/search
-are LightZero internals with our env/config wrapper around them. The custom
-two-seat smoke does not use stock `train_muzero`, the LightZero Collector, or
-the upstream GameBuffer. It does use installed LightZero `MuZeroPolicy`
+are LightZero internals with our env/config wrapper around them. The current
+two-seat self-play bridge, reached through the canonical Coach launcher, does
+not use stock `train_muzero`, the LightZero Collector, or the upstream
+GameBuffer. It does use installed LightZero `MuZeroPolicy`
 `collect_mode.forward`/`eval_mode.forward` and `learn_mode.forward`, but action
 selection is currently one active policy row at a time. If the two-seat lane
 becomes speed-critical, first profile/batch that row-wise policy/search call;
@@ -330,12 +346,12 @@ truth.
   action-weights D2H median `0.0055ms`. First action conversion was `19.14ms`,
   likely first-use/sync overhead. This synthetic boundary does not measure CPU
   ray generation or source fidelity.
-- Reprioritized next optimizer actions: keep the native source-state
-  `train_muzero` path as the active trainer/profile surface; use the completed
-  c128/c256 and sim50 profiles as the single-container baseline; then evaluate
-  coarse synchronous actor/search fanout if single-process LightZero remains
-  the limit. Keep scalar-ray policy/search and ray work as diagnostics, not the
-  main path.
+- Reprioritized next optimizer actions: keep the two-seat self-play launcher as
+  the Coach canonical path; keep native source-state `train_muzero` as the
+  stock-control/profile surface; use the completed c128/c256 and sim50 profiles
+  as the single-container control baseline; then evaluate coarse synchronous
+  actor/search fanout if single-process LightZero remains the limit. Keep
+  scalar-ray policy/search and ray work as diagnostics, not the main path.
 
 ## Current Read
 
