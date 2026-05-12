@@ -7,17 +7,19 @@ environment fidelity or policy quality from this lane.
 
 Final 2026-05-12 Coach handoff state: use the canonical two-seat launcher
 `src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py --mode two-seat-selfplay`.
-The main overnight recommendation is a broad CurvyTron matrix, mostly L4/T4
-with `fast_gray64_direct`, normal death, accumulated replay, CurvyZero
-checkpoint eval/GIF on, and stock LightZero in-loop eval off. Keep browser-lines
-controls because `fast_gray64_direct` is a strong semantic approximation, not a
-browser pixel-fidelity claim. `--two-seat-learning-rate` is now wired through
-the canonical Modal launcher and checkpoint metadata, so Coach can run the LR
-sweep in the recommendation doc. Checkpoint cadence should be chosen from the
-first 20-50 warm-up iterations by wall-clock target: about every 5-10 minutes
-for canaries, 10-20 minutes for the overnight matrix, and 30-60 minutes for
-later long follow-ups. Default stochasticity is observation noise `0.10`; action
-no-op and policy repeat skip are off unless explicitly requested. Full
+The main overnight recommendation is an aggressive approximation-heavy CurvyTron
+matrix, mostly L4/T4 with `fast_gray64_direct`, normal death, accumulated replay,
+CurvyZero checkpoint eval/GIF on, and stock LightZero in-loop eval off.
+Browser-lines is only a tiny optional sentinel, not a control lane and not a
+gate for the main launch. `fast_gray64_direct` is a strong semantic
+approximation, not a browser pixel-fidelity claim, but it is the speed surface
+we should actually train through now. `--two-seat-learning-rate` is wired
+through the canonical Modal launcher and checkpoint metadata, so Coach can run
+the LR sweep in the recommendation doc. Checkpoint cadence should be chosen from
+the first 20-50 warm-up iterations by wall-clock target: about every 5-10
+minutes for canaries, 10-20 minutes for the overnight matrix, and 30-60 minutes
+for later long follow-ups. Default stochasticity is observation noise `0.10`;
+action no-op and policy repeat skip are off unless explicitly requested. Full
 recommendations live in
 [coach next training run recommendations](coach_next_training_run_recommendations_2026-05-12.md).
 Focused validation after the final wiring:
@@ -299,13 +301,14 @@ B128/L4/sim8 fast_gray64_direct:  about 726s wall, worse per replay row
 B128/H100/sim8 fast_gray64_direct about 429s wall, useful scale probe only
 ```
 
-Plain recommendation: Coach should run an overnight matrix, not one sacred
-config. Main lane is L4/T4, B64, sim8, collect64, updates4, learner sample 256,
-accumulated replay, normal death, sparse checkpoints, and `fast_gray64_direct`.
-Add B64/sim16, B32/sim8, B128/sim8 on L4, B128/sim8 on H100, plus B32 and B16
-`browser_lines` controls. This gives speed, search, batch scaling, hardware
-scaling, and fidelity-control signal without turning the morning readout into a
-hundred-run mess. Details are in
+Plain recommendation, updated after capacity clarification: Coach should run an
+aggressive approximation-heavy overnight matrix, not one sacred config. Main
+lane is L4/T4, B64, sim8, collect64, updates4, learner sample 256, accumulated
+replay, normal death, sparse checkpoints, and `fast_gray64_direct`. Add wider
+fast-direct seeds, search, batch, collect, learner, LR, reward, stochasticity,
+and H100 probes. Keep at most one or two `browser_lines` sentinel runs at the
+end; they are not a control lane and should not gate the main launch. Details
+are in
 [coach next training run recommendations](coach_next_training_run_recommendations_2026-05-12.md).
 
 Fresh 2026-05-10 read: active optimizer target is CurvyTron visual, non-ALE,

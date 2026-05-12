@@ -3,11 +3,12 @@
 Date: 2026-05-12
 
 Copy-paste handoff: use the canonical CurvyTron two-seat current-policy
-self-play launcher, run a broad but readable overnight matrix, and keep the
-fast visual lane honest with browser-lines controls. The default recommendation
-is mostly L4/T4, `fast_gray64_direct`, normal death, accumulated replay,
-sparse checkpoints, CurvyZero checkpoint eval/GIF on, and stock LightZero
-in-loop eval off. Do not use the old two-seat Modal smoke wrapper.
+self-play launcher and run an aggressive approximation-heavy overnight matrix.
+The main training surface is `fast_gray64_direct`, not `browser_lines`.
+Browser-lines runs are optional sentinels only; do not let them gate or slow the
+main launch. The default recommendation is mostly L4/T4, `fast_gray64_direct`,
+normal death, accumulated replay, CurvyZero checkpoint eval/GIF on, and stock
+LightZero in-loop eval off. Do not use the old two-seat Modal smoke wrapper.
 
 ## Current Truth
 
@@ -52,9 +53,9 @@ in-loop eval off. Do not use the old two-seat Modal smoke wrapper.
   policy/search, environment stepping, and observation noise.
 - B128/L4 fast was slower per replay row than B64/L4. B128/H100 was much
   better than B128/L4, but not enough to make H100 the default.
-- Plain Amdahl read: use fast direct for most overnight learning probes, keep
-  browser-lines controls, and only pay H100 where batch/search is big enough to
-  expose GPU benefit.
+- Plain Amdahl read: use fast direct for the main overnight learning probes.
+  Browser-lines is a slow fidelity sentinel, not a control lane that gets equal
+  budget. Pay H100 where batch/search is big enough to expose GPU benefit.
 
 ## Base Command Shape
 
@@ -104,44 +105,55 @@ Brief checkpoint recommendation:
 - Profiling-only runs: avoid initial checkpoints and set checkpoint cadence
   high enough that artifact work is not part of the timing result.
 
-## Recommended 30-Run Matrix
+## Recommended 40-Run Matrix
 
-Use distinct run IDs. For paired ablations, keep the same seed family so the
-comparison is not pure noise. If this is too many, run the first 12 plus the two
-browser controls.
+Capacity is fine, so bias hard toward the approximation lane. Use distinct run
+IDs. For paired ablations, keep the same seed family so the comparison is not
+pure noise. Browser-lines rows are optional sentinels at the end; do not wait
+for them before launching the approximation matrix.
 
 ```text
 id  lane                 gpu       render              B    sim  collect  upd  sample  lr       reward             stochastic
 01  main                 L4/T4     fast_gray64_direct  64   8    64       4    256     unset    default            default
 02  main_seed            L4/T4     fast_gray64_direct  64   8    64       4    256     unset    default            default
 03  main_seed            L4/T4     fast_gray64_direct  64   8    64       4    256     unset    default            default
-04  search16             L4/T4     fast_gray64_direct  64   16   64       4    256     unset    default            default
-05  search32             L4/T4     fast_gray64_direct  64   32   64       4    256     unset    default            default
-06  small_batch          L4/T4     fast_gray64_direct  32   8    64       4    128     unset    default            default
-07  large_batch_l4       L4/T4     fast_gray64_direct  128  8    64       4    512     unset    default            default
-08  large_batch_h100     H100      fast_gray64_direct  128  8    64       4    512     unset    default            default
-09  large_search_h100    H100      fast_gray64_direct  128  16   64       4    512     unset    default            default
-10  collect128           L4/T4     fast_gray64_direct  64   8    128      4    256     unset    default            default
-11  updates8             L4/T4     fast_gray64_direct  64   8    64       8    256     unset    default            default
-12  learner512           L4/T4     fast_gray64_direct  64   8    64       4    512     unset    default            default
-13  lr_1e-4              L4/T4     fast_gray64_direct  64   8    64       4    256     1e-4     default            default
-14  lr_3e-4              L4/T4     fast_gray64_direct  64   8    64       4    256     3e-4     default            default
-15  lr_1e-3              L4/T4     fast_gray64_direct  64   8    64       4    256     1e-3     default            default
-16  lr_h100_3e-4         H100      fast_gray64_direct  128  8    64       4    512     3e-4     default            default
-17  no_bonus             L4/T4     fast_gray64_direct  64   8    64       4    256     unset    no_bonus           default
-18  terminal_only        L4/T4     fast_gray64_direct  64   8    64       4    256     unset    terminal_only      default
-19  stronger_terminal    L4/T4     fast_gray64_direct  64   8    64       4    256     unset    terminal_x2        default
-20  survival_only_ctrl   L4/T4     fast_gray64_direct  64   8    64       4    256     unset    survival_only      default
-21  no_obs_noise         L4/T4     fast_gray64_direct  64   8    64       4    256     unset    default            obs_noise_0
-22  action_repeat        L4/T4     fast_gray64_direct  64   8    64       4    256     unset    default            repeat_20pct
-23  action_noop_05       L4/T4     fast_gray64_direct  64   8    64       4    256     unset    default            action_noop_5pct
-24  no_stochasticity     L4/T4     fast_gray64_direct  64   8    64       4    256     unset    default            none
-25  browser_control      L4/T4     browser_lines       32   8    64       4    256     unset    default            default
-26  browser_search       L4/T4     browser_lines       32   16   64       4    256     unset    default            default
-27  browser_lr_3e-4      L4/T4     browser_lines       32   8    64       4    256     3e-4     default            default
-28  browser_no_bonus     L4/T4     browser_lines       32   8    64       4    256     unset    no_bonus           default
-29  h100_search32        H100      fast_gray64_direct  128  32   64       4    512     unset    default            default
-30  h100_collect128      H100      fast_gray64_direct  128  16   128      4    512     unset    default            default
+04  main_seed            L4/T4     fast_gray64_direct  64   8    64       4    256     unset    default            default
+05  main_seed            L4/T4     fast_gray64_direct  64   8    64       4    256     unset    default            default
+06  search16             L4/T4     fast_gray64_direct  64   16   64       4    256     unset    default            default
+07  search32             L4/T4     fast_gray64_direct  64   32   64       4    256     unset    default            default
+08  small_batch          L4/T4     fast_gray64_direct  32   8    64       4    128     unset    default            default
+09  large_batch_l4       L4/T4     fast_gray64_direct  128  8    64       4    512     unset    default            default
+10  large_search_l4      L4/T4     fast_gray64_direct  128  16   64       4    512     unset    default            default
+11  collect128           L4/T4     fast_gray64_direct  64   8    128      4    256     unset    default            default
+12  collect256           L4/T4     fast_gray64_direct  64   8    256      4    256     unset    default            default
+13  updates8             L4/T4     fast_gray64_direct  64   8    64       8    256     unset    default            default
+14  updates16            L4/T4     fast_gray64_direct  64   8    64       16   256     unset    default            default
+15  learner512           L4/T4     fast_gray64_direct  64   8    64       4    512     unset    default            default
+16  learner1024          L4/T4     fast_gray64_direct  128  8    64       4    1024    unset    default            default
+17  lr_3e-5              L4/T4     fast_gray64_direct  64   8    64       4    256     3e-5     default            default
+18  lr_1e-4              L4/T4     fast_gray64_direct  64   8    64       4    256     1e-4     default            default
+19  lr_3e-4              L4/T4     fast_gray64_direct  64   8    64       4    256     3e-4     default            default
+20  lr_1e-3              L4/T4     fast_gray64_direct  64   8    64       4    256     1e-3     default            default
+21  lr_3e-3              L4/T4     fast_gray64_direct  64   8    64       4    256     3e-3     default            default
+22  no_bonus             L4/T4     fast_gray64_direct  64   8    64       4    256     unset    no_bonus           default
+23  terminal_only        L4/T4     fast_gray64_direct  64   8    64       4    256     unset    terminal_only      default
+24  stronger_terminal    L4/T4     fast_gray64_direct  64   8    64       4    256     unset    terminal_x2        default
+25  survival_only_ctrl   L4/T4     fast_gray64_direct  64   8    64       4    256     unset    survival_only      default
+26  bonus_heavy          L4/T4     fast_gray64_direct  64   8    64       4    256     unset    bonus_x2           default
+27  no_obs_noise         L4/T4     fast_gray64_direct  64   8    64       4    256     unset    default            obs_noise_0
+28  obs_noise_05         L4/T4     fast_gray64_direct  64   8    64       4    256     unset    default            obs_noise_05
+29  obs_noise_20         L4/T4     fast_gray64_direct  64   8    64       4    256     unset    default            obs_noise_20
+30  action_repeat        L4/T4     fast_gray64_direct  64   8    64       4    256     unset    default            repeat_20pct
+31  action_noop_05       L4/T4     fast_gray64_direct  64   8    64       4    256     unset    default            action_noop_5pct
+32  no_stochasticity     L4/T4     fast_gray64_direct  64   8    64       4    256     unset    default            none
+33  large_batch_h100     H100      fast_gray64_direct  128  8    64       4    512     unset    default            default
+34  large_search_h100    H100      fast_gray64_direct  128  16   64       4    512     unset    default            default
+35  h100_search32        H100      fast_gray64_direct  128  32   64       4    512     unset    default            default
+36  h100_collect128      H100      fast_gray64_direct  128  16   128      4    512     unset    default            default
+37  h100_b256            H100      fast_gray64_direct  256  8    64       4    1024    unset    default            default
+38  h100_lr_3e-4         H100      fast_gray64_direct  128  8    64       4    512     3e-4     default            default
+39  browser_sentinel     L4/T4     browser_lines       16   8    64       4    128     unset    default            default
+40  browser_sentinel_lr  L4/T4     browser_lines       16   8    64       4    128     3e-4     default            default
 ```
 
 ## Reward Flags
@@ -171,6 +183,9 @@ terminal_x2:
 survival_only:
   --two-seat-terminal-outcome-reward-per-step 0
   --two-seat-bonus-pickup-reward-per-catch 0
+
+bonus_x2:
+  --two-seat-bonus-pickup-reward-per-catch 0.10
 ```
 
 Plain warning: `terminal_only` is not pure AlphaZero sparse +1/-1. The current
@@ -194,6 +209,12 @@ Use these named variants:
 ```text
 obs_noise_0:
   --two-seat-observation-noise-std 0
+
+obs_noise_05:
+  --two-seat-observation-noise-std 0.05
+
+obs_noise_20:
+  --two-seat-observation-noise-std 0.20
 
 repeat_20pct:
   --two-seat-policy-action-repeat-max 3
@@ -240,21 +261,25 @@ separate no-stochasticity control.
 
 ## Minimal Set If Time Is Short
 
-Run these 12 first:
+Run these 16 first. This is still approximation-heavy:
 
 ```text
 01 main
 02 main_seed
 03 main_seed
-04 search16
-07 large_batch_l4
-08 large_batch_h100
-13 lr_1e-4
-14 lr_3e-4
-17 no_bonus
-18 terminal_only
-21 no_obs_noise
-25 browser_control
+04 main_seed
+05 main_seed
+06 search16
+09 large_batch_l4
+13 updates8
+18 lr_1e-4
+19 lr_3e-4
+22 no_bonus
+23 terminal_only
+27 no_obs_noise
+30 action_repeat
+33 large_batch_h100
+39 browser_sentinel
 ```
 
 Then add the remaining rows if the launch surface is healthy.
