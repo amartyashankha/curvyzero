@@ -4,7 +4,7 @@
 
 - Training collection is not the same path as the GIF trace. The trainer defaults
   to `collect` action selection with `temperature=1.0`, `epsilon=0.25`,
-  no-op-skip `extra_probability=0.20`, and observation noise `0.10`
+  no-op-skip disabled, and observation noise `0.10`
   (`curvytron_two_seat_lightzero_train_smoke.py:115-123,166-179`).
 - The collection path calls `MuZeroPolicy.collect_mode.forward` with temperature
   and epsilon, then records fresh-policy action counts by player
@@ -119,8 +119,10 @@ Facts first:
   skipped ticks look like straight actions in physical histograms.
 - Current timing canaries showed varied fresh collect decisions. That is the
   strongest evidence against immediate collection-path one-action collapse.
-- Physical counts being NOOP-heavy is expected under policy no-op skips because
-  skipped policy chances send action `1` and do not create replay rows.
+- Physical counts being NOOP-heavy is expected when policy no-op skips are
+  enabled because skipped policy chances send action `1` and do not create
+  replay rows. The baseline launch should keep that skip knob off; stochastic
+  variants can turn it on only when we are explicitly testing robustness.
 - GIF greedy traces being mostly one action in older runs means deterministic
   low-entropy eval is a recurring readout/problem, not proof of a newly introduced
   stochasticity bug.
@@ -184,6 +186,8 @@ Fast separator tests before overnight:
 Minimal launch changes:
 
 - Do not rewrite reward, architecture, or self-play today.
+- Keep the baseline run clean: no policy no-op skip. Use stochastic variants
+  deliberately, not as the default.
 - Gate launch on fresh collect-decision entropy/top-action fraction, not physical
   NOOP-heavy counts or GIF strings alone.
 - Add or inspect compact eval margin/visit telemetry for early GIF turns if the

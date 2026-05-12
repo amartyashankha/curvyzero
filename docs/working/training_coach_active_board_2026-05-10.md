@@ -42,7 +42,9 @@ Updated 2026-05-12 after the pre-overnight cleanup pass.
 - Pre-overnight cleanup passed local compile/ruff and Modal smoke coverage for
   the corrected two-seat path. Current reward/no-op meaning:
   skipped policy chances send NOOP and stay out of replay/reward targets;
-  bonus pickup reward is immediate on the exact pickup step.
+  bonus pickup reward is immediate on the exact pickup step. Because skipped
+  physical ticks can hide terminal/bonus credit from replay, policy no-op skip
+  is no longer a safe default for the first serious runs.
 - Default two-seat training horizon and background survival-eval cap are both
   `65,536` steps. GIF max steps stay short by default because GIFs are visual
   samples, not the survival metric.
@@ -55,6 +57,11 @@ Updated 2026-05-12 after the pre-overnight cleanup pass.
   `6,734` fresh rows (`~10.8` rows/s, checkpoint 100 around `4.3h`); B64
   finished 4 iterations in `1,183s` with `12,590` fresh rows (`~10.6` rows/s,
   checkpoint 100 around `8.2h`).
+- Run naming rule: every serious run starts with a readable purpose prefix and
+  names the important variant knobs. Use names like
+  `curvy2seat-selfplay-baseline-noskip-b32-sim8-20260512` or
+  `curvy2seat-selfplay-variant-obsnoise10-b32-sim8-20260512`, not bare seed or
+  vague run ids.
 - Action-collapse rule: a deterministic greedy GIF choosing one action is a
   warning, not proof of training collapse. The overnight blocker is collapse in
   fresh policy-decision histograms from trainer progress. Physical action
@@ -72,11 +79,9 @@ Updated 2026-05-12 after the pre-overnight cleanup pass.
   `autoreset_done_rows(seed=None)` so every env restart gets a fresh per-row
   derived seed. Replay rows and step records log `reset_seed` for audit.
   Source-default natural bonus spawning is on by default; no-bonus is only a
-  controlled ablation. Default stochasticity is mild: the legacy
-  `policy_action_repeat_*` flags now mean policy no-op skips, not held actions.
-  With `min=1`, `max=3`, `extra_probability=0.20`, a seat takes one real policy
-  action, then may skip the next one or two policy chances by sending NOOP.
-  Skipped no-op ticks do not create replay rows or reward targets. Add visual
+  controlled ablation. Default stochasticity is now visual-only: the legacy
+  `policy_action_repeat_*` flags mean policy no-op skips, not held actions, and
+  default to off (`min=1`, `max=1`, `extra_probability=0.0`). Add visual
   Gaussian noise `0.10`, keep random no-op/drop off, and use no warmup schedule.
 - Default two-seat trainer reward is shaped but explicit: the reward float that
   replay/learner consume is tiny survival helper plus immediate same-step bonus

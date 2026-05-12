@@ -75,6 +75,9 @@ from curvyzero.env.vector_visual_observation import SOURCE_STATE_RGB_CANVAS_LIKE
 from curvyzero.env.vector_visual_observation import (
     SOURCE_STATE_RGB_CANVAS_LIKE_TRUTH_LEVEL,
 )
+from curvyzero.env.vector_visual_observation import (
+    TRAIL_RENDER_MODE_BODY_CIRCLES_FAST as _TRAIL_RENDER_MODE_BODY_CIRCLES_FAST,
+)
 from curvyzero.env.vector_visual_observation import TRAIL_RENDER_MODE_DEFAULT
 from curvyzero.infra.modal import run_management as runs
 from curvyzero.training.curvytron_current_policy_selfplay_smoke import (
@@ -258,6 +261,7 @@ from curvyzero.training.curvytron_two_seat_lightzero_train_smoke import (
 APP_NAME = "curvyzero-lightzero-curvytron-visual-survival-train"
 TASK_ID = "lightzero-curvytron-visual-survival"
 VOLUME_NAME = "curvyzero-runs"
+TRAIL_RENDER_MODE_BODY_CIRCLES_FAST = _TRAIL_RENDER_MODE_BODY_CIRCLES_FAST
 LIGHTZERO_VERSION = "0.2.0"
 REMOTE_ROOT = Path("/repo")
 RUNS_MOUNT = Path("/runs")
@@ -7242,6 +7246,22 @@ def _run_two_seat_selfplay_payload(
     natural_bonus_spawn = bool(
         payload.get("natural_bonus_spawn", TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN)
     )
+    terminal_outcome_reward_per_step = float(
+        payload.get(
+            "terminal_outcome_reward_per_step",
+            TWO_SEAT_DEFAULT_TERMINAL_OUTCOME_REWARD_PER_STEP,
+        )
+    )
+    bonus_pickup_reward_per_catch = float(
+        payload.get(
+            "bonus_pickup_reward_per_catch",
+            TWO_SEAT_DEFAULT_BONUS_PICKUP_REWARD_PER_CATCH,
+        )
+    )
+    return_target_discount = float(
+        payload.get("return_target_discount", TWO_SEAT_DEFAULT_RETURN_TARGET_DISCOUNT)
+    )
+    learning_rate = payload.get("learning_rate")
     command = {
         "schema_id": "curvyzero_canonical_two_seat_selfplay_command/v0",
         "mode": TWO_SEAT_SELFPLAY_MODE,
@@ -7253,6 +7273,10 @@ def _run_two_seat_selfplay_payload(
         "use_cuda": bool(use_cuda),
         **payload,
         "natural_bonus_spawn": natural_bonus_spawn,
+        "terminal_outcome_reward_per_step": terminal_outcome_reward_per_step,
+        "bonus_pickup_reward_per_catch": bonus_pickup_reward_per_catch,
+        "return_target_discount": return_target_discount,
+        "learning_rate": learning_rate,
         "gif_browser_run_marker_enabled": gif_browser_run_marker_enabled,
         "gif_browser_run_marker_ref": (
             runs.gif_browser_run_marker_ref(TASK_ID, run_id).as_posix()
@@ -7308,13 +7332,9 @@ def _run_two_seat_selfplay_payload(
         decision_ms=float(payload["decision_ms"]),
         alive_reward=float(payload["alive_reward"]),
         dead_reward=float(payload["dead_reward"]),
-        terminal_outcome_reward_per_step=float(
-            payload["terminal_outcome_reward_per_step"]
-        ),
-        bonus_pickup_reward_per_catch=float(
-            payload["bonus_pickup_reward_per_catch"]
-        ),
-        return_target_discount=float(payload["return_target_discount"]),
+        terminal_outcome_reward_per_step=terminal_outcome_reward_per_step,
+        bonus_pickup_reward_per_catch=bonus_pickup_reward_per_catch,
+        return_target_discount=return_target_discount,
         action_selection_mode=str(payload["action_selection_mode"]),
         collect_temperature=float(payload["collect_temperature"]),
         collect_epsilon=float(payload["collect_epsilon"]),
@@ -7330,6 +7350,7 @@ def _run_two_seat_selfplay_payload(
         ),
         observation_noise_std=float(payload["observation_noise_std"]),
         trail_render_mode=str(payload["trail_render_mode"]),
+        learning_rate=learning_rate,
         use_cuda=bool(use_cuda),
         checkpoint_every_iterations=int(payload["checkpoint_every_iterations"]),
         save_initial_checkpoint=bool(payload["save_initial_checkpoint"]),
@@ -7353,13 +7374,10 @@ def _run_two_seat_selfplay_payload(
             "natural_bonus_spawn": natural_bonus_spawn,
             "alive_reward": payload["alive_reward"],
             "dead_reward": payload["dead_reward"],
-            "terminal_outcome_reward_per_step": payload[
-                "terminal_outcome_reward_per_step"
-            ],
-            "bonus_pickup_reward_per_catch": payload[
-                "bonus_pickup_reward_per_catch"
-            ],
-            "return_target_discount": payload["return_target_discount"],
+            "terminal_outcome_reward_per_step": terminal_outcome_reward_per_step,
+            "bonus_pickup_reward_per_catch": bonus_pickup_reward_per_catch,
+            "return_target_discount": return_target_discount,
+            "learning_rate": learning_rate,
         },
         require_installed_lightzero=True,
     )
@@ -8144,6 +8162,7 @@ def main(
     ),
     two_seat_observation_noise_std: float = TWO_SEAT_DEFAULT_OBSERVATION_NOISE_STD,
     two_seat_trail_render_mode: str = TRAIL_RENDER_MODE_DEFAULT,
+    two_seat_learning_rate: float | None = None,
     two_seat_checkpoint_every_iterations: int | None = None,
     two_seat_save_initial_checkpoint: bool = DEFAULT_TWO_SEAT_SAVE_INITIAL_CHECKPOINT,
     two_seat_progress_every_iterations: int = DEFAULT_TWO_SEAT_PROGRESS_EVERY_ITERATIONS,
@@ -8263,6 +8282,7 @@ def main(
             ),
             "observation_noise_std": two_seat_observation_noise_std,
             "trail_render_mode": two_seat_trail_render_mode,
+            "learning_rate": two_seat_learning_rate,
             "checkpoint_every_iterations": (
                 save_ckpt_after_iter
                 if two_seat_checkpoint_every_iterations is None

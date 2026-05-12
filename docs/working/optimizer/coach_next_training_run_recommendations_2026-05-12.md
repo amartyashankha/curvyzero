@@ -2,182 +2,259 @@
 
 Date: 2026-05-12
 
-Copy-paste handoff: For the overnight learning run, use the canonical two-seat
-path with `fast_gray64_direct`, normal death, L4/T4, `batch_size=64`,
-`num_simulations=8`, `collect_steps_per_iteration=64`,
-`updates_per_iteration=4`, accumulated replay, learner sample size `256`,
-sparse checkpoints, and normal CurvyZero checkpoint eval/GIF observability.
-Also run a smaller `browser_lines` control if capacity permits. The fast mode
-is a strong semantic visual approximation, not browser pixel fidelity: it keeps
-trail/head positions, self/other contrast, bonus presence, and bonus type luma,
-but drops connected line rasterization, sprite texture, antialiasing, and exact
-downsample coverage. Use `profile_no_death` only for timing. Do not default to
-B128, H100, or multi-GPU for the overnight run unless the B64 L4 lane is already
-healthy and Coach wants an expensive scale probe.
+Copy-paste handoff: use the canonical CurvyTron two-seat current-policy
+self-play launcher, run a broad but readable overnight matrix, and keep the
+fast visual lane honest with browser-lines controls. The default recommendation
+is mostly L4/T4, `fast_gray64_direct`, normal death, accumulated replay,
+sparse checkpoints, CurvyZero checkpoint eval/GIF on, and stock LightZero
+in-loop eval off. Do not use the old two-seat Modal smoke wrapper.
 
 ## Current Truth
 
-- Canonical Coach path:
+- Canonical path:
   `src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py --mode two-seat-selfplay`.
 - This is current-policy two-seat self-play. One shared LightZero MuZero policy
-  chooses both players from the same pre-step observation; CurvyTron advances
-  once with the joint action; later learner updates mutate that same policy.
-- Two-seat mode supports `--compute gpu-l4-t4` and `--compute gpu-h100-cpu40`.
-  The old `gpu-l4-t4-cpu40` and `gpu-h100x2-cpu40` shapes are for other
-  stock/control paths, not this canonical mode.
-- Default/render-control mode is `two_seat_trail_render_mode=browser_lines`.
-  `fast_gray64_direct` is the optimizer speed lane. It is acceptable for a
-  speed-first overnight canary if labeled as approximation. `body_circles_fast`
-  is only a historical/speed comparison and is not recommended.
-- Dirty-render production path is the default optimizer recommendation. It is
-  exact-pixel intended and falls back to full render on reset or unsupported
-  cache state.
-- `profile_no_death` is optimizer timing only. Real training should use normal
-  death/reset semantics.
+  chooses both players from the same pre-step state, then CurvyTron advances
+  once with the joint action.
+- The custom part should stay small: CurvyTron environment plus simultaneous
+  action bridge. Keep the learner/search/replay path close to LightZero.
+- `browser_lines` is the closer visual reference. It renders source-state RGB
+  and downsamples to gray64.
+- `fast_gray64_direct` is the speed lane. It is a strong semantic visual
+  approximation, not browser pixel fidelity. It keeps trail/head positions,
+  self/other contrast, bonus presence, and bonus type luma. It drops exact
+  connected-line rasterization, sprite texture, antialiasing, and exact
+  downsample coverage.
+- `body_circles_fast` is historical/comparison only. Do not use it for new
+  Coach runs.
+- `profile_no_death` is only for optimizer timing. Real training should use
+  normal death.
 
-## Evidence So Far
+## What Changed For Coach
 
-- Fixed-opponent stock-control profiles found useful single-container width up
-  to about c128, but those are controls, not direct two-seat learning facts.
-- Active two-seat no-death profiles before the latest cache work were
-  render-bound: `browser_lines` spent about `191.6s` in visual stack update out
-  of `219.4s` elapsed for a small L4 run. Named timers put visual stack near
-  `95%` of the measured hot-loop time.
-- H100 did not solve the pre-cache render bottleneck. That points to CPU render
-  and Python/NumPy orchestration, not raw GPU model throughput, as the current
-  Amdahl limit.
-- Perspective reuse, a conservative browser-line trail cache, exact downsample
-  scratch, copy/recolor, and dirty-block rendering have landed. Latest focused
-  validation: ruff passed; `pytest tests/test_curvytron_two_seat_render_mode.py
-  tests/test_vector_visual_observation.py
-  tests/test_benchmark_render_lane_microbench.py -q` reported `60 passed`.
-- Dirty render reuses previous RGB/gray frames and recomposes only dirty 11x11
-  source blocks. Local CPU dynamic stack profiles show about `2.7x-4.3x` over
-  full render in the tested B16/B32 long-trail cases.
-- Fast direct luma mode passed focused render tests and gives the clearest
-  wall-clock win. B64/L4 no-death full loop dropped from roughly `768s` with
-  `browser_lines` to about `203s` with `fast_gray64_direct`; the visual stack
-  bucket dropped from about `40s/iteration` to about `2s/iteration`.
-- Fast mode keeps the main semantic visual facts, but it is not an Environment
-  fidelity claim. Treat it as a speed-first training surface until Coach and
-  Environment accept it.
-- The first non-wait `opt-render-cache-*` launch printed function-call IDs but
-  did not produce attempt/progress files after the local app exited. Treat that
-  as a bad profile launch pattern, not speed evidence.
-- Current wait-mode matrix summary:
+- `--two-seat-learning-rate` is now wired through the canonical Modal launcher,
+  two-seat runner, policy config patch, progress metadata, and checkpoints.
+  Omit it to use the LightZero config default.
+- Profiling GIF/eval clutter can be disabled with
+  `--no-background-eval-enabled --no-background-gif-enabled`. Default training
+  should leave CurvyZero checkpoint eval/GIF on.
+- Default stochasticity is not what we casually assumed earlier:
+  observation noise is on at `0.10`, but random action no-op and policy repeat
+  skip are off by default.
 
-```text
-run                                      B    sim  wall     visual   search  replay_rows
-opt-render-cache-wait-l4-b16-sim16      16   16   198.6s   136.2s   14.0s   2356
-opt-render-cache-wait-l4-b64-sim16      64   16   559.4s   494.9s   21.2s   7957
-opt-render-cache-wait-l4-b64-sim32      64   32   562.1s   493.5s   28.4s   7922
-opt-render-cache-wait-l4-b128-sim16     128  16   1112.7s  990.8s   61.0s   15623
-opt-render-cache-wait-h100-b128-sim16   128  16   978.9s   853.9s   57.8s   15611
-```
+## Evidence
 
-- Plain read: this pre-dirty matrix says to scale B upward only while replay
-  rows/sec improves and learner/search are not starved. B64 is next; B128 waits
-  until render is no longer dominant. Sim32 at B64 was not proof that search is
-  cheap in general.
+- Before fast direct rendering, long no-death profiles were render-bound. A
+  B64/L4/browser-lines no-death profile took about `768s`; visual stack was
+  around `40s/iteration`.
+- With `fast_gray64_direct`, the comparable B64/L4 profile took about `203s`;
+  visual stack dropped to about `2s/iteration`. The bottleneck moved toward
+  policy/search, environment stepping, and observation noise.
+- B128/L4 fast was slower per replay row than B64/L4. B128/H100 was much
+  better than B128/L4, but not enough to make H100 the default.
+- Plain Amdahl read: use fast direct for most overnight learning probes, keep
+  browser-lines controls, and only pay H100 where batch/search is big enough to
+  expose GPU benefit.
 
-## Run First
+## Base Command Shape
 
-1. Profiling gate, not learning:
-   L4/T4, `browser_lines`, `profile_no_death`, background eval/GIF off, no
-   initial checkpoint, enough iterations for trails to get long. Compare
-   `visual_stack_update_sec`, `policy_search_sec`, `env_step_sec`, learner time,
-   elapsed wall time, action batching, and replay rows.
-2. Overnight speed-first run:
-   L4/T4, `fast_gray64_direct`, normal death, B64, sim8, collect64, updates4,
-   accumulated replay, learner sample 256, sparse checkpoints.
-3. Browser-lines control:
-   L4/T4, `browser_lines`, normal death, B16 or B32, sim8, collect64, updates4,
-   accumulated replay, learner sample 128 or 256. This is the closest current
-   visual control, not the fastest lane.
-4. Do not use B128, H100, or multi-GPU as the default overnight lane. B128 on
-   L4 was worse per replay row in the fast profile; B128 on H100 is only a
-   scale probe if there is spare budget and B64 looks healthy.
-
-## Training Shape
-
-Recommended overnight speed-first run:
+Use this shape for most runs and vary only the table columns:
 
 ```text
---mode two-seat-selfplay
---compute gpu-l4-t4
---batch-size 64
---max-train-iter long enough for several checkpoints
---num-simulations 8
---two-seat-collect-steps-per-iteration 64
---two-seat-updates-per-iteration 4
---two-seat-replay-scope accumulated
---two-seat-learner-sample-size 256
---two-seat-max-replay-rows 65536
---two-seat-death-mode normal
---two-seat-trail-render-mode fast_gray64_direct
---save-ckpt-after-iter 100 to 250
+modal run src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py \
+  --mode two-seat-selfplay \
+  --compute gpu-l4-t4 \
+  --batch-size 64 \
+  --max-train-iter <ITERATIONS> \
+  --num-simulations 8 \
+  --two-seat-collect-steps-per-iteration 64 \
+  --two-seat-updates-per-iteration 4 \
+  --two-seat-replay-scope accumulated \
+  --two-seat-learner-sample-size 256 \
+  --two-seat-max-replay-rows 65536 \
+  --two-seat-death-mode normal \
+  --two-seat-trail-render-mode fast_gray64_direct \
+  --save-ckpt-after-iter 50
 ```
 
-Recommended browser-lines control:
+For profiling-only runs, add:
 
 ```text
---mode two-seat-selfplay
---compute gpu-l4-t4
---batch-size 16 or 32
---max-train-iter long enough for at least one checkpoint
---num-simulations 8
---two-seat-collect-steps-per-iteration 64
---two-seat-updates-per-iteration 4
---two-seat-replay-scope accumulated
---two-seat-learner-sample-size 128 or 256
---two-seat-max-replay-rows 65536
---two-seat-death-mode normal
---two-seat-trail-render-mode browser_lines
---save-ckpt-after-iter 100 to 250
+--two-seat-death-mode profile_no_death \
+--no-background-eval-enabled \
+--no-background-gif-enabled \
+--two-seat-save-initial-checkpoint false
 ```
 
-Keep progress writes frequent enough to see early movement. Keep stock
-LightZero in-loop eval off; it is separate from CurvyZero checkpoint survival
-eval/inspection/GIF.
+For real overnight training, do not add those profiling flags. Let CurvyZero
+checkpoint eval/GIF run at the checkpoint cadence.
 
-## Cadence
+Brief checkpoint recommendation:
 
-- Profiling: use `--no-background-eval-enabled` and
-  `--no-background-gif-enabled`. This also suppresses the GIF browser marker in
-  current code. Avoid initial checkpoints unless checking artifact plumbing.
-- First real training: allow CurvyZero checkpoint eval/inspection/GIF, but make
-  checkpoint cadence sparse enough that artifacts do not become the run. Default
-  `100` is okay for a canary; use `250` or `500` for longer runs once stable.
-- GIFs are observability, not speed evidence. If the goal is wall-clock
-  profiling, turn them off.
+- Choose cadence from the first 20-50 warm-up iterations, not from a fixed
+  guess. Target wall-clock spacing is the real rule.
+- First canary wave: aim for one checkpoint every 5-10 minutes. Start with
+  `--save-ckpt-after-iter 50` if no better rate estimate exists.
+- Overnight matrix after the launch path is healthy: aim for one checkpoint
+  every 10-20 minutes. Use `50`, `100`, or `250` iterations depending on the
+  measured iteration speed.
+- Very long follow-up runs: checkpoint every 30-60 minutes if eval/GIF artifacts
+  are already working and intermediate visibility is less important. Relax
+  further only after the first curves look sane.
+- Profiling-only runs: avoid initial checkpoints and set checkpoint cadence
+  high enough that artifact work is not part of the timing result.
 
-## Scaling Read
+## Recommended 30-Run Matrix
 
-- Larger batches increase self-play volume and search batching opportunities,
-  but they are not automatically better. In the measured fast profiles, B64/L4
-  was the clean default. B128/L4 was slower per replay row; B128/H100 was closer
-  but not enough to make H100 the default.
-- More simulations increase search cost. While render dominates, sim16 is
-  affordable in some profiles, but the overnight speed-first run should start
-  at sim8 unless Coach explicitly wants stronger search.
-- H100 is useful for quick scale sweeps after B64 is healthy. It is not required
-  for the first overnight run.
-- Multi-GPU is not a current two-seat recommendation. The canonical launcher
-  does not expose H100x2 for two-seat mode, and the measured bottleneck is not
-  yet a multi-GPU model throughput problem.
+Use distinct run IDs. For paired ablations, keep the same seed family so the
+comparison is not pure noise. If this is too many, run the first 12 plus the two
+browser controls.
 
-## Caveats For Coach
+```text
+id  lane                 gpu       render              B    sim  collect  upd  sample  lr       reward             stochastic
+01  main                 L4/T4     fast_gray64_direct  64   8    64       4    256     unset    default            default
+02  main_seed            L4/T4     fast_gray64_direct  64   8    64       4    256     unset    default            default
+03  main_seed            L4/T4     fast_gray64_direct  64   8    64       4    256     unset    default            default
+04  search16             L4/T4     fast_gray64_direct  64   16   64       4    256     unset    default            default
+05  search32             L4/T4     fast_gray64_direct  64   32   64       4    256     unset    default            default
+06  small_batch          L4/T4     fast_gray64_direct  32   8    64       4    128     unset    default            default
+07  large_batch_l4       L4/T4     fast_gray64_direct  128  8    64       4    512     unset    default            default
+08  large_batch_h100     H100      fast_gray64_direct  128  8    64       4    512     unset    default            default
+09  large_search_h100    H100      fast_gray64_direct  128  16   64       4    512     unset    default            default
+10  collect128           L4/T4     fast_gray64_direct  64   8    128      4    256     unset    default            default
+11  updates8             L4/T4     fast_gray64_direct  64   8    64       8    256     unset    default            default
+12  learner512           L4/T4     fast_gray64_direct  64   8    64       4    512     unset    default            default
+13  lr_1e-4              L4/T4     fast_gray64_direct  64   8    64       4    256     1e-4     default            default
+14  lr_3e-4              L4/T4     fast_gray64_direct  64   8    64       4    256     3e-4     default            default
+15  lr_1e-3              L4/T4     fast_gray64_direct  64   8    64       4    256     1e-3     default            default
+16  lr_h100_3e-4         H100      fast_gray64_direct  128  8    64       4    512     3e-4     default            default
+17  no_bonus             L4/T4     fast_gray64_direct  64   8    64       4    256     unset    no_bonus           default
+18  terminal_only        L4/T4     fast_gray64_direct  64   8    64       4    256     unset    terminal_only      default
+19  stronger_terminal    L4/T4     fast_gray64_direct  64   8    64       4    256     unset    terminal_x2        default
+20  survival_only_ctrl   L4/T4     fast_gray64_direct  64   8    64       4    256     unset    survival_only      default
+21  no_obs_noise         L4/T4     fast_gray64_direct  64   8    64       4    256     unset    default            obs_noise_0
+22  action_repeat        L4/T4     fast_gray64_direct  64   8    64       4    256     unset    default            repeat_20pct
+23  action_noop_05       L4/T4     fast_gray64_direct  64   8    64       4    256     unset    default            action_noop_5pct
+24  no_stochasticity     L4/T4     fast_gray64_direct  64   8    64       4    256     unset    default            none
+25  browser_control      L4/T4     browser_lines       32   8    64       4    256     unset    default            default
+26  browser_search       L4/T4     browser_lines       32   16   64       4    256     unset    default            default
+27  browser_lr_3e-4      L4/T4     browser_lines       32   8    64       4    256     3e-4     default            default
+28  browser_no_bonus     L4/T4     browser_lines       32   8    64       4    256     unset    no_bonus           default
+29  h100_search32        H100      fast_gray64_direct  128  32   64       4    512     unset    default            default
+30  h100_collect128      H100      fast_gray64_direct  128  16   128      4    512     unset    default            default
+```
 
-- Optimizer is making speed/setup recommendations only. Do not read these as
-  claims about reward quality, learning progress, or policy strength.
-- `fast_gray64_direct` is a strong semantic approximation, not exact browser
-  fidelity. Keep the browser-lines control around so we can catch approximation
-  damage.
-- `profile_no_death` deliberately exaggerates long-trail render cost and hides
-  normal reset/episode dynamics. Use it to expose Amdahl bottlenecks, then train
-  with normal death.
-- Compare training results to `iteration_0` with the same eval settings. Report
-  trainer reward, sparse outcome, survival length, terminal causes, and action
-  histograms separately.
-- If early progress still shows mean episode length around 10-11 steps with no
-  action collapse, that is a debugging signal, not a final learning verdict.
+## Reward Flags
+
+Default reward means no reward flags:
+
+```text
+alive +0.01 while alive
+bonus pickup +0.05 per same-step catch
+terminal outcome = sparse_outcome * 0.01 * episode_step_count
+return discount = 1.0
+```
+
+Use these named variants:
+
+```text
+no_bonus:
+  --two-seat-bonus-pickup-reward-per-catch 0
+
+terminal_only:
+  --two-seat-alive-reward 0
+  --two-seat-bonus-pickup-reward-per-catch 0
+
+terminal_x2:
+  --two-seat-terminal-outcome-reward-per-step 0.02
+
+survival_only:
+  --two-seat-terminal-outcome-reward-per-step 0
+  --two-seat-bonus-pickup-reward-per-catch 0
+```
+
+Plain warning: `terminal_only` is not pure AlphaZero sparse +1/-1. The current
+implementation still scales terminal outcome by episode length. That may be a
+reasonable delayed-reward control, but label it correctly.
+
+## Stochasticity Flags
+
+Default stochasticity means observation noise only:
+
+```text
+--two-seat-observation-noise-std 0.10
+--two-seat-action-noop-probability 0
+--two-seat-policy-action-repeat-min 1
+--two-seat-policy-action-repeat-max 1
+--two-seat-policy-action-repeat-extra-probability 0
+```
+
+Use these named variants:
+
+```text
+obs_noise_0:
+  --two-seat-observation-noise-std 0
+
+repeat_20pct:
+  --two-seat-policy-action-repeat-max 3
+  --two-seat-policy-action-repeat-extra-probability 0.20
+
+action_noop_5pct:
+  --two-seat-action-noop-probability 0.05
+
+none:
+  --two-seat-observation-noise-std 0
+  --two-seat-action-noop-probability 0
+  --two-seat-policy-action-repeat-min 1
+  --two-seat-policy-action-repeat-max 1
+  --two-seat-policy-action-repeat-extra-probability 0
+```
+
+Optimizer recommendation: do not make random action no-op the default tonight.
+It changes the agent-action contract and was recently added. Include one small
+no-op probe if Coach wants to test robustness. Prefer default obs noise and a
+separate no-stochasticity control.
+
+## Hardware Read
+
+- Use L4/T4 for most runs. It is cheaper and enough for B64 fast-direct runs.
+- Use H100 only for the five listed scale probes. H100 helps B128 more than L4,
+  but it is not proven to improve learning per dollar or per wall-clock yet.
+- Skip multi-GPU tonight. The canonical two-seat path has not shown a clean
+  model-throughput bottleneck where multi-GPU is the obvious next move.
+
+## What To Watch
+
+- Primary learning read belongs to Coach: survival length, sparse outcome,
+  terminal causes, collapse checks, and action histograms.
+- Optimizer read: wall time per checkpoint, replay rows/sec, self-play rows/sec,
+  policy/search time, env step time, visual stack time, learner time, checkpoint
+  artifact time.
+- If fast-direct improves but browser-lines fails, the approximation may be too
+  lossy. If both fail the same way, look at reward/search/training setup before
+  blaming rendering.
+- Larger self-play batches are useful only if the learner actually turns the
+  extra collected rows into better checkpoint behavior. They are not magic; they
+  trade fresher, more frequent updates for bigger batches and more compute per
+  update.
+
+## Minimal Set If Time Is Short
+
+Run these 12 first:
+
+```text
+01 main
+02 main_seed
+03 main_seed
+04 search16
+07 large_batch_l4
+08 large_batch_h100
+13 lr_1e-4
+14 lr_3e-4
+17 no_bonus
+18 terminal_only
+21 no_obs_noise
+25 browser_control
+```
+
+Then add the remaining rows if the launch surface is healthy.

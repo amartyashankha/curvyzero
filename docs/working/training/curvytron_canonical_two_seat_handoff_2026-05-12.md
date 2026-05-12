@@ -19,10 +19,11 @@ for every episode. Replay rows and step records keep `reset_seed` so this can be
 audited. The default ruleset uses source-default natural bonus
 spawning; no-bonus is now only an explicit ablation. Default robustness noise is
 mild: the legacy `policy_action_repeat_*` flags now mean policy no-op skips, not
-held actions. With `min=1`, `max=3`, `extra_probability=0.20`, a seat takes one
-real policy action, then may skip the next one or two policy chances by sending
-NOOP. Skipped no-op ticks do not create replay rows or reward targets. Visual
-input gets Gaussian noise `0.10`, and random no-op/drop is off.
+held actions. They are now off by default: `min=1`, `max=1`,
+`extra_probability=0.0`. This is intentional for the first serious runs because
+skipped no-op ticks currently do not create replay rows or reward targets, so a
+death or bonus during a skipped tick can be miscredited. Visual input gets
+Gaussian noise `0.10`, and random no-op/drop is off.
 The default trainer reward is now shaped
 but labeled: each per-seat replay row gets a tiny alive helper `+0.01`, an
 immediate same-step bonus pickup helper `+0.05` per bonus caught by that player,
@@ -84,11 +85,13 @@ been deleted. Historical commands must be translated to the canonical launcher.
 - Default two-seat env horizon is `65,536` ticks. Background checkpoint survival
   eval also defaults to `65,536` max steps so the eval does not hide long
   survival. GIFs stay shorter by default so artifacts do not become huge.
-- Default stochasticity is mild and simple: legacy
-  `policy_action_repeat_max=3` / `policy_action_repeat_extra_probability=0.20`
-  means policy no-op skipping, not action holding. Skipped ticks send NOOP and
-  stay out of replay/reward targets. `observation_noise_std=0.10`,
-  `action_noop_probability=0.0`, and no warmup schedule.
+- Default stochasticity is mild and simple: legacy `policy_action_repeat_*`
+  means policy no-op skipping, not action holding, and is disabled by default
+  with `policy_action_repeat_min=1`, `policy_action_repeat_max=1`, and
+  `policy_action_repeat_extra_probability=0.0`. Keep it off for the baseline
+  overnight run until reward/replay accounting for skipped physical ticks is
+  proven. `observation_noise_std=0.10`, `action_noop_probability=0.0`, and no
+  warmup schedule.
 - Default trainer reward is the single reward float LightZero consumes from
   replay rows: dense alive helper `+0.01`/step while alive, plus immediate
   same-step bonus pickup helper `+0.05` per bonus caught by that player, plus
@@ -119,6 +122,42 @@ Preferred first overnight shape once the user gives the exact launch command:
 --two-seat-trail-render-mode browser_lines
 --save-ckpt-after-iter 100
 ```
+
+Baseline stochasticity proof check before launch:
+
+```text
+control_stochasticity.counts.policy_noop_skip_rows == 0
+fresh_policy_action_summary.decision_count ==
+  control_stochasticity.physical_action_summary.executed_action_count
+```
+
+If this fails, do not treat the run as the clean baseline. Stochastic variants
+are still allowed, but they must be named as variants and read with the skip
+accounting caveat.
+
+## Run Naming
+
+Every serious run and attempt must start with a clear purpose prefix, then name
+the important variant knobs. Do not use bare seed names or vague labels.
+
+Recommended prefix format:
+
+```text
+curvy2seat-selfplay-<purpose>-<variant>-<date_or_batch>
+```
+
+Examples:
+
+```text
+curvy2seat-selfplay-baseline-noskip-b32-sim8-20260512
+curvy2seat-selfplay-ablate-noobsnoise-b32-sim8-20260512
+curvy2seat-selfplay-variant-obsnoise10-b32-sim8-20260512
+curvy2seat-selfplay-variant-noopskip20-accounting-b32-sim8-20260512
+```
+
+Baseline means no policy no-op skip. If a run enables policy no-op skip,
+action drop, extra observation noise, changed reward scale, changed replay
+scope, or changed render mode, put that in the run id and attempt id.
 
 Use `--batch-size 64 --two-seat-learner-sample-size 256` later only for a
 deliberate slower-feedback run with more self-play rows per checkpoint.

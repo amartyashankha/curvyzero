@@ -343,6 +343,7 @@ def _build_lightzero_policy(
     num_simulations: int,
     require_installed_lightzero: bool,
     use_cuda: bool = False,
+    learning_rate: float | None = None,
 ) -> dict[str, Any]:
     packages = {
         "LightZero": _version_or_missing("LightZero", "lightzero"),
@@ -374,6 +375,7 @@ def _build_lightzero_policy(
             seed=seed,
             num_simulations=num_simulations,
             use_cuda=use_cuda,
+            learning_rate=learning_rate,
         )
         cfg = compile_config(
             main_config,
@@ -418,6 +420,7 @@ def _patch_stacked_visual_config(
     seed: int,
     num_simulations: int,
     use_cuda: bool = False,
+    learning_rate: float | None = None,
 ) -> list[dict[str, Any]]:
     patches = [
         _set_path(
@@ -466,6 +469,13 @@ def _patch_stacked_visual_config(
         _set_path(main_config, ("policy", "model", "self_supervised_learning_loss"), True),
         _set_path(main_config, ("policy", "use_augmentation"), False),
     ]
+    if learning_rate is not None:
+        resolved_learning_rate = float(learning_rate)
+        if not np.isfinite(resolved_learning_rate) or resolved_learning_rate <= 0.0:
+            raise ValueError("learning_rate must be finite and > 0")
+        patches.append(
+            _set_path(main_config, ("policy", "learning_rate"), resolved_learning_rate)
+        )
     return patches
 
 
@@ -753,7 +763,6 @@ def _discounted_survival_returns_from_sample(
     context_lookup = _return_context_lookup(sample, discount=discount)
     if context_lookup is not None:
         iterations = np.asarray(sample["iteration_batch"], dtype=np.int64)
-        decisions = np.asarray(sample["decision_index_batch"], dtype=np.int64)
         return np.asarray(
             [
                 context_lookup.get(
@@ -1408,6 +1417,7 @@ def _compiled_surface(cfg: Any, main_config: Any, create_config: Any) -> dict[st
         "action_space_size": int(cfg.policy.model.action_space_size),
         "num_simulations": int(cfg.policy.num_simulations),
         "batch_size": int(cfg.policy.batch_size),
+        "learning_rate": _cfg_get(cfg.policy, "learning_rate", None),
     }
 
 

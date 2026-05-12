@@ -113,8 +113,8 @@ DEFAULT_PROGRESS_COMMIT_EVERY_ITERATIONS = 100
 DEFAULT_ACTION_NOOP_PROBABILITY = 0.0
 DEFAULT_ACTION_NOOP_WARMUP_ITERATIONS = 0
 DEFAULT_POLICY_ACTION_REPEAT_MIN = 1
-DEFAULT_POLICY_ACTION_REPEAT_MAX = 3
-DEFAULT_POLICY_ACTION_REPEAT_EXTRA_PROBABILITY = 0.20
+DEFAULT_POLICY_ACTION_REPEAT_MAX = 1
+DEFAULT_POLICY_ACTION_REPEAT_EXTRA_PROBABILITY = 0.0
 DEFAULT_POLICY_ACTION_REPEAT_WARMUP_ITERATIONS = 0
 DEFAULT_OBSERVATION_NOISE_STD = 0.10
 POLICY_ACTION_REPEAT_RNG_SALT = 0xC0A7A11
@@ -178,6 +178,7 @@ def run_curvytron_two_seat_lightzero_train_smoke(
     ),
     observation_noise_std: float = DEFAULT_OBSERVATION_NOISE_STD,
     trail_render_mode: str = STACK_RENDER_MODE_DEFAULT,
+    learning_rate: float | None = None,
     use_cuda: bool = False,
     require_installed_lightzero: bool = True,
 ) -> dict[str, Any]:
@@ -301,6 +302,7 @@ def run_curvytron_two_seat_lightzero_train_smoke(
         num_simulations=num_simulations,
         require_installed_lightzero=require_installed_lightzero,
         use_cuda=use_cuda,
+        learning_rate=learning_rate,
     )
     policy = policy_context.get("policy")
     if policy is None:
@@ -348,6 +350,7 @@ def run_curvytron_two_seat_lightzero_train_smoke(
                 ),
                 observation_noise_std=resolved_observation_noise_std,
                 trail_render_mode=resolved_trail_render_mode,
+                learning_rate=learning_rate,
                 use_cuda=use_cuda,
                 elapsed_sec=time.perf_counter() - run_started,
                 checkpoint_every_iterations=resolved_checkpoint_every_iterations,
@@ -415,6 +418,7 @@ def run_curvytron_two_seat_lightzero_train_smoke(
                     ),
                     "return_target_discount": float(resolved_return_target_discount),
                     "trail_render_mode": resolved_trail_render_mode,
+                    "learning_rate": None if learning_rate is None else float(learning_rate),
                     "policy_action_repeat_min": int(resolved_policy_action_repeat_min),
                     "policy_action_repeat_max": int(resolved_policy_action_repeat_max),
                     "policy_action_repeat_extra_probability": float(
@@ -460,6 +464,7 @@ def run_curvytron_two_seat_lightzero_train_smoke(
                 "collect_temperature": float(resolved_collect_temperature),
                 "collect_epsilon": float(resolved_collect_epsilon),
                 "trail_render_mode": resolved_trail_render_mode,
+                "learning_rate": None if learning_rate is None else float(learning_rate),
             },
             print_line=progress_print,
         )
@@ -701,6 +706,7 @@ def run_curvytron_two_seat_lightzero_train_smoke(
                         resolved_bonus_pickup_reward_per_catch
                     ),
                     "return_target_discount": float(resolved_return_target_discount),
+                    "learning_rate": None if learning_rate is None else float(learning_rate),
                     "action_selection_mode": action_selection_mode,
                     "collect_temperature": float(resolved_collect_temperature),
                     "collect_epsilon": float(resolved_collect_epsilon),
@@ -855,6 +861,7 @@ def run_curvytron_two_seat_lightzero_train_smoke(
             ),
             observation_noise_std=resolved_observation_noise_std,
             trail_render_mode=resolved_trail_render_mode,
+            learning_rate=learning_rate,
             use_cuda=use_cuda,
             elapsed_sec=time.perf_counter() - run_started,
             checkpoint_every_iterations=resolved_checkpoint_every_iterations,
@@ -1082,6 +1089,7 @@ def _result_payload(
     policy_action_repeat_warmup_iterations: int,
     observation_noise_std: float,
     trail_render_mode: str,
+    learning_rate: float | None,
     use_cuda: bool,
     elapsed_sec: float,
     checkpoint_every_iterations: int,
@@ -1241,6 +1249,7 @@ def _result_payload(
             ),
             "observation_noise_std": float(observation_noise_std),
             "trail_render_mode": render_metadata["trail_render_mode"],
+            "learning_rate": None if learning_rate is None else float(learning_rate),
             "default_trail_render_mode": render_metadata["default_trail_render_mode"],
             "supported_trail_render_modes": render_metadata[
                 "supported_trail_render_modes"
@@ -3411,6 +3420,12 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--learning-rate",
+        type=float,
+        default=None,
+        help="Optional LightZero policy learning_rate override. Omit to use the stock config default.",
+    )
+    parser.add_argument(
         "--death-mode",
         choices=tuple(vector_runtime.DEATH_MODES),
         default=DEFAULT_DEATH_MODE,
@@ -3498,6 +3513,7 @@ def main() -> None:
         ),
         observation_noise_std=args.observation_noise_std,
         trail_render_mode=args.trail_render_mode,
+        learning_rate=args.learning_rate,
         death_mode=args.death_mode,
         natural_bonus_spawn=args.natural_bonus_spawn,
         checkpoint_every_iterations=args.checkpoint_every_iterations,
