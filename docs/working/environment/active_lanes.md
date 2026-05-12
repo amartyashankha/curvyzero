@@ -134,7 +134,7 @@ Observation-path purge ledger:
 - The fuller one-line visual command is now
   `scripts/compare_2p_raw_visual_observation.py --suite full2p --format plain`.
   Recorded result:
-  `PASS full_2p_source_state_visual_gate canvas_gray64=35/35 typed_bonus=12/12 final_obs=pass canaries=2/2 mismatch_pixels=0 max_abs_diff=0.0 expected_canary_mismatch_pixels=78`.
+  `PASS full_2p_source_state_visual_gate canvas_gray64=35/35 typed_bonus=12/12 final_obs=pass canaries=2/2 mismatch_pixels=0 max_abs_diff=0.0 expected_canary_mismatch_pixels=26`.
   This means only that source and vector agreed through the source-state/native
   render path and that the separate diagnostic bonus64 gate passed. It does not
   prove real browser canvas pixels, trainer wrapper/replay propagation, or full

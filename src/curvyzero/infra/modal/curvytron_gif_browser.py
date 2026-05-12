@@ -969,6 +969,7 @@ def _render_page(
     limit: int,
     offset: int,
     total_rows: int,
+    server_elapsed_ms: int | None = None,
     reload_error: str | None = None,
 ) -> str:
     generated_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -999,6 +1000,11 @@ def _render_page(
         if reload_error
         else ""
     )
+    load_label = (
+        f"server {server_elapsed_ms} ms"
+        if server_elapsed_ms is not None
+        else "server timing unavailable"
+    )
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -1019,8 +1025,24 @@ def _render_page(
             gap: 16px;
             margin-bottom: 16px;
         }}
+        .header-meta {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: baseline;
+            justify-content: flex-end;
+            color: #5f6368;
+            font-size: 13px;
+        }}
         h1 {{ margin: 0; font-size: 24px; }}
         .generated {{ color: #5f6368; font-size: 13px; white-space: nowrap; }}
+        .auto-refresh {{
+            display: inline-flex;
+            gap: 4px;
+            align-items: center;
+            white-space: nowrap;
+        }}
+        .auto-refresh input {{ height: auto; padding: 0; }}
         .filters {{
             display: flex;
             flex-wrap: wrap;
@@ -1173,7 +1195,14 @@ def _render_page(
 <body>
     <header>
         <h1>CurvyTron Self-Play GIFs</h1>
-        <span class="generated">{_html_attr(generated_at)}</span>
+        <div class="header-meta">
+            <span class="generated">{_html_attr(generated_at)}</span>
+            <span id="load-time">{_html_attr(load_label)}</span>
+            <label class="auto-refresh">
+                <input id="auto-refresh" type="checkbox" checked>
+                Auto 10s
+            </label>
+        </div>
     </header>
     {filters}
     {reload_warning}
@@ -1227,6 +1256,19 @@ def _render_page(
                 }}
             }});
         }}
+        const loadTime = document.getElementById("load-time");
+        if (loadTime && performance?.timing) {{
+            const elapsed = Date.now() - performance.timing.navigationStart;
+            if (Number.isFinite(elapsed) && elapsed >= 0) {{
+                loadTime.textContent += `, browser ${{elapsed}} ms`;
+            }}
+        }}
+        const autoRefresh = document.getElementById("auto-refresh");
+        const scheduleAutoRefresh = () => {{
+            if (!autoRefresh?.checked) return;
+            window.location.reload();
+        }};
+        window.setInterval(scheduleAutoRefresh, 10000);
     </script>
 </body>
 </html>

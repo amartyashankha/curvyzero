@@ -215,6 +215,9 @@ from curvyzero.training.curvytron_two_seat_lightzero_train_smoke import (
     DEFAULT_DEATH_MODE as TWO_SEAT_DEFAULT_DEATH_MODE,
 )
 from curvyzero.training.curvytron_two_seat_lightzero_train_smoke import (
+    DEFAULT_NATURAL_BONUS_SPAWN as TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN,
+)
+from curvyzero.training.curvytron_two_seat_lightzero_train_smoke import (
     DEFAULT_OBSERVATION_NOISE_STD as TWO_SEAT_DEFAULT_OBSERVATION_NOISE_STD,
 )
 from curvyzero.training.curvytron_two_seat_lightzero_train_smoke import (
@@ -6979,6 +6982,7 @@ def _run_two_seat_selfplay_payload(
         replay_row_log_limit=int(payload["replay_row_log_limit"]),
         max_ticks=payload["max_ticks"],
         death_mode=str(payload["death_mode"]),
+        natural_bonus_spawn=bool(payload["natural_bonus_spawn"]),
         decision_ms=float(payload["decision_ms"]),
         alive_reward=float(payload["alive_reward"]),
         dead_reward=float(payload["dead_reward"]),
@@ -7017,6 +7021,7 @@ def _run_two_seat_selfplay_payload(
             "two_seat_current_policy_selfplay": True,
             "trail_render_mode": payload["trail_render_mode"],
             "death_mode": payload["death_mode"],
+            "natural_bonus_spawn": payload["natural_bonus_spawn"],
         },
         require_installed_lightzero=True,
     )
@@ -7768,6 +7773,7 @@ def main(
     two_seat_replay_row_log_limit: int = 256,
     two_seat_max_ticks: int | None = DEFAULT_TWO_SEAT_MAX_TICKS,
     two_seat_death_mode: str = TWO_SEAT_DEFAULT_DEATH_MODE,
+    two_seat_natural_bonus_spawn: bool = TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN,
     two_seat_alive_reward: float = 1.0,
     two_seat_dead_reward: float = 0.0,
     two_seat_action_selection_mode: str = "collect",
@@ -7882,6 +7888,7 @@ def main(
             "replay_row_log_limit": two_seat_replay_row_log_limit,
             "max_ticks": two_seat_max_ticks,
             "death_mode": two_seat_death_mode,
+            "natural_bonus_spawn": two_seat_natural_bonus_spawn,
             "decision_ms": decision_ms,
             "alive_reward": two_seat_alive_reward,
             "dead_reward": two_seat_dead_reward,

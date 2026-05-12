@@ -12,14 +12,15 @@ order actually means for 2-player fidelity.
 - Original CurvyTron defaults to normal wall death. It is not borderless by
   default and it is not a torus by default.
 - Borderless exists in the original game as a game bonus (`BonusGameBorderless`)
-  and as the `game.borderless` state. While active, an avatar whose center moves
-  strictly outside the map is teleported to the opposite edge.
+  and as the `game.borderless` state; in CurvyZero it can also be forced by
+  explicit source/vector fixture config. While active, an avatar whose center
+  moves strictly outside the map is teleported to the opposite edge.
 - Borderless is not full toroidal collision. The source does not use periodic
   distance checks, does not duplicate bodies across borders, and skips body
   lookup on the wrap frame. A body at the destination can kill the avatar on the
   next frame, not the same wrap frame.
 - CurvyZero's source-shaped scalar env implements the source branch: normal
-  wall death by default, optional borderless wrap, wall priority over body
+  wall death by default, optional borderless wrap, wall-check priority over body
   collisions, and source-shaped body/trail collision latency.
 - CurvyZero's fast vector runtime implements the covered normal wall, borderless
   wrap, and body/trail collision rules, including source reverse player order.
@@ -117,7 +118,7 @@ Consequences:
   miss the collision. Training wrappers need source-sized substeps to avoid
   introducing extra tunneling.
 
-## Current Python Implementation
+## Current Implemented Status
 
 `CurvyTronSourceEnv`:
 

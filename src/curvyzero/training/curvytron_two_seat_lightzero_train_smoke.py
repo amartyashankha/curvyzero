@@ -97,6 +97,7 @@ DEFAULT_ALIVE_REWARD = 1.0
 DEFAULT_DEAD_REWARD = 0.0
 DEFAULT_ENV_MAX_TICKS = 2_000
 DEFAULT_DEATH_MODE = vector_runtime.DEATH_MODE_NORMAL
+DEFAULT_NATURAL_BONUS_SPAWN = True
 DEFAULT_CHECKPOINT_EVERY_ITERATIONS = 100
 DEFAULT_PROGRESS_EVERY_ITERATIONS = 100
 DEFAULT_PROGRESS_COMMIT_EVERY_ITERATIONS = 100
@@ -139,6 +140,7 @@ def run_curvytron_two_seat_lightzero_train_smoke(
     progress_print: bool = True,
     max_ticks: int | None = None,
     death_mode: str = DEFAULT_DEATH_MODE,
+    natural_bonus_spawn: bool = DEFAULT_NATURAL_BONUS_SPAWN,
     decision_ms: float = 300.0,
     replay_scope: str = REPLAY_SCOPE_CURRENT_ITERATION,
     learner_sample_size: int | None = None,
@@ -218,6 +220,7 @@ def run_curvytron_two_seat_lightzero_train_smoke(
             f"death_mode must be one of {tuple(vector_runtime.DEATH_MODES)!r}; "
             f"got {death_mode!r}"
         )
+    resolved_natural_bonus_spawn = bool(natural_bonus_spawn)
     resolved_action_noop_probability = float(action_noop_probability)
     if not 0.0 <= resolved_action_noop_probability <= 1.0:
         raise ValueError("action_noop_probability must be in [0, 1]")
@@ -320,6 +323,7 @@ def run_curvytron_two_seat_lightzero_train_smoke(
                 save_initial_checkpoint=save_initial_checkpoint,
                 env_max_ticks=resolved_max_ticks,
                 death_mode=resolved_death_mode,
+                natural_bonus_spawn=resolved_natural_bonus_spawn,
                 policy_context=policy_context,
                 problems=problems,
                 records=[],
@@ -368,6 +372,7 @@ def run_curvytron_two_seat_lightzero_train_smoke(
                     "collect_temperature": float(resolved_collect_temperature),
                     "collect_epsilon": float(resolved_collect_epsilon),
                     "death_mode": resolved_death_mode,
+                    "natural_bonus_spawn": bool(resolved_natural_bonus_spawn),
                     "trail_render_mode": resolved_trail_render_mode,
                     "policy_action_repeat_min": int(resolved_policy_action_repeat_min),
                     "policy_action_repeat_max": int(resolved_policy_action_repeat_max),
@@ -400,6 +405,7 @@ def run_curvytron_two_seat_lightzero_train_smoke(
                 "requested_max_ticks": None if max_ticks is None else int(max_ticks),
                 "env_max_ticks": int(resolved_max_ticks),
                 "death_mode": resolved_death_mode,
+                "natural_bonus_spawn": bool(resolved_natural_bonus_spawn),
                 "action_selection_mode": action_selection_mode,
                 "collect_temperature": float(resolved_collect_temperature),
                 "collect_epsilon": float(resolved_collect_epsilon),
@@ -417,6 +423,7 @@ def run_curvytron_two_seat_lightzero_train_smoke(
         decision_ms=decision_ms,
         max_ticks=resolved_max_ticks,
         death_mode=resolved_death_mode,
+        natural_bonus_spawn=resolved_natural_bonus_spawn,
     )
     visual_stack = SourceStateGray64Stack4(
         batch_size=batch_size,
@@ -780,6 +787,7 @@ def run_curvytron_two_seat_lightzero_train_smoke(
             save_initial_checkpoint=save_initial_checkpoint,
             env_max_ticks=resolved_max_ticks,
             death_mode=resolved_death_mode,
+            natural_bonus_spawn=resolved_natural_bonus_spawn,
             policy_context=policy_context,
             problems=problems,
             records=records,
@@ -825,6 +833,7 @@ def compact_curvytron_two_seat_lightzero_train_smoke_summary(
                 "replay_scope": inputs.get("replay_scope"),
                 "learner_sample_size": inputs.get("learner_sample_size"),
                 "death_mode": inputs.get("death_mode"),
+                "natural_bonus_spawn": inputs.get("natural_bonus_spawn"),
                 "death_suppression_for_profile": inputs.get(
                     "death_suppression_for_profile"
                 ),
@@ -960,6 +969,7 @@ def _result_payload(
     save_initial_checkpoint: bool,
     env_max_ticks: int | None = None,
     death_mode: str = DEFAULT_DEATH_MODE,
+    natural_bonus_spawn: bool = DEFAULT_NATURAL_BONUS_SPAWN,
     policy_context: Mapping[str, Any],
     problems: list[str],
     records: list[dict[str, Any]],
@@ -1055,6 +1065,13 @@ def _result_payload(
             "autoreset_seed_policy": "generated_from_env_rng",
             "env_max_ticks": None if env_max_ticks is None else int(env_max_ticks),
             "death_mode": death_mode,
+            "natural_bonus_spawn": bool(natural_bonus_spawn),
+            "ruleset_hint": (
+                "source-default natural bonus spawning is enabled by default; "
+                "disable only for no-bonus ablations"
+                if natural_bonus_spawn
+                else "no-bonus ablation; not the default Coach ruleset"
+            ),
             "death_suppression_for_profile": (
                 death_mode == vector_runtime.DEATH_MODE_PROFILE_NO_DEATH
             ),
@@ -1176,6 +1193,7 @@ def _result_payload(
             "--updates-per-iteration 1 --num-simulations 2 --replay-scope accumulated "
             "--learner-sample-size 32 --allow-optimizer-step "
             f"--two-seat-death-mode {death_mode} "
+            f"--two-seat-natural-bonus-spawn {str(bool(natural_bonus_spawn)).lower()} "
             f"--two-seat-trail-render-mode {render_metadata['trail_render_mode']}"
         ),
     }
@@ -2926,6 +2944,12 @@ def main() -> None:
         help="Use profile_no_death only for optimizer long-survival profiling.",
     )
     parser.add_argument(
+        "--natural-bonus-spawn",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULT_NATURAL_BONUS_SPAWN,
+        help="Enable source-default natural bonus timers, type draws, and position draws.",
+    )
+    parser.add_argument(
         "--checkpoint-every-iterations",
         type=int,
         default=DEFAULT_CHECKPOINT_EVERY_ITERATIONS,
@@ -2999,6 +3023,7 @@ def main() -> None:
         observation_noise_std=args.observation_noise_std,
         trail_render_mode=args.trail_render_mode,
         death_mode=args.death_mode,
+        natural_bonus_spawn=args.natural_bonus_spawn,
         checkpoint_every_iterations=args.checkpoint_every_iterations,
         save_initial_checkpoint=args.save_initial_checkpoint,
         progress_path=args.progress_path,
@@ -3030,6 +3055,7 @@ __all__ = [
     "ACTION_SELECTION_MODE_EVAL",
     "DEFAULT_ACTION_NOOP_PROBABILITY",
     "DEFAULT_ACTION_NOOP_WARMUP_ITERATIONS",
+    "DEFAULT_NATURAL_BONUS_SPAWN",
     "DEFAULT_OBSERVATION_NOISE_STD",
     "LEARN_BATCH_BLOCKER",
     "REPLAY_SCOPE_ACCUMULATED",

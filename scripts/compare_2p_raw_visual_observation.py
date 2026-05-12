@@ -763,7 +763,7 @@ def run_full_2p_visual_gate(*, max_steps: int | None = None) -> dict[str, Any]:
         "scope": "2P source-state model-facing visual observation; not browser canvas; not trainer/replay propagation",
         "not_a_training_ready_claim": True,
         "remaining_training_work": [
-            "use one product path: source-state browser-like RGB64 raw frame -> grayscale64 -> stack",
+            "use one product path: source-state browser-like 704x704 RGB raw frame -> 64x64 gray64 -> stack",
             "keep bonus64 v1 as a diagnostic/proof tensor, not a training observation path",
             "prove the canvas-gray64 observation survives replay serialization paths",
             "add source/original fixtures for programmatic bonus stack/death stress probes",

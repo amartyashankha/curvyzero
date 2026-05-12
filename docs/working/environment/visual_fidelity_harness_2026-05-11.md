@@ -15,7 +15,7 @@ still not a browser pixel parity claim.
 `scripts/compare_2p_raw_visual_observation.py` checks whether the source-shaped
 2P state and the fast vector runtime produce the same source-state/native
 product image frame. The active product path is one clean image path:
-source-state browser-style RGB64 raw frame -> deterministic gray64
+source-state browser-style 704x704 RGB raw frame -> deterministic gray64
 `uint8[1,64,64]` -> normalized frame stack. The harness directly compares
 gray64; trainer wrapper/replay propagation must be proven separately. This is
 not a real browser/DOM canvas pixel-parity claim.
@@ -49,7 +49,7 @@ consistency command. The recorded 2026-05-11 result was:
 
 ```bash
 uv run python scripts/compare_2p_raw_visual_observation.py --suite full2p --format plain
-# PASS full_2p_source_state_visual_gate canvas_gray64=35/35 typed_bonus=12/12 final_obs=pass canaries=2/2 mismatch_pixels=0 max_abs_diff=0.0 expected_canary_mismatch_pixels=78
+# PASS full_2p_source_state_visual_gate canvas_gray64=35/35 typed_bonus=12/12 final_obs=pass canaries=2/2 mismatch_pixels=0 max_abs_diff=0.0 expected_canary_mismatch_pixels=26
 ```
 
 Read that line carefully: it means only that source and vector matched through

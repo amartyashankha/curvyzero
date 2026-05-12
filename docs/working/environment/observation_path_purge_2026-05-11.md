@@ -8,7 +8,7 @@ is a doc cleanup ledger, not a new runtime contract.
 There is one active product visual path under hardening:
 
 ```text
-source-state browser-like RGB64 raw frame -> deterministic gray64 -> frame stack
+source-state browser-like 704x704 RGB raw frame -> deterministic gray64 -> frame stack
 ```
 
 The trail renderer split for that path is now explicit:
@@ -39,7 +39,7 @@ trainer-readiness claim.
 - `active_lanes.md`: added the front-door guardrail, renamed the current gate as
   source-state gray64, and fenced bonus64/rich tensors as diagnostics only.
 - `visual_fidelity_harness_2026-05-11.md`: tightened the scope to source-state
-  RGB64 -> gray64 -> stack, removed wording that made canvas-gray64 sound like
+  704x704 RGB -> gray64 -> stack, removed wording that made canvas-gray64 sound like
   browser pixel parity, and kept trainer propagation explicitly open.
 - `two_player_fidelity_gap_catalog_2026-05-11.md`: separated the source-state
   gray64 product image path from diagnostic bonus64 and left two-seat
