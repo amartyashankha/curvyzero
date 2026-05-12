@@ -241,6 +241,36 @@ write the `show_in_gif_browser.flag` marker. Optimizer profiling runs with
 not clutter the GIF browser website. The two pre-fix profile markers above were
 removed from the Modal volume.
 
+2026-05-12 overnight recommendation update: the speed-first lane is now
+`fast_gray64_direct`, not `body_circles_fast`. This is a strong semantic visual
+approximation, not browser pixel fidelity. It preserves trail/head positions,
+self/other contrast, bonus presence, and bonus type luma, but drops connected
+browser-line rasterization, sprite texture, antialiasing, and exact downsample
+coverage. Focused validation passed:
+
+```text
+ruff passed
+uv run pytest tests/test_curvytron_two_seat_render_mode.py \
+  tests/test_vector_visual_observation.py \
+  tests/test_benchmark_render_lane_microbench.py -q
+62 passed
+```
+
+Speed signal from canonical no-death full-loop profiles:
+
+```text
+B64/L4/sim8 browser_lines:        about 768s wall, visual about 40s/iteration
+B64/L4/sim8 fast_gray64_direct:   about 203s wall, visual about 2s/iteration
+B128/L4/sim8 fast_gray64_direct:  about 726s wall, worse per replay row
+B128/H100/sim8 fast_gray64_direct about 429s wall, useful scale probe only
+```
+
+Plain recommendation: Coach should run the overnight learning canary on L4/T4,
+B64, sim8, collect64, updates4, learner sample 256, accumulated replay, normal
+death, sparse checkpoints, and `fast_gray64_direct`. If capacity permits, run a
+smaller B16/B32 `browser_lines` control in parallel. H100/B128 is optional only
+as an expensive scale probe; it is not the default.
+
 Fresh 2026-05-10 read: active optimizer target is CurvyTron visual, non-ALE,
 wrapper-stacked debug survival profiling. The missing artifact is a bounded
 `[4,64,64]` collect -> MCTS/search -> replay -> sample -> learner profile.
