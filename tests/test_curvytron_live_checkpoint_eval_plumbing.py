@@ -1193,6 +1193,21 @@ def test_selfplay_gif_spawn_is_guarded_for_joint_action_checkpoints():
     assert request["reason"] == "background_gif_unsupported_for_source_state_joint_action"
 
 
+def test_two_seat_rejects_mutable_frozen_opponent_checkpoint_ref():
+    with pytest.raises(ValueError, match="immutable"):
+        train_mod.main(
+            mode=train_mod.TWO_SEAT_SELFPLAY_MODE,
+            compute=train_mod.COMPUTE_CPU,
+            run_id="mutable-frozen-ref",
+            attempt_id="mutable-frozen-ref",
+            two_seat_frozen_opponent_probability=0.25,
+            two_seat_frozen_opponent_checkpoint_ref=(
+                "training/lightzero-curvytron-visual-survival/example/"
+                "checkpoints/lightzero/latest.pth.tar"
+            ),
+        )
+
+
 def test_checkpoint_eval_poller_completes_eval_inspection_and_selfplay_gif_jobs(
     tmp_path, monkeypatch
 ):
