@@ -18,6 +18,15 @@ artifact creation. `train_status=running` and `progress_latest.json` alone are
 not enough: some rows report `running` even when their latest checkpoint has not
 changed for hours, and some healthy rows have stale `progress_latest.json`.
 
+Correction after deeper investigation: this health check only looked at the
+fixed CurvyZero path `train/lightzero_exp/ckpt`. Some rows that looked stuck at
+`iteration_0` have later checkpoints under DI-engine timestamped directories
+such as `train/lightzero_exp_260513_123802/ckpt`. See
+[stale_checkpoint_bug_investigation_2026-05-13.md](stale_checkpoint_bug_investigation_2026-05-13.md).
+The counts below are still useful for describing what the website/status reader
+saw, but they are not the true highest-checkpoint counts across all LightZero
+experiment directories.
+
 ## Counts
 
 | Check | Result |

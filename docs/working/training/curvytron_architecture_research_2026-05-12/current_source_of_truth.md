@@ -115,6 +115,16 @@ cleanup had 33/33 rows running, with trainer heartbeats, train roots, eval
 manifests, and GIF artifacts. A single all-212 status read timed out at 300s;
 use chunked reads for a full sweep.
 
+Important correction, 2026-05-13 evening EDT: several rows that looked stuck at
+`iteration_0` were not truly missing checkpoints. After Modal restarts,
+DI-engine `compile_config` can append a timestamp to `cfg.exp_name` when the
+configured directory already exists, so LightZero writes checkpoints under
+`train/lightzero_exp_YYMMDD_HHMMSS/ckpt` while CurvyZero status/poller/resume
+code keeps scanning `train/lightzero_exp/ckpt`. The current investigation doc is
+[stale_checkpoint_bug_investigation_2026-05-13.md](stale_checkpoint_bug_investigation_2026-05-13.md).
+Do not treat fixed-path `iteration_0` as proof that training failed until all
+`lightzero_exp*` directories have been scanned.
+
 Fast-render clarification: the trusted stock `--mode train` source-state path
 does not use the old custom/two-seat name `fast_gray64_direct`. Its fast
 training render is `source_state_trail_render_mode=body_circles_fast`. The
