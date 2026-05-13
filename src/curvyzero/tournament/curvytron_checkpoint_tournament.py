@@ -499,7 +499,7 @@ def normalize_pair_spec(raw: Mapping[str, Any]) -> dict[str, Any]:
         or raw.get("trail_render_mode")
     )
     gif_trail_render_mode = DEFAULT_GIF_TRAIL_RENDER_MODE
-    return {
+    normalized = {
         "schema_id": BATTLE_SCHEMA_ID,
         "tournament_id": tournament_id,
         "battle_id": battle_id,
@@ -533,6 +533,17 @@ def normalize_pair_spec(raw: Mapping[str, Any]) -> dict[str, Any]:
         "save_frames_npz": bool(raw.get("save_frames_npz", DEFAULT_SAVE_FRAMES_NPZ)),
         "action_trace_limit": int(raw.get("action_trace_limit", 128)),
     }
+    for key in (
+        "pair_key",
+        "schedule_reason",
+        "schedule_priority",
+        "scheduled_round_index",
+    ):
+        if key in raw and raw.get(key) is not None:
+            normalized[key] = raw[key]
+    if isinstance(raw.get("schedule"), Mapping):
+        normalized["schedule"] = _to_plain(dict(raw["schedule"]))
+    return normalized
 
 
 def gif_sample_count_for_pair(pair_spec: Mapping[str, Any]) -> int:
@@ -988,6 +999,15 @@ def summarize_pair_from_tally(
         "first_gif_ref": first_gif_ref,
         "game_summary_ref_count": len(game_summary_refs or []),
     }
+    for key in (
+        "pair_key",
+        "schedule_reason",
+        "schedule_priority",
+        "scheduled_round_index",
+        "schedule",
+    ):
+        if key in pair:
+            summary[key] = pair[key]
     if game_summary_refs is not None:
         summary["game_summary_refs"] = list(game_summary_refs)
     if games is not None:
