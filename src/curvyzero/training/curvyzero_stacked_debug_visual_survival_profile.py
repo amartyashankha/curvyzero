@@ -672,13 +672,21 @@ def _target_value_batch(
         }
 
     discount, discount_source = _target_return_discount(policy, sample)
-    returns = _discounted_survival_returns_from_sample(sample, discount=discount)
+    context_lookup = _precomputed_return_context_lookup(sample, discount=discount)
+    if context_lookup is None:
+        context_lookup = _return_context_lookup(sample, discount=discount)
+    returns = (
+        _returns_from_context_lookup(sample, context_lookup)
+        if context_lookup is not None
+        else _discounted_survival_returns_from_sample(sample, discount=discount)
+    )
     target_value = _survival_return_value_targets(
         sample,
         returns,
         batch_size=batch_size,
         num_unroll_steps=num_unroll_steps,
         discount=discount,
+        return_lookup=context_lookup,
     )
     return target_value, {
         "source": "discounted_survival_return",
@@ -693,6 +701,40 @@ def _target_value_batch(
             "winner keeps its accumulated shaped survival return."
         ),
     }
+
+
+def _precomputed_return_context_lookup(
+    sample: Mapping[str, Any],
+    *,
+    discount: float | None,
+) -> Mapping[tuple[int, ...], float] | None:
+    lookup = sample.get("return_context_lookup")
+    if discount is None or not isinstance(lookup, Mapping):
+        return None
+    try:
+        lookup_discount = float(sample.get("return_context_lookup_discount"))
+    except (TypeError, ValueError):
+        return None
+    if abs(float(discount) - lookup_discount) > 1e-12:
+        return None
+    return lookup
+
+
+def _returns_from_context_lookup(
+    sample: Mapping[str, Any],
+    lookup: Mapping[tuple[int, ...], float],
+) -> np.ndarray:
+    iterations = np.asarray(sample["iteration_batch"], dtype=np.int64)
+    return np.asarray(
+        [
+            lookup.get(
+                _sample_return_key(sample, index),
+                0.0,
+            )
+            for index in range(len(iterations))
+        ],
+        dtype=np.float32,
+    )
 
 
 def _has_survival_target_metadata(sample: Mapping[str, Any]) -> bool:
@@ -796,13 +838,12 @@ def _survival_return_value_targets(
     batch_size: int,
     num_unroll_steps: int,
     discount: float | None = None,
+    return_lookup: Mapping[tuple[int, ...], float] | None = None,
 ) -> np.ndarray:
     target_value = np.zeros((batch_size, num_unroll_steps + 1), dtype=np.float32)
-    lookup = (
-        _return_context_lookup(sample, discount=discount)
-        if discount is not None
-        else None
-    )
+    lookup = return_lookup
+    if lookup is None and discount is not None:
+        lookup = _return_context_lookup(sample, discount=discount)
     if lookup is None:
         lookup = _sample_return_lookup(sample, returns)
     decisions = np.asarray(sample["decision_index_batch"], dtype=np.int64)

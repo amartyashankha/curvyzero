@@ -3,6 +3,7 @@ import json
 import numpy as np
 import pytest
 
+from curvyzero.training import curvyzero_source_state_visual_survival_lightzero_env as env_mod
 from curvyzero.env import vector_runtime
 from curvyzero.env.trainer_contract import ACTION_ID_TO_SOURCE_MOVE
 from curvyzero.env.trainer_contract import ACTION_SPACE_ID
@@ -22,11 +23,16 @@ from curvyzero.env.vector_visual_observation import rgb_canvas_like_to_gray64
 from curvyzero.env.vector_visual_observation import render_source_state_canvas_gray64
 from curvyzero.env.vector_visual_observation import render_source_state_rgb_canvas_like
 from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
+    CurvyZeroSourceStateVisualJointActionLightZeroEnv,
+    CurvyZeroSourceStateVisualJointActionLightZeroLocalEnv,
     CurvyZeroSourceStateVisualSurvivalLightZeroEnv,
     CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv,
+    LIGHTZERO_SOURCE_STATE_VISUAL_JOINT_ACTION_ENV_ID,
+    LIGHTZERO_SOURCE_STATE_VISUAL_JOINT_ACTION_ENV_TYPE,
     LIGHTZERO_SOURCE_STATE_VISUAL_SURVIVAL_ENV_ID,
     LIGHTZERO_SOURCE_STATE_VISUAL_SURVIVAL_ENV_TYPE,
     LIGHTZERO_SOURCE_STATE_VISUAL_SURVIVAL_IMPORT_NAMES,
+    OPPONENT_POLICY_KIND_NONE_CENTRALIZED_JOINT_ACTION,
     SOURCE_STATE_CANVAS_LIKE_GRAY64_SCHEMA_HASH,
     SOURCE_STATE_CANVAS_LIKE_GRAY64_SCHEMA_ID,
     SOURCE_STATE_CANVAS_LIKE_GRAY64_SURFACE,
@@ -37,6 +43,9 @@ from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env imp
     SOURCE_STATE_FIXED_OPPONENT_RUNTIME_TOPOLOGY,
     SOURCE_STATE_FIXED_OPPONENT_TWO_SEAT_STATUS,
     SOURCE_STATE_FIXED_OPPONENT_UNDERLYING_ENV_CLASS,
+    SOURCE_STATE_JOINT_ACTION_ENV_VARIANT,
+    SOURCE_STATE_JOINT_ACTION_RUNTIME_TOPOLOGY,
+    SOURCE_STATE_JOINT_ACTION_TRAINING_STATUS,
     SOURCE_STATE_SUPPORTED_TRAIL_RENDER_MODES,
     SOURCE_STATE_TRAIL_RENDER_MODE_BODY_CIRCLES_FAST,
     SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES,
@@ -46,6 +55,7 @@ from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env imp
     _normalize_player_perspective,
     _player_perspective_lut,
 )
+from curvyzero.training.multiplayer_opponent_policy import OpponentPolicySelection
 
 
 def test_source_state_visual_survival_reset_shape_and_metadata():
@@ -492,6 +502,152 @@ def test_source_state_visual_survival_step_and_terminal_telemetry(tmp_path):
     assert rows[0]["eval_episode_return"] == timestep.reward
 
 
+def test_source_state_visual_survival_profile_env_timing_is_opt_in(tmp_path):
+    telemetry_path = tmp_path / "source_state_timed_steps.jsonl"
+    env = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
+        {
+            "seed": 22,
+            "source_max_steps": 2,
+            "telemetry_path": telemetry_path,
+            "telemetry_stride": 1,
+            "profile_env_timing_enabled": True,
+        }
+    )
+    env.reset(seed=22)
+
+    timestep = env.step(1)
+
+    timing = timestep.info["profile_env_timing_sec"]
+    assert timing["opponent_action_sec"] >= 0.0
+    assert timing["vector_step_sec"] >= 0.0
+    assert timing["observation_sec"] >= 0.0
+    assert timing["step_total_before_info_sec"] >= timing["observation_sec"]
+
+    rows = [
+        json.loads(line)
+        for line in telemetry_path.read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+    assert len(rows) == 1
+    assert rows[0]["profile_env_timing_sec"]["opponent_action_sec"] >= 0.0
+    assert rows[0]["profile_env_timing_sec"]["observation_sec"] >= 0.0
+
+
+def test_source_state_visual_survival_can_use_frozen_checkpoint_opponent(
+    monkeypatch,
+    tmp_path,
+):
+    calls = []
+    telemetry_path = tmp_path / "frozen_source_state_steps.jsonl"
+
+    class FakeFrozenOpponentPolicy:
+        policy_id = "fake_snapshot_policy"
+        policy_version = "v-test"
+        seed = 99
+
+        def select_actions(
+            self,
+            legal_action_mask,
+            opponent_mask,
+            *,
+            decision_index=0,
+            observation=None,
+        ):
+            calls.append(
+                {
+                    "legal_action_mask": legal_action_mask.copy(),
+                    "opponent_mask": opponent_mask.copy(),
+                    "decision_index": decision_index,
+                    "observation": observation.copy(),
+                }
+            )
+            actions = np.full((1, 2), -1, dtype=np.int16)
+            actions[0, 1] = 2
+            action_seed = np.full((1, 2), -1, dtype=np.int64)
+            action_seed[0, 1] = 123
+            action_logp = np.full((1, 2), np.nan, dtype=np.float32)
+            action_logp[0, 1] = -0.25
+            return OpponentPolicySelection(
+                policy_id=self.policy_id,
+                policy_version=self.policy_version,
+                seed=self.seed,
+                actions=actions,
+                action_seed=action_seed,
+                action_logp=action_logp,
+                opponent_mask=opponent_mask,
+                decision_index=decision_index,
+                policy_metadata={
+                    "checkpoint_ref": "runs/checkpoints/iteration_7.pth.tar",
+                    "snapshot_ref": "stage-007",
+                    "provider_id": "fake_provider",
+                    "provider_version": "v-test",
+                    "provider_load_summary": {
+                        "ok": True,
+                        "strict": True,
+                        "candidate": "as_is",
+                    },
+                },
+            )
+
+    def fake_builder(**kwargs):
+        assert kwargs["checkpoint_path"] == "/tmp/frozen.pth.tar"
+        assert kwargs["checkpoint_ref"] == "runs/checkpoints/iteration_7.pth.tar"
+        assert kwargs["snapshot_ref"] == "stage-007"
+        assert kwargs["state_key"] == "model"
+        return FakeFrozenOpponentPolicy()
+
+    monkeypatch.setattr(
+        env_mod,
+        "snapshot_backed_lightzero_checkpoint_opponent_policy",
+        fake_builder,
+    )
+    env = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
+        {
+            "seed": 21,
+            "source_max_steps": 2,
+            "opponent_policy_kind": "frozen_lightzero_checkpoint",
+            "opponent_checkpoint_path": "/tmp/frozen.pth.tar",
+            "opponent_checkpoint_ref": "runs/checkpoints/iteration_7.pth.tar",
+            "opponent_snapshot_ref": "stage-007",
+            "opponent_checkpoint_state_key": "model",
+            "opponent_policy_seed": 99,
+            "telemetry_path": telemetry_path,
+        }
+    )
+
+    env.reset(seed=21)
+    timestep = env.step(0)
+
+    assert timestep.info["joint_action"] == {"player_0": 0, "player_1": 2}
+    assert timestep.info["opponent_action_id"] == 2
+    assert timestep.info["opponent_policy_kind"] == "frozen_lightzero_checkpoint"
+    assert (
+        timestep.info["opponent_training_relation"]
+        == "learner_vs_frozen_lightzero_checkpoint"
+    )
+    assert timestep.info["opponent_policy_id"] == "fake_snapshot_policy"
+    assert timestep.info["opponent_policy_version"] == "v-test"
+    sidecar = timestep.info["opponent_policy_sidecar"]
+    assert sidecar["policy_metadata"]["checkpoint_ref"] == (
+        "runs/checkpoints/iteration_7.pth.tar"
+    )
+    assert calls[0]["decision_index"] == 0
+    np.testing.assert_array_equal(calls[0]["opponent_mask"], np.array([[False, True]]))
+    assert calls[0]["observation"].shape == (1, 2, *STACKED_SOURCE_STATE_GRAY64_SHAPE)
+    assert calls[0]["legal_action_mask"].shape == (1, 2, 3)
+    rows = [
+        json.loads(line)
+        for line in telemetry_path.read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+    assert rows[0]["opponent_checkpoint_ref"] == "runs/checkpoints/iteration_7.pth.tar"
+    assert rows[0]["opponent_snapshot_ref"] == "stage-007"
+    assert rows[0]["opponent_provider_id"] == "fake_provider"
+    assert rows[0]["opponent_provider_load_ok"] is True
+    assert rows[0]["opponent_provider_load_strict"] is True
+    assert rows[0]["opponent_provider_load_candidate"] == "as_is"
+
+
 def test_source_state_fixed_opponent_config_names_non_self_play_runtime_contract():
     config = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv.config
 
@@ -716,6 +872,61 @@ def test_registered_source_state_visual_survival_env_exposes_spaces_and_random_a
     assert _space_action_count(env.action_space) == 3
     np.testing.assert_array_equal(env.legal_actions, np.array([0, 1, 2], dtype=np.int64))
     assert env.random_action() in {0, 1, 2}
+
+
+def test_source_state_joint_action_accepts_none_centralized_opponent_kind():
+    env = CurvyZeroSourceStateVisualJointActionLightZeroLocalEnv(
+        {
+            "seed": 71,
+            "source_max_steps": 8,
+            "opponent_policy_kind": OPPONENT_POLICY_KIND_NONE_CENTRALIZED_JOINT_ACTION,
+        }
+    )
+
+    observation = env.reset(seed=71)
+    timestep = env.step(4)
+
+    assert env.env_id == LIGHTZERO_SOURCE_STATE_VISUAL_JOINT_ACTION_ENV_ID
+    assert env.last_reset_info["env_variant"] == SOURCE_STATE_JOINT_ACTION_ENV_VARIANT
+    assert env.last_reset_info["runtime_topology"] == (
+        SOURCE_STATE_JOINT_ACTION_RUNTIME_TOPOLOGY
+    )
+    assert env.last_reset_info["opponent_policy_kind"] == (
+        OPPONENT_POLICY_KIND_NONE_CENTRALIZED_JOINT_ACTION
+    )
+    assert env.last_reset_info["opponent_training_relation"] == (
+        "centralized_policy_controls_both_players"
+    )
+    assert observation["action_mask"].shape == (9,)
+    np.testing.assert_array_equal(env.legal_actions, np.arange(9, dtype=np.int64))
+    assert timestep.info["joint_action_scalar"] == 4
+    assert timestep.info["joint_action"] == {"player_0": 1, "player_1": 1}
+    assert timestep.info["centralized_joint_action_control"] is True
+    assert timestep.info["true_competitive_self_play"] is False
+    assert timestep.info["two_seat_self_play"] is False
+    assert timestep.info["two_seat_self_play_status"] == (
+        SOURCE_STATE_JOINT_ACTION_TRAINING_STATUS
+    )
+    assert timestep.info["current_policy_self_play"] is False
+    assert timestep.info["current_policy_self_play_blocker"] == (
+        "centralized_joint_action_control_is_not_true_competitive_self_play"
+    )
+
+
+def test_registered_source_state_joint_action_env_exposes_nine_actions():
+    env = CurvyZeroSourceStateVisualJointActionLightZeroEnv(
+        {
+            "seed": 73,
+            "source_max_steps": 8,
+            "opponent_policy_kind": OPPONENT_POLICY_KIND_NONE_CENTRALIZED_JOINT_ACTION,
+        }
+    )
+    env.reset(seed=73)
+
+    assert env.env_id == LIGHTZERO_SOURCE_STATE_VISUAL_JOINT_ACTION_ENV_ID
+    assert env.lightzero_env_type == LIGHTZERO_SOURCE_STATE_VISUAL_JOINT_ACTION_ENV_TYPE
+    assert _space_action_count(env.action_space) == 9
+    assert env.random_action() in set(range(9))
 
 
 def test_player_perspective_lut_remaps_only_player_body_and_head_values():

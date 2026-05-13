@@ -2,10 +2,17 @@
 set -euo pipefail
 
 MODULE="curvyzero.infra.modal.lightzero_curvyzero_stacked_debug_visual_survival_train"
+if [[ "${ALLOW_HISTORICAL_CUSTOM_TWO_SEAT_RERUN:-0}" != "1" ]]; then
+  print -r -- "This historical launcher reruns the custom two-seat adapter that failed the May 12 learning audit." >&2
+  print -r -- "Set ALLOW_HISTORICAL_CUSTOM_TWO_SEAT_RERUN=1 only for postmortem reproduction." >&2
+  exit 2
+fi
 BATCH_TAG="${BATCH_TAG:-overnight40a}"
 DATE_TAG="${DATE_TAG:-20260512}"
 MAX_TRAIN_ITER="${MAX_TRAIN_ITER:-3000}"
-CKPT_EVERY="${CKPT_EVERY:-50}"
+CKPT_EVERY="${CKPT_EVERY:-25}"
+BACKGROUND_GIF_MAX_STEPS="${BACKGROUND_GIF_MAX_STEPS:-2048}"
+BACKGROUND_GIF_FRAME_STRIDE="${BACKGROUND_GIF_FRAME_STRIDE:-4}"
 LOG_DIR="${LOG_DIR:-logs}"
 LOG_PATH="${LOG_PATH:-${LOG_DIR}/curvytron_${BATCH_TAG}_launch_${DATE_TAG}.log}"
 START_AT="${1:-${START_AT:-1}}"
@@ -74,6 +81,8 @@ launch_row() {
     --two-seat-death-mode normal
     --two-seat-trail-render-mode "${render}"
     --background-eval-launch-kind poller
+    --background-gif-max-steps "${BACKGROUND_GIF_MAX_STEPS}"
+    --background-gif-frame-stride "${BACKGROUND_GIF_FRAME_STRIDE}"
     --output-detail compact
   )
 
@@ -149,8 +158,8 @@ launch_row 05 main_seed gpu-l4-t4 fast_gray64_direct 64 8 64 4 256 unset default
 launch_row 06 search16 gpu-l4-t4 fast_gray64_direct 64 16 64 4 256 unset default default 1206
 launch_row 07 search32 gpu-l4-t4 fast_gray64_direct 64 32 64 4 256 unset default default 1207
 launch_row 08 small_batch gpu-l4-t4 fast_gray64_direct 32 8 64 4 128 unset default default 1208
-launch_row 09 large_batch_l4 gpu-l4-t4 fast_gray64_direct 128 8 64 4 512 unset default default 1209
-launch_row 10 large_search_l4 gpu-l4-t4 fast_gray64_direct 128 16 64 4 512 unset default default 1210
+launch_row 09 large_batch_l4_probe gpu-l4-t4 fast_gray64_direct 128 8 64 4 512 unset default default 1209
+launch_row 10 large_search_l4_probe gpu-l4-t4 fast_gray64_direct 128 16 64 4 512 unset default default 1210
 launch_row 11 collect128 gpu-l4-t4 fast_gray64_direct 64 8 128 4 256 unset default default 1211
 launch_row 12 collect256 gpu-l4-t4 fast_gray64_direct 64 8 256 4 256 unset default default 1212
 launch_row 13 updates8 gpu-l4-t4 fast_gray64_direct 64 8 64 8 256 unset default default 1213
@@ -170,17 +179,17 @@ launch_row 26 bonus_heavy gpu-l4-t4 fast_gray64_direct 64 8 64 4 256 unset bonus
 launch_row 27 no_obs_noise gpu-l4-t4 fast_gray64_direct 64 8 64 4 256 unset default obs_noise_0 1227
 launch_row 28 obs_noise_05 gpu-l4-t4 fast_gray64_direct 64 8 64 4 256 unset default obs_noise_05 1228
 launch_row 29 obs_noise_20 gpu-l4-t4 fast_gray64_direct 64 8 64 4 256 unset default obs_noise_20 1229
-launch_row 30 action_repeat gpu-l4-t4 fast_gray64_direct 64 8 64 4 256 unset default repeat_20pct 1230
+launch_row 30 action_repeat_diag gpu-l4-t4 fast_gray64_direct 64 8 64 0 256 unset default repeat_20pct 1230
 launch_row 31 action_noop_05 gpu-l4-t4 fast_gray64_direct 64 8 64 4 256 unset default action_noop_5pct 1231
-launch_row 32 no_stochasticity gpu-l4-t4 fast_gray64_direct 64 8 64 4 256 unset default none 1232
+launch_row 32 no_obs_noise_seed gpu-l4-t4 fast_gray64_direct 64 8 64 4 256 unset default obs_noise_0 1232
 launch_row 33 large_batch_h100 gpu-h100-cpu40 fast_gray64_direct 128 8 64 4 512 unset default default 1233
 launch_row 34 large_search_h100 gpu-h100-cpu40 fast_gray64_direct 128 16 64 4 512 unset default default 1234
 launch_row 35 h100_search32 gpu-h100-cpu40 fast_gray64_direct 128 32 64 4 512 unset default default 1235
 launch_row 36 h100_collect128 gpu-h100-cpu40 fast_gray64_direct 128 16 128 4 512 unset default default 1236
 launch_row 37 h100_b256 gpu-h100-cpu40 fast_gray64_direct 256 8 64 4 1024 unset default default 1237
 launch_row 38 h100_lr_3e-4 gpu-h100-cpu40 fast_gray64_direct 128 8 64 4 512 3e-4 default default 1238
-launch_row 39 browser_sentinel gpu-l4-t4 browser_lines 16 8 64 4 128 unset default default 1239
-launch_row 40 browser_sentinel_lr gpu-l4-t4 browser_lines 16 8 64 4 128 3e-4 default default 1240
+launch_row 39 fast_sentinel_b16 gpu-l4-t4 fast_gray64_direct 16 8 64 4 128 unset default default 1239
+launch_row 40 browser_sentinel_b16 gpu-l4-t4 browser_lines 16 8 64 4 128 unset default default 1240
 
 print -r -- ""
 print -r -- "All launch commands completed. Log: ${LOG_PATH}"

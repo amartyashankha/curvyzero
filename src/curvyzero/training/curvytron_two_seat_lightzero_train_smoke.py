@@ -10,7 +10,7 @@ collection can use the refreshed policy.
 from __future__ import annotations
 
 import argparse
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import UTC, datetime
 import json
 from pathlib import Path
@@ -56,6 +56,7 @@ from curvyzero.training.curvyzero_stacked_debug_visual_survival_profile import (
     _model_hash,
     _policy_eval_action,
     _policy_model_device,
+    _return_context_lookup,
     _root_value,
     _strip_large_arrays,
     _strip_runtime_object,
@@ -149,6 +150,7 @@ def run_curvytron_two_seat_lightzero_train_smoke(
     num_simulations: int = 2,
     learner_updates: int = 1,
     allow_optimizer_step: bool = False,
+    verify_model_update_hash: bool = False,
     checkpoint_dir: str | Path | None = None,
     checkpoint_metadata: Mapping[str, Any] | None = None,
     checkpoint_every_iterations: int = DEFAULT_CHECKPOINT_EVERY_ITERATIONS,
@@ -275,6 +277,21 @@ def run_curvytron_two_seat_lightzero_train_smoke(
         extra_probability=resolved_policy_action_repeat_extra_probability,
         warmup_iterations=resolved_policy_action_repeat_warmup_iterations,
     )
+    if (
+        allow_optimizer_step
+        and resolved_updates_per_iteration > 0
+        and _policy_noop_skip_can_drop_training_targets(
+            min_repeat=resolved_policy_action_repeat_min,
+            max_repeat=resolved_policy_action_repeat_max,
+            extra_probability=resolved_policy_action_repeat_extra_probability,
+        )
+    ):
+        raise ValueError(
+            "policy no-op skip cannot be used with optimizer training yet: "
+            "terminal rewards on skipped physical ticks are not replay targets. "
+            "Use repeat min/max 1 and extra probability 0, or run it as a "
+            "no-update diagnostic."
+        )
     resolved_observation_noise_std = float(observation_noise_std)
     if resolved_observation_noise_std < 0.0:
         raise ValueError("observation_noise_std must be >= 0")
@@ -358,6 +375,7 @@ def run_curvytron_two_seat_lightzero_train_smoke(
                 num_simulations=num_simulations,
                 learner_updates=learner_updates,
                 allow_optimizer_step=allow_optimizer_step,
+                verify_model_update_hash=verify_model_update_hash,
                 replay_scope=replay_scope,
                 learner_sample_size=resolved_learner_sample_size,
                 max_replay_rows=resolved_max_replay_rows,
@@ -498,6 +516,7 @@ def run_curvytron_two_seat_lightzero_train_smoke(
                     "updates_per_iteration": int(resolved_updates_per_iteration),
                     "num_simulations": int(num_simulations),
                     "allow_optimizer_step": bool(allow_optimizer_step),
+                    "verify_model_update_hash": bool(verify_model_update_hash),
                     "replay_scope": replay_scope,
                     "learner_sample_size": resolved_learner_sample_size,
                     "action_selection_mode": action_selection_mode,
@@ -596,7 +615,7 @@ def run_curvytron_two_seat_lightzero_train_smoke(
         enabled=frozen_opponent_policy is not None,
     )
     initial_reset_seed_sample = _reset_seed_sample(batch.info)
-    observation = visual_stack.update(env)
+    observation = visual_stack.update(env, copy=False)
     problems.extend(_validate_visual_batch(observation, batch.action_mask, label="reset"))
 
     records: list[dict[str, Any]] = []
@@ -622,6 +641,9 @@ def run_curvytron_two_seat_lightzero_train_smoke(
     cumulative_update_index = 0
 
     for outer_index in range(outer_iterations):
+        iteration_started = time.perf_counter()
+        iteration_timing_sec: Counter[str] = Counter()
+        learner_timing_sec: Counter[str] = Counter()
         iteration_number = outer_index + 1
         effective_action_noop_probability = _scheduled_action_noop_probability(
             final_probability=resolved_action_noop_probability,
@@ -635,6 +657,7 @@ def run_curvytron_two_seat_lightzero_train_smoke(
                 iteration=iteration_number,
             )
         )
+        started = time.perf_counter()
         collection = _collect_current_policy_iteration(
             policy,
             env,
@@ -680,6 +703,7 @@ def run_curvytron_two_seat_lightzero_train_smoke(
             frozen_opponent_player_id=resolved_frozen_opponent_player_id,
             frozen_opponent_metadata=frozen_opponent_metadata,
         )
+        iteration_timing_sec["collect_total_sec"] += time.perf_counter() - started
         batch = collection["batch"]
         observation = collection["observation"]
         frozen_opponent_row_mask = collection["frozen_opponent_row_mask"]
@@ -719,6 +743,7 @@ def run_curvytron_two_seat_lightzero_train_smoke(
             learner_sample_size=resolved_learner_sample_size,
         )
         iteration_updates: list[dict[str, Any]] = []
+        learner_replay_context: dict[str, Any] | None = None
         if resolved_updates_per_iteration < 1:
             learner_forward = {
                 "status": "skipped",
@@ -740,7 +765,15 @@ def run_curvytron_two_seat_lightzero_train_smoke(
                 "learner_batch_size": int(learner_batch_size),
             }
         else:
+            started = time.perf_counter()
+            learner_replay_context = _replay_return_context_arrays(
+                learner_replay_rows
+            )
+            learner_timing_sec["learner_context_build_sec"] += (
+                time.perf_counter() - started
+            )
             for iteration_update_index in range(resolved_updates_per_iteration):
+                started = time.perf_counter()
                 sample = _sample_replay_batch(
                     learner_replay_rows,
                     replay_scope=replay_scope,
@@ -750,16 +783,30 @@ def run_curvytron_two_seat_lightzero_train_smoke(
                         iteration=iteration_number,
                         update_index=cumulative_update_index,
                     ),
+                    return_context=learner_replay_context,
+                    include_stratification=False,
+                    validate_rows=False,
                 )
+                learner_timing_sec["learner_sample_sec"] += (
+                    time.perf_counter() - started
+                )
+                started = time.perf_counter()
                 if allow_optimizer_step:
                     update = _learn_mode_forward_update(
                         policy,
                         sample,
                         update_index=cumulative_update_index,
+                        verify_model_update_hash=verify_model_update_hash,
                     )
                 else:
                     update = _learn_mode_forward_loss(policy, sample)
                     update["update_index"] = int(cumulative_update_index)
+                learner_timing_sec["learner_update_total_sec"] += (
+                    time.perf_counter() - started
+                )
+                if isinstance(update.get("timing_sec"), Mapping):
+                    for key, value in update["timing_sec"].items():
+                        learner_timing_sec[str(key)] += float(value)
                 update["iteration"] = int(iteration_number)
                 update["iteration_update_index"] = int(iteration_update_index)
                 update["replay_scope"] = replay_scope
@@ -775,7 +822,11 @@ def run_curvytron_two_seat_lightzero_train_smoke(
                     update["blocker"] = LEARN_BATCH_BLOCKER
                     problems.append("LightZero learn_mode.forward failed")
                     break
-                if allow_optimizer_step and not bool(update.get("model_parameters_changed")):
+                if (
+                    allow_optimizer_step
+                    and verify_model_update_hash
+                    and not bool(update.get("model_parameters_changed"))
+                ):
                     problems.append(
                         "real optimizer step ran but model parameters did not change"
                     )
@@ -792,6 +843,7 @@ def run_curvytron_two_seat_lightzero_train_smoke(
                 or iteration_number == outer_iterations
             )
         ):
+            started = time.perf_counter()
             iteration_checkpoint = _save_lightzero_policy_checkpoint(
                 policy,
                 resolved_checkpoint_dir,
@@ -808,6 +860,7 @@ def run_curvytron_two_seat_lightzero_train_smoke(
                     "num_simulations": int(num_simulations),
                     "learner_updates": int(learner_updates),
                     "allow_optimizer_step": True,
+                    "verify_model_update_hash": bool(verify_model_update_hash),
                     "replay_scope": replay_scope,
                     "learner_sample_size": resolved_learner_sample_size,
                     "alive_reward": resolved_alive_reward,
@@ -852,6 +905,9 @@ def run_curvytron_two_seat_lightzero_train_smoke(
                     **dict(checkpoint_metadata or {}),
                 },
             )
+            iteration_timing_sec["checkpoint_save_sec"] += (
+                time.perf_counter() - started
+            )
             checkpoint_records.append(iteration_checkpoint)
 
         iteration_summaries.append(
@@ -883,6 +939,10 @@ def run_curvytron_two_seat_lightzero_train_smoke(
             "control_stochasticity"
         ]
         iteration_summaries[-1]["collect_timing_sec"] = collection["timing_sec"]
+        iteration_summaries[-1]["learner_timing_sec"] = {
+            key: round(float(learner_timing_sec[key]), 6)
+            for key in sorted(learner_timing_sec)
+        }
         iteration_summaries[-1]["visual_stack_dirty_render"] = collection[
             "visual_stack_dirty_render"
         ]
@@ -896,6 +956,13 @@ def run_curvytron_two_seat_lightzero_train_smoke(
             collection["policy_search_row_count"]
         )
         iteration_summaries[-1]["opponent_mix"] = collection["opponent_mix"]
+        iteration_timing_sec["iteration_wall_before_progress_sec"] += (
+            time.perf_counter() - iteration_started
+        )
+        iteration_summaries[-1]["iteration_timing_sec"] = {
+            key: round(float(iteration_timing_sec[key]), 6)
+            for key in sorted(iteration_timing_sec)
+        }
         if (
             resolved_progress_path is not None
             and (
@@ -904,6 +971,7 @@ def run_curvytron_two_seat_lightzero_train_smoke(
                 or bool(problems)
             )
         ):
+            started = time.perf_counter()
             _append_progress_line(
                 resolved_progress_path,
                 _iteration_progress_line(
@@ -917,6 +985,9 @@ def run_curvytron_two_seat_lightzero_train_smoke(
                 ),
                 print_line=progress_print,
             )
+            iteration_timing_sec["progress_write_sec"] += (
+                time.perf_counter() - started
+            )
             if (
                 progress_commit_callback is not None
                 and (
@@ -925,7 +996,18 @@ def run_curvytron_two_seat_lightzero_train_smoke(
                     or bool(problems)
                 )
             ):
+                started = time.perf_counter()
                 progress_commit_callback()
+                iteration_timing_sec["progress_commit_sec"] += (
+                    time.perf_counter() - started
+                )
+        iteration_timing_sec["iteration_wall_sec"] += (
+            time.perf_counter() - iteration_started
+        )
+        iteration_summaries[-1]["iteration_timing_sec"] = {
+            key: round(float(iteration_timing_sec[key]), 6)
+            for key in sorted(iteration_timing_sec)
+        }
         if problems:
             break
 
@@ -944,6 +1026,7 @@ def run_curvytron_two_seat_lightzero_train_smoke(
             num_simulations=num_simulations,
             learner_updates=learner_updates,
             allow_optimizer_step=allow_optimizer_step,
+            verify_model_update_hash=verify_model_update_hash,
             replay_scope=replay_scope,
             learner_sample_size=resolved_learner_sample_size,
             max_replay_rows=resolved_max_replay_rows,
@@ -1071,6 +1154,7 @@ def compact_curvytron_two_seat_lightzero_train_smoke_summary(
                 "checkpoint_every_iterations": inputs.get(
                     "checkpoint_every_iterations"
                 ),
+                "verify_model_update_hash": inputs.get("verify_model_update_hash"),
             },
             "lightzero_policy_status": policy.get("status"),
             "lightzero_policy_requested_cuda": policy.get("requested_cuda"),
@@ -1079,6 +1163,8 @@ def compact_curvytron_two_seat_lightzero_train_smoke_summary(
             "elapsed_sec": result.get("elapsed_sec"),
             "steps_survived": result.get("steps_survived"),
             "collect_timing_summary": result.get("collect_timing_summary"),
+            "learner_timing_summary": result.get("learner_timing_summary"),
+            "iteration_timing_summary": result.get("iteration_timing_summary"),
             "episode_duration_summary": result.get("episode_duration_summary"),
             "opponent_mix": result.get("opponent_mix"),
             "surface": {
@@ -1108,6 +1194,10 @@ def compact_curvytron_two_seat_lightzero_train_smoke_summary(
                 "model_hash_before": learner.get("model_hash_before"),
                 "model_hash_after": learner.get("model_hash_after"),
                 "model_parameters_changed": learner.get("model_parameters_changed"),
+                "model_update_hash_verification_enabled": learner.get(
+                    "model_update_hash_verification_enabled"
+                ),
+                "timing_sec": learner.get("timing_sec"),
                 "replay_scope": learner.get("replay_scope"),
                 "replay_rows_available": learner.get("replay_rows_available"),
                 "learner_batch_size": learner.get("learner_batch_size"),
@@ -1484,6 +1574,7 @@ def _result_payload(
     num_simulations: int,
     learner_updates: int,
     allow_optimizer_step: bool,
+    verify_model_update_hash: bool,
     replay_scope: str,
     learner_sample_size: int | None,
     max_replay_rows: int | None,
@@ -1582,6 +1673,7 @@ def _result_payload(
         "called_train_muzero": False,
         "true_lightzero_current_policy_self_play_training": False,
         "real_optimizer_step_allowed": bool(allow_optimizer_step),
+        "model_update_hash_verification_enabled": bool(verify_model_update_hash),
         "simple_label": (
             "one shared LightZero policy object chooses both CurvyTron player "
             "actions in a bounded local joint-action smoke"
@@ -1622,6 +1714,7 @@ def _result_payload(
             "num_simulations": int(num_simulations),
             "learner_updates": int(learner_updates),
             "allow_optimizer_step": bool(allow_optimizer_step),
+            "verify_model_update_hash": bool(verify_model_update_hash),
             "replay_scope": replay_scope,
             "learner_sample_size": learner_sample_size,
             "max_replay_rows": max_replay_rows,
@@ -1735,6 +1828,14 @@ def _result_payload(
         "steps_survived": int(total_steps_collected),
         "total_steps_collected": int(total_steps_collected),
         "collect_timing_summary": _collect_timing_summary(iteration_summaries),
+        "learner_timing_summary": _timing_summary_from_iteration_field(
+            iteration_summaries,
+            "learner_timing_sec",
+        ),
+        "iteration_timing_summary": _timing_summary_from_iteration_field(
+            iteration_summaries,
+            "iteration_timing_sec",
+        ),
         "episode_duration_summary": _episode_duration_summary(iteration_summaries),
         "opponent_mix": {
             "schema_id": OPPONENT_MIX_SCHEMA_ID,
@@ -1929,6 +2030,8 @@ def _collect_current_policy_iteration(
             )
         )
 
+    policy_observation_noise_workspace = _ObservationNoiseWorkspace()
+    replay_observation_noise_workspace = _ObservationNoiseWorkspace()
     for iteration_step in range(collect_steps):
         decision_index = int(decision_offset + iteration_step)
         started = time.perf_counter()
@@ -1936,6 +2039,7 @@ def _collect_current_policy_iteration(
             observation,
             std=observation_noise_std,
             rng=observation_noise_rng,
+            workspace=policy_observation_noise_workspace,
         )
         add_elapsed("observation_noise_sec", started)
         started = time.perf_counter()
@@ -2020,6 +2124,8 @@ def _collect_current_policy_iteration(
                 temperature=collect_temperature,
                 epsilon=collect_epsilon,
             )
+            for timing_name, elapsed_sec in batched_search.get("timing_sec", {}).items():
+                timing_sec[str(timing_name)] += float(elapsed_sec)
             policy_search_row_count += int(fresh_observations.shape[0])
             if batched_search.get("ok"):
                 policy_search_call_count += 1
@@ -2049,6 +2155,7 @@ def _collect_current_policy_iteration(
             else:
                 policy_batching_counts["row_fallback"] += 1
                 policy_batching_label = "row_fallback"
+                fallback_started = time.perf_counter()
                 for fresh_row in range(fresh_observations.shape[0]):
                     active_row = int(fresh_active_indices[fresh_row])
                     policy_search_call_count += 1
@@ -2088,6 +2195,9 @@ def _collect_current_policy_iteration(
                         break
                     selected_actions.append(action)
                     search_records_by_active[active_row] = search_record
+                timing_sec["policy_batch_fallback_sec"] += (
+                    time.perf_counter() - fallback_started
+                )
         add_elapsed("policy_search_sec", started)
         if problems:
             break
@@ -2180,18 +2290,32 @@ def _collect_current_policy_iteration(
         step_batch = env.step(joint_action)
         add_elapsed("env_step_sec", started)
         started = time.perf_counter()
-        next_observation = visual_stack.update(env)
+        next_observation = visual_stack.update(env, copy=False)
         add_elapsed("visual_stack_update_sec", started)
         started = time.perf_counter()
         replay_next_observation = _apply_observation_noise(
             next_observation,
             std=observation_noise_std,
             rng=observation_noise_rng,
+            workspace=replay_observation_noise_workspace,
         )
         add_elapsed("replay_observation_noise_sec", started)
         alive_after = step_batch.info.get("alive")
         done_by_row = np.asarray(step_batch.done, dtype=bool)
         winner_by_row = _winner_by_row(step_batch.info)
+        skipped_terminal_slots = np.zeros(0, dtype=bool)
+        if skipped_active_indices.size:
+            skipped_terminal_slots = done_by_row[
+                active_env_row_id[skipped_active_indices]
+            ]
+            stochasticity_counts["policy_noop_skip_terminal_slots"] += int(
+                skipped_terminal_slots.sum()
+            )
+            stochasticity_counts["policy_noop_skip_terminal_env_rows"] += int(
+                np.unique(
+                    active_env_row_id[skipped_active_indices][skipped_terminal_slots]
+                ).size
+            )
         for active_row in range(active_count):
             env_row = int(active_env_row_id[active_row])
             player = int(active_player_id[active_row])
@@ -2311,8 +2435,10 @@ def _collect_current_policy_iteration(
                     "replay_row_for_fresh_policy_decision": True,
                     "policy_noop_skip_ticks_create_replay_rows": False,
                     "observation_noise_std": float(observation_noise_std),
-                    "action_weights": _action_weights(search_record, policy_action),
-                    "root_value": _root_value(search_record),
+                    "action_weights": _search_record_action_weights(
+                        search_record, policy_action
+                    ),
+                    "root_value": _search_record_root_value(search_record),
                     "reward": float(training_reward),
                     "dense_survival_helper_reward": float(dense_survival_helper),
                     "bonus_pickup_count": int(bonus_pickup_count),
@@ -2332,6 +2458,39 @@ def _collect_current_policy_iteration(
                         winner_by_row,
                         env_row=env_row,
                         done=bool(done_by_row[env_row]),
+                    ),
+                    "terminal_reason": _info_scalar_for_row(
+                        step_batch.info,
+                        "terminal_reason",
+                        env_row=env_row,
+                        default=-1,
+                    ),
+                    "terminal_reason_name": _info_scalar_for_row(
+                        step_batch.info,
+                        "terminal_reason_name",
+                        env_row=env_row,
+                        default="none",
+                    ),
+                    "death_count": _info_scalar_for_row(
+                        step_batch.info,
+                        "death_count",
+                        env_row=env_row,
+                        default=0,
+                    ),
+                    "death_player": _info_row_list(
+                        step_batch.info,
+                        "death_player",
+                        env_row=env_row,
+                    ),
+                    "death_cause": _info_row_list(
+                        step_batch.info,
+                        "death_cause",
+                        env_row=env_row,
+                    ),
+                    "death_cause_name": _info_row_list(
+                        step_batch.info,
+                        "death_cause_name",
+                        env_row=env_row,
                     ),
                     "return_schema_id": TWO_SEAT_TERMINAL_SHAPED_RETURN_SCHEMA_ID,
                     "return_schema_hash": TWO_SEAT_TERMINAL_SHAPED_RETURN_SCHEMA_HASH,
@@ -2406,6 +2565,7 @@ def _collect_current_policy_iteration(
             "policy_noop_skip_remaining_after": repeat_remaining_after.copy(),
             "policy_noop_skip_started_mask": policy_noop_skip_started.copy(),
             "policy_noop_skip_interval_steps": policy_noop_skip_interval.copy(),
+            "policy_noop_skip_terminal_slots": int(skipped_terminal_slots.sum()),
             "observation_noise_std": float(observation_noise_std),
             "reward": step_batch.reward.copy(),
             "done": step_batch.done.copy(),
@@ -2559,9 +2719,15 @@ def _policy_actions_batch(
             "step_index": int(step_index),
             "reason": f"unknown action selection mode: {mode}",
         }
+    timing_sec: Counter[str] = Counter()
+
+    def add_policy_elapsed(name: str, started: float) -> None:
+        timing_sec[name] += time.perf_counter() - started
+
     try:
         import torch
 
+        started = time.perf_counter()
         obs_array = np.asarray(observations, dtype=np.float32)
         action_mask = np.asarray(legal_action_mask, dtype=np.float32)
         if obs_array.shape[0] != action_mask.shape[0]:
@@ -2576,6 +2742,8 @@ def _policy_actions_batch(
         )
         ready_env_id = np.arange(obs_array.shape[0])
         to_play = [int(item) for item in players]
+        add_policy_elapsed("policy_tensor_prepare_sec", started)
+        started = time.perf_counter()
         with torch.no_grad():
             output = policy.collect_mode.forward(
                 obs_tensor,
@@ -2585,16 +2753,24 @@ def _policy_actions_batch(
                 epsilon=float(epsilon),
                 ready_env_id=ready_env_id,
             )
+        add_policy_elapsed("policy_collect_forward_sec", started)
+        started = time.perf_counter()
+        plain_output = _to_plain(output)
         records = []
         for row in range(obs_array.shape[0]):
-            row_output = _policy_output_row(output, row)
+            row_output = _policy_output_row_from_plain(plain_output, row)
+            action = _extract_eval_action_from_plain(row_output)
+            action_weights = _action_weights_from_policy_output(row_output, action)
+            root_value = _root_value_from_policy_output(row_output)
             records.append(
                 {
                     "ok": True,
                     "status": "ok",
                     "step_index": int(step_index),
                     "api": "MuZeroPolicy.collect_mode.forward",
-                    "action": _extract_eval_action(row_output),
+                    "action": action,
+                    "action_weights": action_weights,
+                    "root_value": root_value,
                     "data_shape": [int(item) for item in obs_tensor.shape],
                     "row_data_shape": [int(item) for item in obs_array[row].shape],
                     "action_mask_shape": [int(item) for item in action_mask.shape],
@@ -2606,15 +2782,18 @@ def _policy_actions_batch(
                     "batch_size": int(obs_array.shape[0]),
                     "temperature": float(temperature),
                     "epsilon": float(epsilon),
-                    "compact_output": _compact_mcts_output(row_output),
                     "policy_batching": "batched_active_rows",
                 }
             )
+        add_policy_elapsed("policy_output_decode_sec", started)
         return {
             "ok": True,
             "status": "ok",
             "step_index": int(step_index),
             "records": records,
+            "timing_sec": {
+                key: round(float(timing_sec[key]), 6) for key in sorted(timing_sec)
+            },
         }
     except Exception as exc:  # pragma: no cover - installed runtime diagnosis.
         return {
@@ -2623,6 +2802,9 @@ def _policy_actions_batch(
             "step_index": int(step_index),
             "reason": "batched MuZeroPolicy.collect_mode.forward failed",
             "exception": _exception_result(exc),
+            "timing_sec": {
+                key: round(float(timing_sec[key]), 6) for key in sorted(timing_sec)
+            },
         }
 
 
@@ -2686,7 +2868,10 @@ def _policy_eval_actions_batch(
 
 
 def _policy_output_row(output: Any, row: int) -> Any:
-    plain = _to_plain(output)
+    return _policy_output_row_from_plain(_to_plain(output), row)
+
+
+def _policy_output_row_from_plain(plain: Any, row: int) -> Any:
     if isinstance(plain, Mapping):
         for key in (int(row), str(int(row))):
             if key in plain:
@@ -2694,7 +2879,7 @@ def _policy_output_row(output: Any, row: int) -> Any:
         row_item: dict[str, Any] = {}
         for key, value in plain.items():
             if isinstance(value, Mapping):
-                row_item[key] = _policy_output_row(value, row)
+                row_item[key] = _policy_output_row_from_plain(value, row)
                 continue
             try:
                 array = np.asarray(value)
@@ -2708,7 +2893,78 @@ def _policy_output_row(output: Any, row: int) -> Any:
         return row_item
     if isinstance(plain, list) and len(plain) > int(row):
         return plain[int(row)]
-    return output
+    return plain
+
+
+def _root_output_from_plain(plain: Any) -> Any:
+    if isinstance(plain, Mapping):
+        for key in (0, "0"):
+            if key in plain:
+                return plain[key]
+    return plain
+
+
+def _extract_eval_action_from_plain(plain: Any) -> int:
+    if isinstance(plain, Mapping):
+        if "action" in plain:
+            return int(np.asarray(plain["action"]).reshape(-1)[0])
+        for key in (0, "0"):
+            if key in plain:
+                return _extract_eval_action_from_plain(plain[key])
+        for key in ("actions", "selected_action", "selected_actions"):
+            if key in plain:
+                return int(np.asarray(plain[key]).reshape(-1)[0])
+    if isinstance(plain, list) and plain:
+        return _extract_eval_action_from_plain(plain[0])
+    raise ValueError(f"could not extract action from policy eval output: {plain!r}")
+
+
+def _action_weights_from_policy_output(output: Any, action: int) -> np.ndarray:
+    root = _root_output_from_plain(output)
+    if isinstance(root, Mapping):
+        for key in ("visit_count_distribution", "visit_count_distributions"):
+            if key not in root:
+                continue
+            array = np.asarray(root[key], dtype=np.float32).reshape(-1)
+            if array.size == ACTION_COUNT and float(array.sum()) > 0:
+                return array / float(array.sum())
+    weights = np.zeros((ACTION_COUNT,), dtype=np.float32)
+    if 0 <= int(action) < ACTION_COUNT:
+        weights[int(action)] = 1.0
+    return weights
+
+
+def _root_value_from_policy_output(output: Any) -> float:
+    root = _root_output_from_plain(output)
+    if isinstance(root, Mapping):
+        for key in ("searched_value", "predicted_value", "value"):
+            if key not in root:
+                continue
+            try:
+                return float(np.asarray(root[key]).reshape(-1)[0])
+            except (TypeError, ValueError, IndexError):
+                pass
+    return 0.0
+
+
+def _search_record_action_weights(
+    search_record: Mapping[str, Any],
+    action: int,
+) -> np.ndarray:
+    if "action_weights" in search_record:
+        array = np.asarray(search_record["action_weights"], dtype=np.float32).reshape(-1)
+        if array.size == ACTION_COUNT and float(array.sum()) > 0:
+            return array / float(array.sum())
+    return _action_weights(search_record, action)
+
+
+def _search_record_root_value(search_record: Mapping[str, Any]) -> float:
+    if "root_value" in search_record:
+        try:
+            return float(np.asarray(search_record["root_value"]).reshape(-1)[0])
+        except (TypeError, ValueError, IndexError):
+            pass
+    return _root_value(search_record)
 
 
 def _policy_action(
@@ -2857,6 +3113,8 @@ def _iteration_progress_line(
         "control_stochasticity": iteration_summary.get("control_stochasticity"),
         "opponent_mix": iteration_summary.get("opponent_mix"),
         "collect_timing_sec": iteration_summary.get("collect_timing_sec"),
+        "learner_timing_sec": iteration_summary.get("learner_timing_sec"),
+        "iteration_timing_sec": iteration_summary.get("iteration_timing_sec"),
         "policy_batching_counts": iteration_summary.get("policy_batching_counts"),
         "policy_search_call_count": iteration_summary.get("policy_search_call_count"),
         "policy_search_row_count": iteration_summary.get("policy_search_row_count"),
@@ -2877,6 +3135,10 @@ def _compact_progress_replay(replay: Any) -> dict[str, Any]:
     return {
         "status": replay.get("status"),
         "row_count": replay.get("row_count"),
+        "rollout_kind_counts": replay.get("rollout_kind_counts"),
+        "action_source_counts": replay.get("action_source_counts"),
+        "stratification": replay.get("stratification"),
+        "learner_stratification": replay.get("learner_stratification"),
         "scope": replay.get("scope"),
         "replay_rows_available": replay.get("replay_rows_available"),
         "learner_batch_size": replay.get("learner_batch_size"),
@@ -2895,6 +3157,7 @@ def _compact_progress_sample(sample: Any) -> dict[str, Any]:
         "reward_mean": sample.get("reward_mean"),
         "terminal_count": sample.get("terminal_count"),
         "action_counts": sample.get("action_counts"),
+        "stratification": sample.get("stratification"),
     }
 
 
@@ -2978,6 +3241,10 @@ def _iteration_summary(
                 "row_count": int(len(replay_rows)),
                 "rollout_kind_counts": _counter_dict(rollout_kind_counts),
                 "action_source_counts": _counter_dict(action_source_counts),
+                "stratification": _replay_row_stratification(replay_rows),
+                "learner_stratification": _replay_row_stratification(
+                    learner_replay_rows
+                ),
                 "scope": replay_scope,
                 "replay_rows_available": int(replay_rows_available),
                 "learner_batch_size": int(learner_batch_size),
@@ -3010,6 +3277,10 @@ def _iteration_summary(
                     "replay_scope": item.get("replay_scope"),
                     "replay_rows_available": item.get("replay_rows_available"),
                     "learner_batch_size": item.get("learner_batch_size"),
+                    "model_update_hash_verification_enabled": item.get(
+                        "model_update_hash_verification_enabled"
+                    ),
+                    "timing_sec": item.get("timing_sec"),
                     "blocker": item.get("blocker"),
                     "reason": item.get("reason"),
                 }
@@ -3141,6 +3412,41 @@ def _collect_timing_summary(iteration_summaries: list[dict[str, Any]]) -> dict[s
     }
 
 
+def _timing_summary_from_iteration_field(
+    iteration_summaries: list[dict[str, Any]],
+    field_name: str,
+) -> dict[str, Any]:
+    timings = [
+        item.get(field_name, {})
+        for item in iteration_summaries
+        if isinstance(item.get(field_name), Mapping)
+    ]
+    if not timings:
+        return {"iteration_count": 0, "timing_sec": {}}
+    names = sorted({str(name) for timing in timings for name in timing})
+    timing_summary = {}
+    for name in names:
+        values = [
+            float(timing[name])
+            for timing in timings
+            if name in timing and timing[name] is not None
+        ]
+        if not values:
+            continue
+        timing_summary[name] = {
+            "sum": round(float(sum(values)), 6),
+            "mean": round(float(np.mean(values)), 6),
+            "min": round(float(min(values)), 6),
+            "max": round(float(max(values)), 6),
+            "first": round(float(values[0]), 6),
+            "last": round(float(values[-1]), 6),
+        }
+    return {
+        "iteration_count": int(len(timings)),
+        "timing_sec": timing_summary,
+    }
+
+
 def _summarize_dirty_render_stats(stats: list[Any]) -> dict[str, Any]:
     if not stats:
         return {}
@@ -3174,17 +3480,38 @@ def _learn_mode_forward_update(
     sample: Mapping[str, Any],
     *,
     update_index: int,
+    verify_model_update_hash: bool = False,
 ) -> dict[str, Any]:
+    timing_sec: Counter[str] = Counter()
+
+    def add_elapsed(name: str, started: float) -> None:
+        timing_sec[name] += time.perf_counter() - started
+
     try:
         model = getattr(policy, "_model", None)
-        before_hash = _model_hash(model)
+        before_hash = None
+        after_hash = None
+        if verify_model_update_hash:
+            started = time.perf_counter()
+            before_hash = _model_hash(model)
+            add_elapsed("model_hash_sec", started)
+        started = time.perf_counter()
         current_batch, target_batch, sample_summary = _learn_mode_batches(policy, sample)
+        add_elapsed("learner_batch_build_sec", started)
+        started = time.perf_counter()
         with _temporary_policy_batch_size(
             policy,
             int(sample_summary["batch_size"]),
         ) as batch_size_patched:
             output = policy.learn_mode.forward([current_batch, target_batch])
-        after_hash = _model_hash(model)
+        add_elapsed("learner_forward_sec", started)
+        if verify_model_update_hash:
+            started = time.perf_counter()
+            after_hash = _model_hash(model)
+            add_elapsed("model_hash_sec", started)
+        started = time.perf_counter()
+        loss = _loss_summary(output)
+        add_elapsed("learner_loss_summary_sec", started)
         return {
             "ok": True,
             "status": "updated",
@@ -3192,12 +3519,18 @@ def _learn_mode_forward_update(
             "update_index": int(update_index),
             "optimizer_step": "allowed",
             "trainer_entrypoint_called": False,
+            "model_update_hash_verification_enabled": bool(verify_model_update_hash),
             "model_hash_before": before_hash,
             "model_hash_after": after_hash,
-            "model_parameters_changed": before_hash != after_hash,
+            "model_parameters_changed": (
+                before_hash != after_hash if verify_model_update_hash else None
+            ),
             "policy_batch_size_patched": batch_size_patched,
             "sample": sample_summary,
-            "loss": _loss_summary(output),
+            "loss": loss,
+            "timing_sec": {
+                key: round(float(timing_sec[key]), 6) for key in sorted(timing_sec)
+            },
         }
     except Exception as exc:  # pragma: no cover - installed runtime diagnosis.
         return {
@@ -3209,7 +3542,11 @@ def _learn_mode_forward_update(
             "update_index": int(update_index),
             "optimizer_step": "allowed",
             "trainer_entrypoint_called": False,
+            "model_update_hash_verification_enabled": bool(verify_model_update_hash),
             "exception": _exception_result(exc),
+            "timing_sec": {
+                key: round(float(timing_sec[key]), 6) for key in sorted(timing_sec)
+            },
         }
 
 
@@ -3267,6 +3604,9 @@ def _sample_replay_batch(
     replay_scope: str = REPLAY_SCOPE_CURRENT_ITERATION,
     learner_sample_size: int | None = None,
     rng: np.random.Generator | None = None,
+    return_context: Mapping[str, Any] | None = None,
+    include_stratification: bool = True,
+    validate_rows: bool = True,
 ) -> dict[str, Any]:
     if not rows:
         return {
@@ -3277,21 +3617,17 @@ def _sample_replay_batch(
             "learner_sample_size": learner_sample_size,
             "learner_batch_size": 0,
         }
-    bad_rows = [
-        index
-        for index, row in enumerate(rows)
-        if row.get("action_source") != ACTION_SOURCE_CURRENT_POLICY
-        or row.get("learner_controlled") is not True
-    ]
-    if bad_rows:
-        raise ValueError(
-            "learner replay rows must all be current-policy controlled; "
-            f"bad row indices: {bad_rows[:8]}"
-        )
+    if validate_rows:
+        _validate_learner_replay_rows(rows)
     selected_rows, sample_indices, sampled_without_replacement = _select_replay_rows(
         rows,
         learner_sample_size=learner_sample_size,
         rng=rng,
+    )
+    resolved_return_context = (
+        dict(return_context)
+        if return_context is not None
+        else _replay_return_context_arrays(rows, validate_rows=False)
     )
     sample = {
         "ok": True,
@@ -3300,11 +3636,7 @@ def _sample_replay_batch(
         "replay_scope": replay_scope,
         "replay_rows_available": len(rows),
         "learner_sample_size": learner_sample_size,
-        "return_target_discount": _common_row_float(
-            rows,
-            key="return_target_discount",
-            default=DEFAULT_RETURN_TARGET_DISCOUNT,
-        ),
+        "return_target_discount": resolved_return_context["return_target_discount"],
         "sampled_without_replacement": bool(sampled_without_replacement),
         "sample_indices": sample_indices,
         "players": sorted({int(row["player_id"]) for row in selected_rows}),
@@ -3323,6 +3655,75 @@ def _sample_replay_batch(
         "decision_index_batch": np.asarray(
             [row["decision_index"] for row in selected_rows],
             dtype=np.int64,
+        ),
+        "observation_batch": np.stack(
+            [row["observation"] for row in selected_rows],
+            axis=0,
+        ),
+        "next_observation_batch": np.stack(
+            [row["next_observation"] for row in selected_rows],
+            axis=0,
+        ),
+        "action_batch": np.asarray(
+            [row["action"] for row in selected_rows],
+            dtype=np.int64,
+        ),
+        "reward_batch": np.asarray(
+            [row["reward"] for row in selected_rows],
+            dtype=np.float32,
+        ),
+        "done_batch": np.asarray([row["done"] for row in selected_rows], dtype=np.bool_),
+        "terminal_winner_batch": np.asarray(
+            [row.get("terminal_winner", -1) for row in selected_rows],
+            dtype=np.int64,
+        ),
+        "return_schema_id_batch": np.asarray(
+            [row.get("return_schema_id", "") for row in selected_rows],
+            dtype=object,
+        ),
+        "policy_batch": np.stack(
+            [row["action_weights"] for row in selected_rows],
+            axis=0,
+        ),
+    }
+    sample.update(resolved_return_context)
+    if include_stratification:
+        sample["stratification"] = _replay_row_stratification(selected_rows)
+        sample["return_context_stratification"] = _replay_row_stratification(rows)
+    if all("episode_id" in row for row in selected_rows):
+        sample["episode_id_batch"] = np.asarray(
+            [row["episode_id"] for row in selected_rows],
+            dtype=np.int64,
+        )
+    return sample
+
+
+def _validate_learner_replay_rows(rows: list[dict[str, Any]]) -> None:
+    bad_rows = [
+        index
+        for index, row in enumerate(rows)
+        if row.get("action_source") != ACTION_SOURCE_CURRENT_POLICY
+        or row.get("learner_controlled") is not True
+    ]
+    if bad_rows:
+        raise ValueError(
+            "learner replay rows must all be current-policy controlled; "
+            f"bad row indices: {bad_rows[:8]}"
+        )
+
+
+def _replay_return_context_arrays(
+    rows: list[dict[str, Any]],
+    *,
+    validate_rows: bool = True,
+) -> dict[str, Any]:
+    if validate_rows:
+        _validate_learner_replay_rows(rows)
+    context: dict[str, Any] = {
+        "return_target_discount": _common_row_float(
+            rows,
+            key="return_target_discount",
+            default=DEFAULT_RETURN_TARGET_DISCOUNT,
         ),
         "return_context_iteration_batch": np.asarray(
             [row["iteration"] for row in rows],
@@ -3356,47 +3757,22 @@ def _sample_replay_batch(
             [row.get("return_schema_id", "") for row in rows],
             dtype=object,
         ),
-        "observation_batch": np.stack(
-            [row["observation"] for row in selected_rows],
-            axis=0,
-        ),
-        "next_observation_batch": np.stack(
-            [row["next_observation"] for row in selected_rows],
-            axis=0,
-        ),
-        "action_batch": np.asarray(
-            [row["action"] for row in selected_rows],
-            dtype=np.int64,
-        ),
-        "reward_batch": np.asarray(
-            [row["reward"] for row in selected_rows],
-            dtype=np.float32,
-        ),
-        "done_batch": np.asarray([row["done"] for row in selected_rows], dtype=np.bool_),
-        "terminal_winner_batch": np.asarray(
-            [row.get("terminal_winner", -1) for row in selected_rows],
-            dtype=np.int64,
-        ),
-        "return_schema_id_batch": np.asarray(
-            [row.get("return_schema_id", "") for row in selected_rows],
-            dtype=object,
-        ),
-        "policy_batch": np.stack(
-            [row["action_weights"] for row in selected_rows],
-            axis=0,
-        ),
     }
-    if all("episode_id" in row for row in selected_rows):
-        sample["episode_id_batch"] = np.asarray(
-            [row["episode_id"] for row in selected_rows],
-            dtype=np.int64,
-        )
     if all("episode_id" in row for row in rows):
-        sample["return_context_episode_id_batch"] = np.asarray(
+        context["return_context_episode_id_batch"] = np.asarray(
             [row["episode_id"] for row in rows],
             dtype=np.int64,
         )
-    return sample
+    lookup = _return_context_lookup(
+        context,
+        discount=float(context["return_target_discount"]),
+    )
+    if lookup is not None:
+        context["return_context_lookup"] = lookup
+        context["return_context_lookup_discount"] = float(
+            context["return_target_discount"]
+        )
+    return context
 
 
 def _summarize_replay_sample(
@@ -3444,6 +3820,63 @@ def _summarize_replay_sample(
         "reward_batch_shape": list(sample["reward_batch"].shape),
         "policy_batch_shape": list(sample["policy_batch"].shape),
         "reward_sum": float(np.asarray(sample["reward_batch"], dtype=np.float32).sum()),
+        "stratification": sample["stratification"],
+        "return_context_stratification": sample["return_context_stratification"],
+    }
+
+
+def _replay_row_stratification(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    row_count = len(rows)
+    rollout_kind_counts: Counter[str] = Counter()
+    action_source_counts: Counter[str] = Counter()
+    player_counts: Counter[str] = Counter()
+    rollout_player_counts: Counter[str] = Counter()
+    rollout_player_source_counts: Counter[str] = Counter()
+    source_player_counts: Counter[str] = Counter()
+    rewards_by_rollout: dict[str, list[float]] = defaultdict(list)
+    terminal_by_rollout: Counter[str] = Counter()
+
+    for row in rows:
+        rollout_kind = str(
+            row.get("rollout_kind", ROLLOUT_KIND_CURRENT_POLICY_SELFPLAY)
+        )
+        action_source = str(row.get("action_source", ACTION_SOURCE_CURRENT_POLICY))
+        try:
+            player_id = int(row.get("player_id", -1))
+        except Exception:
+            player_id = -1
+        player_key = f"player_{player_id}"
+        rollout_kind_counts[rollout_kind] += 1
+        action_source_counts[action_source] += 1
+        player_counts[player_key] += 1
+        rollout_player_counts[f"{rollout_kind}|{player_key}"] += 1
+        rollout_player_source_counts[
+            f"{rollout_kind}|{player_key}|{action_source}"
+        ] += 1
+        source_player_counts[f"{action_source}|{player_key}"] += 1
+        rewards_by_rollout[rollout_kind].append(float(row.get("reward", 0.0)))
+        if bool(row.get("done", False)):
+            terminal_by_rollout[rollout_kind] += 1
+
+    return {
+        "row_count": int(row_count),
+        "rollout_kind_counts": _counter_dict(rollout_kind_counts),
+        "action_source_counts": _counter_dict(action_source_counts),
+        "player_id_counts": _counter_dict(player_counts),
+        "rollout_kind_player_counts": _counter_dict(rollout_player_counts),
+        "action_source_player_counts": _counter_dict(source_player_counts),
+        "rollout_kind_player_action_source_counts": _counter_dict(
+            rollout_player_source_counts
+        ),
+        "reward_by_rollout_kind": {
+            rollout_kind: {
+                "count": int(len(values)),
+                "reward_sum": float(sum(values)),
+                "reward_mean": float(np.mean(values)) if values else 0.0,
+                "terminal_count": int(terminal_by_rollout.get(rollout_kind, 0)),
+            }
+            for rollout_kind, values in sorted(rewards_by_rollout.items())
+        },
     }
 
 
@@ -3571,20 +4004,51 @@ def _observation_noise_rng(
     return np.random.default_rng(seed_sequence)
 
 
+class _ObservationNoiseWorkspace:
+    def __init__(self) -> None:
+        self.noisy: np.ndarray | None = None
+
+    def apply(
+        self,
+        observation: np.ndarray,
+        *,
+        std: float,
+        rng: np.random.Generator,
+    ) -> np.ndarray:
+        if self.noisy is None or self.noisy.shape != observation.shape:
+            self.noisy = np.empty(observation.shape, dtype=np.float32)
+        rng.standard_normal(
+            size=observation.shape,
+            dtype=np.float32,
+            out=self.noisy,
+        )
+        np.multiply(self.noisy, np.float32(std), out=self.noisy)
+        np.add(self.noisy, observation, out=self.noisy)
+        return np.clip(
+            self.noisy,
+            np.float32(0.0),
+            np.float32(1.0),
+            out=self.noisy,
+        )
+
+
 def _apply_observation_noise(
     observation: np.ndarray,
     *,
     std: float,
     rng: np.random.Generator,
+    workspace: _ObservationNoiseWorkspace | None = None,
 ) -> np.ndarray:
     resolved_std = float(std)
     if resolved_std <= 0.0:
         return observation
+    if workspace is not None:
+        return workspace.apply(observation, std=resolved_std, rng=rng)
     noisy = observation.astype(np.float32, copy=True)
-    noisy += rng.normal(loc=0.0, scale=resolved_std, size=noisy.shape).astype(
-        np.float32
-    )
-    return np.clip(noisy, 0.0, 1.0)
+    noise = rng.standard_normal(size=noisy.shape, dtype=np.float32)
+    np.multiply(noise, np.float32(resolved_std), out=noise)
+    np.add(noisy, noise, out=noisy)
+    return np.clip(noisy, np.float32(0.0), np.float32(1.0), out=noisy)
 
 
 def _scheduled_action_noop_probability(
@@ -3629,6 +4093,17 @@ def _validate_policy_action_repeat_config(
         raise ValueError("policy_action_repeat_extra_probability must be in [0, 1]")
     if int(warmup_iterations) < 0:
         raise ValueError("policy_action_repeat_warmup_iterations must be >= 0")
+
+
+def _policy_noop_skip_can_drop_training_targets(
+    *,
+    min_repeat: int,
+    max_repeat: int,
+    extra_probability: float,
+) -> bool:
+    if int(min_repeat) > 1:
+        return True
+    return int(max_repeat) > int(min_repeat) and float(extra_probability) > 0.0
 
 
 def _sample_policy_action_repeats(
@@ -3679,16 +4154,8 @@ def _refresh_reset_rows_in_visual_stack(
     if mask.shape != (env.batch_size,):
         raise ValueError("row_mask must have shape [B]")
     if not bool(mask.any()):
-        return visual_stack.stack.copy()
-
-    reset_stack = SourceStateGray64Stack4(
-        batch_size=env.batch_size,
-        player_count=env.player_count,
-        trail_render_mode=visual_stack.trail_render_mode,
-    )
-    reset_observation = reset_stack.update(env)
-    visual_stack.stack[mask] = reset_observation[mask]
-    return visual_stack.stack.copy()
+        return visual_stack.stack
+    return visual_stack.reset_rows(env, mask, copy=False)
 
 
 def _validate_visual_batch(
@@ -3815,6 +4282,46 @@ def _terminal_winner_for_row(
     if not done or winner_by_row is None or winner_by_row.shape[0] <= int(env_row):
         return -1
     return int(winner_by_row[int(env_row)])
+
+
+def _plain_info_value(value: Any) -> Any:
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
+def _info_scalar_for_row(
+    info: Mapping[str, Any],
+    key: str,
+    *,
+    env_row: int,
+    default: Any,
+) -> Any:
+    raw = info.get(key)
+    if raw is None:
+        return default
+    array = np.asarray(raw, dtype=object)
+    if array.ndim < 1 or array.shape[0] <= int(env_row):
+        return default
+    value = array[int(env_row)]
+    if isinstance(value, np.ndarray):
+        return default
+    return _plain_info_value(value)
+
+
+def _info_row_list(
+    info: Mapping[str, Any],
+    key: str,
+    *,
+    env_row: int,
+) -> list[Any]:
+    raw = info.get(key)
+    if raw is None:
+        return []
+    array = np.asarray(raw, dtype=object)
+    if array.ndim < 2 or array.shape[0] <= int(env_row):
+        return []
+    return [_plain_info_value(item) for item in array[int(env_row)].tolist()]
 
 
 def _episode_id_for_row(info: Mapping[str, Any], env_row: int) -> int:
@@ -3951,6 +4458,14 @@ def main() -> None:
         "--allow-optimizer-step",
         action="store_true",
         help="Allow learn_mode.forward to update the LightZero policy weights.",
+    )
+    parser.add_argument(
+        "--verify-model-update-hash",
+        action="store_true",
+        help=(
+            "Hash model weights before and after each learner update. Useful for "
+            "debugging, but expensive enough to keep off in profiling/training."
+        ),
     )
     parser.add_argument(
         "--checkpoint-dir",
@@ -4144,6 +4659,7 @@ def main() -> None:
         num_simulations=args.num_simulations,
         learner_updates=args.learner_updates,
         allow_optimizer_step=args.allow_optimizer_step,
+        verify_model_update_hash=args.verify_model_update_hash,
         checkpoint_dir=args.checkpoint_dir,
         max_ticks=args.max_ticks,
         decision_ms=args.decision_ms,

@@ -29,7 +29,7 @@ import traceback
 from collections import Counter
 from importlib import metadata
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import modal
 
@@ -47,6 +47,7 @@ from curvyzero.infra.modal.lightzero_curvyzero_stacked_debug_visual_survival_tra
     DEFAULT_N_EPISODE,
     DEFAULT_N_EVALUATOR_EPISODE,
     DEFAULT_NUM_SIMULATIONS,
+    DEFAULT_OPPONENT_USE_CUDA,
     DEFAULT_OPPONENT_POLICY_KIND,
     DEFAULT_REWARD_VARIANT,
     DEFAULT_RUN_ID as TRAIN_DEFAULT_RUN_ID,
@@ -481,6 +482,13 @@ def _first_death_from_info(info: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _winner_value_from_info(info: dict[str, Any], key: str) -> Any:
+    value = _row_zero(info.get(key))
+    if isinstance(value, list):
+        return value[0] if value else None
+    return value
+
+
 def _root_output(output: Any) -> Any:
     plain = _to_plain(output)
     if isinstance(plain, dict):
@@ -634,6 +642,7 @@ def _make_policy_and_env(
     opponent_checkpoint: dict[str, Any] | None,
     opponent_snapshot_ref: str | None,
     opponent_checkpoint_state_key: str | None,
+    opponent_use_cuda: bool = DEFAULT_OPPONENT_USE_CUDA,
     natural_bonus_spawn: bool = TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN,
 ) -> tuple[Any, Any, dict[str, Any]]:
     from ding.config import compile_config
@@ -666,6 +675,7 @@ def _make_policy_and_env(
         env_telemetry_stride=DEFAULT_ENV_TELEMETRY_STRIDE,
         env_manager_type=DEFAULT_ENV_MANAGER_TYPE,
         opponent_policy_kind=opponent_policy_kind,
+        opponent_use_cuda=bool(opponent_use_cuda),
         opponent_checkpoint=opponent_checkpoint,
         opponent_snapshot_ref=opponent_snapshot_ref,
         opponent_checkpoint_state_key=opponent_checkpoint_state_key,
@@ -843,6 +853,12 @@ def _run_survival_episode(
         "total_reward": total_reward,
         "done": bool(done),
         "terminal_reason": terminal_reason,
+        "winner": _winner_value_from_info(last_info, "winner"),
+        "round_winner": _winner_value_from_info(last_info, "round_winner"),
+        "match_winner": _winner_value_from_info(last_info, "match_winner"),
+        "winner_ids": _to_plain(last_info.get("winner_ids")),
+        "loser_ids": _to_plain(last_info.get("loser_ids")),
+        "draw": last_info.get("draw"),
         "death_player": death["death_player"],
         "death_cause": death["death_cause"],
         "death_cause_name": death["death_cause_name"],
@@ -879,6 +895,7 @@ def _eval_checkpoint(
     opponent_checkpoint: dict[str, Any] | None,
     opponent_snapshot_ref: str | None,
     opponent_checkpoint_state_key: str | None,
+    opponent_use_cuda: bool = DEFAULT_OPPONENT_USE_CUDA,
     natural_bonus_spawn: bool = TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN,
 ) -> dict[str, Any]:
     checkpoint = _torch_load(checkpoint_path)
@@ -901,6 +918,7 @@ def _eval_checkpoint(
         opponent_checkpoint=opponent_checkpoint,
         opponent_snapshot_ref=opponent_snapshot_ref,
         opponent_checkpoint_state_key=opponent_checkpoint_state_key,
+        opponent_use_cuda=bool(opponent_use_cuda),
         natural_bonus_spawn=bool(natural_bonus_spawn),
     )
     episode = _run_survival_episode(
@@ -927,13 +945,19 @@ def _row_from_result(job: dict[str, Any], result: dict[str, Any]) -> dict[str, A
     episode = result.get("episode") if isinstance(result.get("episode"), dict) else {}
     status = result.get("status") if isinstance(result.get("status"), dict) else {}
     artifact = result.get("artifact") if isinstance(result.get("artifact"), dict) else {}
-    return {
+    row = {
         "index": job.get("index"),
         "checkpoint_label": job.get("checkpoint_label"),
         "seed": job.get("seed"),
         "steps_survived": status.get("steps_survived", episode.get("steps_survived")),
         "cap": status.get("cap", episode.get("cap")),
         "terminal_reason": episode.get("terminal_reason"),
+        "winner": episode.get("winner"),
+        "round_winner": episode.get("round_winner"),
+        "match_winner": episode.get("match_winner"),
+        "winner_ids": episode.get("winner_ids"),
+        "loser_ids": episode.get("loser_ids"),
+        "draw": episode.get("draw"),
         "death_player": episode.get("death_player"),
         "death_cause": episode.get("death_cause"),
         "death_cause_name": episode.get("death_cause_name"),
@@ -951,6 +975,81 @@ def _row_from_result(job: dict[str, Any], result: dict[str, Any]) -> dict[str, A
         if isinstance(result.get("wrapper_error"), dict)
         else None,
     }
+    row["outcome"] = _outcome_from_row(row)
+    return row
+
+
+def _normal_player_id(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith("player_"):
+            return text
+        if text.isdigit():
+            return f"player_{text}"
+        return text or None
+    try:
+        return f"player_{int(value)}"
+    except (TypeError, ValueError):
+        return None
+
+
+def _winner_ids(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        values = [value]
+    elif isinstance(value, (list, tuple, set)):
+        values = list(value)
+    else:
+        values = [value]
+    return [
+        player_id
+        for player_id in (_normal_player_id(item) for item in values)
+        if player_id is not None
+    ]
+
+
+def _outcome_from_row(row: dict[str, Any]) -> str:
+    if row.get("ok") is False:
+        return "error"
+
+    terminal = str(row.get("terminal_reason") or "").lower()
+    if "draw" in terminal or row.get("draw") is True:
+        return "draw"
+
+    winners = _winner_ids(row.get("winner_ids"))
+    if winners:
+        return "win" if "player_0" in winners else "loss"
+
+    for key in ("winner", "round_winner", "match_winner"):
+        winner = _int_or_none(row.get(key))
+        if winner is None:
+            continue
+        if winner < 0:
+            return "draw" if terminal and terminal not in ("cap", "none") else "unknown"
+        return "win" if winner == 0 else "loss"
+
+    death_player = _int_or_none(row.get("death_player"))
+    if death_player is not None and death_player >= 0:
+        return "loss" if death_player == 0 else "win"
+
+    if terminal in ("cap", "timeout", "source_max_steps") or (
+        _number(row.get("steps_survived")) is not None
+        and _number(row.get("cap")) is not None
+        and _number(row.get("steps_survived")) >= _number(row.get("cap"))
+    ):
+        return "cap"
+    return "unknown"
+
+
+def _outcome_histogram(rows: list[dict[str, Any]]) -> dict[str, int]:
+    histogram: Counter[str] = Counter()
+    for row in rows:
+        outcome = row.get("outcome") or _outcome_from_row(row)
+        histogram[str(outcome)] += 1
+    return dict(sorted(histogram.items()))
 
 
 def _table_value(value: Any) -> str:
@@ -1048,6 +1147,7 @@ def _survival_aggregate_table(table: list[dict[str, Any]]) -> list[dict[str, Any
                 "ok_count": ok_count,
                 "capped_count": capped_count,
                 "failure_count": len(rows) - ok_count,
+                "outcome_histogram": _outcome_histogram(rows),
                 "mean_training_reward": _mean(scores),
                 "mean_elapsed_sec": _mean(elapsed),
             }
@@ -1063,6 +1163,8 @@ def _survival_table(table: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "steps": row.get("steps_survived"),
             "cap": row.get("cap"),
             "terminal": row.get("terminal_reason"),
+            "outcome": row.get("outcome"),
+            "winner_ids": row.get("winner_ids"),
             "death_player": row.get("death_player"),
             "death_cause": row.get("death_cause"),
             "death_cause_name": row.get("death_cause_name"),
@@ -1561,6 +1663,7 @@ def main(
     table = [_row_from_result(job, result) for job, result in zip(jobs, results, strict=True)]
     survival_aggregate_table = _survival_aggregate_table(table)
     survival_table = _survival_table(table)
+    outcome_histogram = _outcome_histogram(table)
     manifest_ref = manifest_ref or _manifest_ref(
         run_id=run_id,
         attempt_id=attempt_id,
@@ -1637,6 +1740,13 @@ def main(
             "steps_survived",
             "cap",
             "terminal_reason",
+            "outcome",
+            "winner",
+            "round_winner",
+            "match_winner",
+            "winner_ids",
+            "loser_ids",
+            "draw",
             "death_player",
             "death_cause",
             "death_cause_name",
@@ -1651,6 +1761,7 @@ def main(
             "artifact_ref",
             "checkpoint_ref",
         ],
+        "outcome_histogram": outcome_histogram,
         "survival_aggregate_table": survival_aggregate_table,
         "survival_table": survival_table,
         "table": table,
@@ -1671,6 +1782,7 @@ def main(
         manifest=manifest,
     )
     summary = {
+        "outcome_histogram": outcome_histogram,
         "survival_aggregate_table": survival_aggregate_table,
         "survival_table": survival_table,
         "table": table,
@@ -1695,6 +1807,7 @@ def main(
                 "ok_count",
                 "capped_count",
                 "failure_count",
+                "outcome_histogram",
                 "mean_training_reward",
                 "mean_elapsed_sec",
             ],
@@ -1708,6 +1821,7 @@ def main(
                 "steps",
                 "cap",
                 "terminal",
+                "outcome",
                 "actions",
                 "ok",
                 "strict",

@@ -1079,7 +1079,6 @@ def _render_filters(
         )
     for run in runs:
         run_id = str(run["run_id"])
-        run_label = f"{run_id} ({run['updated_at']})"
         select_url = _filter_url(
             run_id=run_id,
             run_filter=run_filter,

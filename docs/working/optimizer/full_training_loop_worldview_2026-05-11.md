@@ -9,6 +9,11 @@ spikes produce harder evidence.
 Related replication-control backlog:
 `docs/working/optimizer/framework_replication_controls_2026-05-11.md`.
 
+2026-05-12 postmortem correction: the line below is historical. The custom
+`--mode two-seat-selfplay` path should not be treated as the trusted Coach
+learning baseline until native replay/target semantics are restored or tested.
+See `docs/working/training/curvytron_architecture_research_2026-05-12/`.
+
 ## One-Line Goal
 
 Current Coach baseline:

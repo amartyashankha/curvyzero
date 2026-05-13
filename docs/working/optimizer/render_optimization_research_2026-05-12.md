@@ -78,12 +78,88 @@ bonus to one gray value. It also falls back to `body_*` trails when
 `visual_trail_*` arrays exist but have no active slots. Focused tests include
 semantic pixel checks and a loose mask-level comparison against `browser_lines`.
 
-Current recommendation: use `fast_gray64_direct` for the overnight speed-first
-training canary if Coach accepts the declared approximation. Keep a smaller
-`browser_lines` run as the fidelity/control lane. The approximation is strong
-semantically but not pixel-fidelity: isolated 64x64 trail circles instead of
-connected browser lines, bonus type luma circles instead of sprites, and no edge
-antialias/downsample coverage.
+Current optimizer recommendation: use `fast_gray64_direct` as the main
+overnight training surface. Keep only one or two small `browser_lines`
+sentinels to catch obvious approximation damage; do not make browser-lines a
+control lane or gate. The approximation is strong semantically but not
+pixel-fidelity: isolated 64x64 trail circles instead of connected browser
+lines, bonus type luma circles instead of sprites, and no edge antialias or
+downsample coverage.
+
+Fresh no-death sentinel A/B, 2026-05-12, canonical Modal launcher, L4/T4,
+B8/sim2, 8 iterations, 64 collect steps, no learner updates, no checkpoints,
+background eval/GIF off:
+
+```text
+browser_lines:
+  elapsed_sec=53.6
+  visual_stack_update_sec sum=31.2
+  policy_search_sec sum=9.0
+
+fast_gray64_direct:
+  elapsed_sec=25.5
+  visual_stack_update_sec sum=2.4
+  policy_search_sec sum=9.1
+```
+
+Plain read: the user's reminder is correct for the rich long-survival regime.
+Rendering is still the bottleneck when we use `browser_lines` and disable death
+to mimic trained long-lived games. The fast-direct approximation cuts visual
+time by about `13x` in this matched sentinel and makes search the larger bucket.
+That supports fast-direct as the main speed surface plus matched browser-lines
+sentinels as approximation checks.
+
+Post-dirty-cache next step: verify production `visual_stack_dirty_render` hit
+rate, fallback count, and dirty-block count before landing another renderer
+rewrite. If browser-lines is still render-bound after dirty hits are high, the
+next low-risk target is fixed per-row overlay work: clipped head redraw, clipped
+bonus redraw, and sprite stamping/blending before gray64. A GPU renderer or
+vectorized CPU renderer is still plausible, but only after post-dirty profiles
+show render remains the largest bucket.
+
+Post-dirty Modal profile, 2026-05-12, canonical launcher, L4/T4, B16/sim4,
+8 iterations, 64 collect steps, `profile_no_death`, `browser_lines`, no learner
+updates, background eval/GIF off:
+
+```text
+elapsed_sec=92.7
+visual_stack_update_sec sum=61.3
+policy_search_sec sum=14.4
+env_step_sec sum=3.2
+dirty_render hit_rate=0.9965
+dirty_render fallbacks=0
+last dirty_blocks_per_hit=28.3
+```
+
+Plain read: the dirty cache is active and reliable in this stress profile. It
+does not make browser-lines cheap enough for the main training matrix. The next
+browser-lines optimization target is fixed per-row overlay/downsample work, not
+old full trail redraw.
+
+Fresh local dirty/reuse microbench, 2026-05-12:
+
+```text
+full_stack_update, dirty/reuse path:
+  B8/P2/L1024 bonus4: 31.2ms/update, 513 rows/sec
+  B8/P2/L4096 bonus4: 28.5ms/update, 562 rows/sec
+  B16/P2/L1024 bonus4: 53.4ms/update, 599 rows/sec
+  B16/P2/L4096 bonus4: 56.9ms/update, 562 rows/sec
+
+gray64_render_only, independent full render:
+  B8/P2/L1024 bonus4: 28.8ms per player-view call, 34.7 rows/sec
+  B8/P2/L4096 bonus4: 106.7ms per player-view call, 9.4 rows/sec
+  B16/P2/L1024 bonus4: 29.0ms per player-view call, 34.5 rows/sec
+  B16/P2/L4096 bonus4: 107.8ms per player-view call, 9.3 rows/sec
+
+perspective_reuse_gray64:
+  B16/P2/L1024 bonus4: 6.1ms per policy row, 162.8 rows/sec
+  B16/P2/L4096 bonus4: 6.3ms per policy row, 158.5 rows/sec
+```
+
+Plain read: trail length no longer explodes the dirty stack path the way it did
+before. Browser-lines is still slow in the full Modal loop because every step
+still has many rows, player perspectives, overlay passes, downsampling, and
+Python/NumPy glue.
 
 ## Responsibility Boundary
 
@@ -746,14 +822,15 @@ so the benchmark can isolate render cost from physics/search.
 
 ## Current Recommendation
 
-For now, keep Coach training on `browser_lines` unless Environment explicitly
-chooses a cheaper training surface. Use the dirty-render production path by
-default. Use `profile_no_death` for optimizer timing, but train with normal
+Optimizer recommendation: train mostly on `fast_gray64_direct` now. It is an
+approximation, but it is the surface that removes the old browser-lines render
+bottleneck. Use `profile_no_death` for optimizer timing, but train with normal
 death and do not use no-death runs for learning claims.
 
-Scale batch size upward only while replay rows/sec improves and learner/search
-are not starved. B64 is the next larger self-play test; B128 should wait until
-render is no longer the dominant cost.
+Scale batch size upward as matrix rows, not as a single bet. B64 is the main
+fast-direct baseline. B128 and H100 are useful scale probes. Browser-lines is
+a mandatory small sentinel, paired with a matched fast-direct row, not a full
+control lane.
 
 For bonus visuals: product gray64 should expose bonus type with stable per-type
 grayscale circles if `bonus_type` is available. Generic bonus circles hide

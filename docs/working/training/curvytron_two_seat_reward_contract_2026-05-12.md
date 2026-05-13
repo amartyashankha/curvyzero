@@ -53,5 +53,35 @@ Do not collapse the components in reports. Each replay row should keep:
 - `terminal_outcome_reward`
 - `episode_step_count`
 - `return_target_discount`
+- terminal metadata for auditing: `terminal_winner`, `terminal_reason_name`,
+  `death_count`, `death_player`, and `death_cause_name`
 
 Eval survival length is still telemetry, not proof by itself.
+
+## Death Signal Audit
+
+Fresh policy-decision rows propagate death into training:
+
+1. The vector runtime marks wall, own-trail, opponent-trail, and body deaths in
+   `alive`, `death_cause`, and terminal lifecycle metadata.
+2. `VectorMultiplayerEnv` emits the public sparse outcome: winner `+1`, loser
+   `-1`, draw/truncation `0`.
+3. The two-seat trainer writes one replay row per fresh current-policy seat
+   decision. That row stores the shaped reward components plus death/terminal
+   metadata.
+4. `_sample_replay_batch` copies `reward` into `reward_batch` and the full row
+   history into `return_context_reward_batch`.
+5. `_learn_mode_batches` sends immediate rewards as `target_reward` and builds
+   discounted per-player `target_value` from the replay context.
+
+Death cause is audit metadata only right now. Wall death and trail death do not
+have different reward values; both become the same win/loss/draw outcome plus
+the alive/dead helper.
+
+Important fence: policy no-op skip is not a training feature yet. If a skipped
+physical tick kills a player, that tick has no fresh policy row, so its terminal
+reward would not be a learner target. The trainer now refuses real optimizer
+training when `policy_action_repeat_*` can create skipped policy ticks. Keep
+`policy_action_repeat_min=1`, `policy_action_repeat_max=1`, and
+`policy_action_repeat_extra_probability=0` for learning runs until skipped-tick
+reward aggregation is implemented.

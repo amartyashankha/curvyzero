@@ -34,7 +34,7 @@ support/model shape; that is not the eval score.
 
 ## Current State
 
-Updated 2026-05-12 after the pre-overnight cleanup pass.
+Updated 2026-05-12 after optimizer fast-direct correction.
 
 - Launch hold: do not start new overnight CurvyTron jobs until the user gives
   the exact launch recipe. The code is launch-ready, but no new overnight run
@@ -48,15 +48,20 @@ Updated 2026-05-12 after the pre-overnight cleanup pass.
 - Default two-seat training horizon and background survival-eval cap are both
   `65,536` steps. GIF max steps stay short by default because GIFs are visual
   samples, not the survival metric.
-- First overnight shape should be B32/sample128 on `gpu-l4-t4` with sim8,
-  collect64, updates4, accumulated replay, normal death, `browser_lines`,
-  checkpoint every 100 iterations, and CurvyZero background eval/GIF on. Latest
-  wait-mode timing makes B64/sample256 slightly worse on rows/sec and much worse
-  on time-to-checkpoint; use B64 later only if early checkpoint health justifies
-  slower feedback. Timing canaries: B32 finished 4 iterations in `626s` with
-  `6,734` fresh rows (`~10.8` rows/s, checkpoint 100 around `4.3h`); B64
-  finished 4 iterations in `1,183s` with `12,590` fresh rows (`~10.6` rows/s,
-  checkpoint 100 around `8.2h`).
+- Optimizer recommendation now supersedes the earlier B32/browser-lines canary:
+  run an aggressive approximation-heavy matrix. Main surface is
+  `fast_gray64_direct`, mostly L4/T4, B64, sim8, collect64, updates4,
+  accumulated replay, learner sample 256, normal death, CurvyZero background
+  eval/GIF on. Browser-lines is only one or two small sentinels and should not
+  gate the fast-direct matrix. Historical browser-lines timing canaries: B32
+  finished 4 iterations in `626s` with `6,734` fresh rows; B64 finished 4
+  iterations in `1,183s` with `12,590` fresh rows. Those browser-lines numbers
+  do not override the fast-direct recommendation. Optimizer matrix:
+  [optimizer recommendations](optimizer/coach_next_training_run_recommendations_2026-05-12.md).
+- Live-run guardrail: optimizer can read status/progress/logs/checkpoints from
+  overnight runs, but should not mutate them. Early read-only fast-direct
+  progress says the speed bottleneck has shifted toward policy/search/MCTS, not
+  rendering, in rows that are actually collecting.
 - Run naming rule: every serious run starts with a readable purpose prefix and
   names the important variant knobs. Use names like
   `curvy2seat-selfplay-baseline-noskip-b32-sim8-20260512` or

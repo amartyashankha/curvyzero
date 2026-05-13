@@ -1,8 +1,23 @@
-# CurvyTron Canonical Two-Seat Coach Handoff - 2026-05-12
+# CurvyTron Custom Two-Seat Adapter Handoff - 2026-05-12
+
+## Superseded Naming
+
+This file used to call the path "canonical." That is no longer correct. Treat
+this as historical/operational notes for the custom two-seat adapter only.
+
+Current research and gates live in:
+`docs/working/training/curvytron_architecture_research_2026-05-12/`.
 
 ## Copyable Agent Handoff
 
-Current Coach main line is CurvyTron two-seat current-policy self-play through
+2026-05-12 correction after the no-learning audit: this file describes the
+current operational two-seat launcher, but it is not a trusted stock-LightZero
+learning lane. Do not scale it again as the main proof until it either calls
+stock `train_muzero`, feeds native `GameSegment` / `MuZeroGameBuffer`, or has a
+parity-tested repo-owned learner-target contract. See
+[train-muzero reconciliation](curvytron_train_muzero_reconciliation_2026-05-12.md).
+
+Current operational two-seat launcher is
 `src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py --mode two-seat-selfplay`.
 The old `lightzero_curvytron_two_seat_train_smoke.py` Modal wrapper is deleted;
 do not use old commands except as historical notes translated to the canonical
@@ -22,7 +37,8 @@ mild: the legacy `policy_action_repeat_*` flags now mean policy no-op skips, not
 held actions. They are now off by default: `min=1`, `max=1`,
 `extra_probability=0.0`. This is intentional for the first serious runs because
 skipped no-op ticks currently do not create replay rows or reward targets, so a
-death or bonus during a skipped tick can be miscredited. Visual input gets
+death or bonus during a skipped tick can be miscredited. The trainer now fails
+fast if real optimizer training enables this skip path. Visual input gets
 Gaussian noise `0.10`, and random no-op/drop is off.
 The default trainer reward is now shaped
 but labeled: each per-seat replay row gets a tiny alive helper `+0.01`, an
@@ -30,17 +46,19 @@ immediate same-step bonus pickup helper `+0.05` per bonus caught by that player,
 plus the sparse terminal outcome scaled by `0.01 * episode_step_count`.
 Components are logged separately as training reward, dense helper, bonus pickup
 helper, sparse outcome, and terminal outcome.
-Next real work is to launch and monitor clean long CurvyTron self-play runs from
-this canonical path, with survival curves and collapse checks.
+Next real work is not to launch more long runs from this path. It is to restore
+stock-loop controls or prove a native replay/target bridge before scaling true
+two-seat learning again.
 
-Current setup recommendation for the first overnight run: use `gpu-l4-t4`,
-`batch_size=32`, `num_simulations=8`, `collect_steps_per_iteration=64`,
-`updates_per_iteration=4`, accumulated replay, `learner_sample_size=128`,
-normal death, sparse checkpoints around every `100` iterations, and background
-CurvyZero eval/GIF on. Latest wait-mode timing makes B64/sample256 only
-interesting after early B32 checkpoints show healthy fresh decisions; B64 is
-slower to checkpoint and is not better on rows/sec. Do not assume B128,
-sim16, or multi-GPU helps until render/search stops dominating.
+Current optimizer setup recommendation supersedes the older B32/browser-lines
+canary: run an aggressive approximation-heavy matrix. The main surface is
+`fast_gray64_direct`, not `browser_lines`. Use mostly `gpu-l4-t4`, B64, sim8,
+collect64, updates4, accumulated replay, learner sample 256, normal death, and
+background CurvyZero eval/GIF on. Browser-lines is only a tiny sentinel, not a
+control lane and not a gate. Choose checkpoint cadence from warm-up wall time:
+target one checkpoint every 5-10 minutes for canaries and 10-20 minutes for the
+overnight matrix. Full optimizer matrix:
+[optimizer recommendations](../optimizer/coach_next_training_run_recommendations_2026-05-12.md).
 
 ## Short Version
 
@@ -58,22 +76,25 @@ Run it with:
 
 The older Modal wrapper
 `src/curvyzero/infra/modal/lightzero_curvytron_two_seat_train_smoke.py` has
-been deleted. Historical commands must be translated to the canonical launcher.
+been deleted. Historical commands must not be treated as learning guidance
+without the May 12 postmortem checks.
 
 ## What Works Now
 
-- The default Coach path is current-policy two-seat self-play.
+- This path performs current-policy two-seat action collection, but it is not
+  the default trusted learning path.
 - One live LightZero MuZero policy chooses actions for both CurvyTron seats from
   the same pre-step state.
 - The env advances once with the joint action.
 - The learner updates that same policy before later collection.
 - Modal GPU L4/T4 works; smoke saw model parameters on `cuda:0`.
-- Current measured path uses full source-state visual input:
+- Current measured reference path uses full source-state visual input:
   `trail_render_mode=browser_lines`, browser-sprite bonus rendering, and
   LightZero policy/search on `cuda:0`. Env stepping, visual render/downsample,
   replay packaging, and observation noise are still CPU-side. Warmed profiles
-  say render is the largest bucket, so B64 is useful for more self-play per
-  checkpoint but is not a free throughput win.
+  say browser-lines rendering is the largest bucket. The active optimizer
+  training recommendation therefore uses `fast_gray64_direct`, a strong
+  semantic approximation that is much faster but not browser pixel fidelity.
 - Reset starts are varied: the trainer seeds the vector env, then calls
   `reset(seed=None)` and `autoreset_done_rows(seed=None)`, so each row/reset
   gets a generated reset seed. Replay rows and step records carry `reset_seed`.
@@ -100,6 +121,11 @@ been deleted. Historical commands must be translated to the canonical launcher.
   while bonus pickup stays local to the step where it happened. Eval survival
   length remains separate telemetry. Reward contract:
   [curvytron_two_seat_reward_contract_2026-05-12.md](curvytron_two_seat_reward_contract_2026-05-12.md).
+- Death signal audit: for normal fresh policy decisions, wall/trail/body deaths
+  propagate into replay and learner targets through `alive_after`,
+  `sparse_outcome_reward`, `terminal_outcome_reward`, `reward_batch`, and
+  discounted `target_value`. Death cause labels are now preserved on replay rows
+  for debugging, but cause type does not change the reward value.
 - Checkpoints write to:
   `training/lightzero-curvytron-visual-survival/<run_id>/checkpoints/lightzero`.
 - Progress writes to:
@@ -107,21 +133,25 @@ been deleted. Historical commands must be translated to the canonical launcher.
 
 ## Launch Shape
 
-Preferred first overnight shape once the user gives the exact launch command:
+Preferred first overnight baseline shape:
 
 ```text
 --mode two-seat-selfplay
 --compute gpu-l4-t4
---batch-size 32
+--batch-size 64
 --num-simulations 8
 --two-seat-collect-steps-per-iteration 64
 --two-seat-updates-per-iteration 4
 --two-seat-replay-scope accumulated
---two-seat-learner-sample-size 128
+--two-seat-learner-sample-size 256
 --two-seat-death-mode normal
---two-seat-trail-render-mode browser_lines
---save-ckpt-after-iter 100
+--two-seat-trail-render-mode fast_gray64_direct
+--save-ckpt-after-iter 50
 ```
+
+Run the broader approximation-heavy matrix from the optimizer recommendation
+doc when capacity is available. Keep at most one or two `browser_lines`
+sentinels, and do not wait for them before launching fast-direct runs.
 
 Baseline stochasticity proof check before launch:
 
@@ -133,7 +163,9 @@ fresh_policy_action_summary.decision_count ==
 
 If this fails, do not treat the run as the clean baseline. Stochastic variants
 are still allowed, but they must be named as variants and read with the skip
-accounting caveat.
+accounting caveat. As of the death-signal audit on 2026-05-12, policy no-op
+skip variants are blocked for real optimizer training until skipped physical
+ticks have explicit reward/return accounting.
 
 ## Run Naming
 
@@ -159,17 +191,16 @@ Baseline means no policy no-op skip. If a run enables policy no-op skip,
 action drop, extra observation noise, changed reward scale, changed replay
 scope, or changed render mode, put that in the run id and attempt id.
 
-Use `--batch-size 64 --two-seat-learner-sample-size 256` later only for a
-deliberate slower-feedback run with more self-play rows per checkpoint.
-Use `num_simulations=16` only if we deliberately want stronger search and accept
-slower wall time. Keep `profile_no_death` and background eval/GIF off for
-profiling only; real training uses normal death and background observability.
+Use B128/H100/search-depth variants as explicit matrix rows, not as the single
+baseline. Keep `profile_no_death` and background eval/GIF off for profiling
+only; real training uses normal death and background observability.
 
 ## Pre-Overnight Timing
 
-Wait-mode timing canaries on 2026-05-12 used normal death, `browser_lines`,
-sim8, collect64, updates4, accumulated replay, background eval/GIF off, and
-checkpoint cadence 100.
+Historical wait-mode timing canaries on 2026-05-12 used normal death,
+`browser_lines`, sim8, collect64, updates4, accumulated replay, background
+eval/GIF off, and checkpoint cadence 100. These are now browser-lines
+historical context, not the active fast-direct recommendation.
 
 | shape | elapsed for 4 iters | fresh rows | rows/sec | rough checkpoint 100 |
 | --- | ---: | ---: | ---: | ---: |
@@ -178,7 +209,9 @@ checkpoint cadence 100.
 
 Both runs were healthy plumbing smokes: `ok=true`, model parameters changed,
 CUDA model, accumulated replay, and no trainer problems. B64 did not improve
-rows/sec enough to justify delayed feedback for the first overnight canary.
+rows/sec in browser-lines mode. That does not apply to the current
+`fast_gray64_direct` recommendation, where B64 is the main baseline and
+browser-lines is only a slow sentinel.
 
 ## Action Collapse Gate
 

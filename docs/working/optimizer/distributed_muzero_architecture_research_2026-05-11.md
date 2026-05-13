@@ -2,13 +2,15 @@
 
 Date: 2026-05-11
 
-Status: optimizer correction note. This replaces the weaker assumption that the
-main CurvyTron speed path is mostly single-loop micro-optimization.
+Status: historical optimizer correction note. Some launcher facts below were
+true on 2026-05-11 and are now stale. For the current optimizer architecture
+map, start with:
+`docs/working/optimizer/architecture_reexploration_2026-05-12/README.md`.
 
-Current launcher truth, 2026-05-11 late: Coach canonical CurvyZero launcher is
-`src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py --mode two-seat-selfplay`.
-The fixed/frozen-opponent stock `train_muzero` path discussed here is
-controls/profiling evidence, not the Coach main lane.
+Current launcher truth, 2026-05-12: the trusted proof/profile lane is stock
+LightZero `train_muzero` with `source_state_fixed_opponent` and a frozen
+checkpoint opponent. The old custom `two-seat-selfplay` path is historical
+until native replay and target semantics are proven.
 
 Related framework comparison and simultaneous-action modeling note:
 `docs/working/optimizer/framework_reassessment_2026-05-11.md`.
@@ -19,9 +21,8 @@ Related component checklist for the full training loop:
 ## Plain Verdict
 
 The current native CurvyTron LightZero stock loop is useful as
-fixed/frozen-opponent control/profile evidence, but it is not the Coach
-canonical launcher and is not structurally close to the training systems that
-made AlphaZero/MuZero fast.
+fixed/frozen-opponent control/profile evidence. It is still not structurally
+close to the training systems that made AlphaZero/MuZero fast.
 
 Important correction: the current stock `train_muzero` path is synchronous
 inside one trainer container. It collects, pushes to local replay, samples, and

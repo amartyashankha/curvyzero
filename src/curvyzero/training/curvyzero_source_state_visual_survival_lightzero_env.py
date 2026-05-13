@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -87,8 +88,13 @@ from curvyzero.training.curvyzero_debug_visual_lightzero_smoke import (
 from curvyzero.training.curvyzero_stacked_debug_visual_survival_lightzero_smoke import (
     CURRENT_POLICY_SELF_PLAY_BLOCKER,
     CURRENT_POLICY_SELF_PLAY_CLAIM,
+    OPPONENT_POLICY_KIND_FROZEN_LIGHTZERO_CHECKPOINT,
     OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
+    OPPONENT_TRAINING_RELATION_FROZEN_LIGHTZERO_CHECKPOINT,
     OPPONENT_TRAINING_RELATION_FIXED_STRAIGHT,
+)
+from curvyzero.training.lightzero_checkpoint_opponent_provider import (
+    snapshot_backed_lightzero_checkpoint_opponent_policy,
 )
 try:  # Imported inside a LightZero/DI-engine runtime.
     import gym
@@ -228,6 +234,16 @@ SOURCE_STATE_FIXED_OPPONENT_REWARD_VARIANTS = (
     REWARD_VARIANT_SPARSE_OUTCOME,
     REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME,
 )
+SOURCE_STATE_OPPONENT_POLICY_KINDS = (
+    OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
+    OPPONENT_POLICY_KIND_FROZEN_LIGHTZERO_CHECKPOINT,
+)
+OPPONENT_POLICY_KIND_NONE_CENTRALIZED_JOINT_ACTION = (
+    "none_centralized_joint_action"
+)
+SOURCE_STATE_JOINT_ACTION_OPPONENT_POLICY_KINDS = (
+    OPPONENT_POLICY_KIND_NONE_CENTRALIZED_JOINT_ACTION,
+)
 SOURCE_STATE_JOINT_ACTION_REWARD_VARIANTS = (
     REWARD_VARIANT_ALL_PLAYERS_ALIVE_DIAGNOSTIC,
 )
@@ -314,6 +330,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
 
     _default_reward_variant = REWARD_VARIANT_SPARSE_OUTCOME
     _allowed_reward_variants = SOURCE_STATE_FIXED_OPPONENT_REWARD_VARIANTS
+    _allowed_opponent_policy_kinds = SOURCE_STATE_OPPONENT_POLICY_KINDS
 
     config = {
         "env_id": LIGHTZERO_SOURCE_STATE_VISUAL_SURVIVAL_ENV_ID,
@@ -359,7 +376,31 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         self.opponent_player_index = 1
         self.ego_player_id = "player_0"
         self.opponent_player_id = "player_1"
+        self._opponent_policy_kind = str(
+            _cfg_get(cfg, "opponent_policy_kind", OPPONENT_POLICY_KIND_FIXED_STRAIGHT)
+        )
+        allowed_opponent_policy_kinds = tuple(
+            getattr(
+                self,
+                "_allowed_opponent_policy_kinds",
+                SOURCE_STATE_OPPONENT_POLICY_KINDS,
+            )
+        )
+        if self._opponent_policy_kind not in allowed_opponent_policy_kinds:
+            raise ValueError(
+                "opponent_policy_kind must be one of "
+                f"{allowed_opponent_policy_kinds!r}; "
+                f"got {self._opponent_policy_kind!r}"
+            )
         self._seed = int(_cfg_get(cfg, "seed", 0))
+        self._opponent_policy_seed = int(_cfg_get(cfg, "opponent_policy_seed", self._seed))
+        self._last_opponent_policy_sidecar: dict[str, Any] | None = None
+        self.opponent_policy = None
+        if self._opponent_policy_kind == OPPONENT_POLICY_KIND_FROZEN_LIGHTZERO_CHECKPOINT:
+            self.opponent_policy = _build_source_state_frozen_lightzero_opponent_policy(
+                cfg,
+                seed=self._opponent_policy_seed,
+            )
         self._episode_seed = self._seed
         self._configured_dynamic_seed = bool(_cfg_get(cfg, "dynamic_seed", False))
         self._dynamic_seed = self._configured_dynamic_seed
@@ -399,6 +440,9 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         self._telemetry_stride = int(_cfg_get(cfg, "telemetry_stride", 1))
         if self._telemetry_stride < 1:
             raise ValueError("telemetry_stride must be at least 1")
+        self._profile_env_timing_enabled = bool(
+            _cfg_get(cfg, "profile_env_timing_enabled", False)
+        )
         self._override_probability = float(
             _cfg_get(cfg, "ego_action_straight_override_probability", 0.0)
         )
@@ -465,8 +509,17 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             dtype=np.uint8,
         )
         self._gray64_frame = np.zeros(SOURCE_STATE_CANVAS_GRAY64_SHAPE, dtype=np.uint8)
+        self._opponent_gray64_frame = np.zeros(
+            SOURCE_STATE_CANVAS_GRAY64_SHAPE,
+            dtype=np.uint8,
+        )
         self._normalized_frame = np.zeros(SOURCE_STATE_CANVAS_GRAY64_SHAPE, dtype=np.float32)
+        self._opponent_normalized_frame = np.zeros(
+            SOURCE_STATE_CANVAS_GRAY64_SHAPE,
+            dtype=np.float32,
+        )
         self._stack = np.zeros(STACKED_SOURCE_STATE_GRAY64_SHAPE, dtype=np.float32)
+        self._opponent_stack = np.zeros(STACKED_SOURCE_STATE_GRAY64_SHAPE, dtype=np.float32)
         self._has_reset = False
         self._needs_reset = False
         self._last_batch = None
@@ -537,6 +590,8 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         )
         self._env = self._new_env(reset_seed)
         self._stack.fill(0.0)
+        self._opponent_stack.fill(0.0)
+        self._last_opponent_policy_sidecar = None
         self._needs_reset = False
         self._has_reset = True
         self._episode_return = 0.0
@@ -550,9 +605,16 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             raise RuntimeError("reset must be called before step")
         if self._needs_reset:
             raise RuntimeError("reset must be called before stepping after done")
+        timing_sec: dict[str, float] | None = (
+            {} if self._profile_env_timing_enabled else None
+        )
+        step_started = time.perf_counter() if timing_sec is not None else 0.0
         requested_action = _validate_action(action)
         executed_action, override_applied = self._executed_ego_action(requested_action)
-        opponent_action = STRAIGHT_ACTION_ID
+        opponent_started = time.perf_counter() if timing_sec is not None else 0.0
+        opponent_action = self._opponent_action()
+        if timing_sec is not None:
+            timing_sec["opponent_action_sec"] = time.perf_counter() - opponent_started
         joint_action = np.array([[executed_action, opponent_action]], dtype=np.int16)
         action_repeat_requested = self._sample_policy_action_repeat()
         action_repeat_executed = 0
@@ -563,11 +625,18 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         terminated = False
         truncated = False
         batch = None
+        physical_loop_started = time.perf_counter() if timing_sec is not None else 0.0
+        vector_step_sec = 0.0
+        reward_sec = 0.0
         for _ in range(action_repeat_requested):
+            vector_started = time.perf_counter() if timing_sec is not None else 0.0
             batch = self._env.step(joint_action, timer_advance_ms=self._decision_ms)
+            if timing_sec is not None:
+                vector_step_sec += time.perf_counter() - vector_started
             self._last_batch = batch
             action_repeat_executed += 1
             self._physical_step_index += 1
+            reward_started = time.perf_counter() if timing_sec is not None else 0.0
             components = self._reward_components_for_player(
                 batch=batch,
                 player_index=self.ego_player_index,
@@ -578,14 +647,24 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             done = bool(batch.done[0])
             terminated = bool(batch.terminated[0])
             truncated = bool(batch.truncated[0])
+            if timing_sec is not None:
+                reward_sec += time.perf_counter() - reward_started
             if done:
                 break
+        if timing_sec is not None:
+            timing_sec["physical_loop_sec"] = time.perf_counter() - physical_loop_started
+            timing_sec["vector_step_sec"] = vector_step_sec
+            timing_sec["reward_sec"] = reward_sec
         if batch is None:
             raise RuntimeError("policy action repeat produced no physical env step")
         self._needs_reset = done
         self._episode_return += reward
         self._step_index += 1
+        observation_started = time.perf_counter() if timing_sec is not None else 0.0
         next_obs = self._lightzero_observation(needs_reset=done)
+        if timing_sec is not None:
+            timing_sec["observation_sec"] = time.perf_counter() - observation_started
+            timing_sec["step_total_before_info_sec"] = time.perf_counter() - step_started
         info = self._step_info(
             requested_action=requested_action,
             executed_action=executed_action,
@@ -602,6 +681,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             batch=batch,
             sparse_outcome_reward_sum=sparse_outcome_reward_sum,
             dense_survival_helper_sum=dense_survival_helper_sum,
+            profile_env_timing_sec=timing_sec,
         )
         timestep = LocalDebugVisualLightZeroTimestep(next_obs, reward, done, info)
         self._write_telemetry_row(timestep=timestep)
@@ -677,7 +757,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             f"env_id={self.env_id!r}, "
             f"ego_player_id={self.ego_player_id!r}, "
             f"opponent_player_id={self.opponent_player_id!r}, "
-            "opponent_policy_kind='fixed_straight')"
+            f"opponent_policy_kind={self._opponent_policy_kind!r})"
         )
 
     def _new_env(self, seed: int) -> VectorMultiplayerEnv:
@@ -718,12 +798,45 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         )
         self._stack[:-1] = self._stack[1:]
         self._stack[-1] = self._normalized_frame[0]
+        _normalize_player_perspective(
+            gray64,
+            controlled_player=self.opponent_player_index,
+            out=self._opponent_gray64_frame,
+        )
+        np.multiply(
+            self._opponent_gray64_frame,
+            np.float32(1.0 / 255.0),
+            out=self._opponent_normalized_frame,
+            casting="unsafe",
+        )
+        self._opponent_stack[:-1] = self._opponent_stack[1:]
+        self._opponent_stack[-1] = self._opponent_normalized_frame[0]
         return self._stack
 
     def _action_mask(self, *, active: bool) -> np.ndarray:
         if not active:
             return np.zeros(ACTION_COUNT, dtype=np.int8)
         return self._env._action_mask()[0, self.ego_player_index].astype(np.int8, copy=True)
+
+    def _opponent_action(self) -> int:
+        if self._opponent_policy_kind == OPPONENT_POLICY_KIND_FIXED_STRAIGHT:
+            self._last_opponent_policy_sidecar = None
+            return STRAIGHT_ACTION_ID
+        if self.opponent_policy is None:
+            raise RuntimeError("frozen LightZero opponent policy was not initialized")
+        legal = self._env._action_mask()[:, :2].astype(bool, copy=True)
+        opponent_mask = np.array([[False, True]], dtype=bool)
+        observation = np.zeros((1, 2, *STACKED_SOURCE_STATE_GRAY64_SHAPE), dtype=np.float32)
+        observation[0, self.ego_player_index] = self._stack
+        observation[0, self.opponent_player_index] = self._opponent_stack
+        selection = self.opponent_policy.select_actions(
+            legal,
+            opponent_mask,
+            decision_index=int(self._step_index),
+            observation=observation,
+        )
+        self._last_opponent_policy_sidecar = selection.sidecar()
+        return int(selection.actions[0, self.opponent_player_index])
 
     def _executed_ego_action(self, requested_action: int) -> tuple[int, bool]:
         if self._override_probability <= 0.0:
@@ -863,6 +976,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         batch: Any,
         sparse_outcome_reward_sum: float,
         dense_survival_helper_sum: float,
+        profile_env_timing_sec: dict[str, float] | None = None,
     ) -> dict[str, Any]:
         info = self._base_info()
         final_reward_map = None
@@ -951,6 +1065,12 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
                 "trace_hash": self._trace_hash(joint_action=joint_action),
             }
         )
+        if profile_env_timing_sec is not None:
+            info["profile_env_timing_sec"] = {
+                key: float(value) for key, value in profile_env_timing_sec.items()
+            }
+        if self._last_opponent_policy_sidecar is not None:
+            info["opponent_policy_sidecar"] = self._last_opponent_policy_sidecar
         return info
 
     def _base_info(self) -> dict[str, Any]:
@@ -958,7 +1078,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         runtime_env_impl_id = str(public_info["env_impl_id"])
         public_env_contract_id = str(public_info["public_env_contract_id"])
         ruleset_id = str(public_info["ruleset_id"])
-        return {
+        info = {
             "env_id": self.env_id,
             "lightzero_env_type": LIGHTZERO_SOURCE_STATE_VISUAL_SURVIVAL_ENV_TYPE,
             "env_variant": SOURCE_STATE_FIXED_OPPONENT_ENV_VARIANT,
@@ -1100,10 +1220,12 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
                 else 0.0
             ),
             "opponent_policy_id": "curvyzero_source_state_fixed_straight_opponent",
-            "opponent_policy_kind": OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
-            "opponent_training_relation": OPPONENT_TRAINING_RELATION_FIXED_STRAIGHT,
+            "opponent_policy_kind": self._opponent_policy_kind,
+            "opponent_training_relation": _source_state_opponent_training_relation(
+                self._opponent_policy_kind
+            ),
             "opponent_policy_version": "v0.2026-05-11",
-            "opponent_policy_seed": self._seed,
+            "opponent_policy_seed": self._opponent_policy_seed,
             "episode_seed": self._episode_seed,
             "reset_seed_strategy": (
                 "dynamic_seed_sequence_from_run_seed_and_reset_index/v0"
@@ -1143,6 +1265,14 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
                 "terminal_reason_name": str(public_info["terminal_reason_name"][0]),
             },
         }
+        if self.opponent_policy is not None:
+            info["opponent_policy_id"] = str(
+                getattr(self.opponent_policy, "policy_id", info["opponent_policy_id"])
+            )
+            info["opponent_policy_version"] = str(
+                getattr(self.opponent_policy, "policy_version", "unknown")
+            )
+        return info
 
     def _write_telemetry_row(self, *, timestep: LocalDebugVisualLightZeroTimestep) -> None:
         if self._telemetry_path is None:
@@ -1156,6 +1286,12 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         if not sampled_step:
             return
         info = timestep.info
+        opponent_metadata = _opponent_policy_metadata(
+            info.get("opponent_policy_sidecar")
+        )
+        opponent_load_summary = opponent_metadata.get("provider_load_summary")
+        if not isinstance(opponent_load_summary, dict):
+            opponent_load_summary = {}
         row = {
             "schema_id": "curvyzero_source_state_visual_survival_env_step/v0",
             "telemetry_stride": int(self._telemetry_stride),
@@ -1214,6 +1350,13 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             "opponent_policy_version": info.get("opponent_policy_version"),
             "opponent_policy_kind": info.get("opponent_policy_kind"),
             "opponent_training_relation": info.get("opponent_training_relation"),
+            "opponent_checkpoint_ref": opponent_metadata.get("checkpoint_ref"),
+            "opponent_snapshot_ref": opponent_metadata.get("snapshot_ref"),
+            "opponent_provider_id": opponent_metadata.get("provider_id"),
+            "opponent_provider_version": opponent_metadata.get("provider_version"),
+            "opponent_provider_load_ok": opponent_load_summary.get("ok"),
+            "opponent_provider_load_strict": opponent_load_summary.get("strict"),
+            "opponent_provider_load_candidate": opponent_load_summary.get("candidate"),
             "current_policy_self_play": info.get("current_policy_self_play"),
             "current_policy_self_play_blocker": info.get("current_policy_self_play_blocker"),
             "trusted_current_policy_self_play": info.get("trusted_current_policy_self_play"),
@@ -1277,6 +1420,13 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             "debug_fidelity_only": info.get("debug_fidelity_only"),
             "uses_ale": info.get("uses_ale"),
         }
+        profile_env_timing_sec = info.get("profile_env_timing_sec")
+        if isinstance(profile_env_timing_sec, dict):
+            row["profile_env_timing_sec"] = {
+                str(key): float(value)
+                for key, value in profile_env_timing_sec.items()
+                if isinstance(value, (int, float))
+            }
         self._telemetry_path.parent.mkdir(parents=True, exist_ok=True)
         with self._telemetry_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n")
@@ -1404,6 +1554,7 @@ class CurvyZeroSourceStateVisualJointActionLightZeroLocalEnv(
 
     _default_reward_variant = REWARD_VARIANT_ALL_PLAYERS_ALIVE_DIAGNOSTIC
     _allowed_reward_variants = SOURCE_STATE_JOINT_ACTION_REWARD_VARIANTS
+    _allowed_opponent_policy_kinds = SOURCE_STATE_JOINT_ACTION_OPPONENT_POLICY_KINDS
 
     config = {
         **CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv.config,
@@ -1547,7 +1698,7 @@ class CurvyZeroSourceStateVisualJointActionLightZeroLocalEnv(
                 "reward_schema_hash": ALL_PLAYERS_ALIVE_DIAGNOSTIC_REWARD_SCHEMA_HASH,
                 "reward_contract": "diagnostic_all_players_alive_after_one_source_tick",
                 "opponent_policy_id": "centralized_joint_action_controls_player_1",
-                "opponent_policy_kind": "none_centralized_joint_action",
+                "opponent_policy_kind": OPPONENT_POLICY_KIND_NONE_CENTRALIZED_JOINT_ACTION,
                 "opponent_training_relation": "centralized_policy_controls_both_players",
                 "opponent_policy_version": None,
                 "current_policy_self_play": False,
@@ -1616,6 +1767,52 @@ class CurvyZeroSourceStateVisualJointActionLightZeroEnv(
     def step(self, action: Any) -> BaseEnvTimestep:
         local_timestep = super().step(action)
         return local_timestep.to_base_env_timestep(BaseEnvTimestep)
+
+
+def _build_source_state_frozen_lightzero_opponent_policy(
+    cfg: Any,
+    *,
+    seed: int,
+) -> Any:
+    checkpoint_path = _cfg_get(cfg, "opponent_checkpoint_path", None)
+    if checkpoint_path is None:
+        raise ValueError(
+            "opponent_checkpoint_path is required with opponent_policy_kind="
+            f"{OPPONENT_POLICY_KIND_FROZEN_LIGHTZERO_CHECKPOINT!r}"
+        )
+    checkpoint_ref = _cfg_get(cfg, "opponent_checkpoint_ref", None)
+    snapshot_ref = str(
+        _cfg_get(
+            cfg,
+            "opponent_snapshot_ref",
+            "curvytron_source_state_visual_survival_frozen_opponent",
+        )
+    )
+    return snapshot_backed_lightzero_checkpoint_opponent_policy(
+        checkpoint_path=checkpoint_path,
+        snapshot_ref=snapshot_ref,
+        checkpoint_ref=None if checkpoint_ref is None else str(checkpoint_ref),
+        seed=int(seed),
+        num_simulations=int(_cfg_get(cfg, "opponent_num_simulations", 8)),
+        batch_size=int(_cfg_get(cfg, "opponent_batch_size", 16)),
+        use_cuda=bool(_cfg_get(cfg, "opponent_use_cuda", False)),
+        state_key=_cfg_get(cfg, "opponent_checkpoint_state_key", None),
+    )
+
+
+def _source_state_opponent_training_relation(opponent_policy_kind: str) -> str:
+    if opponent_policy_kind == OPPONENT_POLICY_KIND_FIXED_STRAIGHT:
+        return OPPONENT_TRAINING_RELATION_FIXED_STRAIGHT
+    if opponent_policy_kind == OPPONENT_POLICY_KIND_FROZEN_LIGHTZERO_CHECKPOINT:
+        return OPPONENT_TRAINING_RELATION_FROZEN_LIGHTZERO_CHECKPOINT
+    return f"unknown:{opponent_policy_kind}"
+
+
+def _opponent_policy_metadata(sidecar: Any) -> dict[str, Any]:
+    if not isinstance(sidecar, dict):
+        return {}
+    metadata = sidecar.get("policy_metadata")
+    return dict(metadata) if isinstance(metadata, dict) else {}
 
 
 def _normalize_player_perspective(
@@ -1769,6 +1966,7 @@ __all__ = [
     "LIGHTZERO_SOURCE_STATE_VISUAL_SURVIVAL_ENV_ID",
     "LIGHTZERO_SOURCE_STATE_VISUAL_SURVIVAL_ENV_TYPE",
     "LIGHTZERO_SOURCE_STATE_VISUAL_SURVIVAL_IMPORT_NAMES",
+    "OPPONENT_POLICY_KIND_NONE_CENTRALIZED_JOINT_ACTION",
     "SOURCE_STATE_JOINT_ACTION_ADAPTER_IMPL_ID",
     "SOURCE_STATE_JOINT_ACTION_ENV_VARIANT",
     "SOURCE_STATE_JOINT_ACTION_RUNTIME_TOPOLOGY",

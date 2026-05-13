@@ -4,6 +4,28 @@ Date: 2026-05-09
 
 ## Next
 
+- Current architecture investigation lives in
+  [architecture re-exploration](architecture_reexploration_2026-05-12/README.md).
+  First-wave verdict: LightZero is still the near-term trusted proof/profile
+  path, but it is a synchronous trainer loop, not a full actor fleet.
+  EfficientZero/MiniZero teach system decomposition; MCTX teaches batched
+  search; none is a clean drop-in. Next decisions should come from a collect-only
+  fanout design and a visual-root MCTX benchmark plan.
+- Stock-vs-custom speed panic is resolved for now. Matched tiny profile:
+  stock fixed-opponent `21.689s/818 roots/4 learner updates`, stock centralized
+  joint-action `19.261s/929 roots/4 learner updates`, custom two-seat
+  `19.674s/1024 policy rows/4 learner updates`. Next work is not "switch
+  because stock is faster"; next work is target/replay correctness review plus
+  search/noise/autoreset profiling. Details:
+  [stock train-MuZero vs two-seat profile plan](train_muzero_stock_vs_two_seat_profile_plan_2026-05-12.md).
+- Keep the [continuous optimization loop](continuous_optimization_loop_2026-05-12.md)
+  active: reorient, measure, run isolated experiments, integrate only when a
+  whole-loop win is plausible, reprofile, and update docs. Do not treat a Coach
+  handoff as a stopping condition.
+- Before touching the live training path again, get fresh fine-grained evidence
+  for the post-`fast_gray64_direct` bottleneck: policy/search, env/physics,
+  observation noise, replay/sample/learner, checkpoint/artifacts, and H100/B128+
+  scaling.
 - Keep the optimizer [world model](world_model_2026-05-09.md) current as other
   lanes produce evidence.
 - Use [CurvyTron native LightZero profile](curvytron_native_lightzero_profile_2026-05-11.md)
@@ -100,16 +122,21 @@ Date: 2026-05-09
 - Current measured source-backed baseline should use
   `source_setup_mode=controlled_trail` when timing body/ray geometry. Default
   source setup can produce zero body circles and overstate ray-path throughput.
-- Next full-loop measurement is the canonical two-seat self-play launcher. Keep
+- 2026-05-12 postmortem correction: the old "canonical two-seat" measurement
+  target is now an experimental/prototype lane, not trusted learning evidence.
+  Next full-loop learning measurements should start from stock-loop controls or
+  a native replay bridge. Historical note: next full-loop measurement was the
+  canonical two-seat self-play launcher. Keep
   native source-state visual LightZero `train_muzero` as a stock-control
   comparison. Report env step, render, stack/normalize, policy/search, replay,
   reset, learner, checkpoint, and checkpoint/policy-version metadata when using
   actor chunks. The current stock loop is synchronous; actor-fleet freshness
   only applies to future split collection.
-- Current post-reorientation order for CurvyTron optimizer work:
+- Historical post-reorientation order for CurvyTron optimizer work:
   1. Keep `lightzero_curvyzero_stacked_debug_visual_survival_train.py --mode
      two-seat-selfplay` as the Coach canonical launcher, and keep the native
-     source-state `train_muzero` path as stock controls/profiling.
+     source-state `train_muzero` path as stock controls/profiling. This is now
+     superseded by the May 12 training postmortem.
   2. Use subprocess env manager and collector batches `128/128` for throughput,
      with `64/64` as the fallback if capacity or stability requires it.
   3. Use `num_simulations=50` for serious MuZero-style proof lanes and `16` for

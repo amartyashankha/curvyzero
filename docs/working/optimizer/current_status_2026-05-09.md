@@ -5,23 +5,122 @@ Date: 2026-05-09
 Optimizer scope: synthesize speed and training-loop setup. Do not claim
 environment fidelity or policy quality from this lane.
 
-Final 2026-05-12 Coach handoff state: use the canonical two-seat launcher
-`src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py --mode two-seat-selfplay`.
-The main overnight recommendation is an aggressive approximation-heavy CurvyTron
-matrix, mostly L4/T4 with `fast_gray64_direct`, normal death, accumulated replay,
-CurvyZero checkpoint eval/GIF on, and stock LightZero in-loop eval off.
-Browser-lines is only a tiny optional sentinel, not a control lane and not a
-gate for the main launch. `fast_gray64_direct` is a strong semantic
-approximation, not a browser pixel-fidelity claim, but it is the speed surface
-we should actually train through now. `--two-seat-learning-rate` is wired
-through the canonical Modal launcher and checkpoint metadata, so Coach can run
-the LR sweep in the recommendation doc. Checkpoint cadence should be chosen from
-the first 20-50 warm-up iterations by wall-clock target: about every 5-10
-minutes for canaries, 10-20 minutes for the overnight matrix, and 30-60 minutes
-for later long follow-ups. Default stochasticity is observation noise `0.10`;
-action no-op and policy repeat skip are off unless explicitly requested. Full
-recommendations live in
-[coach next training run recommendations](coach_next_training_run_recommendations_2026-05-12.md).
+Active operating memory now lives in
+[continuous optimization loop](continuous_optimization_loop_2026-05-12.md).
+The standing rule is to keep measuring and optimizing: reorient, state the
+Amdahl picture, run isolated experiments, integrate only when a whole-loop win
+is plausible, reprofile, and update docs.
+
+Current reset, 2026-05-12: the trusted CurvyTron lane is stock LightZero
+`train_muzero` with `env_variant=source_state_fixed_opponent`,
+`opponent_policy_kind=frozen_lightzero_checkpoint`, and the env-owned frozen
+opponent on CPU by default. The custom `--mode two-seat-selfplay` path below is
+historical/postmortem until replay and target semantics are trusted. Start from
+[stock frozen optimizer pivot](stock_frozen_optimizer_pivot_2026-05-12.md).
+
+Fresh stock-vs-custom correction, 2026-05-12: the clean stock LightZero
+`train_muzero` paths are healthy controls, but they are not clearly faster in a
+matched tiny profile. Stock fixed-opponent took `21.689s` for `818` roots and
+4 learner updates; stock centralized joint action took `19.261s` for `929`
+roots and 4 learner updates; custom two-seat took `19.674s` for `1024`
+policy/search rows and 4 learner updates. Do not compare raw `steps/s`: custom
+steps are physical CurvyTron ticks. Current read: speed alone does not force a
+switch to stock. The custom two-seat risk is replay/target correctness, not an
+obvious throughput collapse. Details:
+[stock train-MuZero vs two-seat profile plan](train_muzero_stock_vs_two_seat_profile_plan_2026-05-12.md).
+
+Superseded pre-reset Coach handoff: the old instruction to use
+`--mode two-seat-selfplay`, including the custom two-seat overnight matrix in
+`coach_next_training_run_recommendations_2026-05-12.md`, is
+historical/postmortem only. Do not use it as current trusted training guidance.
+
+Fresh read-only live-run check, 2026-05-12: do not mutate the overnight Coach
+runs. Read-only progress from the running fast-direct rows says the immediate
+Amdahl target has moved away from rendering and toward policy/search/MCTS. In
+`overnight40a` row 33, H100/B128/sim8/fast-direct at iteration 120,
+`policy_search_sec` was `54.9s` versus `visual_stack_update_sec=2.25s`;
+observation noise plus replay observation noise was `8.87s`, loop autoreset was
+`4.63s`, and env step was `1.18s`. In row 37, H100/B256/sim8/fast-direct at
+iteration 20, `policy_search_sec` was `323.5s` versus
+`visual_stack_update_sec=5.95s`. In `mixpast` row 01, L4/T4/B64/sim8 with obs
+noise disabled at iteration 40, `policy_search_sec` was `16.44s` versus
+`visual_stack_update_sec=1.44s`. Plain read: keep render fidelity as a guardrail,
+but the next speed work is search/MCTS batching and search scaling, with
+observation noise/autoreset/env as secondary CPU terms.
+
+Fresh isolated Amdahl matrix, 2026-05-12: the read-only live-run shape held up.
+For the current `fast_gray64_direct` main surface, B64/L4/sim8 with learner on
+spent `14.87s` in search, `9.52s` in observation plus replay noise, `4.16s` in
+visual stack, and `2.79s` in learner. The matched no-death sentinel still says
+rich `browser_lines` is render-bound: `31.37s` visual versus `9.01s` search.
+Plain read: optimize fast-direct search/noise first; keep browser-lines render
+optimization as a separate fidelity/sentinel lane.
+
+Wave 2 collect-only scaling, 2026-05-12: default observation noise is now the
+clearest low-risk Amdahl target. B64/L4/sim8 with noise on collected about `452`
+replay rows/s; the matched no-noise bound collected about `753` replay rows/s.
+H100/B128/sim8 improved search throughput, but noise (`58.11s`) was larger than
+search (`48.22s`). Plain read: do not change MuZero or remove noise for Coach;
+make the CPU augmentation cheaper, then reprofile.
+
+Fresh replay-throughput read, 2026-05-12: compare replay rows per second, not
+iteration count. Old-prefix row 01 (L4/T4, B64, sim8, fast-direct) reached
+iteration 360 with `2.949M` replay rows in `10850s`, about `272` rows/s. Row 08
+(L4/T4, B32, sim8) reached iteration 690 with `2.826M` replay rows in `10641s`,
+about `266` rows/s. Row 09 (L4/T4, B128, sim8) reached iteration 90 with
+`1.475M` replay rows in `10081s`, about `146` rows/s. Plain read: B32 and B64
+are close on throughput, B64 remains the better main default because it does
+more work per iteration without losing throughput, and B128 on L4 is not a good
+speed default. The named late-iteration buckets still put policy/search above
+render for fast-direct: row 01 had `policy_search_sec=16.41` vs
+`visual_stack_update_sec=1.39`; row 09 had `79.57` vs `3.29`.
+
+Fresh isolated long-survival render A/B, 2026-05-12: same B8/sim2 no-death
+workload, `browser_lines` took `53.6s` wall with `31.2s` visual stack time;
+`fast_gray64_direct` took `25.5s` wall with `2.4s` visual stack time. Plain
+read: the user's reminder is right for rich long-survival rendering. Rendering
+is still the Amdahl target for browser-lines/trained-long-game regimes, but not
+for current fast-direct short random-policy rows.
+
+Fresh optimizer instrumentation, 2026-05-12: future two-seat progress summaries
+now split the old `policy_search_sec` bucket into `policy_tensor_prepare_sec`,
+`policy_collect_forward_sec`, `policy_output_decode_sec`, and
+`policy_batch_fallback_sec`. A later patch also adds
+`learner_timing_summary` and `iteration_timing_summary`, and makes the expensive
+per-update model hash opt-in with `--two-seat-verify-model-update-hash`. This is
+profiling/telemetry only; it does not change MuZero search, action selection,
+replay, or learner updates.
+
+Fresh full-loop profile before the learner-timing/hash patch: B64/L4/sim8
+fast-direct, normal death, 24 iterations, 4 learner updates/iteration took
+`401.5s`. Collect timing per iteration was about `4.8s` policy/search, `2.9s`
+observation plus replay noise, `1.4s` visual stack, `1.2s` autoreset, and
+`0.4s` env step. The missing wall time is now the next measurement target.
+
+Follow-up no-hash profile, same broad B64/L4/sim8 fast-direct shape, 12
+iterations, took `289.4s`. This did not show a clean speedup; the codebase and
+timing surface moved. It did show the next learner-side Amdahl target: replay
+sampling plus learner batch/target construction cost about `2.9s/iteration`,
+while actual learner forward was only about `0.36s/iteration`.
+
+Replay-cache follow-up, same broad B64/L4/sim8 fast-direct shape, 12 iterations,
+took `234.9s`. Learner-side context/sample/batch work is now about
+`0.5s/iteration` instead of about `2.9s/iteration`, and iteration wall before
+progress is about `18.5s/iteration`. This is a real cleanup of repeated Python
+replay/target work, not an algorithm change. Current fast-direct Amdahl picture:
+search/collect is the largest named term, observation noise is still material,
+autoreset/env are secondary, visual stack is small. Keep browser-lines render
+optimization separate because long-survival rich-render profiles are still
+render-bound.
+
+Tiny isolated Modal smoke also passed:
+`opt-searchsplit-smoke-20260512 / searchsplit-smoke-20260512`, B4, sim2,
+`fast_gray64_direct`, 2 iterations, no checkpoint, background eval/GIF off.
+It reported `lightzero_policy_model_device=cuda:0` and the new split timers.
+Warm-up was obvious: first `policy_collect_forward_sec=1.059181`, last
+`policy_collect_forward_sec=0.040710`, last `policy_search_sec=0.046144`.
+Therefore steady-state search profiles must ignore warm-up or run enough
+iterations to amortize it.
 Focused validation after the final wiring:
 
 ```text
@@ -41,20 +140,21 @@ uv run pytest tests/test_curvytron_live_checkpoint_eval_plumbing.py \
 87 passed, 1 skipped
 ```
 
-Fresh 2026-05-11 late correction: Coach canonical CurvyZero launcher is
-`src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py --mode two-seat-selfplay`.
-The fixed/frozen-opponent native stock `train_muzero` path is controls/profile
-evidence only. Stock LightZero in-loop eval is separate from CurvyZero
-checkpoint eval/inspection/GIF.
+Superseded 2026-05-11 note: the old statement that Coach canonical CurvyZero
+training used `--mode two-seat-selfplay` is no longer current. Treat that as
+custom-adapter postmortem evidence; the trusted route is stock LightZero
+`train_muzero` with the fixed-opponent frozen checkpoint on CPU by default.
 
-Fresh 2026-05-12 render-path correction: canonical two-seat self-play now has
-an explicit `two_seat_trail_render_mode` knob. Default is `browser_lines`, and
-the two-seat stack now uses the full source-state RGB-to-gray path
+Historical custom two-seat render-path note, 2026-05-12: custom two-seat
+self-play has an explicit `two_seat_trail_render_mode` knob. Default is
+`browser_lines`, and the two-seat stack now uses the full source-state
+RGB-to-gray path
 `render_source_state_canvas_gray64(...)` before stacking. `body_circles_fast`
 is an explicit profiling comparison mode, not the default. The two-seat runner
 also exposes `two_seat_death_mode`; use `profile_no_death` only for optimizer
 long-survival profiling. This matters because the previous two-seat stack was
-still using the older direct gray renderer while the launcher looked canonical.
+still using the older direct gray renderer while that path was still treated as
+the handoff path.
 Local focused validation:
 
 ```text
@@ -64,7 +164,7 @@ uv run pytest tests/test_curvytron_live_checkpoint_eval_plumbing.py \
 33 passed, 1 skipped
 ```
 
-Tiny canonical Modal smokes also passed with background eval/GIF off and no
+Tiny custom two-seat Modal smokes also passed with background eval/GIF off and no
 optimizer step:
 
 ```text
@@ -119,7 +219,7 @@ call for browser-lines; stack-shift/insert/return-copy-only is only about
 `0.1ms/update`. Plain read: the current bottleneck is full-resolution gray64
 rendering, not FIFO stack copying.
 
-Tiny canonical Modal smoke on the same active path passed:
+Tiny custom two-seat Modal smoke on the same active path passed:
 `opt-active-render-fullpath-wait-20260512 /
 active-render-b2-sim2-it3-steps4-wait`. It used `gpu-l4-t4`, `cuda:0`,
 `profile_no_death`, `browser_lines`, `batch_size=2`, `num_simulations=2`,
@@ -130,7 +230,7 @@ Final-iteration timing was `visual_stack_update_sec=0.154739`,
 included warm-up (`0.993303`). It saved a final checkpoint, so use the
 instrumented buckets, not total wall time, for this smoke.
 
-Active 20-iteration no-death profiles on the canonical two-seat path also
+Active 20-iteration no-death profiles on the custom two-seat path also
 completed, L4/T4, batch 8, sim 4, 16 collect steps per iteration, 320 collected
 steps, background eval/GIF off. Product `browser_lines` took `219.37s` elapsed;
 named buckets were `191.64s` visual stack update, `8.38s` policy/search,
@@ -247,12 +347,12 @@ static microbench: B16/L1024/b4 56.135ms, B32/L1024/b4 112.522ms,
                    B32/L4096/b4 140.105ms per update
 ```
 
-Short canonical smoke is running:
-`opt-dirty-render-smoke-20260512 / b16-sim8-no-death`, canonical launcher on
+Short custom two-seat smoke is running:
+`opt-dirty-render-smoke-20260512 / b16-sim8-no-death`, custom bridge path on
 `gpu-l4-t4`, B16, 4 iterations, collect32, updates2, sim8,
 `profile_no_death`, background eval/GIF off, `--wait-for-train`.
 
-Fresh canonical wait-mode matrix, 2026-05-12, `browser_lines`,
+Fresh custom two-seat wait-mode matrix, 2026-05-12, `browser_lines`,
 `profile_no_death`, 20 iterations, 8 collect steps per iteration, 4 learner
 updates, background eval/GIF off:
 
@@ -277,7 +377,7 @@ write the `show_in_gif_browser.flag` marker. Optimizer profiling runs with
 not clutter the GIF browser website. The two pre-fix profile markers above were
 removed from the Modal volume.
 
-2026-05-12 overnight recommendation update: the speed-first lane is now
+Superseded custom-adapter overnight recommendation, 2026-05-12: the speed-first lane was
 `fast_gray64_direct`, not `body_circles_fast`. This is a strong semantic visual
 approximation, not browser pixel fidelity. It preserves trail/head positions,
 self/other contrast, bonus presence, and bonus type luma, but drops connected
@@ -292,7 +392,7 @@ uv run pytest tests/test_curvytron_two_seat_render_mode.py \
 62 passed
 ```
 
-Speed signal from canonical no-death full-loop profiles:
+Speed signal from custom two-seat no-death full-loop profiles:
 
 ```text
 B64/L4/sim8 browser_lines:        about 768s wall, visual about 40s/iteration
@@ -301,14 +401,10 @@ B128/L4/sim8 fast_gray64_direct:  about 726s wall, worse per replay row
 B128/H100/sim8 fast_gray64_direct about 429s wall, useful scale probe only
 ```
 
-Plain recommendation, updated after capacity clarification: Coach should run an
-aggressive approximation-heavy overnight matrix, not one sacred config. Main
-lane is L4/T4, B64, sim8, collect64, updates4, learner sample 256, accumulated
-replay, normal death, sparse checkpoints, and `fast_gray64_direct`. Add wider
-fast-direct seeds, search, batch, collect, learner, LR, reward, stochasticity,
-and H100 probes. Keep at most one or two `browser_lines` sentinel runs at the
-end; they are not a control lane and should not gate the main launch. Details
-are in
+Historical recommendation at that time: the custom adapter matrix used L4/T4,
+B64, sim8, collect64, updates4, learner sample 256, accumulated replay, normal
+death, sparse checkpoints, and `fast_gray64_direct`. Do not use this as the
+current trusted Coach launch plan. Details remain in
 [coach next training run recommendations](coach_next_training_run_recommendations_2026-05-12.md).
 
 Fresh 2026-05-10 read: active optimizer target is CurvyTron visual, non-ALE,
@@ -380,18 +476,18 @@ subprocess teardown.
 `iteration_35`, and `ckpt_best`. This proves the normal trainer path runs; it
 is not a learning-quality claim.
 
-2026-05-11 coach-usage correction: Coach should use
-`src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py --mode two-seat-selfplay`.
-Native single-ego fixed/frozen-opponent runs through stock LightZero
-`train_muzero` are controls/profiling only. The older
-`lightzero_curvytron_two_seat_train_smoke.py` wrapper has been deleted.
-Historical results from that wrapper are smoke evidence only, not live launch
-instructions. Treat these lanes separately in speed reports.
+Superseded 2026-05-11 coach-usage correction: the recommendation to use
+`--mode two-seat-selfplay` is now historical. Current trusted route is stock
+LightZero `train_muzero` via `--mode train`,
+`env_variant=source_state_fixed_opponent`,
+`opponent_policy_kind=frozen_lightzero_checkpoint`, with
+`opponent_use_cuda=false` by default. Historical results from deleted wrappers
+remain smoke evidence only.
 
 MCTS/collector clarity: native single-ego runs call stock LightZero
 `train_muzero`, so collector, GameBuffer, learner loop, and MuZero MCTS/search
 are LightZero internals with our env/config wrapper around them. The current
-two-seat self-play bridge, reached through the canonical Coach launcher, does
+two-seat self-play bridge, reached through the custom bridge path, does
 not use stock `train_muzero`, the LightZero Collector, or the upstream
 GameBuffer. It does use installed LightZero `MuZeroPolicy`
 `collect_mode.forward`/`eval_mode.forward` and `learn_mode.forward`, but action
@@ -631,12 +727,13 @@ truth.
   action-weights D2H median `0.0055ms`. First action conversion was `19.14ms`,
   likely first-use/sync overhead. This synthetic boundary does not measure CPU
   ray generation or source fidelity.
-- Reprioritized next optimizer actions: keep the two-seat self-play launcher as
-  the Coach canonical path; keep native source-state `train_muzero` as the
-  stock-control/profile surface; use the completed c128/c256 and sim50 profiles
-  as the single-container control baseline; then evaluate coarse synchronous
-  actor/search fanout if single-process LightZero remains the limit. Keep
-  scalar-ray policy/search and ray work as diagnostics, not the main path.
+- Superseded next-action note: the old instruction to keep the two-seat
+  self-play launcher as the Coach canonical path is obsolete. Current trusted
+  route is stock LightZero `train_muzero` via `--mode train`,
+  `env_variant=source_state_fixed_opponent`,
+  `opponent_policy_kind=frozen_lightzero_checkpoint`, with
+  `opponent_use_cuda=false` by default. Keep scalar-ray policy/search and ray
+  work as diagnostics, not the main path.
 
 ## Current Read
 

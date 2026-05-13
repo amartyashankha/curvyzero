@@ -8,11 +8,11 @@ No pytest was run for this docs-only index.
 
 ## Start Here
 
-- 2026-05-12 canonical CurvyTron Coach launcher:
-  `src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py`
-  with `--mode two-seat-selfplay`. Stock LightZero in-training eval stays off;
-  CurvyZero checkpoint eval, inspection, and GIF generation stay on; checkpoint
-  cadence defaults to `100` iterations.
+- 2026-05-12 correction: `--mode two-seat-selfplay` is an operational custom
+  collector/adapter path, not a trusted stock LightZero learning lane. It should
+  not be scaled again as the main proof until it either calls stock
+  `train_muzero`, feeds native `GameSegment` / `MuZeroGameBuffer` targets, or
+  has a parity-tested repo-owned target contract.
 - Current read at 2026-05-11 14:08 EDT: stock-like visual Pong has real
   survival learning across multiple rows. `s122` is strongest, but `s114`,
   `s120`, `s121`, `s142`, and exact controls `s113/s123` all show later
@@ -58,11 +58,31 @@ No pytest was run for this docs-only index.
   current Coach decision on self-play path choice, fixed-opponent controls,
   trainer-layer action repeat/dropout, per-seat/per-row schedules, and logging
   requirements.
-- [Active board](../training_coach_active_board_2026-05-10.md): current
-  decision, live gates, reporting rules, and the canonical two-seat self-play
-  entrypoint. Survival steps remain the lead metric.
-- [Canonical two-seat handoff](curvytron_canonical_two_seat_handoff_2026-05-12.md):
-  current launcher, old-wrapper deletion note, and observability defaults.
+- [Active board](../training_coach_active_board_2026-05-10.md): historical
+  board that now needs postmortem cleanup. Survival steps remain the lead
+  metric, but old two-seat launch guidance is superseded by the May 12
+  reconciliation.
+- [Custom two-seat handoff](curvytron_canonical_two_seat_handoff_2026-05-12.md):
+  historical/operational custom-adapter handoff. Do not treat it as trusted
+  stock-LightZero training guidance.
+- [CurvyTron no-learning failure audit](curvytron_no_learning_failure_audit_2026-05-12.md):
+  latest May 12 read after stopping the large waves. Main facts: representative
+  survival curves stayed around 13-16 mean steps, pure same-policy self-play
+  mostly produced zero sparse terminal outcome, and the scaled two-seat path is
+  a custom replay/target adapter rather than stock LightZero `train_muzero`.
+- [CurvyTron train-muzero reconciliation](curvytron_train_muzero_reconciliation_2026-05-12.md):
+  current paper-trail cleanup. Stock `train_muzero` exists for fixed/frozen
+  opponent and centralized joint-action controls; turn-commit is blocked for
+  training because fake pending steps enter replay; custom two-seat self-play is
+  a collector prototype until native replay/target semantics are restored.
+- [CurvyTron architecture research folder](curvytron_architecture_research_2026-05-12/README.md):
+  current postmortem research hierarchy. Start here for the clean distinction
+  between stock fixed/frozen controls, recent frozen-opponent training,
+  centralized joint-action controls, blocked turn-commit, and custom two-seat
+  collector experiments.
+- [CurvyTron no-learning postmortem](postmortems/2026-05-12-curvytron-no-learning.md):
+  short human-readable summary of why the May 12 scaled two-seat runs are not a
+  trusted learning result.
 - [LightZero Pong replication monitor](../lightzero_pong_replication_monitor_2026-05-11.md):
   live Pong control status, stock64 survival curves, and next eval cadence.
 - [Eval speed investigation](eval_speed_investigation_2026-05-11.md):

@@ -1,5 +1,15 @@
 # CurvyTron Overnight40 Launch - 2026-05-12
 
+## Superseded By No-Learning Audit
+
+This is a historical record of the custom two-seat adapter matrix. Do not use it
+as launch guidance for new learning runs.
+
+The path used here did not call stock `train_muzero` or use native
+`GameSegment` / `MuZeroGameBuffer` targets. See
+`curvytron_no_learning_failure_audit_2026-05-12.md` and
+`curvytron_architecture_research_2026-05-12/`.
+
 ## Source
 
 Launch plan comes from:
@@ -9,7 +19,7 @@ Launch plan comes from:
 
 ## Launcher
 
-Use only the canonical two-seat current-policy self-play launcher:
+Historical launcher used:
 
 ```text
 src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py
@@ -40,8 +50,9 @@ scripts/launch_curvytron_overnight40_20260512.zsh
 
 The main training surface is `fast_gray64_direct`.
 
-`browser_lines` appears only as rows `39` and `40`, as slow fidelity sentinels.
-They are not a gate for the main approximation-heavy matrix.
+Rows `39` and `40` are a matched visual sentinel pair: row `39` is
+`fast_gray64_direct`, row `40` is `browser_lines`. They are not a gate for the
+main approximation-heavy matrix.
 
 ## Naming Rule
 
@@ -83,6 +94,10 @@ The row also wrote `progress_latest.json` with `event=start`.
 
 Checkpoint cadence is configured as every `50` training iterations for every row
 via `--save-ckpt-after-iter 50`.
+
+Later Optimizer recommendation changed future B64 canaries to `25` iterations
+when the measured rate is about 30 seconds/iteration. This section records what
+this already-launched matrix used, not the current recommendation.
 
 The initial checkpoint `iteration_0.pth.tar` appears immediately. The first
 useful training checkpoint is `iteration_50.pth.tar`.
@@ -203,3 +218,20 @@ The 40 rows match the optimizer recommendation:
   update, learner sample, learning-rate, reward, and stochasticity variants.
 - Rows 33-38: H100 scale probes.
 - Rows 39-40: `browser_lines` sentinels only.
+
+Death-signal audit update, `2026-05-12`: row `30` (`repeat_20pct`) used policy
+no-op skip. That path can advance the env on skipped physical ticks without
+creating replay rows, so terminal rewards on those skipped ticks are not learner
+targets. Treat row `30` as diagnostic only, not a learning claim. New code now
+fails fast if this skip path is used with real optimizer updates.
+
+## Stop Note
+
+At `2026-05-12T14:21Z`, the active detached Modal training apps for
+`curvyzero-lightzero-curvytron-visual-survival-train` were stopped because the
+overnight/mixpast runs were not showing useful learning signal. The
+`curvyzero-runs` Modal volume was not deleted or modified, so checkpoints,
+progress logs, eval summaries, and GIF artifacts remain available for later
+analysis. The scheduled `curvyzero-curvytron-collect-t1-gif-subscriber` app was
+also stopped to avoid background compute on stale checkpoints. The GIF browser
+deployment was left up.

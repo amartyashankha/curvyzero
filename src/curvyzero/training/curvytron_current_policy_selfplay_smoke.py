@@ -388,74 +388,105 @@ class SourceStateGray64Stack4:
             ),
         }
 
-    def update(self, env: VectorMultiplayerEnv) -> np.ndarray:
+    def update(self, env: VectorMultiplayerEnv, *, copy: bool = True) -> np.ndarray:
         if env.batch_size != self.batch_size or env.player_count != self.player_count:
             raise ValueError("env shape changed after stack creation")
         for env_row in range(self.batch_size):
             self.stack[env_row, :, :-1] = self.stack[env_row, :, 1:]
-            if self.trail_render_mode == STACK_RENDER_MODE_FAST_GRAY64_DIRECT:
-                raw_frames = render_source_state_gray64_fast_player_perspectives(
-                    env.state,
-                    row=env_row,
-                    player_count=self.player_count,
-                    out=self._raw_perspectives,
-                )
-                for player in range(self.player_count):
-                    frame = normalize_source_state_gray64(
-                        raw_frames[player],
-                        out=self._normalized,
-                    )
-                    self.stack[env_row, player, -1] = frame[0]
-                continue
-            if self.player_count == 2:
-                raw_frames = render_source_state_canvas_gray64_player_perspectives(
-                    env.state,
-                    row=env_row,
-                    out=self._raw_perspectives,
-                    rgb_base_out=self._rgb_base,
-                    rgb_work_out=self._rgb,
-                    trail_cache=self._trail_layer_caches[env_row],
-                    dirty_render_cache=self._dirty_render_caches[env_row],
-                    downsample_scratch=self._downsample_scratch,
-                    player_rgbs=[
-                        player_perspective_rgb_palette(
-                            env.state,
-                            row=env_row,
-                            controlled_player=player,
-                            player_count=self.player_count,
-                        )
-                        for player in range(self.player_count)
-                    ],
-                    trail_render_mode=self.trail_render_mode,
-                )
-                for player in range(self.player_count):
-                    frame = normalize_source_state_gray64(
-                        raw_frames[player],
-                        out=self._normalized,
-                    )
-                    self.stack[env_row, player, -1] = frame[0]
-                continue
+            self._render_row_into_last_frame(env, env_row)
+        return self.stack.copy() if copy else self.stack
+
+    def reset_rows(
+        self,
+        env: VectorMultiplayerEnv,
+        row_mask: np.ndarray,
+        *,
+        copy: bool = True,
+    ) -> np.ndarray:
+        if env.batch_size != self.batch_size or env.player_count != self.player_count:
+            raise ValueError("env shape changed after stack creation")
+        mask = np.asarray(row_mask, dtype=bool)
+        if mask.shape != (self.batch_size,):
+            raise ValueError("row_mask must have shape [B]")
+        for env_row in np.flatnonzero(mask):
+            row = int(env_row)
+            self.stack[row] = 0.0
+            self._trail_layer_caches[row] = SourceStateBrowserLineTrailLayerCache(
+                min_active_slots=1
+            )
+            self._dirty_render_caches[row] = SourceStateCanvasGray64DirtyRenderCache(
+                player_count=self.player_count
+            )
+            self._render_row_into_last_frame(env, row)
+        return self.stack.copy() if copy else self.stack
+
+    def _render_row_into_last_frame(
+        self,
+        env: VectorMultiplayerEnv,
+        env_row: int,
+    ) -> None:
+        if self.trail_render_mode == STACK_RENDER_MODE_FAST_GRAY64_DIRECT:
+            raw_frames = render_source_state_gray64_fast_player_perspectives(
+                env.state,
+                row=env_row,
+                player_count=self.player_count,
+                out=self._raw_perspectives,
+            )
             for player in range(self.player_count):
-                raw = render_source_state_canvas_gray64(
-                    env.state,
-                    row=env_row,
-                    out=self._raw,
-                    rgb_out=self._rgb,
-                    player_rgb=player_perspective_rgb_palette(
+                frame = normalize_source_state_gray64(
+                    raw_frames[player],
+                    out=self._normalized,
+                )
+                self.stack[env_row, player, -1] = frame[0]
+            return
+        if self.player_count == 2:
+            raw_frames = render_source_state_canvas_gray64_player_perspectives(
+                env.state,
+                row=env_row,
+                out=self._raw_perspectives,
+                rgb_base_out=self._rgb_base,
+                rgb_work_out=self._rgb,
+                trail_cache=self._trail_layer_caches[env_row],
+                dirty_render_cache=self._dirty_render_caches[env_row],
+                downsample_scratch=self._downsample_scratch,
+                player_rgbs=[
+                    player_perspective_rgb_palette(
                         env.state,
                         row=env_row,
                         controlled_player=player,
                         player_count=self.player_count,
-                    ),
-                    trail_render_mode=self.trail_render_mode,
-                    downsample_scratch=self._downsample_scratch,
-                )
+                    )
+                    for player in range(self.player_count)
+                ],
+                trail_render_mode=self.trail_render_mode,
+            )
+            for player in range(self.player_count):
                 frame = normalize_source_state_gray64(
-                    raw,
+                    raw_frames[player],
                     out=self._normalized,
                 )
                 self.stack[env_row, player, -1] = frame[0]
-        return self.stack.copy()
+            return
+        for player in range(self.player_count):
+            raw = render_source_state_canvas_gray64(
+                env.state,
+                row=env_row,
+                out=self._raw,
+                rgb_out=self._rgb,
+                player_rgb=player_perspective_rgb_palette(
+                    env.state,
+                    row=env_row,
+                    controlled_player=player,
+                    player_count=self.player_count,
+                ),
+                trail_render_mode=self.trail_render_mode,
+                downsample_scratch=self._downsample_scratch,
+            )
+            frame = normalize_source_state_gray64(
+                raw,
+                out=self._normalized,
+            )
+            self.stack[env_row, player, -1] = frame[0]
 
 
 def validate_stack_trail_render_mode(value: str) -> str:

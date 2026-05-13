@@ -173,6 +173,12 @@ from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env imp
     SOURCE_STATE_JOINT_ACTION_TRAINING_STATUS,
 )
 from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
+    SOURCE_STATE_DEFAULT_TRAIL_RENDER_MODE,
+)
+from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
+    SOURCE_STATE_SUPPORTED_TRAIL_RENDER_MODES,
+)
+from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
     STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID,
 )
 from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
@@ -268,11 +274,13 @@ APP_NAME = "curvyzero-lightzero-curvytron-visual-survival-train"
 TASK_ID = "lightzero-curvytron-visual-survival"
 VOLUME_NAME = "curvyzero-runs"
 TRAIL_RENDER_MODE_BODY_CIRCLES_FAST = _TRAIL_RENDER_MODE_BODY_CIRCLES_FAST
+DEFAULT_SOURCE_STATE_TRAIL_RENDER_MODE = SOURCE_STATE_DEFAULT_TRAIL_RENDER_MODE
+SOURCE_STATE_TRAIL_RENDER_MODE_CHOICES = tuple(SOURCE_STATE_SUPPORTED_TRAIL_RENDER_MODES)
 LIGHTZERO_VERSION = "0.2.0"
 REMOTE_ROOT = Path("/repo")
 RUNS_MOUNT = Path("/runs")
 
-DEFAULT_MODE = "two-seat-selfplay"
+DEFAULT_MODE = "dry"
 DEFAULT_COMPUTE = "gpu-l4-t4"
 DEFAULT_SEED = 0
 DEFAULT_MAX_ENV_STEP = 8192
@@ -289,6 +297,8 @@ DEFAULT_SKIP_LIGHTZERO_EVAL_IN_PROFILE = True
 DEFAULT_LIGHTZERO_MULTI_GPU = False
 DEFAULT_PROFILE_CUDA_SYNC_ENABLED = False
 DEFAULT_PROFILE_ALLOW_AUTO_RESUME = False
+DEFAULT_PROFILE_VOLUME_COMMIT = False
+DEFAULT_PROFILE_SPAWN = False
 # Checkpoint cadence also controls automatic checkpoint eval/inspection/GIF work.
 # Keep this frequent enough to observe progress but not every loop.
 DEFAULT_SAVE_CKPT_AFTER_ITER = 100
@@ -297,8 +307,8 @@ DEFAULT_DECISION_MS = SOURCE_STATE_DEFAULT_DECISION_MS
 DEFAULT_ENV_TELEMETRY_STRIDE = 1
 DEFAULT_ENV_MANAGER_TYPE = "subprocess"
 ENV_MANAGER_TYPE_CHOICES = ("base", "subprocess")
-DEFAULT_RUN_ID = "curvytron-two-seat-selfplay-canonical-s0"
-DEFAULT_ATTEMPT_ID = "two-seat-current-policy-selfplay"
+DEFAULT_RUN_ID = "curvytron-stock-loop-control-s0"
+DEFAULT_ATTEMPT_ID = "stock-loop-control"
 ENV_VARIANT_FIXED_OPPONENT = "fixed_opponent"
 ENV_VARIANT_TURN_COMMIT = "turn_commit"
 ENV_VARIANT_SOURCE_STATE_TURN_COMMIT = "source_state_turn_commit"
@@ -327,6 +337,7 @@ OPPONENT_POLICY_KIND_NONE_CENTRALIZED_JOINT_ACTION = (
     "none_centralized_joint_action"
 )
 DEFAULT_OPPONENT_POLICY_KIND = OPPONENT_POLICY_KIND_FIXED_STRAIGHT
+DEFAULT_OPPONENT_USE_CUDA = False
 OPPONENT_POLICY_KIND_CHOICES = (
     OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
     OPPONENT_POLICY_KIND_FROZEN_LIGHTZERO_CHECKPOINT,
@@ -433,6 +444,16 @@ def _normalize_reward_variant_for_env(*, env_variant: str, reward_variant: str) 
             return REWARD_VARIANT_SPARSE_OUTCOME
         return REWARD_VARIANT_AUTO
     return reward_variant
+
+
+def _validate_source_state_trail_render_mode(value: str) -> str:
+    mode = str(value)
+    if mode not in SOURCE_STATE_TRAIL_RENDER_MODE_CHOICES:
+        raise ValueError(
+            "source_state_trail_render_mode must be one of "
+            f"{SOURCE_STATE_TRAIL_RENDER_MODE_CHOICES!r}; got {mode!r}"
+        )
+    return mode
 
 
 def _reward_policy_for_variant(
@@ -2688,10 +2709,12 @@ def _run_visual_survival_train(
     skip_lightzero_eval_in_profile: bool,
     profile_cuda_sync_enabled: bool,
     profile_allow_auto_resume: bool,
+    profile_volume_commit: bool,
     save_ckpt_after_iter: int,
     stop_after_learner_train_calls: int,
     env_variant: str,
     reward_variant: str,
+    source_state_trail_render_mode: str,
     ego_action_straight_override_probability: float,
     control_noise_profile_id: str,
     disable_death_for_profile: bool,
@@ -2699,6 +2722,7 @@ def _run_visual_survival_train(
     env_manager_type: str,
     lightzero_multi_gpu: bool,
     opponent_policy_kind: str,
+    opponent_use_cuda: bool,
     opponent_checkpoint_ref: str | None,
     opponent_snapshot_ref: str | None,
     opponent_checkpoint_report_ref: str | None,
@@ -2752,6 +2776,9 @@ def _run_visual_survival_train(
         env_variant=env_variant,
         reward_variant=reward_variant,
     )
+    source_state_trail_render_mode = _validate_source_state_trail_render_mode(
+        source_state_trail_render_mode
+    )
     lightzero_target_config = _lightzero_target_config_for_reward(
         env_variant=env_variant,
         reward_variant=reward_variant,
@@ -2792,7 +2819,6 @@ def _run_visual_survival_train(
     if env_variant in (
         ENV_VARIANT_TURN_COMMIT,
         ENV_VARIANT_SOURCE_STATE_TURN_COMMIT,
-        ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT,
     ) and opponent_policy_kind != OPPONENT_POLICY_KIND_FIXED_STRAIGHT:
         raise ValueError(f"{env_variant} env_variant does not use frozen opponent checkpoints")
     if float(decision_ms) <= 0.0:
@@ -2891,6 +2917,7 @@ def _run_visual_survival_train(
         "skip_lightzero_eval_in_profile": bool(skip_lightzero_eval_in_profile),
         "profile_cuda_sync_enabled": bool(profile_cuda_sync_enabled),
         "profile_allow_auto_resume": bool(profile_allow_auto_resume),
+        "profile_volume_commit": bool(profile_volume_commit),
         "lightzero_multi_gpu": bool(lightzero_multi_gpu),
         "save_ckpt_after_iter": int(save_ckpt_after_iter),
         "stop_after_learner_train_calls": int(stop_after_learner_train_calls),
@@ -2902,6 +2929,9 @@ def _run_visual_survival_train(
         "reward_schema_id": reward_policy["reward_schema_id"],
         "reward_policy": reward_policy,
         "lightzero_target_config": lightzero_target_config,
+        "source_state_trail_render_mode": source_state_trail_render_mode,
+        "default_trail_render_mode": DEFAULT_SOURCE_STATE_TRAIL_RENDER_MODE,
+        "supported_trail_render_modes": list(SOURCE_STATE_TRAIL_RENDER_MODE_CHOICES),
         "observation_schema_id": env_spec["observation_schema_id"],
         "debug_fidelity_only": env_spec["debug_fidelity_only"],
         "ego_action_straight_override_probability": float(
@@ -2933,11 +2963,15 @@ def _run_visual_survival_train(
         "env_telemetry_stride": int(env_telemetry_stride),
         "env_manager_type": env_manager_type,
         "profile_label": "profile" if mode == "profile" else None,
+        "profile_env_timing_enabled": bool(mode == "profile"),
         "learning_proof": False,
         "source_fidelity_claim": env_spec["source_fidelity_claim"],
         "opponent_policy_kind": opponent_policy_kind,
+        "opponent_use_cuda": bool(opponent_use_cuda),
         "opponent_training_relation": (
-            env_spec["opponent_training_relation"]
+            _opponent_training_relation(opponent_policy_kind)
+            if env_variant == ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT
+            else env_spec["opponent_training_relation"]
             or _opponent_training_relation(opponent_policy_kind)
         ),
         "current_policy_self_play": env_spec["current_policy_self_play"],
@@ -3045,12 +3079,15 @@ def _run_visual_survival_train(
         control_noise_profile_id=control_noise_profile_id,
         disable_death_for_profile=disable_death_for_profile,
         env_telemetry_stride=env_telemetry_stride,
+        profile_env_timing_enabled=(mode == "profile"),
         env_manager_type=env_manager_type,
         opponent_policy_kind=opponent_policy_kind,
+        opponent_use_cuda=opponent_use_cuda,
         opponent_checkpoint=opponent_checkpoint,
         opponent_snapshot_ref=opponent_snapshot_ref,
         opponent_checkpoint_state_key=opponent_checkpoint_state_key,
         reward_variant=reward_variant,
+        source_state_trail_render_mode=source_state_trail_render_mode,
     )
     auto_resume = _prepare_lightzero_auto_resume(
         run_id=run_id,
@@ -3421,6 +3458,20 @@ def _run_visual_survival_train(
         summary_ref=summary_ref,
         modal_task_id=modal_task_id,
     )
+    final_volume_commit = {"attempted": False}
+    if mode == "profile" and profile_volume_commit and hasattr(runs_volume, "commit"):
+        final_volume_commit = {"attempted": True, "ok": False}
+        commit_started = time.perf_counter()
+        try:
+            runs_volume.commit()
+            final_volume_commit["ok"] = True
+        except Exception as exc:  # pragma: no cover - remote artifact durability only.
+            final_volume_commit["error"] = f"{type(exc).__name__}: {exc}"
+        finally:
+            final_volume_commit["elapsed_sec"] = round(
+                time.perf_counter() - commit_started,
+                6,
+            )
     result = {
         "ok": summary["ok"],
         "status": status,
@@ -3438,6 +3489,7 @@ def _run_visual_survival_train(
         "action_observability": action_summary,
         "checkpoint_mirror": checkpoint_mirror,
         "auto_resume": auto_resume,
+        "final_volume_commit": final_volume_commit,
         "phase_profile": phase_profile,
         "target_audit": target_audit_summary,
         "artifact_refs": {
@@ -3899,10 +3951,13 @@ def _build_visual_survival_configs(
     env_telemetry_stride: int,
     env_manager_type: str,
     opponent_policy_kind: str,
+    opponent_use_cuda: bool,
     opponent_checkpoint: dict[str, Any] | None,
     opponent_snapshot_ref: str | None,
     opponent_checkpoint_state_key: str | None,
+    source_state_trail_render_mode: str = DEFAULT_SOURCE_STATE_TRAIL_RENDER_MODE,
     natural_bonus_spawn: bool = TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN,
+    profile_env_timing_enabled: bool = False,
 ) -> dict[str, Any]:
     from easydict import EasyDict
 
@@ -3916,6 +3971,9 @@ def _build_visual_survival_configs(
     reward_policy = _reward_policy_for_variant(
         env_variant=env_variant,
         reward_variant=reward_variant,
+    )
+    source_state_trail_render_mode = _validate_source_state_trail_render_mode(
+        source_state_trail_render_mode
     )
     target_config = _lightzero_target_config_for_reward(
         env_variant=env_variant,
@@ -3998,10 +4056,14 @@ def _build_visual_survival_configs(
             "manually_discretization": False,
             "telemetry_path": str(telemetry_path),
             "telemetry_stride": int(env_telemetry_stride),
+            "profile_env_timing_enabled": bool(profile_env_timing_enabled),
             "reward_variant": reward_variant,
             "reward_schema_id": reward_policy["reward_schema_id"],
             "reward_policy": reward_policy,
             "lightzero_target_config": target_config,
+            "source_state_trail_render_mode": source_state_trail_render_mode,
+            "default_trail_render_mode": DEFAULT_SOURCE_STATE_TRAIL_RENDER_MODE,
+            "supported_trail_render_modes": list(SOURCE_STATE_TRAIL_RENDER_MODE_CHOICES),
             "observation_schema_id": env_spec["observation_schema_id"],
             "debug_fidelity_only": env_spec["debug_fidelity_only"],
             "source_fidelity_claim": env_spec["source_fidelity_claim"],
@@ -4035,7 +4097,9 @@ def _build_visual_survival_configs(
             "turn_commit_adapter": bool(env_spec["turn_commit_adapter"]),
             "opponent_policy_kind": opponent_policy_kind,
             "opponent_training_relation": (
-                env_spec["opponent_training_relation"]
+                _opponent_training_relation(opponent_policy_kind)
+                if env_variant == ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT
+                else env_spec["opponent_training_relation"]
                 or _opponent_training_relation(opponent_policy_kind)
             ),
             "current_policy_self_play": env_spec["current_policy_self_play"],
@@ -4059,7 +4123,7 @@ def _build_visual_survival_configs(
                 "opponent_policy_seed": int(seed),
                 "opponent_num_simulations": int(num_simulations),
                 "opponent_batch_size": int(batch_size),
-                "opponent_use_cuda": bool(cuda),
+                "opponent_use_cuda": bool(opponent_use_cuda),
             }
         )
     patches.append(_set_or_add_path(main_config, ("env",), env_cfg))
@@ -4125,10 +4189,14 @@ def _extract_surface(
         "reset_seed_strategy": env.get("reset_seed_strategy"),
         "telemetry_path": env.get("telemetry_path"),
         "telemetry_stride": env.get("telemetry_stride"),
+        "profile_env_timing_enabled": env.get("profile_env_timing_enabled"),
         "reward_variant": env.get("reward_variant"),
         "reward_schema_id": env.get("reward_schema_id"),
         "reward_policy": _to_plain(env.get("reward_policy")),
         "lightzero_target_config": _to_plain(env.get("lightzero_target_config")),
+        "source_state_trail_render_mode": env.get("source_state_trail_render_mode"),
+        "default_trail_render_mode": env.get("default_trail_render_mode"),
+        "supported_trail_render_modes": _to_plain(env.get("supported_trail_render_modes")),
         "observation_schema_id": env.get("observation_schema_id"),
         "debug_fidelity_only": env.get("debug_fidelity_only"),
         "source_fidelity_claim": env.get("source_fidelity_claim"),
@@ -4168,6 +4236,7 @@ def _extract_surface(
         "opponent_checkpoint_ref": env.get("opponent_checkpoint_ref"),
         "opponent_snapshot_ref": env.get("opponent_snapshot_ref"),
         "opponent_checkpoint_state_key": env.get("opponent_checkpoint_state_key"),
+        "opponent_use_cuda": env.get("opponent_use_cuda"),
         "save_ckpt_after_iter": _get_path(
             policy,
             ("learn", "learner", "hook", "save_ckpt_after_iter"),
@@ -4220,10 +4289,14 @@ def _validate_visual_survival_surface(
         "dynamic_seed": True,
         "reset_seed_strategy": command.get("reset_seed_strategy"),
         "telemetry_stride": command["env_telemetry_stride"],
+        "profile_env_timing_enabled": command["profile_env_timing_enabled"],
         "reward_variant": command["reward_variant"],
         "reward_schema_id": command["reward_schema_id"],
         "reward_policy": command["reward_policy"],
         "lightzero_target_config": command["lightzero_target_config"],
+        "source_state_trail_render_mode": command["source_state_trail_render_mode"],
+        "default_trail_render_mode": command["default_trail_render_mode"],
+        "supported_trail_render_modes": command["supported_trail_render_modes"],
         "observation_schema_id": command["observation_schema_id"],
         "debug_fidelity_only": command["debug_fidelity_only"],
         "source_fidelity_claim": command["source_fidelity_claim"],
@@ -4268,6 +4341,7 @@ def _validate_visual_survival_surface(
         expected["opponent_checkpoint_ref"] = command["opponent_checkpoint_report_ref"]
         expected["opponent_snapshot_ref"] = command["opponent_snapshot_ref"]
         expected["opponent_checkpoint_state_key"] = command["opponent_checkpoint_state_key"]
+        expected["opponent_use_cuda"] = command["opponent_use_cuda"]
     problems = []
     for key, value in expected.items():
         if surface.get(key) != value:
@@ -4275,7 +4349,10 @@ def _validate_visual_survival_surface(
     return problems
 
 
-def _source_state_fixed_opponent_readiness_expected() -> dict[str, Any]:
+def _source_state_fixed_opponent_readiness_expected(
+    *,
+    opponent_policy_kind: str = OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
+) -> dict[str, Any]:
     spec = _env_variant_spec(ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT)
     return {
         "env_variant": ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT,
@@ -4286,8 +4363,8 @@ def _source_state_fixed_opponent_readiness_expected() -> dict[str, Any]:
         "underlying_env_class": spec["underlying_env_class"],
         "runtime_env_impl_id": spec["runtime_env_impl_id"],
         "runtime_topology": spec["runtime_topology"],
-        "opponent_policy_kind": OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
-        "opponent_training_relation": spec["opponent_training_relation"],
+        "opponent_policy_kind": opponent_policy_kind,
+        "opponent_training_relation": _opponent_training_relation(opponent_policy_kind),
         "current_policy_self_play": spec["current_policy_self_play"],
         "trusted_current_policy_self_play": spec["trusted_current_policy_self_play"],
         "simultaneous_game_theory_claim": spec["simultaneous_game_theory_claim"],
@@ -4310,7 +4387,11 @@ def _source_state_fixed_opponent_training_readiness_gate(
     surface: dict[str, Any] | None = None,
     action_observability: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    expected = _source_state_fixed_opponent_readiness_expected()
+    expected = _source_state_fixed_opponent_readiness_expected(
+        opponent_policy_kind=str(
+            command.get("opponent_policy_kind", OPPONENT_POLICY_KIND_FIXED_STRAIGHT)
+        )
+    )
     problems: list[str] = []
     checks: dict[str, dict[str, Any]] = {}
     scopes = {"command": command}
@@ -4412,6 +4493,19 @@ def _compile_config_summary(main_config: Any, create_config: Any, *, seed: int) 
                 "reward_variant": _cfg_get(env_cfg, "reward_variant", None),
                 "reward_schema_id": _cfg_get(env_cfg, "reward_schema_id", None),
                 "reward_policy": _to_plain(_cfg_get(env_cfg, "reward_policy", None)),
+                "source_state_trail_render_mode": _cfg_get(
+                    env_cfg,
+                    "source_state_trail_render_mode",
+                    None,
+                ),
+                "default_trail_render_mode": _cfg_get(
+                    env_cfg,
+                    "default_trail_render_mode",
+                    None,
+                ),
+                "supported_trail_render_modes": _to_plain(
+                    _cfg_get(env_cfg, "supported_trail_render_modes", None)
+                ),
                 "lightzero_target_config": _to_plain(
                     _cfg_get(env_cfg, "lightzero_target_config", None)
                 ),
@@ -5729,6 +5823,9 @@ def _live_train_summary_for_inspector(command: dict[str, Any]) -> dict[str, Any]
         "visual_truth_level": command.get("visual_truth_level"),
         "visual_source_state_backed": command.get("visual_source_state_backed"),
         "source_fidelity_claim": command.get("source_fidelity_claim"),
+        "source_state_trail_render_mode": command.get("source_state_trail_render_mode"),
+        "default_trail_render_mode": command.get("default_trail_render_mode"),
+        "supported_trail_render_modes": command.get("supported_trail_render_modes"),
         "debug_fidelity_only": command.get("debug_fidelity_only"),
         "training_readiness_gate": training_readiness_gate,
         "learning_proof": command.get("learning_proof", False),
@@ -6922,6 +7019,8 @@ def _summarize_env_step_telemetry(path: Path) -> dict[str, Any]:
     opponent_counts: Counter[str] = Counter()
     acting_player_counts: Counter[str] = Counter()
     terminal_reasons: Counter[str] = Counter()
+    profile_env_timing_sums: Counter[str] = Counter()
+    profile_env_timing_counts: Counter[str] = Counter()
     rows: list[dict[str, Any]] = []
     observed_fields = _observed_fields_from_telemetry_rows([])
     trainer_reward_sum = 0.0
@@ -6974,6 +7073,15 @@ def _summarize_env_step_telemetry(path: Path) -> dict[str, Any]:
             pending_scalar_count += 1
         if row.get("terminal_reason"):
             terminal_reasons[str(row.get("terminal_reason"))] += 1
+        profile_env_timing = row.get("profile_env_timing_sec")
+        if isinstance(profile_env_timing, dict):
+            for key, value in profile_env_timing.items():
+                try:
+                    seconds = float(value)
+                except (TypeError, ValueError):
+                    continue
+                profile_env_timing_sums[str(key)] += seconds
+                profile_env_timing_counts[str(key)] += 1
         trainer_reward_sum += float(row.get("reward") or 0.0)
         done_count += int(bool(row.get("done", False)))
     for action_id in ("0", "1", "2"):
@@ -7013,6 +7121,19 @@ def _summarize_env_step_telemetry(path: Path) -> dict[str, Any]:
             if physical_env_advanced_count
             else None
         ),
+        "profile_env_timing_sec": {
+            "scope": "sampled_telemetry_rows" if telemetry_sampled else "all_telemetry_rows",
+            "sampled_sum": dict(sorted(profile_env_timing_sums.items())),
+            "sampled_count": dict(sorted(profile_env_timing_counts.items())),
+            "sampled_mean": {
+                key: (
+                    float(profile_env_timing_sums[key])
+                    / float(profile_env_timing_counts[key])
+                )
+                for key in sorted(profile_env_timing_sums)
+                if profile_env_timing_counts[key]
+            },
+        },
         "terminal_reasons": dict(sorted(terminal_reasons.items())),
         "observed_fields": observed_fields,
         "first_rows": rows,
@@ -7358,7 +7479,7 @@ def _two_seat_checkpoint_ref(run_id: str) -> Path:
 def _reject_mutable_frozen_opponent_checkpoint_ref(ref: str | None) -> None:
     if ref is None:
         return
-    name = PurePosixPath(str(ref)).name
+    name = Path(str(ref)).name
     if name in {"latest.pth.tar", "ckpt_best.pth.tar"}:
         raise ValueError(
             "two-seat frozen opponent checkpoint refs must be immutable "
@@ -7629,12 +7750,12 @@ def _run_two_seat_selfplay_payload(
             ),
         }
     command = {
-        "schema_id": "curvyzero_canonical_two_seat_selfplay_command/v0",
+        "schema_id": "curvyzero_experimental_two_seat_adapter_command/v0",
         "mode": TWO_SEAT_SELFPLAY_MODE,
         "canonical_launcher": (
             "curvyzero.infra.modal.lightzero_curvyzero_stacked_debug_visual_survival_train"
         ),
-        "launcher_status": "canonical_two_seat_selfplay",
+        "launcher_status": "experimental_two_seat_adapter",
         "compute": compute_label,
         "use_cuda": bool(use_cuda),
         **payload,
@@ -7687,6 +7808,7 @@ def _run_two_seat_selfplay_payload(
         num_simulations=int(payload["num_simulations"]),
         learner_updates=int(payload["learner_updates"]),
         allow_optimizer_step=bool(payload["allow_optimizer_step"]),
+        verify_model_update_hash=bool(payload.get("verify_model_update_hash", False)),
         replay_scope=str(payload["replay_scope"]),
         learner_sample_size=payload["learner_sample_size"],
         max_replay_rows=payload["max_replay_rows"],
@@ -7752,6 +7874,9 @@ def _run_two_seat_selfplay_payload(
             "compute": compute_label,
             "canonical_launcher": command["canonical_launcher"],
             "two_seat_current_policy_selfplay": True,
+            "verify_model_update_hash": bool(
+                payload.get("verify_model_update_hash", False)
+            ),
             "trail_render_mode": payload["trail_render_mode"],
             "death_mode": payload["death_mode"],
             "natural_bonus_spawn": natural_bonus_spawn,
@@ -8071,11 +8196,13 @@ def lightzero_curvytron_visual_survival_cpu(
     skip_lightzero_eval_in_profile: bool = DEFAULT_SKIP_LIGHTZERO_EVAL_IN_PROFILE,
     profile_cuda_sync_enabled: bool = DEFAULT_PROFILE_CUDA_SYNC_ENABLED,
     profile_allow_auto_resume: bool = DEFAULT_PROFILE_ALLOW_AUTO_RESUME,
+    profile_volume_commit: bool = DEFAULT_PROFILE_VOLUME_COMMIT,
     lightzero_multi_gpu: bool = DEFAULT_LIGHTZERO_MULTI_GPU,
     save_ckpt_after_iter: int = DEFAULT_SAVE_CKPT_AFTER_ITER,
     stop_after_learner_train_calls: int = DEFAULT_STOP_AFTER_LEARNER_TRAIN_CALLS,
     env_variant: str = DEFAULT_ENV_VARIANT,
     reward_variant: str = DEFAULT_REWARD_VARIANT,
+    source_state_trail_render_mode: str = DEFAULT_SOURCE_STATE_TRAIL_RENDER_MODE,
     ego_action_straight_override_probability: float = (
         DEFAULT_EGO_ACTION_STRAIGHT_OVERRIDE_PROBABILITY
     ),
@@ -8084,6 +8211,7 @@ def lightzero_curvytron_visual_survival_cpu(
     env_telemetry_stride: int = DEFAULT_ENV_TELEMETRY_STRIDE,
     env_manager_type: str = DEFAULT_ENV_MANAGER_TYPE,
     opponent_policy_kind: str = DEFAULT_OPPONENT_POLICY_KIND,
+    opponent_use_cuda: bool = DEFAULT_OPPONENT_USE_CUDA,
     opponent_checkpoint_ref: str | None = None,
     opponent_snapshot_ref: str | None = None,
     opponent_checkpoint_report_ref: str | None = None,
@@ -8128,17 +8256,20 @@ def lightzero_curvytron_visual_survival_cpu(
         skip_lightzero_eval_in_profile=skip_lightzero_eval_in_profile,
         profile_cuda_sync_enabled=profile_cuda_sync_enabled,
         profile_allow_auto_resume=profile_allow_auto_resume,
+        profile_volume_commit=profile_volume_commit,
         lightzero_multi_gpu=lightzero_multi_gpu,
         save_ckpt_after_iter=save_ckpt_after_iter,
         stop_after_learner_train_calls=stop_after_learner_train_calls,
         env_variant=env_variant,
         reward_variant=reward_variant,
+        source_state_trail_render_mode=source_state_trail_render_mode,
         ego_action_straight_override_probability=ego_action_straight_override_probability,
         control_noise_profile_id=control_noise_profile_id,
         disable_death_for_profile=disable_death_for_profile,
         env_telemetry_stride=env_telemetry_stride,
         env_manager_type=env_manager_type,
         opponent_policy_kind=opponent_policy_kind,
+        opponent_use_cuda=opponent_use_cuda,
         opponent_checkpoint_ref=opponent_checkpoint_ref,
         opponent_snapshot_ref=opponent_snapshot_ref,
         opponent_checkpoint_report_ref=opponent_checkpoint_report_ref,
@@ -8177,6 +8308,9 @@ def lightzero_curvytron_visual_survival_cpu64(**kwargs: Any) -> dict[str, Any]:
     kwargs.setdefault("reward_variant", DEFAULT_REWARD_VARIANT)
     kwargs.setdefault("lightzero_eval_freq", DEFAULT_LIGHTZERO_EVAL_FREQ)
     kwargs.setdefault("skip_lightzero_eval_in_profile", DEFAULT_SKIP_LIGHTZERO_EVAL_IN_PROFILE)
+    kwargs.setdefault("profile_volume_commit", DEFAULT_PROFILE_VOLUME_COMMIT)
+    kwargs.setdefault("opponent_use_cuda", DEFAULT_OPPONENT_USE_CUDA)
+    kwargs.setdefault("source_state_trail_render_mode", DEFAULT_SOURCE_STATE_TRAIL_RENDER_MODE)
     return _run_visual_survival_train(compute=COMPUTE_CPU64, **kwargs)
 
 
@@ -8207,11 +8341,13 @@ def lightzero_curvytron_visual_survival_gpu(
     skip_lightzero_eval_in_profile: bool = DEFAULT_SKIP_LIGHTZERO_EVAL_IN_PROFILE,
     profile_cuda_sync_enabled: bool = DEFAULT_PROFILE_CUDA_SYNC_ENABLED,
     profile_allow_auto_resume: bool = DEFAULT_PROFILE_ALLOW_AUTO_RESUME,
+    profile_volume_commit: bool = DEFAULT_PROFILE_VOLUME_COMMIT,
     lightzero_multi_gpu: bool = DEFAULT_LIGHTZERO_MULTI_GPU,
     save_ckpt_after_iter: int = DEFAULT_SAVE_CKPT_AFTER_ITER,
     stop_after_learner_train_calls: int = DEFAULT_STOP_AFTER_LEARNER_TRAIN_CALLS,
     env_variant: str = DEFAULT_ENV_VARIANT,
     reward_variant: str = DEFAULT_REWARD_VARIANT,
+    source_state_trail_render_mode: str = DEFAULT_SOURCE_STATE_TRAIL_RENDER_MODE,
     ego_action_straight_override_probability: float = (
         DEFAULT_EGO_ACTION_STRAIGHT_OVERRIDE_PROBABILITY
     ),
@@ -8220,6 +8356,7 @@ def lightzero_curvytron_visual_survival_gpu(
     env_telemetry_stride: int = DEFAULT_ENV_TELEMETRY_STRIDE,
     env_manager_type: str = DEFAULT_ENV_MANAGER_TYPE,
     opponent_policy_kind: str = DEFAULT_OPPONENT_POLICY_KIND,
+    opponent_use_cuda: bool = DEFAULT_OPPONENT_USE_CUDA,
     opponent_checkpoint_ref: str | None = None,
     opponent_snapshot_ref: str | None = None,
     opponent_checkpoint_report_ref: str | None = None,
@@ -8264,17 +8401,20 @@ def lightzero_curvytron_visual_survival_gpu(
         skip_lightzero_eval_in_profile=skip_lightzero_eval_in_profile,
         profile_cuda_sync_enabled=profile_cuda_sync_enabled,
         profile_allow_auto_resume=profile_allow_auto_resume,
+        profile_volume_commit=profile_volume_commit,
         lightzero_multi_gpu=lightzero_multi_gpu,
         save_ckpt_after_iter=save_ckpt_after_iter,
         stop_after_learner_train_calls=stop_after_learner_train_calls,
         env_variant=env_variant,
         reward_variant=reward_variant,
+        source_state_trail_render_mode=source_state_trail_render_mode,
         ego_action_straight_override_probability=ego_action_straight_override_probability,
         control_noise_profile_id=control_noise_profile_id,
         disable_death_for_profile=disable_death_for_profile,
         env_telemetry_stride=env_telemetry_stride,
         env_manager_type=env_manager_type,
         opponent_policy_kind=opponent_policy_kind,
+        opponent_use_cuda=opponent_use_cuda,
         opponent_checkpoint_ref=opponent_checkpoint_ref,
         opponent_snapshot_ref=opponent_snapshot_ref,
         opponent_checkpoint_report_ref=opponent_checkpoint_report_ref,
@@ -8314,6 +8454,9 @@ def lightzero_curvytron_visual_survival_gpu_cpu40(**kwargs: Any) -> dict[str, An
     kwargs.setdefault("reward_variant", DEFAULT_REWARD_VARIANT)
     kwargs.setdefault("lightzero_eval_freq", DEFAULT_LIGHTZERO_EVAL_FREQ)
     kwargs.setdefault("skip_lightzero_eval_in_profile", DEFAULT_SKIP_LIGHTZERO_EVAL_IN_PROFILE)
+    kwargs.setdefault("profile_volume_commit", DEFAULT_PROFILE_VOLUME_COMMIT)
+    kwargs.setdefault("opponent_use_cuda", DEFAULT_OPPONENT_USE_CUDA)
+    kwargs.setdefault("source_state_trail_render_mode", DEFAULT_SOURCE_STATE_TRAIL_RENDER_MODE)
     return _run_visual_survival_train(compute=COMPUTE_GPU_L4_T4_CPU40, **kwargs)
 
 
@@ -8330,6 +8473,9 @@ def lightzero_curvytron_visual_survival_h100_cpu40(**kwargs: Any) -> dict[str, A
     kwargs.setdefault("reward_variant", DEFAULT_REWARD_VARIANT)
     kwargs.setdefault("lightzero_eval_freq", DEFAULT_LIGHTZERO_EVAL_FREQ)
     kwargs.setdefault("skip_lightzero_eval_in_profile", DEFAULT_SKIP_LIGHTZERO_EVAL_IN_PROFILE)
+    kwargs.setdefault("profile_volume_commit", DEFAULT_PROFILE_VOLUME_COMMIT)
+    kwargs.setdefault("opponent_use_cuda", DEFAULT_OPPONENT_USE_CUDA)
+    kwargs.setdefault("source_state_trail_render_mode", DEFAULT_SOURCE_STATE_TRAIL_RENDER_MODE)
     return _run_visual_survival_train(compute=COMPUTE_GPU_H100_CPU40, **kwargs)
 
 
@@ -8346,6 +8492,9 @@ def lightzero_curvytron_visual_survival_h100x2_cpu40(**kwargs: Any) -> dict[str,
     kwargs.setdefault("reward_variant", DEFAULT_REWARD_VARIANT)
     kwargs.setdefault("lightzero_eval_freq", DEFAULT_LIGHTZERO_EVAL_FREQ)
     kwargs.setdefault("skip_lightzero_eval_in_profile", DEFAULT_SKIP_LIGHTZERO_EVAL_IN_PROFILE)
+    kwargs.setdefault("profile_volume_commit", DEFAULT_PROFILE_VOLUME_COMMIT)
+    kwargs.setdefault("opponent_use_cuda", DEFAULT_OPPONENT_USE_CUDA)
+    kwargs.setdefault("source_state_trail_render_mode", DEFAULT_SOURCE_STATE_TRAIL_RENDER_MODE)
     return _run_visual_survival_train(compute=COMPUTE_GPU_H100X2_CPU40, **kwargs)
 
 
@@ -8426,15 +8575,22 @@ def _compact_train_result_for_output(result: Any) -> Any:
         "command": {
             "env_variant": command.get("env_variant"),
             "reward_variant": command.get("reward_variant"),
+            "opponent_policy_kind": command.get("opponent_policy_kind"),
+            "opponent_use_cuda": command.get("opponent_use_cuda"),
             "env_manager_type": command.get("env_manager_type"),
             "collector_env_num": command.get("collector_env_num"),
             "n_episode": command.get("n_episode"),
             "num_simulations": command.get("num_simulations"),
             "batch_size": command.get("batch_size"),
+            "source_state_trail_render_mode": command.get(
+                "source_state_trail_render_mode"
+            ),
             "lightzero_eval_freq": command.get("lightzero_eval_freq"),
             "skip_lightzero_eval_in_profile": command.get("skip_lightzero_eval_in_profile"),
             "profile_cuda_sync_enabled": command.get("profile_cuda_sync_enabled"),
             "profile_allow_auto_resume": command.get("profile_allow_auto_resume"),
+            "profile_volume_commit": command.get("profile_volume_commit"),
+            "profile_env_timing_enabled": command.get("profile_env_timing_enabled"),
             "lightzero_multi_gpu": command.get("lightzero_multi_gpu"),
             "source_max_steps": command.get("source_max_steps"),
             "disable_death_for_profile": command.get("disable_death_for_profile"),
@@ -8477,6 +8633,7 @@ def _compact_train_result_for_output(result: Any) -> Any:
             "counts_scope": action.get("counts_scope"),
             "telemetry_sampled": action.get("telemetry_sampled"),
             "telemetry_stride": action.get("telemetry_stride"),
+            "profile_env_timing_sec": action.get("profile_env_timing_sec"),
         },
         "gpu": {
             "requested_compute": runtime.get("requested_compute"),
@@ -8485,6 +8642,7 @@ def _compact_train_result_for_output(result: Any) -> Any:
             "max_memory_used_mib": gpu.get("max_memory_used_mib"),
             "sample_count": gpu.get("sample_count"),
         },
+        "final_volume_commit": train_result.get("final_volume_commit"),
     }
     if "background_eval" in result:
         compact["background_eval"] = result["background_eval"]
@@ -8512,11 +8670,14 @@ def main(
     skip_lightzero_eval_in_profile: bool = DEFAULT_SKIP_LIGHTZERO_EVAL_IN_PROFILE,
     profile_cuda_sync_enabled: bool = DEFAULT_PROFILE_CUDA_SYNC_ENABLED,
     profile_allow_auto_resume: bool = DEFAULT_PROFILE_ALLOW_AUTO_RESUME,
+    profile_volume_commit: bool = DEFAULT_PROFILE_VOLUME_COMMIT,
+    profile_spawn: bool = DEFAULT_PROFILE_SPAWN,
     lightzero_multi_gpu: bool = DEFAULT_LIGHTZERO_MULTI_GPU,
     save_ckpt_after_iter: int = DEFAULT_SAVE_CKPT_AFTER_ITER,
     stop_after_learner_train_calls: int = DEFAULT_STOP_AFTER_LEARNER_TRAIN_CALLS,
     env_variant: str = DEFAULT_ENV_VARIANT,
     reward_variant: str = DEFAULT_REWARD_VARIANT,
+    source_state_trail_render_mode: str = DEFAULT_SOURCE_STATE_TRAIL_RENDER_MODE,
     ego_action_straight_override_probability: float = (
         DEFAULT_EGO_ACTION_STRAIGHT_OVERRIDE_PROBABILITY
     ),
@@ -8526,6 +8687,7 @@ def main(
     env_manager_type: str = DEFAULT_ENV_MANAGER_TYPE,
     wait_for_train: bool = False,
     opponent_policy_kind: str = DEFAULT_OPPONENT_POLICY_KIND,
+    opponent_use_cuda: bool = DEFAULT_OPPONENT_USE_CUDA,
     opponent_checkpoint_ref: str | None = None,
     snapshot_ref: str = "curvytron_visual_survival_snapshot_opponent_smoke",
     checkpoint_ref: str | None = None,
@@ -8538,6 +8700,7 @@ def main(
     two_seat_updates_per_iteration: int | None = None,
     two_seat_learner_updates: int = 1,
     two_seat_allow_optimizer_step: bool = True,
+    two_seat_verify_model_update_hash: bool = False,
     two_seat_replay_scope: str = "accumulated",
     two_seat_learner_sample_size: int | None = DEFAULT_TWO_SEAT_LEARNER_SAMPLE_SIZE,
     two_seat_max_replay_rows: int | None = DEFAULT_TWO_SEAT_MAX_REPLAY_ROWS,
@@ -8619,6 +8782,8 @@ def main(
         raise ValueError(
             f"output_detail must be one of {OUTPUT_DETAIL_CHOICES!r}; got {output_detail!r}"
         )
+    if profile_spawn and mode != "profile":
+        raise ValueError("profile_spawn is only valid with mode='profile'")
     if mode == OPPONENT_SMOKE_MODE:
         result = lightzero_curvytron_visual_survival_opponent_smoke.remote(
             run_id=run_id,
@@ -8691,6 +8856,7 @@ def main(
             "num_simulations": num_simulations,
             "learner_updates": two_seat_learner_updates,
             "allow_optimizer_step": two_seat_allow_optimizer_step,
+            "verify_model_update_hash": two_seat_verify_model_update_hash,
             "replay_scope": two_seat_replay_scope,
             "learner_sample_size": two_seat_learner_sample_size,
             "max_replay_rows": two_seat_max_replay_rows,
@@ -8789,7 +8955,7 @@ def main(
             print(
                 json.dumps(
                     {
-                        "schema_id": "curvyzero_canonical_two_seat_selfplay_background_launch/v0",
+                        "schema_id": "curvyzero_experimental_two_seat_adapter_background_launch/v0",
                         "status": "spawned",
                         "mode": TWO_SEAT_SELFPLAY_MODE,
                         "compute": compute,
@@ -8853,6 +9019,9 @@ def main(
         opponent_policy_kind=opponent_policy_kind,
         opponent_checkpoint_ref=opponent_checkpoint_ref,
     )
+    source_state_trail_render_mode = _validate_source_state_trail_render_mode(
+        source_state_trail_render_mode
+    )
     kwargs = {
         "mode": mode,
         "seed": seed,
@@ -8872,17 +9041,20 @@ def main(
         "skip_lightzero_eval_in_profile": skip_lightzero_eval_in_profile,
         "profile_cuda_sync_enabled": profile_cuda_sync_enabled,
         "profile_allow_auto_resume": profile_allow_auto_resume,
+        "profile_volume_commit": profile_volume_commit,
         "lightzero_multi_gpu": lightzero_multi_gpu,
         "save_ckpt_after_iter": save_ckpt_after_iter,
         "stop_after_learner_train_calls": stop_after_learner_train_calls,
         "env_variant": env_variant,
         "reward_variant": reward_variant,
+        "source_state_trail_render_mode": source_state_trail_render_mode,
         "ego_action_straight_override_probability": ego_action_straight_override_probability,
         "control_noise_profile_id": control_noise_profile_id,
         "disable_death_for_profile": disable_death_for_profile,
         "env_telemetry_stride": env_telemetry_stride,
         "env_manager_type": env_manager_type,
         "opponent_policy_kind": opponent_policy_kind,
+        "opponent_use_cuda": opponent_use_cuda,
         "opponent_checkpoint_ref": opponent_checkpoint_ref,
         "opponent_snapshot_ref": snapshot_ref,
         "opponent_checkpoint_report_ref": checkpoint_ref,
@@ -8950,6 +9122,34 @@ def main(
         poller_call_id = (
             getattr(poller_call, "object_id", None) or getattr(poller_call, "id", None)
         )
+    if mode == "profile" and profile_spawn:
+        call = train_fn.spawn(**train_kwargs)
+        call_id = getattr(call, "object_id", None) or getattr(call, "id", None)
+        print(
+            json.dumps(
+                {
+                    "schema_id": "curvyzero_lightzero_curvytron_profile_spawn/v0",
+                    "status": "spawned",
+                    "mode": mode,
+                    "compute": compute,
+                    "seed": seed,
+                    "run_id": run_id,
+                    "attempt_id": attempt_id,
+                    "function_call_id": call_id,
+                    "result_readback": "modal.FunctionCall.from_id(function_call_id).get()",
+                    "summary_ref": (
+                        runs.attempt_train_ref(TASK_ID, run_id, attempt_id) / "summary.json"
+                    ).as_posix(),
+                    "summary_ref_status": (
+                        "best_effort_volume_artifact_not_profile_source_of_truth"
+                    ),
+                    "command": kwargs,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return
     if mode == "train" and not wait_for_train:
         call = train_fn.spawn(**train_kwargs)
         call_id = getattr(call, "object_id", None) or getattr(call, "id", None)

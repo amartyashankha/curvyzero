@@ -26,6 +26,7 @@ from curvyzero.training.curvytron_current_policy_selfplay_smoke import (
     player_perspective_rgb_palette,
 )
 from curvyzero.training.curvyzero_stacked_debug_visual_survival_profile import (
+    _learn_mode_batches,
     _strip_large_arrays,
 )
 
@@ -745,6 +746,63 @@ def test_two_seat_frozen_opponent_mix_does_not_emit_frozen_replay(monkeypatch):
     assert collection["opponent_mix"]["current_policy_vs_frozen_rows"] == 1
 
 
+def test_two_seat_replay_stratification_exposes_rollout_player_source_split():
+    rows = [
+        {
+            "rollout_kind": train_smoke.ROLLOUT_KIND_CURRENT_POLICY_SELFPLAY,
+            "action_source": train_smoke.ACTION_SOURCE_CURRENT_POLICY,
+            "player_id": 0,
+            "reward": 0.5,
+            "done": False,
+        },
+        {
+            "rollout_kind": train_smoke.ROLLOUT_KIND_CURRENT_POLICY_SELFPLAY,
+            "action_source": train_smoke.ACTION_SOURCE_CURRENT_POLICY,
+            "player_id": 1,
+            "reward": 0.25,
+            "done": False,
+        },
+        {
+            "rollout_kind": train_smoke.ROLLOUT_KIND_CURRENT_POLICY_VS_FROZEN,
+            "action_source": train_smoke.ACTION_SOURCE_CURRENT_POLICY,
+            "player_id": 0,
+            "reward": 1.0,
+            "done": True,
+        },
+    ]
+
+    summary = train_smoke._replay_row_stratification(rows)
+
+    assert summary["row_count"] == 3
+    assert summary["rollout_kind_counts"] == {
+        train_smoke.ROLLOUT_KIND_CURRENT_POLICY_SELFPLAY: 2,
+        train_smoke.ROLLOUT_KIND_CURRENT_POLICY_VS_FROZEN: 1,
+    }
+    assert summary["action_source_counts"] == {
+        train_smoke.ACTION_SOURCE_CURRENT_POLICY: 3
+    }
+    assert summary["player_id_counts"] == {"player_0": 2, "player_1": 1}
+    assert summary["rollout_kind_player_action_source_counts"] == {
+        (
+            f"{train_smoke.ROLLOUT_KIND_CURRENT_POLICY_SELFPLAY}|"
+            f"player_0|{train_smoke.ACTION_SOURCE_CURRENT_POLICY}"
+        ): 1,
+        (
+            f"{train_smoke.ROLLOUT_KIND_CURRENT_POLICY_SELFPLAY}|"
+            f"player_1|{train_smoke.ACTION_SOURCE_CURRENT_POLICY}"
+        ): 1,
+        (
+            f"{train_smoke.ROLLOUT_KIND_CURRENT_POLICY_VS_FROZEN}|"
+            f"player_0|{train_smoke.ACTION_SOURCE_CURRENT_POLICY}"
+        ): 1,
+    }
+    mixed_reward = summary["reward_by_rollout_kind"][
+        train_smoke.ROLLOUT_KIND_CURRENT_POLICY_VS_FROZEN
+    ]
+    assert mixed_reward["reward_sum"] == 1.0
+    assert mixed_reward["terminal_count"] == 1
+
+
 def test_two_seat_replay_sampler_rejects_frozen_rows():
     with pytest.raises(ValueError, match="current-policy controlled"):
         train_smoke._sample_replay_batch(
@@ -760,6 +818,275 @@ def test_two_seat_replay_sampler_rejects_frozen_rows():
 def test_two_seat_replay_sampler_rejects_missing_control_metadata():
     with pytest.raises(ValueError, match="current-policy controlled"):
         train_smoke._sample_replay_batch([{"action": 1}])
+
+
+def test_two_seat_terminal_death_reward_reaches_learner_targets():
+    observation = np.zeros(train_smoke.STACKED_SOURCE_STATE_GRAY64_SHAPE, dtype=np.float32)
+    next_observation = np.ones(
+        train_smoke.STACKED_SOURCE_STATE_GRAY64_SHAPE,
+        dtype=np.float32,
+    )
+    policy = np.full((train_smoke.ACTION_COUNT,), 1.0 / train_smoke.ACTION_COUNT)
+
+    def row(
+        *,
+        player: int,
+        decision: int,
+        reward: float,
+        done: bool = False,
+        terminal_winner: int = -1,
+        death_cause_name: list[str] | None = None,
+    ) -> dict[str, object]:
+        return {
+            "action_source": train_smoke.ACTION_SOURCE_CURRENT_POLICY,
+            "learner_controlled": True,
+            "iteration": 1,
+            "episode_id": 9,
+            "env_row_id": 0,
+            "player_id": player,
+            "decision_index": decision,
+            "observation": observation.copy(),
+            "next_observation": next_observation.copy(),
+            "action": 1,
+            "reward": reward,
+            "done": done,
+            "terminal_winner": terminal_winner,
+            "return_target_discount": 1.0,
+            "return_schema_id": train_smoke.TWO_SEAT_TERMINAL_SHAPED_RETURN_SCHEMA_ID,
+            "action_weights": policy.copy(),
+            "terminal_reason_name": "survivor_win" if done else "none",
+            "death_cause_name": death_cause_name or ["none", "none"],
+        }
+
+    rows = [
+        row(player=0, decision=0, reward=0.01),
+        row(player=1, decision=0, reward=0.01),
+        row(player=0, decision=1, reward=0.01),
+        row(player=1, decision=1, reward=0.01),
+        row(
+            player=0,
+            decision=2,
+            reward=-0.03,
+            done=True,
+            terminal_winner=1,
+            death_cause_name=["wall", "none"],
+        ),
+        row(player=1, decision=2, reward=0.04, done=True, terminal_winner=1),
+    ]
+
+    sample = train_smoke._sample_replay_batch(rows, learner_sample_size=None)
+    fake_policy = SimpleNamespace(
+        _cfg=SimpleNamespace(batch_size=len(rows), num_unroll_steps=1, model={})
+    )
+    _current_batch, target_batch, summary = _learn_mode_batches(fake_policy, sample)
+    target_reward, target_value, _target_policy = target_batch
+
+    np.testing.assert_allclose(
+        target_reward[:, 0],
+        np.asarray([0.01, 0.01, 0.01, 0.01, -0.03, 0.04], dtype=np.float32),
+    )
+    np.testing.assert_allclose(
+        target_value[:, 0],
+        np.asarray([-0.01, 0.06, -0.02, 0.05, -0.03, 0.04], dtype=np.float32),
+        atol=1e-6,
+    )
+    assert summary["target_value_source"] == "discounted_survival_return"
+    assert sample["return_context_terminal_winner_batch"].tolist()[-2:] == [1, 1]
+
+
+def test_two_seat_hot_policy_decode_preserves_mcts_targets_without_compact_output():
+    plain_output = {
+        "action": np.asarray([0, 2], dtype=np.int64),
+        "visit_count_distribution": np.asarray(
+            [[1.0, 1.0, 2.0], [0.0, 3.0, 1.0]],
+            dtype=np.float32,
+        ),
+        "searched_value": np.asarray([0.25, -0.5], dtype=np.float32),
+    }
+
+    row_output = train_smoke._policy_output_row_from_plain(plain_output, 1)
+    action = train_smoke._extract_eval_action_from_plain(row_output)
+    weights = train_smoke._action_weights_from_policy_output(row_output, action)
+    record = {
+        "action": action,
+        "action_weights": weights,
+        "root_value": train_smoke._root_value_from_policy_output(row_output),
+    }
+
+    assert action == 2
+    np.testing.assert_allclose(weights, np.asarray([0.0, 0.75, 0.25], dtype=np.float32))
+    np.testing.assert_allclose(
+        train_smoke._search_record_action_weights(record, action),
+        np.asarray([0.0, 0.75, 0.25], dtype=np.float32),
+    )
+    assert train_smoke._search_record_root_value(record) == pytest.approx(-0.5)
+    assert "compact_output" not in record
+
+
+def test_two_seat_batched_policy_decode_accepts_ready_env_id_keyed_output():
+    pytest.importorskip("torch")
+
+    class FakeCollectMode:
+        def forward(
+            self,
+            obs_tensor,
+            *,
+            action_mask,
+            temperature,
+            to_play,
+            epsilon,
+            ready_env_id,
+        ):
+            del obs_tensor, action_mask, temperature, to_play, epsilon
+            return {
+                int(env_id): {
+                    "action": np.asarray(row % train_smoke.ACTION_COUNT),
+                    "visit_count_distributions": np.asarray(
+                        [row + 1.0, 1.0, 2.0],
+                        dtype=np.float32,
+                    ),
+                    "searched_value": np.asarray(0.25 * row, dtype=np.float32),
+                }
+                for row, env_id in enumerate(ready_env_id)
+            }
+
+    fake_policy = SimpleNamespace(collect_mode=FakeCollectMode(), _model=None)
+    observations = np.zeros((2, *train_smoke.STACKED_SOURCE_STATE_GRAY64_SHAPE), dtype=np.float32)
+    legal = np.ones((2, train_smoke.ACTION_COUNT), dtype=np.float32)
+
+    result = train_smoke._policy_actions_batch(
+        fake_policy,
+        observations,
+        legal,
+        player_id=np.asarray([0, 1], dtype=np.int64),
+        step_index=3,
+        mode=train_smoke.ACTION_SELECTION_MODE_COLLECT,
+        temperature=1.0,
+        epsilon=0.0,
+    )
+
+    assert result["ok"] is True
+    assert "policy_output_decode_sec" in result["timing_sec"]
+    first, second = result["records"]
+    assert "compact_output" not in first
+    assert first["action"] == 0
+    assert second["action"] == 1
+    np.testing.assert_allclose(
+        first["action_weights"],
+        np.asarray([0.25, 0.25, 0.5], dtype=np.float32),
+    )
+    np.testing.assert_allclose(
+        second["action_weights"],
+        np.asarray([0.4, 0.2, 0.4], dtype=np.float32),
+    )
+    assert second["root_value"] == pytest.approx(0.25)
+
+
+def test_two_seat_observation_noise_is_float32_bounded_and_non_mutating():
+    observation = np.full(
+        (8, 2, *train_smoke.STACKED_SOURCE_STATE_GRAY64_SHAPE),
+        0.5,
+        dtype=np.float32,
+    )
+    before = observation.copy()
+
+    noisy = train_smoke._apply_observation_noise(
+        observation,
+        std=0.10,
+        rng=np.random.default_rng(123),
+    )
+
+    np.testing.assert_array_equal(observation, before)
+    assert noisy.dtype == np.float32
+    assert not np.shares_memory(noisy, observation)
+    assert float(noisy.min()) >= 0.0
+    assert float(noisy.max()) <= 1.0
+    assert 0.45 < float(noisy.mean()) < 0.55
+    assert float(noisy.std()) > 0.05
+
+    workspace = train_smoke._ObservationNoiseWorkspace()
+    expected = train_smoke._apply_observation_noise(
+        observation,
+        std=0.10,
+        rng=np.random.default_rng(456),
+    )
+    workspace_noisy = train_smoke._apply_observation_noise(
+        observation,
+        std=0.10,
+        rng=np.random.default_rng(456),
+        workspace=workspace,
+    )
+    np.testing.assert_array_equal(workspace_noisy, expected)
+    assert workspace_noisy.dtype == np.float32
+    assert not np.shares_memory(workspace_noisy, observation)
+    np.testing.assert_array_equal(observation, before)
+
+    no_noise = train_smoke._apply_observation_noise(
+        observation,
+        std=0.0,
+        rng=np.random.default_rng(789),
+        workspace=workspace,
+    )
+    assert no_noise is observation
+
+
+@pytest.mark.parametrize(
+    "trail_render_mode",
+    [
+        STACK_RENDER_MODE_FAST_GRAY64_DIRECT,
+        "browser_lines",
+    ],
+)
+def test_two_seat_stack_reset_rows_renders_only_reset_rows(trail_render_mode: str):
+    env = train_smoke.VectorMultiplayerEnv(
+        batch_size=2,
+        player_count=2,
+        seed=123,
+        death_mode="profile_no_death",
+        natural_bonus_spawn=False,
+    )
+    env.reset(seed=123)
+    stack = SourceStateGray64Stack4(
+        batch_size=2,
+        player_count=2,
+        trail_render_mode=trail_render_mode,
+    )
+    stack.update(env)
+    kept_row = stack.stack[1].copy()
+
+    expected_reset_stack = SourceStateGray64Stack4(
+        batch_size=2,
+        player_count=2,
+        trail_render_mode=trail_render_mode,
+    )
+    expected_reset = expected_reset_stack.update(env)
+
+    actual = stack.reset_rows(env, np.asarray([True, False], dtype=bool))
+
+    np.testing.assert_allclose(actual[0], expected_reset[0])
+    np.testing.assert_allclose(actual[1], kept_row)
+
+    next_actual = stack.update(env)
+    expected_next_stack = SourceStateGray64Stack4(
+        batch_size=2,
+        player_count=2,
+        trail_render_mode=trail_render_mode,
+    )
+    expected_next_stack.update(env)
+    expected_next = expected_next_stack.update(env)
+    np.testing.assert_allclose(next_actual[0], expected_next[0])
+
+
+def test_two_seat_training_rejects_repeat_skip_until_terminal_targets_are_accounted():
+    with pytest.raises(ValueError, match="terminal rewards on skipped physical ticks"):
+        train_smoke.run_curvytron_two_seat_lightzero_train_smoke(
+            require_installed_lightzero=False,
+            allow_optimizer_step=True,
+            updates_per_iteration=1,
+            policy_action_repeat_min=1,
+            policy_action_repeat_max=3,
+            policy_action_repeat_extra_probability=0.2,
+        )
 
 
 def test_frozen_opponent_reset_resampling_does_not_force_singletons_frozen():
