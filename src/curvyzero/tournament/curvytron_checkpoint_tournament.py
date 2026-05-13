@@ -1309,10 +1309,245 @@ def _rating_battle_id(
     )
 
 
+def _pair_history_rows_by_key(
+    pair_history: Mapping[str, Any] | None,
+) -> dict[str, dict[str, Any]]:
+    if not pair_history:
+        return {}
+    rows = pair_history.get("rows") or []
+    if not isinstance(rows, Sequence):
+        return {}
+    result: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if isinstance(row, Mapping) and row.get("pair_key"):
+            result[str(row["pair_key"])] = dict(row)
+    return result
+
+
+def _rating_row_value(
+    rows: Mapping[str, Mapping[str, Any]],
+    checkpoint: Mapping[str, Any],
+    key: str,
+    default: Any,
+) -> Any:
+    row = rows.get(str(checkpoint["checkpoint_id"]), {})
+    return row.get(key, default)
+
+
+def select_adaptive_v0_pair_slots(
+    rating_spec: Mapping[str, Any],
+    *,
+    previous_snapshot: Mapping[str, Any] | None = None,
+    scheduler_state: Mapping[str, Any] | None = None,
+    pair_history: Mapping[str, Any] | None = None,
+    round_index: int = 0,
+) -> list[dict[str, Any]]:
+    spec = normalize_rating_spec(rating_spec)
+    budget = int(spec["pairs_per_round"] or 0)
+    if budget < 1:
+        raise ValueError("adaptive_v0 pair selection requires pairs_per_round")
+    checkpoints = spec["checkpoints"]
+    if len(checkpoints) < 2 and not spec["include_self_pairs"]:
+        raise ValueError("at least two checkpoints are needed for adaptive_v0")
+
+    expected_pool_hash = rating_pool_hash(checkpoints)
+    for state, label in (
+        (scheduler_state, "scheduler_state"),
+        (pair_history, "pair_history"),
+    ):
+        if isinstance(state, Mapping) and state.get("pool_hash"):
+            if str(state["pool_hash"]) != expected_pool_hash:
+                raise ValueError(f"{label} pool_hash does not match rating spec")
+
+    current_rows = _rating_rows_by_checkpoint(previous_snapshot)
+    history_by_key = _pair_history_rows_by_key(pair_history)
+    rng = random.Random(int(spec["seed"]) + int(round_index) * 1_000_003 + 17)
+    rows = []
+    for index, checkpoint in enumerate(checkpoints):
+        checkpoint_id = str(checkpoint["checkpoint_id"])
+        games = int(_rating_row_value(current_rows, checkpoint, "games", 0) or 0)
+        distinct = int(
+            _rating_row_value(current_rows, checkpoint, "distinct_opponents", 0)
+            or len(_rating_row_value(current_rows, checkpoint, "opponent_ids", []) or [])
+            or 0
+        )
+        rows.append(
+            {
+                "index": index,
+                "checkpoint": checkpoint,
+                "checkpoint_id": checkpoint_id,
+                "rating": float(
+                    _rating_row_value(
+                        current_rows,
+                        checkpoint,
+                        "rating",
+                        spec["initial_rating"],
+                    )
+                ),
+                "games": games,
+                "distinct_opponents": distinct,
+                "rated_battles": int(
+                    _rating_row_value(current_rows, checkpoint, "rated_battles", 0)
+                    or 0
+                ),
+                "last_round_delta": abs(
+                    float(
+                        _rating_row_value(
+                            current_rows,
+                            checkpoint,
+                            "last_round_delta",
+                            0.0,
+                        )
+                        or 0.0
+                    )
+                ),
+                "failure_count": int(
+                    _rating_row_value(current_rows, checkpoint, "failure_count", 0)
+                    or 0
+                ),
+            }
+        )
+
+    by_rating = sorted(rows, key=lambda row: (float(row["rating"]), str(row["checkpoint_id"])))
+    rating_position = {int(row["index"]): pos for pos, row in enumerate(by_rating)}
+    anchor_indices = []
+    if by_rating:
+        for pos in {0, len(by_rating) // 4, len(by_rating) // 2, len(by_rating) - 1}:
+            if 0 <= pos < len(by_rating):
+                anchor_indices.append(int(by_rating[pos]["index"]))
+    anchor_indices = sorted(set(anchor_indices))
+
+    slots: list[dict[str, Any]] = []
+    used_keys: set[str] = set()
+    considered = 0
+
+    def add_pair(i: int, j: int, reason: str, priority: float) -> bool:
+        nonlocal considered
+        considered += 1
+        if len(slots) >= budget:
+            return False
+        if not spec["include_self_pairs"] and i == j:
+            return False
+        if i < 0 or j < 0 or i >= len(checkpoints) or j >= len(checkpoints):
+            return False
+        player_a = checkpoints[i]
+        player_b = checkpoints[j]
+        pair_key = rating_pair_key(
+            str(player_a["checkpoint_id"]),
+            str(player_b["checkpoint_id"]),
+        )
+        if pair_key in used_keys:
+            return False
+        used_keys.add(pair_key)
+        history = history_by_key.get(pair_key, {})
+        priority_value = float(priority)
+        if history.get("battle_count"):
+            priority_value *= 0.5
+        slots.append(
+            {
+                "player_a_index": i,
+                "player_b_index": j,
+                "pair_key": pair_key,
+                "schedule_reason": reason,
+                "schedule_priority": priority_value,
+                "scheduled_round_index": int(round_index),
+                "prior_battle_count": int(history.get("battle_count") or 0),
+            }
+        )
+        return True
+
+    placement_budget = max(1, int(round(budget * 0.2)))
+    low_coverage = sorted(
+        rows,
+        key=lambda row: (
+            int(row["distinct_opponents"]),
+            int(row["games"]),
+            str(row["checkpoint_id"]),
+        ),
+    )
+    for row in low_coverage:
+        if len([slot for slot in slots if slot["schedule_reason"] == "placement"]) >= placement_budget:
+            break
+        target = int(row["index"])
+        candidates = [anchor for anchor in anchor_indices if anchor != target]
+        if not candidates:
+            candidates = [int(other["index"]) for other in rows if int(other["index"]) != target]
+        rng.shuffle(candidates)
+        for opponent in candidates:
+            if add_pair(target, opponent, "placement", 1.0):
+                break
+
+    near_budget = max(1, int(round(budget * 0.6)))
+    target_order = list(range(len(by_rating)))
+    rng.shuffle(target_order)
+    for pos in target_order:
+        if len([slot for slot in slots if slot["schedule_reason"] == "near_rating"]) >= near_budget:
+            break
+        row = by_rating[pos]
+        index = int(row["index"])
+        window = []
+        for offset in range(1, 9):
+            for neighbor_pos in (pos - offset, pos + offset):
+                if 0 <= neighbor_pos < len(by_rating):
+                    window.append(int(by_rating[neighbor_pos]["index"]))
+        for opponent in window:
+            if add_pair(index, opponent, "near_rating", 0.9):
+                break
+
+    uncertain_budget = max(1, int(round(budget * 0.2)))
+    uncertain_rows = sorted(
+        rows,
+        key=lambda row: (
+            -float(row["last_round_delta"]),
+            int(row["distinct_opponents"]),
+            int(row["games"]),
+            -int(row["failure_count"]),
+            str(row["checkpoint_id"]),
+        ),
+    )
+    for row in uncertain_rows:
+        if len([slot for slot in slots if slot["schedule_reason"] == "uncertain"]) >= uncertain_budget:
+            break
+        index = int(row["index"])
+        pos = rating_position[index]
+        nearby = [
+            int(by_rating[neighbor_pos]["index"])
+            for neighbor_pos in range(max(0, pos - 4), min(len(by_rating), pos + 5))
+            if neighbor_pos != pos
+        ]
+        rng.shuffle(nearby)
+        for opponent in nearby + anchor_indices:
+            if add_pair(index, opponent, "uncertain", 0.8):
+                break
+
+    bridge_attempts = max(budget * 20, 20)
+    for _attempt in range(bridge_attempts):
+        if len(slots) >= budget:
+            break
+        i = rng.randrange(len(checkpoints))
+        j = rng.randrange(len(checkpoints))
+        if add_pair(i, j, "random_bridge", 0.4):
+            continue
+
+    for pos, row in enumerate(by_rating):
+        if len(slots) >= budget:
+            break
+        index = int(row["index"])
+        for neighbor_pos in range(pos + 1, min(len(by_rating), pos + 17)):
+            if add_pair(index, int(by_rating[neighbor_pos]["index"]), "fill", 0.1):
+                break
+
+    for slot_index, slot in enumerate(slots):
+        slot["schedule_slot"] = slot_index
+    return slots
+
+
 def build_rating_round_pair_specs(
     rating_spec: Mapping[str, Any],
     *,
     previous_snapshot: Mapping[str, Any] | None = None,
+    scheduler_state: Mapping[str, Any] | None = None,
+    pair_history: Mapping[str, Any] | None = None,
     round_index: int = 0,
 ) -> list[dict[str, Any]]:
     spec = normalize_rating_spec(rating_spec)
