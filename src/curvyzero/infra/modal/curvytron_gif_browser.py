@@ -43,7 +43,7 @@ GIF_VARIANT_EVAL_GREEDY = "eval_greedy"
 GIF_VARIANT_COLLECT_T1 = "collect_t1"
 GIF_VARIANT_LABELS = {
     GIF_VARIANT_EVAL_GREEDY: "Greedy eval",
-    GIF_VARIANT_COLLECT_T1: "Collect T=1",
+    GIF_VARIANT_COLLECT_T1: "Train collect T=1 eps=0.25",
 }
 GIF_VARIANT_FILENAMES = {
     GIF_VARIANT_EVAL_GREEDY: "raw.gif",
@@ -508,6 +508,22 @@ def _default_selected_run_id(runs: list[dict[str, Any]], requested_run_id: str) 
     return str(runs[0]["run_id"])
 
 
+def _gif_variant_label(variant_id: str, variant_summary: dict[str, Any]) -> str:
+    if variant_id == GIF_VARIANT_COLLECT_T1:
+        temperature = _safe_float(variant_summary.get("temperature"))
+        epsilon = _safe_float(variant_summary.get("epsilon"))
+        if temperature is not None and epsilon is not None:
+            return f"Train collect T={temperature:g} eps={epsilon:g}"
+        label = variant_summary.get("label")
+        if isinstance(label, str) and "eps" in label:
+            return label.strip()
+        return GIF_VARIANT_LABELS[variant_id]
+    label = variant_summary.get("label")
+    if isinstance(label, str) and label.strip():
+        return label
+    return GIF_VARIANT_LABELS[variant_id]
+
+
 def _gif_variant_rows(
     mount: Path,
     *,
@@ -540,7 +556,7 @@ def _gif_variant_rows(
         variants.append(
             {
                 "variant_id": variant_id,
-                "label": variant_summary.get("label") or GIF_VARIANT_LABELS[variant_id],
+                "label": _gif_variant_label(variant_id, variant_summary),
                 "policy_mode": variant_summary.get("policy_mode"),
                 "temperature": variant_summary.get("temperature"),
                 "epsilon": variant_summary.get("epsilon"),

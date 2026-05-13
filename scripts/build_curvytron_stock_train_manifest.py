@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Build a dry-run manifest for CurvyTron stock LightZero train launches.
+"""Build a historical dry-run manifest for CurvyTron stock LightZero train launches.
 
 This script never calls Modal. It emits explicit run ids, attempt ids, artifact
 refs, and launch commands for the canonical CurvyTron Modal trainer so a matrix
 can be reviewed before anyone launches it.
+
+The matrices in this file are historical May 12 controls. They do not encode
+the current survival diagnostic lane.
 """
 
 from __future__ import annotations
@@ -20,6 +23,10 @@ from typing import Any
 MODULE = "curvyzero.infra.modal.lightzero_curvyzero_stacked_debug_visual_survival_train"
 TASK_ID = "lightzero-curvytron-visual-survival"
 SCHEMA_ID = "curvyzero_curvytron_stock_train_dry_run_manifest/v0"
+HISTORICAL_MATRIX_WARNING = (
+    "historical_only: this generator emits May 12 fixed/frozen control rows, "
+    "not the current survival_plus_bonus_no_outcome blank_canvas_noop matrix"
+)
 
 MODE_TRAIN = "train"
 ENV_SOURCE_STATE_FIXED_OPPONENT = "source_state_fixed_opponent"
@@ -919,6 +926,14 @@ def _manifest_row(
 
 
 def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
+    if not bool(getattr(args, "allow_historical_matrix", False)):
+        raise SystemExit(
+            "Refusing to emit this historical stock manifest by default. "
+            "The current CurvyTron survival diagnostic lane needs a new schema "
+            "with survival_plus_bonus_no_outcome, blank_canvas_noop, separated "
+            "seed/copy fields, render pairs, and explicit stochasticity. "
+            "Pass --allow-historical-matrix only to inspect old May 12 controls."
+        )
     matrix_name = _safe_id(args.matrix_name, label="matrix_name")
     run_prefix = _safe_id(args.run_prefix or f"curvytron-stock-{matrix_name}", label="run_prefix")
     attempt_prefix = _safe_id(
@@ -959,6 +974,9 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
         "schema_id": SCHEMA_ID,
         "generated_at": _utc_timestamp(),
         "dry_run_only": True,
+        "historical_only": True,
+        "current_launch_approved": False,
+        "warning": HISTORICAL_MATRIX_WARNING,
         "launches_modal": False,
         "matrix_name": matrix_name,
         "task_id": TASK_ID,
@@ -976,6 +994,10 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
             "source_state_trail_render_mode": args.source_state_trail_render_mode,
             "frozen_checkpoint_refs_must_be_immutable": True,
             "commands_reviewed_only": True,
+            "current_survivaldiag_matrix": False,
+            "current_launch_blocker": (
+                "stale reward/opponent/seed schema; use only for historical audit"
+            ),
             "include_joint_diagnostics": bool(args.include_joint_diagnostics),
         },
         "rows": manifest_rows,
@@ -1057,6 +1079,14 @@ def parse_args() -> argparse.Namespace:
         help="Omit --detach from generated command text.",
     )
     parser.add_argument(
+        "--allow-historical-matrix",
+        action="store_true",
+        help=(
+            "Permit historical May 12 fixed/frozen control manifests. This does "
+            "not approve the output for current CurvyTron survivaldiag launches."
+        ),
+    )
+    parser.add_argument(
         "--stdout-only",
         action="store_true",
         help="Print the manifest and do not write artifact files.",
@@ -1076,6 +1106,8 @@ def main() -> None:
             {
                 "ok": True,
                 "dry_run_only": True,
+                "historical_only": manifest.get("historical_only"),
+                "current_launch_approved": manifest.get("current_launch_approved"),
                 "launches_modal": False,
                 "matrix_name": manifest["matrix_name"],
                 "row_count": manifest["row_count"],

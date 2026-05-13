@@ -41,6 +41,12 @@ while keeping LightZero replay and target construction intact.
 Fix: revive it as a stock-loop control/curriculum candidate, with honest labels
 and opponent panels.
 
+Current update: v1d weakened the "recent frozen as curriculum" claim. Keep
+fixed/old/recent frozen as controls when useful, but follow
+[current_source_of_truth.md](current_source_of_truth.md): the active next lane
+is survival-first with diagnostic opponents, not recent frozen as the main
+curriculum.
+
 ## 5. Scaling Before Replay/Target Semantics Were Proven
 
 Wrong because: the highest-risk code was not Modal or GPU setup. It was the
@@ -118,3 +124,29 @@ resume path.
 
 Fix: put code-version assumptions in run metadata and never rely on old
 detached jobs picking up new local code.
+
+## 12. Treating Outcome Against Weak Opponents As The Main Signal
+
+Wrong because: fixed, old frozen, and recent frozen opponents can die or lose
+before the ego policy has learned meaningful wall survival.
+
+Reality: v1d showed outcome can move or saturate while survival stays near the
+floor. For the current diagnostic lane, survival and trainer reward are the
+primary curves; outcome is telemetry.
+
+Fix: use `survival_plus_bonus_no_outcome` for training, keep
+`blank_canvas_noop` as the anchor, and include weak/frozen opponents only as
+small labeled controls.
+
+## 13. Launching From Historical Dry-Run Generators
+
+Wrong because: old generators can still emit plausible Modal commands with
+stale reward names, weak/frozen opponent assumptions, short episode caps, and
+single-seed schemas.
+
+Reality: the old stock manifest generator is now historical-only and fails
+closed by default. The next launch needs a fresh survivaldiag manifest schema.
+
+Fix: current launch commands must come from a generator that records
+`survival_plus_bonus_no_outcome`, `blank_canvas_noop`, high cap, render pairing,
+stochasticity semantics, and separated seed/copy fields.

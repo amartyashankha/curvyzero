@@ -120,6 +120,79 @@ def test_eval_manifest_rollup_uses_latest_manifest_by_checkpoint(monkeypatch, tm
     assert checkpoint["row_action_collapsed_count"] == 2
 
 
+def test_eval_manifest_rollup_preserves_survivaldiag_fields(monkeypatch, tmp_path):
+    monkeypatch.setattr(status_mod, "RUNS_MOUNT", tmp_path)
+    run_id = "run-survivaldiag"
+    attempt_id = "attempt-survivaldiag"
+    eval_root = tmp_path / runs.attempt_eval_ref(status_mod.TASK_ID, run_id, attempt_id, "matrix")
+    manifest_path = eval_root / "manifest_survivaldiag.json"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "job_kind": "lightzero_curvytron_visual_survival_checkpoint_curve_eval",
+                "eval_id": "matrix-survivaldiag",
+                "created_at": "2026-05-13T01:00:00Z",
+                "survival_aggregate_table": [
+                    {
+                        "checkpoint": "iteration_2",
+                        "seeds": 2,
+                        "mean_steps": 18,
+                        "median_steps": 18,
+                        "min_steps": 12,
+                        "max_steps": 24,
+                        "ok_count": 1,
+                        "failure_count": 1,
+                        "action_entropy": 0.42,
+                    }
+                ],
+                "table": [
+                    {
+                        "checkpoint_label": "iteration_2",
+                        "seed": 1,
+                        "ok": True,
+                        "training_reward": 1.0,
+                        "bonus_pickup_count": 1,
+                        "bonus_pickup_reward": 0.1,
+                        "reward_components": {"survival": 0.9, "bonus": 0.1},
+                        "terminal_cause": "normal_wall",
+                        "action_histogram": {"0": 1, "1": 1},
+                    },
+                    {
+                        "checkpoint_label": "iteration_2",
+                        "seed": 2,
+                        "ok": False,
+                        "training_reward": 2.0,
+                        "bonus_pickup_count": 3,
+                        "bonus_pickup_reward": 0.4,
+                        "reward_components": {"survival": 1.6, "bonus": 0.4},
+                        "terminal_cause": "cap",
+                        "action_histogram": {"1": 2},
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rollup = status_mod._eval_manifest_rollup(
+        run_id,
+        attempt_id,
+        collapse_threshold=0.8,
+    )
+
+    checkpoint = rollup["eval_checkpoints"][0]
+    assert checkpoint["mean_training_reward"] == 1.5
+    assert checkpoint["mean_bonus_pickup_count"] == 2.0
+    assert checkpoint["mean_bonus_reward"] == 0.25
+    assert checkpoint["mean_reward_components"] == {"bonus": 0.25, "survival": 1.25}
+    assert checkpoint["terminal_cause_histogram"] == {"cap": 1, "normal_wall": 1}
+    assert checkpoint["action_histogram"] == {"0": 1, "1": 3}
+    assert checkpoint["action_entropy"] == 0.42
+    assert checkpoint["failure_rate"] == 0.5
+    assert checkpoint["eval_health"] == "has_failures"
+
+
 def test_status_rolls_up_missing_reason_train_actions_poller_and_gifs(monkeypatch, tmp_path):
     monkeypatch.setattr(status_mod, "RUNS_MOUNT", tmp_path)
     run_id = "run-b"

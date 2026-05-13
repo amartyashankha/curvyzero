@@ -171,6 +171,39 @@ def _step_input(
     )
 
 
+def test_step_input_validates_disabled_player_mask_shape_and_dtype():
+    valid = _step_input(row_count=2, player_count=2)
+    valid = vector_runtime.VectorStepInput(
+        state=valid.state,
+        step_ms=valid.step_ms,
+        source_moves=valid.source_moves,
+        player_count=valid.player_count,
+        print_manager_mode=valid.print_manager_mode,
+        disabled_player_mask=np.zeros((2, 2), dtype=bool),
+    )
+    vector_runtime.validate_step_input(valid)
+
+    bad_shape = vector_runtime.VectorStepInput(
+        state=valid.state,
+        step_ms=valid.step_ms,
+        source_moves=valid.source_moves,
+        player_count=valid.player_count,
+        disabled_player_mask=np.zeros((2, 1), dtype=bool),
+    )
+    with pytest.raises(vector_runtime.VectorRuntimeError, match="disabled_player_mask"):
+        vector_runtime.validate_step_input(bad_shape)
+
+    bad_dtype = vector_runtime.VectorStepInput(
+        state=valid.state,
+        step_ms=valid.step_ms,
+        source_moves=valid.source_moves,
+        player_count=valid.player_count,
+        disabled_player_mask=np.zeros((2, 2), dtype=np.int8),
+    )
+    with pytest.raises(vector_runtime.VectorRuntimeError, match="disabled_player_mask"):
+        vector_runtime.validate_step_input(bad_dtype)
+
+
 def _random_tape_state() -> dict[str, np.ndarray]:
     return {
         "tick": np.zeros(2, dtype=np.int32),

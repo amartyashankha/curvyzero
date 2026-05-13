@@ -140,7 +140,40 @@ from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env imp
     DEFAULT_DECISION_MS as SOURCE_STATE_DEFAULT_DECISION_MS,
 )
 from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
+    DEFAULT_POLICY_ACTION_REPEAT_EXTRA_PROBABILITY as SOURCE_STATE_DEFAULT_POLICY_ACTION_REPEAT_EXTRA_PROBABILITY,
+)
+from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
+    DEFAULT_POLICY_ACTION_REPEAT_MAX as SOURCE_STATE_DEFAULT_POLICY_ACTION_REPEAT_MAX,
+)
+from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
+    DEFAULT_POLICY_ACTION_REPEAT_MIN as SOURCE_STATE_DEFAULT_POLICY_ACTION_REPEAT_MIN,
+)
+from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
     JOINT_ACTION_COUNT as SOURCE_STATE_JOINT_ACTION_COUNT,
+)
+from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
+    OPPONENT_DEATH_MODE_IMMORTAL,
+)
+from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
+    OPPONENT_DEATH_MODE_NORMAL,
+)
+from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
+    OPPONENT_DEATH_MODES,
+)
+from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
+    OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP,
+)
+from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
+    OPPONENT_RUNTIME_MODE_NORMAL,
+)
+from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
+    OPPONENT_RUNTIME_MODES,
+)
+from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
+    OPPONENT_POLICY_KIND_PROACTIVE_WALL_AVOIDANT,
+)
+from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
+    OPPONENT_TRAINING_RELATION_PROACTIVE_WALL_AVOIDANT,
 )
 from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
     LIGHTZERO_SOURCE_STATE_VISUAL_JOINT_ACTION_ENV_ID,
@@ -161,7 +194,16 @@ from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env imp
     REWARD_VARIANT_SPARSE_OUTCOME,
 )
 from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
+    REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME,
+)
+from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
     SOURCE_STATE_FIXED_OPPONENT_REWARD_VARIANTS,
+)
+from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
+    SURVIVAL_PLUS_BONUS_NO_OUTCOME_BONUS_REWARD,
+)
+from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
+    SURVIVAL_PLUS_BONUS_NO_OUTCOME_REWARD_SCHEMA_ID,
 )
 from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
     SOURCE_STATE_JOINT_ACTION_ADAPTER_IMPL_ID,
@@ -324,15 +366,24 @@ ENV_VARIANT_CHOICES = (
 DEFAULT_ENV_VARIANT = ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT
 REWARD_VARIANT_AUTO = "auto"
 DEFAULT_REWARD_VARIANT = REWARD_VARIANT_AUTO
+SOURCE_STATE_FIXED_OPPONENT_MAX_MODEL_SUPPORT_SCALE = 300
 REWARD_VARIANT_CHOICES = (
     REWARD_VARIANT_AUTO,
     REWARD_VARIANT_SPARSE_OUTCOME,
     REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME,
+    REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME,
     REWARD_VARIANT_ALL_PLAYERS_ALIVE_DIAGNOSTIC,
 )
 DEFAULT_EGO_ACTION_STRAIGHT_OVERRIDE_PROBABILITY = 0.0
+DEFAULT_POLICY_ACTION_REPEAT_MIN = SOURCE_STATE_DEFAULT_POLICY_ACTION_REPEAT_MIN
+DEFAULT_POLICY_ACTION_REPEAT_MAX = SOURCE_STATE_DEFAULT_POLICY_ACTION_REPEAT_MAX
+DEFAULT_POLICY_ACTION_REPEAT_EXTRA_PROBABILITY = (
+    SOURCE_STATE_DEFAULT_POLICY_ACTION_REPEAT_EXTRA_PROBABILITY
+)
 DEFAULT_CONTROL_NOISE_PROFILE_ID = "none"
 DEFAULT_DISABLE_DEATH_FOR_PROFILE = False
+DEFAULT_OPPONENT_DEATH_MODE = OPPONENT_DEATH_MODE_NORMAL
+DEFAULT_OPPONENT_RUNTIME_MODE = OPPONENT_RUNTIME_MODE_NORMAL
 OPPONENT_POLICY_KIND_NONE_CENTRALIZED_JOINT_ACTION = (
     "none_centralized_joint_action"
 )
@@ -340,6 +391,7 @@ DEFAULT_OPPONENT_POLICY_KIND = OPPONENT_POLICY_KIND_FIXED_STRAIGHT
 DEFAULT_OPPONENT_USE_CUDA = False
 OPPONENT_POLICY_KIND_CHOICES = (
     OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
+    OPPONENT_POLICY_KIND_PROACTIVE_WALL_AVOIDANT,
     OPPONENT_POLICY_KIND_FROZEN_LIGHTZERO_CHECKPOINT,
     OPPONENT_POLICY_KIND_NONE_CENTRALIZED_JOINT_ACTION,
 )
@@ -370,6 +422,8 @@ BACKGROUND_GIF_POLICY_MODE_CHOICES = (
 DEFAULT_BACKGROUND_GIF_POLICY_MODE = BACKGROUND_GIF_POLICY_MODE_EVAL_GREEDY
 DEFAULT_BACKGROUND_GIF_COLLECT_TEMPERATURE = 1.0
 DEFAULT_BACKGROUND_GIF_COLLECT_EPSILON = 0.25
+BACKGROUND_GIF_COLLECT_SETTINGS_SOURCE_TRAINING = "training_collect_settings"
+BACKGROUND_GIF_COLLECT_SETTINGS_SOURCE_OVERRIDE = "background_gif_override"
 BACKGROUND_GIF_VARIANT_EVAL_GREEDY = "eval_greedy"
 BACKGROUND_GIF_VARIANT_COLLECT_T1 = "collect_t1"
 BACKGROUND_GIF_VARIANT_FILENAMES = {
@@ -387,8 +441,10 @@ BACKGROUND_EVAL_LAUNCH_CHOICES = (
 DEFAULT_BACKGROUND_EVAL_LAUNCH_KIND = BACKGROUND_EVAL_LAUNCH_POLLER
 DEFAULT_BACKGROUND_EVAL_POLL_INTERVAL_SEC = 10.0
 DEFAULT_BACKGROUND_EVAL_POLL_STABLE_POLLS = 1
-DEFAULT_BACKGROUND_EVAL_POLLER_MAX_RUNTIME_SEC = 8 * 60 * 60
+DEFAULT_BACKGROUND_EVAL_POLLER_MAX_RUNTIME_SEC = 18 * 60 * 60
 DEFAULT_BACKGROUND_EVAL_POLLER_IDLE_AFTER_DONE_SEC = 60.0
+DEFAULT_STOCK_TRAIN_MODAL_TIMEOUT_SEC = 16 * 60 * 60
+DEFAULT_BACKGROUND_EVAL_POLLER_MODAL_TIMEOUT_SEC = 20 * 60 * 60
 DEFAULT_TWO_SEAT_COLLECT_STEPS_PER_ITERATION = 64
 DEFAULT_TWO_SEAT_UPDATES_PER_ITERATION = 4
 DEFAULT_TWO_SEAT_MAX_TICKS = 65_536
@@ -502,6 +558,33 @@ def _reward_policy_for_variant(
                 "draw_bonus": 0.0,
                 "truncation_bonus": 0.0,
             }
+        if reward_variant == REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME:
+            return {
+                "reward_variant": reward_variant,
+                "reward_schema_id": SURVIVAL_PLUS_BONUS_NO_OUTCOME_REWARD_SCHEMA_ID,
+                "survival_length_is_eval_metric": True,
+                "dense_survival_reward": True,
+                "dense_alive_helper": 1.0,
+                "same_step_bonus_pickup_reward": True,
+                "bonus_pickup_reward_per_catch": (
+                    SURVIVAL_PLUS_BONUS_NO_OUTCOME_BONUS_REWARD
+                ),
+                "bonus_pickup_source": "bonus_catch_count_step[0, ego_player_index]",
+                "sparse_outcome_reward": False,
+                "sparse_outcome_telemetry_only": True,
+                "survival_only": False,
+                "diagnostic_all_players_alive": False,
+                "centralized_joint_action_control": False,
+                "per_player_reward": True,
+                "zero_sum_reward": False,
+                "post_transition_alive_reward": 1.0,
+                "post_transition_dead_reward": 0.0,
+                "terminal_outcome_bonus": 0.0,
+                "winner_bonus": 0.0,
+                "loser_penalty": 0.0,
+                "draw_bonus": 0.0,
+                "truncation_bonus": 0.0,
+            }
         raise ValueError(
             "source_state_fixed_opponent reward_variant must be one of "
             f"{SOURCE_STATE_FIXED_OPPONENT_REWARD_VARIANTS!r}; got {reward_variant!r}"
@@ -540,15 +623,50 @@ def _lightzero_target_config_for_reward(
         reward_variant=reward_variant,
     )
     if env_variant == ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT:
-        support_scale = 1
+        reward_support_scale = 1
+        value_support_scale = 1
         if reward_variant == REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME:
-            support_scale = int(source_max_steps) + 1
+            reward_support_scale = 2
+            value_support_scale = int(source_max_steps) + 1
+        if reward_variant == REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME:
+            reward_support_scale = int(
+                1.0 + SURVIVAL_PLUS_BONUS_NO_OUTCOME_BONUS_REWARD
+            )
+            value_support_scale = int(
+                source_max_steps
+                * (1.0 + SURVIVAL_PLUS_BONUS_NO_OUTCOME_BONUS_REWARD)
+            )
+        max_support_scale = SOURCE_STATE_FIXED_OPPONENT_MAX_MODEL_SUPPORT_SCALE
+        capped_reward_support_scale = min(int(reward_support_scale), max_support_scale)
+        capped_value_support_scale = min(int(value_support_scale), max_support_scale)
+        model_support_scale = max(capped_reward_support_scale, capped_value_support_scale)
+        model_support_size = int(2 * model_support_scale + 1)
+        model_support_range = (
+            -float(model_support_scale),
+            float(model_support_scale + 1),
+            1.0,
+        )
         return {
             "discount_factor": 1.0,
             "td_steps": int(source_max_steps),
-            "model_support_scale": int(support_scale),
-            "model_reward_support_size": int(2 * support_scale + 1),
-            "model_value_support_size": int(2 * support_scale + 1),
+            "model_support_scale": int(model_support_scale),
+            "model_reward_support_size": model_support_size,
+            "model_value_support_size": model_support_size,
+            "model_reward_support_range": model_support_range,
+            "model_value_support_range": model_support_range,
+            "model_support_cap": int(max_support_scale),
+            "model_reward_support_capped": (
+                int(reward_support_scale) > max_support_scale
+            ),
+            "model_value_support_capped": (
+                int(value_support_scale) > max_support_scale
+            ),
+            "model_reward_support_requested_scale": int(reward_support_scale),
+            "model_value_support_requested_scale": int(value_support_scale),
+            "model_reward_support_effective_scale": int(model_support_scale),
+            "model_value_support_effective_scale": int(model_support_scale),
+            "uncapped_model_reward_support_scale": int(reward_support_scale),
+            "uncapped_model_value_support_scale": int(value_support_scale),
         }
     if env_variant == ENV_VARIANT_SOURCE_STATE_JOINT_ACTION:
         support_scale = max(1, int(source_max_steps))
@@ -625,6 +743,14 @@ PROFILE_COUNT_KEYS = (
 
 def _compute_uses_cuda(compute: str) -> bool:
     return compute.startswith("gpu-")
+
+
+def _should_install_lightzero_phase_profile(
+    *, mode: str, stop_after_learner_train_calls: int
+) -> bool:
+    return mode == "profile" or int(stop_after_learner_train_calls) > 0
+
+
 LIGHTZERO_RESUME_STATE_DIRNAME = "lightzero_resume_state"
 TARGET_AUDIT_MAX_SEGMENTS = 4
 TARGET_AUDIT_MAX_STEPS_PER_SEGMENT = 8
@@ -1476,7 +1602,7 @@ def _install_lightzero_phase_profile(
                         raise _LightZeroProfileStop(
                             "stopped after "
                             f"{learner_train_calls} BaseLearner.train calls "
-                            "by optimizer profile cap"
+                            "by explicit learner train call cap"
                         )
                     return result
 
@@ -1650,6 +1776,125 @@ def _install_live_checkpoint_publisher(
         except Exception as exc:  # pragma: no cover - remote resilience only.
             print(
                 "curvyzero checkpoint eval trigger failed: "
+                f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
+        return result
+
+    setattr(owner, "save_checkpoint", wrapped)
+
+    def restore() -> None:
+        setattr(owner, "save_checkpoint", original)
+
+    return restore
+
+
+def _safe_int_or_none(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _latest_lightzero_iteration_checkpoint(exp_name: Path) -> dict[str, Any] | None:
+    ckpt_dir = exp_name / "ckpt"
+    if not ckpt_dir.is_dir():
+        return None
+    candidates: list[tuple[int, Path]] = []
+    for path in ckpt_dir.glob("iteration_*.pth.tar"):
+        iteration = _lightzero_iteration_from_checkpoint_name(path.name)
+        if iteration is not None:
+            candidates.append((iteration, path))
+    if not candidates:
+        return None
+    iteration, path = max(candidates, key=lambda item: item[0])
+    checkpoint_ref = None
+    try:
+        checkpoint_ref = _checkpoint_source_ref(path)
+    except ValueError:
+        checkpoint_ref = None
+    return {
+        "iteration": int(iteration),
+        "checkpoint_name": path.name,
+        "checkpoint_path": str(path),
+        "checkpoint_ref": checkpoint_ref,
+    }
+
+
+def _write_checkpoint_progress_latest(
+    *,
+    run_id: str,
+    attempt_id: str,
+    attempt_train_root: Path,
+    exp_name: Path,
+    learner: Any,
+    started_monotonic: float,
+) -> dict[str, Any]:
+    checkpoint = _latest_lightzero_iteration_checkpoint(exp_name)
+    learner_iteration = _safe_int_or_none(getattr(learner, "train_iter", None))
+    iteration = (
+        int(checkpoint["iteration"])
+        if checkpoint is not None and checkpoint.get("iteration") is not None
+        else learner_iteration
+    )
+    now = runs.utc_timestamp()
+    payload = {
+        "schema_id": "curvyzero_lightzero_curvytron_train_progress_latest/v0",
+        "task_id": TASK_ID,
+        "run_id": run_id,
+        "attempt_id": attempt_id,
+        "iteration": iteration,
+        "learner_train_iter": learner_iteration,
+        "elapsed_sec": round(max(0.0, time.perf_counter() - started_monotonic), 6),
+        "timestamp": now,
+        "updated_at": now,
+        "source": "BaseLearner.save_checkpoint",
+    }
+    if checkpoint is not None:
+        payload["checkpoint"] = checkpoint
+        payload["checkpoint_ref"] = checkpoint.get("checkpoint_ref")
+        payload["checkpoint_name"] = checkpoint.get("checkpoint_name")
+    path = attempt_train_root / "progress_latest.json"
+    return runs.write_json(path, _to_plain(payload))
+
+
+def _install_checkpoint_progress_writer(
+    *,
+    train_muzero: Any,
+    run_id: str,
+    attempt_id: str,
+    exp_name: Path,
+    attempt_train_root: Path,
+    started_monotonic: float,
+) -> Any:
+    """Write the progress file used by the GIF browser whenever LightZero checkpoints."""
+
+    globals_map = getattr(train_muzero, "__globals__", {})
+    learner_cls = globals_map.get("BaseLearner")
+    if not inspect.isclass(learner_cls):
+        return None
+    owner = next(
+        (base for base in inspect.getmro(learner_cls) if "save_checkpoint" in getattr(base, "__dict__", {})),
+        None,
+    )
+    if owner is None:
+        return None
+    original = owner.__dict__["save_checkpoint"]
+
+    def wrapped(self: Any, *args: Any, **kwargs: Any) -> Any:
+        result = original(self, *args, **kwargs)
+        try:
+            _write_checkpoint_progress_latest(
+                run_id=run_id,
+                attempt_id=attempt_id,
+                attempt_train_root=attempt_train_root,
+                exp_name=exp_name,
+                learner=self,
+                started_monotonic=started_monotonic,
+            )
+        except Exception as exc:  # pragma: no cover - remote resilience only.
+            print(
+                "curvyzero checkpoint progress write failed: "
                 f"{type(exc).__name__}: {exc}",
                 flush=True,
             )
@@ -2717,7 +2962,12 @@ def _run_visual_survival_train(
     source_state_trail_render_mode: str,
     ego_action_straight_override_probability: float,
     control_noise_profile_id: str,
+    policy_action_repeat_min: int,
+    policy_action_repeat_max: int,
+    policy_action_repeat_extra_probability: float,
     disable_death_for_profile: bool,
+    opponent_death_mode: str,
+    opponent_runtime_mode: str,
     env_telemetry_stride: int,
     env_manager_type: str,
     lightzero_multi_gpu: bool,
@@ -2772,6 +3022,14 @@ def _run_visual_survival_train(
         env_variant=env_variant,
         reward_variant=reward_variant,
     )
+    if opponent_death_mode not in OPPONENT_DEATH_MODES:
+        raise ValueError(
+            f"opponent_death_mode must be one of {OPPONENT_DEATH_MODES!r}"
+        )
+    if opponent_runtime_mode not in OPPONENT_RUNTIME_MODES:
+        raise ValueError(
+            f"opponent_runtime_mode must be one of {OPPONENT_RUNTIME_MODES!r}"
+        )
     reward_policy = _reward_policy_for_variant(
         env_variant=env_variant,
         reward_variant=reward_variant,
@@ -2825,6 +3083,15 @@ def _run_visual_survival_train(
         raise ValueError("decision_ms must be positive")
     if not 0.0 <= float(ego_action_straight_override_probability) <= 1.0:
         raise ValueError("ego_action_straight_override_probability must be in [0, 1]")
+    if int(policy_action_repeat_min) < 1:
+        raise ValueError("policy_action_repeat_min must be at least 1")
+    if int(policy_action_repeat_max) < int(policy_action_repeat_min):
+        raise ValueError(
+            "policy_action_repeat_max must be greater than or equal to "
+            "policy_action_repeat_min"
+        )
+    if not 0.0 <= float(policy_action_repeat_extra_probability) <= 1.0:
+        raise ValueError("policy_action_repeat_extra_probability must be in [0, 1]")
     if bool(disable_death_for_profile) and mode != "profile":
         raise ValueError("disable_death_for_profile is only allowed in mode='profile'")
     if env_variant == ENV_VARIANT_SOURCE_STATE_TURN_COMMIT and mode == "train":
@@ -2937,7 +3204,45 @@ def _run_visual_survival_train(
         "ego_action_straight_override_probability": float(
             ego_action_straight_override_probability
         ),
+        "policy_action_repeat_min": int(policy_action_repeat_min),
+        "policy_action_repeat_max": int(policy_action_repeat_max),
+        "policy_action_repeat_extra_probability": float(
+            policy_action_repeat_extra_probability
+        ),
+        "policy_action_repeat_semantics": (
+            "repeat_selected_policy_action_inside_one_lightzero_env_step"
+        ),
         "disable_death_for_profile": bool(disable_death_for_profile),
+        "opponent_death_mode": opponent_death_mode,
+        "opponent_death_mode_diagnostic": (
+            opponent_death_mode == OPPONENT_DEATH_MODE_IMMORTAL
+        ),
+        "opponent_death_mode_claim": (
+            "diagnostic_opponent_immortal_not_source_faithful"
+            if opponent_death_mode == OPPONENT_DEATH_MODE_IMMORTAL
+            else "none"
+        ),
+        "opponent_runtime_mode": opponent_runtime_mode,
+        "opponent_runtime_mode_claim": (
+            "blank_canvas_noop_player_1_inert_hidden_no_trail_no_collision_no_bonus"
+            if opponent_runtime_mode == OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP
+            else "normal_opponent_runtime"
+        ),
+        "opponent_visibility_mode": (
+            "hidden_from_model_gif_raw_render_views_public_present_alive"
+            if opponent_runtime_mode == OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP
+            else "visible_if_present_alive"
+        ),
+        "opponent_collision_effect": (
+            "disabled_no_player_1_movement_trail_collision_bonus_side_effects"
+            if opponent_runtime_mode == OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP
+            else "normal"
+        ),
+        "opponent_trail_mode": (
+            "none_blank_canvas_scrubbed"
+            if opponent_runtime_mode == OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP
+            else "normal"
+        ),
         "death_mode": (
             "profile_no_death" if disable_death_for_profile else "normal"
         ),
@@ -3077,7 +3382,12 @@ def _run_visual_survival_train(
         env_variant=env_variant,
         ego_action_straight_override_probability=ego_action_straight_override_probability,
         control_noise_profile_id=control_noise_profile_id,
+        policy_action_repeat_min=policy_action_repeat_min,
+        policy_action_repeat_max=policy_action_repeat_max,
+        policy_action_repeat_extra_probability=policy_action_repeat_extra_probability,
         disable_death_for_profile=disable_death_for_profile,
+        opponent_death_mode=opponent_death_mode,
+        opponent_runtime_mode=opponent_runtime_mode,
         env_telemetry_stride=env_telemetry_stride,
         profile_env_timing_enabled=(mode == "profile"),
         env_manager_type=env_manager_type,
@@ -3158,8 +3468,12 @@ def _run_visual_survival_train(
     called_train_muzero = False
     stdout_text = ""
     stderr_text = ""
+    install_phase_profile = _should_install_lightzero_phase_profile(
+        mode=mode,
+        stop_after_learner_train_calls=int(stop_after_learner_train_calls),
+    )
     profiler = _LightZeroPhaseProfiler(
-        enabled=mode == "profile",
+        enabled=install_phase_profile,
         cuda_sync_enabled=profile_cuda_sync_enabled,
     )
     target_audit = _LightZeroTargetAudit(mode=mode, env_variant=command["env_variant"])
@@ -3171,6 +3485,7 @@ def _run_visual_survival_train(
         restore_profile = None
         restore_target_audit = None
         restore_live_publisher = None
+        restore_progress_writer = None
         restore_resume_state = None
         gpu_sampler = None
         try:
@@ -3180,6 +3495,14 @@ def _run_visual_survival_train(
                 attempt_id=attempt_id,
                 exp_name=exp_name,
                 auto_resume=auto_resume,
+            )
+            restore_progress_writer = _install_checkpoint_progress_writer(
+                train_muzero=train_muzero,
+                run_id=run_id,
+                attempt_id=attempt_id,
+                exp_name=exp_name,
+                attempt_train_root=attempt_train_root,
+                started_monotonic=train_started,
             )
             restore_live_publisher = _install_live_checkpoint_publisher(
                 train_muzero=train_muzero,
@@ -3197,13 +3520,18 @@ def _run_visual_survival_train(
                 train_muzero=train_muzero,
                 audit=target_audit,
             )
-            if mode == "profile":
+            if install_phase_profile:
                 restore_profile = _install_lightzero_phase_profile(
                     train_muzero=train_muzero,
                     profiler=profiler,
                     stop_after_learner_train_calls=int(stop_after_learner_train_calls),
-                    skip_evaluator_eval=bool(skip_lightzero_eval_in_profile),
+                    skip_evaluator_eval=(
+                        bool(skip_lightzero_eval_in_profile)
+                        if mode == "profile"
+                        else False
+                    ),
                 )
+            if mode == "profile":
                 gpu_sampler = _start_gpu_sampler(
                     profiler=profiler,
                     interval_sec=profiler.gpu_sample_interval_sec,
@@ -3236,6 +3564,7 @@ def _run_visual_survival_train(
             train_result = {
                 "ok": True,
                 "stopped_by_optimizer_profile_cap": True,
+                "stopped_by_learner_train_call_cap": True,
                 "stop_reason": str(exc),
                 "elapsed_sec": round(time.perf_counter() - train_started, 6),
                 "log_signals": _parse_training_signals(stdout_text, stderr_text),
@@ -3269,6 +3598,13 @@ def _run_visual_survival_train(
                 except Exception as exc:  # pragma: no cover - remote diagnosis only.
                     profiler.add_note(
                         f"live checkpoint publisher restore failed: {type(exc).__name__}: {exc}"
+                    )
+            if restore_progress_writer is not None:
+                try:
+                    restore_progress_writer()
+                except Exception as exc:  # pragma: no cover - remote diagnosis only.
+                    profiler.add_note(
+                        f"checkpoint progress writer restore failed: {type(exc).__name__}: {exc}"
                     )
             if restore_resume_state is not None:
                 try:
@@ -3458,6 +3794,16 @@ def _run_visual_survival_train(
         summary_ref=summary_ref,
         modal_task_id=modal_task_id,
     )
+    final_status_heartbeat = _write_train_status_heartbeat(
+        run_id=run_id,
+        attempt_id=attempt_id,
+        status=status,
+        stage=status,
+        started_at=started_at,
+        modal_task_id=modal_task_id,
+        config=command,
+        exp_name_ref=exp_name_ref.as_posix(),
+    )
     final_volume_commit = {"attempted": False}
     if mode == "profile" and profile_volume_commit and hasattr(runs_volume, "commit"):
         final_volume_commit = {"attempted": True, "ok": False}
@@ -3483,6 +3829,7 @@ def _run_visual_survival_train(
         "summary_ref": summary_ref,
         "attempt_manifest": attempt_manifest,
         "latest_attempt": latest_attempt,
+        "final_status_heartbeat": final_status_heartbeat,
         "problems": problems,
         "command": command,
         "runtime_compute": summary.get("runtime_compute"),
@@ -3625,7 +3972,10 @@ def _resolve_opponent_checkpoint_for_env(
                 "opponent_checkpoint_ref is not valid for centralized joint-action control"
             )
         return None
-    if opponent_policy_kind == OPPONENT_POLICY_KIND_FIXED_STRAIGHT:
+    if opponent_policy_kind in (
+        OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
+        OPPONENT_POLICY_KIND_PROACTIVE_WALL_AVOIDANT,
+    ):
         if opponent_checkpoint_ref:
             raise ValueError(
                 "opponent_checkpoint_ref is only valid with frozen_lightzero_checkpoint"
@@ -3956,8 +4306,15 @@ def _build_visual_survival_configs(
     opponent_snapshot_ref: str | None,
     opponent_checkpoint_state_key: str | None,
     source_state_trail_render_mode: str = DEFAULT_SOURCE_STATE_TRAIL_RENDER_MODE,
+    policy_action_repeat_min: int = DEFAULT_POLICY_ACTION_REPEAT_MIN,
+    policy_action_repeat_max: int = DEFAULT_POLICY_ACTION_REPEAT_MAX,
+    policy_action_repeat_extra_probability: float = (
+        DEFAULT_POLICY_ACTION_REPEAT_EXTRA_PROBABILITY
+    ),
     natural_bonus_spawn: bool = TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN,
     profile_env_timing_enabled: bool = False,
+    opponent_death_mode: str = DEFAULT_OPPONENT_DEATH_MODE,
+    opponent_runtime_mode: str = DEFAULT_OPPONENT_RUNTIME_MODE,
 ) -> dict[str, Any]:
     from easydict import EasyDict
 
@@ -4088,8 +4445,46 @@ def _build_visual_survival_configs(
             "ego_action_straight_override_probability": float(
                 ego_action_straight_override_probability
             ),
+            "policy_action_repeat_min": int(policy_action_repeat_min),
+            "policy_action_repeat_max": int(policy_action_repeat_max),
+            "policy_action_repeat_extra_probability": float(
+                policy_action_repeat_extra_probability
+            ),
+            "policy_action_repeat_semantics": (
+                "repeat_selected_policy_action_inside_one_lightzero_env_step"
+            ),
             "control_noise_profile_id": str(control_noise_profile_id),
             "disable_death_for_profile": bool(disable_death_for_profile),
+            "opponent_death_mode": opponent_death_mode,
+            "opponent_death_mode_diagnostic": (
+                opponent_death_mode == OPPONENT_DEATH_MODE_IMMORTAL
+            ),
+            "opponent_death_mode_claim": (
+                "diagnostic_opponent_immortal_not_source_faithful"
+                if opponent_death_mode == OPPONENT_DEATH_MODE_IMMORTAL
+                else "none"
+            ),
+            "opponent_runtime_mode": opponent_runtime_mode,
+            "opponent_runtime_mode_claim": (
+                "blank_canvas_noop_player_1_inert_hidden_no_trail_no_collision_no_bonus"
+                if opponent_runtime_mode == OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP
+                else "normal_opponent_runtime"
+            ),
+            "opponent_visibility_mode": (
+                "hidden_from_model_gif_raw_render_views_public_present_alive"
+                if opponent_runtime_mode == OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP
+                else "visible_if_present_alive"
+            ),
+            "opponent_collision_effect": (
+                "disabled_no_player_1_movement_trail_collision_bonus_side_effects"
+                if opponent_runtime_mode == OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP
+                else "normal"
+            ),
+            "opponent_trail_mode": (
+                "none_blank_canvas_scrubbed"
+                if opponent_runtime_mode == OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP
+                else "normal"
+            ),
             "natural_bonus_spawn": bool(natural_bonus_spawn),
             "death_mode": (
                 "profile_no_death" if disable_death_for_profile else "normal"
@@ -4178,6 +4573,8 @@ def _extract_surface(
         "model_support_scale": model.get("support_scale"),
         "model_reward_support_size": model.get("reward_support_size"),
         "model_value_support_size": model.get("value_support_size"),
+        "model_reward_support_range": _to_plain(model.get("reward_support_range")),
+        "model_value_support_range": _to_plain(model.get("value_support_range")),
         "load_ckpt_before_run": _get_path(
             policy,
             ("learn", "learner", "hook", "load_ckpt_before_run"),
@@ -4221,8 +4618,22 @@ def _extract_surface(
         "ego_action_straight_override_probability": env.get(
             "ego_action_straight_override_probability"
         ),
+        "policy_action_repeat_min": env.get("policy_action_repeat_min"),
+        "policy_action_repeat_max": env.get("policy_action_repeat_max"),
+        "policy_action_repeat_extra_probability": env.get(
+            "policy_action_repeat_extra_probability"
+        ),
+        "policy_action_repeat_semantics": env.get("policy_action_repeat_semantics"),
         "control_noise_profile_id": env.get("control_noise_profile_id"),
         "disable_death_for_profile": env.get("disable_death_for_profile"),
+        "opponent_death_mode": env.get("opponent_death_mode"),
+        "opponent_death_mode_diagnostic": env.get("opponent_death_mode_diagnostic"),
+        "opponent_death_mode_claim": env.get("opponent_death_mode_claim"),
+        "opponent_runtime_mode": env.get("opponent_runtime_mode"),
+        "opponent_runtime_mode_claim": env.get("opponent_runtime_mode_claim"),
+        "opponent_visibility_mode": env.get("opponent_visibility_mode"),
+        "opponent_collision_effect": env.get("opponent_collision_effect"),
+        "opponent_trail_mode": env.get("opponent_trail_mode"),
         "death_mode": env.get("death_mode"),
         "env_variant": env.get("env_variant"),
         "turn_commit_adapter": env.get("turn_commit_adapter"),
@@ -4293,7 +4704,7 @@ def _validate_visual_survival_surface(
         "reward_variant": command["reward_variant"],
         "reward_schema_id": command["reward_schema_id"],
         "reward_policy": command["reward_policy"],
-        "lightzero_target_config": command["lightzero_target_config"],
+        "lightzero_target_config": _to_plain(command["lightzero_target_config"]),
         "source_state_trail_render_mode": command["source_state_trail_render_mode"],
         "default_trail_render_mode": command["default_trail_render_mode"],
         "supported_trail_render_modes": command["supported_trail_render_modes"],
@@ -4321,8 +4732,22 @@ def _validate_visual_survival_surface(
         "ego_action_straight_override_probability": command[
             "ego_action_straight_override_probability"
         ],
+        "policy_action_repeat_min": command["policy_action_repeat_min"],
+        "policy_action_repeat_max": command["policy_action_repeat_max"],
+        "policy_action_repeat_extra_probability": command[
+            "policy_action_repeat_extra_probability"
+        ],
+        "policy_action_repeat_semantics": command["policy_action_repeat_semantics"],
         "control_noise_profile_id": command["control_noise_profile_id"],
         "disable_death_for_profile": command["disable_death_for_profile"],
+        "opponent_death_mode": command["opponent_death_mode"],
+        "opponent_death_mode_diagnostic": command["opponent_death_mode_diagnostic"],
+        "opponent_death_mode_claim": command["opponent_death_mode_claim"],
+        "opponent_runtime_mode": command["opponent_runtime_mode"],
+        "opponent_runtime_mode_claim": command["opponent_runtime_mode_claim"],
+        "opponent_visibility_mode": command["opponent_visibility_mode"],
+        "opponent_collision_effect": command["opponent_collision_effect"],
+        "opponent_trail_mode": command["opponent_trail_mode"],
         "death_mode": command["death_mode"],
         "env_variant": command["env_variant"],
         "turn_commit_adapter": env_spec["turn_commit_adapter"],
@@ -4352,6 +4777,7 @@ def _validate_visual_survival_surface(
 def _source_state_fixed_opponent_readiness_expected(
     *,
     opponent_policy_kind: str = OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
+    opponent_runtime_mode: str = DEFAULT_OPPONENT_RUNTIME_MODE,
 ) -> dict[str, Any]:
     spec = _env_variant_spec(ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT)
     return {
@@ -4364,6 +4790,7 @@ def _source_state_fixed_opponent_readiness_expected(
         "runtime_env_impl_id": spec["runtime_env_impl_id"],
         "runtime_topology": spec["runtime_topology"],
         "opponent_policy_kind": opponent_policy_kind,
+        "opponent_runtime_mode": opponent_runtime_mode,
         "opponent_training_relation": _opponent_training_relation(opponent_policy_kind),
         "current_policy_self_play": spec["current_policy_self_play"],
         "trusted_current_policy_self_play": spec["trusted_current_policy_self_play"],
@@ -4390,7 +4817,10 @@ def _source_state_fixed_opponent_training_readiness_gate(
     expected = _source_state_fixed_opponent_readiness_expected(
         opponent_policy_kind=str(
             command.get("opponent_policy_kind", OPPONENT_POLICY_KIND_FIXED_STRAIGHT)
-        )
+        ),
+        opponent_runtime_mode=str(
+            command.get("opponent_runtime_mode", DEFAULT_OPPONENT_RUNTIME_MODE)
+        ),
     )
     problems: list[str] = []
     checks: dict[str, dict[str, Any]] = {}
@@ -4528,6 +4958,12 @@ def _compile_config_summary(main_config: Any, create_config: Any, *, seed: int) 
                 "support_scale": _cfg_get(model_cfg, "support_scale", None),
                 "reward_support_size": _cfg_get(model_cfg, "reward_support_size", None),
                 "value_support_size": _cfg_get(model_cfg, "value_support_size", None),
+                "reward_support_range": _to_plain(
+                    _cfg_get(model_cfg, "reward_support_range", None)
+                ),
+                "value_support_range": _to_plain(
+                    _cfg_get(model_cfg, "value_support_range", None)
+                ),
             },
             "elapsed_sec": round(time.perf_counter() - started, 6),
         }
@@ -4554,6 +4990,8 @@ def _target_config_patches(
         "model_support_scale": ("policy", "model", "support_scale"),
         "model_reward_support_size": ("policy", "model", "reward_support_size"),
         "model_value_support_size": ("policy", "model", "value_support_size"),
+        "model_reward_support_range": ("policy", "model", "reward_support_range"),
+        "model_value_support_range": ("policy", "model", "value_support_range"),
     }
     for key, path in key_paths.items():
         if key not in target_config:
@@ -4847,6 +5285,8 @@ def _opponent_training_relation(opponent_policy_kind: str) -> str:
         return "centralized_policy_controls_both_players"
     if opponent_policy_kind == OPPONENT_POLICY_KIND_FIXED_STRAIGHT:
         return OPPONENT_TRAINING_RELATION_FIXED_STRAIGHT
+    if opponent_policy_kind == OPPONENT_POLICY_KIND_PROACTIVE_WALL_AVOIDANT:
+        return OPPONENT_TRAINING_RELATION_PROACTIVE_WALL_AVOIDANT
     if opponent_policy_kind == OPPONENT_POLICY_KIND_FROZEN_LIGHTZERO_CHECKPOINT:
         return OPPONENT_TRAINING_RELATION_FROZEN_LIGHTZERO_CHECKPOINT
     return f"unknown:{opponent_policy_kind}"
@@ -4990,6 +5430,19 @@ def _publish_live_lightzero_checkpoints(
 
 
 def _background_eval_config_from_command(command: dict[str, Any]) -> dict[str, Any]:
+    training_reward_variant = str(
+        command.get(
+            "training_reward_variant",
+            command.get("reward_variant", DEFAULT_REWARD_VARIANT),
+        )
+    )
+    eval_reward_variant = str(command.get("eval_reward_variant", training_reward_variant))
+    model_reward_variant = str(
+        command.get(
+            "model_reward_variant",
+            command.get("reward_variant", DEFAULT_REWARD_VARIANT),
+        )
+    )
     return {
         "enabled": bool(
             command.get("background_eval_enabled", DEFAULT_BACKGROUND_EVAL_ENABLED)
@@ -5027,28 +5480,22 @@ def _background_eval_config_from_command(command: dict[str, Any]) -> dict[str, A
             command.get("background_eval_batch_size", DEFAULT_BACKGROUND_EVAL_BATCH_SIZE)
         ),
         "env_variant": str(command.get("env_variant", DEFAULT_ENV_VARIANT)),
-        "reward_variant": str(command.get("eval_reward_variant", DEFAULT_REWARD_VARIANT)),
-        "eval_reward_variant": str(
-            command.get("eval_reward_variant", DEFAULT_REWARD_VARIANT)
-        ),
-        "training_reward_variant": str(
-            command.get(
-                "training_reward_variant",
-                command.get("reward_variant", DEFAULT_REWARD_VARIANT),
-            )
-        ),
-        "model_reward_variant": str(
-            command.get(
-                "model_reward_variant",
-                command.get("reward_variant", DEFAULT_REWARD_VARIANT),
-            )
-        ),
+        "reward_variant": eval_reward_variant,
+        "eval_reward_variant": eval_reward_variant,
+        "training_reward_variant": training_reward_variant,
+        "model_reward_variant": model_reward_variant,
         "opponent_policy_kind": str(
             command.get("opponent_policy_kind", DEFAULT_OPPONENT_POLICY_KIND)
         ),
         "opponent_checkpoint_ref": command.get("opponent_checkpoint_ref"),
         "opponent_snapshot_ref": command.get("opponent_snapshot_ref"),
         "opponent_checkpoint_state_key": command.get("opponent_checkpoint_state_key"),
+        "opponent_death_mode": str(
+            command.get("opponent_death_mode", DEFAULT_OPPONENT_DEATH_MODE)
+        ),
+        "opponent_runtime_mode": str(
+            command.get("opponent_runtime_mode", DEFAULT_OPPONENT_RUNTIME_MODE)
+        ),
         "selfplay_gif": _background_gif_config_from_command(command),
     }
 
@@ -5108,6 +5555,12 @@ def _background_gif_config_from_command(command: dict[str, Any]) -> dict[str, An
                 "training_reward_variant",
                 command.get("reward_variant", DEFAULT_REWARD_VARIANT),
             )
+        ),
+        "opponent_death_mode": str(
+            command.get("opponent_death_mode", DEFAULT_OPPONENT_DEATH_MODE)
+        ),
+        "opponent_runtime_mode": str(
+            command.get("opponent_runtime_mode", DEFAULT_OPPONENT_RUNTIME_MODE)
         ),
     }
 
@@ -5306,7 +5759,12 @@ def _spawn_one_checkpoint_background_eval(
             num_simulations=int(config["num_simulations"]),
             batch_size=int(config["batch_size"]),
             env_variant=str(config["env_variant"]),
-            reward_variant=str(config.get("eval_reward_variant", DEFAULT_REWARD_VARIANT)),
+            reward_variant=str(
+                config.get(
+                    "eval_reward_variant",
+                    config.get("reward_variant", DEFAULT_REWARD_VARIANT),
+                )
+            ),
             model_reward_variant=str(
                 config.get(
                     "model_reward_variant",
@@ -5317,6 +5775,12 @@ def _spawn_one_checkpoint_background_eval(
             opponent_checkpoint_ref=config.get("opponent_checkpoint_ref"),
             opponent_snapshot_ref=config.get("opponent_snapshot_ref"),
             opponent_checkpoint_state_key=config.get("opponent_checkpoint_state_key"),
+            opponent_death_mode=str(
+                config.get("opponent_death_mode", DEFAULT_OPPONENT_DEATH_MODE)
+            ),
+            opponent_runtime_mode=str(
+                config.get("opponent_runtime_mode", DEFAULT_OPPONENT_RUNTIME_MODE)
+            ),
             natural_bonus_spawn=bool(
                 config.get("natural_bonus_spawn", TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN)
             ),
@@ -5458,6 +5922,12 @@ def _spawn_one_checkpoint_background_gif(
             training_reward_variant=str(
                 gif_config.get("training_reward_variant", DEFAULT_REWARD_VARIANT)
             ),
+            opponent_death_mode=str(
+                gif_config.get("opponent_death_mode", DEFAULT_OPPONENT_DEATH_MODE)
+            ),
+            opponent_runtime_mode=str(
+                gif_config.get("opponent_runtime_mode", DEFAULT_OPPONENT_RUNTIME_MODE)
+            ),
             natural_bonus_spawn=natural_bonus_spawn,
         )
         request["scheduled"] = True
@@ -5533,6 +6003,8 @@ def _checkpoint_eval_poller_command(
     opponent_checkpoint_ref: str | None,
     opponent_snapshot_ref: str | None,
     opponent_checkpoint_state_key: str | None,
+    opponent_death_mode: str = DEFAULT_OPPONENT_DEATH_MODE,
+    opponent_runtime_mode: str = DEFAULT_OPPONENT_RUNTIME_MODE,
     background_eval_enabled: bool,
     background_eval_compute: str,
     background_eval_id_prefix: str,
@@ -5560,14 +6032,16 @@ def _checkpoint_eval_poller_command(
         "seed": seed,
         "source_max_steps": source_max_steps,
         "env_variant": env_variant,
-        "reward_variant": DEFAULT_REWARD_VARIANT,
-        "eval_reward_variant": DEFAULT_REWARD_VARIANT,
+        "reward_variant": reward_variant,
+        "eval_reward_variant": reward_variant,
         "training_reward_variant": reward_variant,
         "model_reward_variant": reward_variant,
         "opponent_policy_kind": opponent_policy_kind,
         "opponent_checkpoint_ref": opponent_checkpoint_ref,
         "opponent_snapshot_ref": opponent_snapshot_ref,
         "opponent_checkpoint_state_key": opponent_checkpoint_state_key,
+        "opponent_death_mode": opponent_death_mode,
+        "opponent_runtime_mode": opponent_runtime_mode,
         "natural_bonus_spawn": bool(natural_bonus_spawn),
         "background_eval_enabled": background_eval_enabled,
         "background_eval_compute": background_eval_compute,
@@ -5824,6 +6298,12 @@ def _live_train_summary_for_inspector(command: dict[str, Any]) -> dict[str, Any]
         "visual_source_state_backed": command.get("visual_source_state_backed"),
         "source_fidelity_claim": command.get("source_fidelity_claim"),
         "source_state_trail_render_mode": command.get("source_state_trail_render_mode"),
+        "opponent_death_mode": command.get("opponent_death_mode"),
+        "opponent_runtime_mode": command.get("opponent_runtime_mode"),
+        "opponent_runtime_mode_claim": command.get("opponent_runtime_mode_claim"),
+        "opponent_visibility_mode": command.get("opponent_visibility_mode"),
+        "opponent_collision_effect": command.get("opponent_collision_effect"),
+        "opponent_trail_mode": command.get("opponent_trail_mode"),
         "default_trail_render_mode": command.get("default_trail_render_mode"),
         "supported_trail_render_modes": command.get("supported_trail_render_modes"),
         "debug_fidelity_only": command.get("debug_fidelity_only"),
@@ -5897,6 +6377,8 @@ def _run_checkpoint_eval_and_inspect(
     opponent_checkpoint_ref: str | None,
     opponent_snapshot_ref: str | None,
     opponent_checkpoint_state_key: str | None,
+    opponent_death_mode: str = DEFAULT_OPPONENT_DEATH_MODE,
+    opponent_runtime_mode: str = DEFAULT_OPPONENT_RUNTIME_MODE,
     natural_bonus_spawn: bool = TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN,
 ) -> dict[str, Any]:
     if compute not in BACKGROUND_EVAL_COMPUTE_CHOICES:
@@ -5972,6 +6454,8 @@ def _run_checkpoint_eval_and_inspect(
             opponent_checkpoint_ref=opponent_checkpoint_ref,
             opponent_snapshot_ref=opponent_snapshot_ref,
             opponent_checkpoint_state_key=opponent_checkpoint_state_key,
+            opponent_death_mode=opponent_death_mode,
+            opponent_runtime_mode=opponent_runtime_mode,
             natural_bonus_spawn=bool(natural_bonus_spawn),
         )
         jobs.append(job)
@@ -6017,6 +6501,7 @@ def _run_checkpoint_eval_and_inspect(
             "opponent_checkpoint_ref": opponent_checkpoint_ref,
             "opponent_snapshot_ref": opponent_snapshot_ref,
             "opponent_checkpoint_state_key": opponent_checkpoint_state_key,
+            "opponent_runtime_mode": opponent_runtime_mode,
             "natural_bonus_spawn": bool(natural_bonus_spawn),
             "jobs": jobs,
         },
@@ -6047,6 +6532,7 @@ def _run_checkpoint_eval_and_inspect(
             "opponent_checkpoint_ref": opponent_checkpoint_ref,
             "opponent_snapshot_ref": opponent_snapshot_ref,
             "opponent_checkpoint_state_key": opponent_checkpoint_state_key,
+            "opponent_runtime_mode": opponent_runtime_mode,
             "natural_bonus_spawn": bool(natural_bonus_spawn),
         },
         "table": table,
@@ -6482,6 +6968,10 @@ def _checkpoint_gif_policy_action(
     }
 
 
+def _checkpoint_gif_collect_label(*, collect_temperature: float, collect_epsilon: float) -> str:
+    return f"Train collect T={collect_temperature:g} eps={collect_epsilon:g}"
+
+
 def _checkpoint_gif_variant_specs(
     *,
     collect_temperature: float,
@@ -6503,7 +6993,10 @@ def _checkpoint_gif_variant_specs(
         },
         {
             "variant_id": BACKGROUND_GIF_VARIANT_COLLECT_T1,
-            "label": f"Collect T={collect_temperature:g}",
+            "label": _checkpoint_gif_collect_label(
+                collect_temperature=float(collect_temperature),
+                collect_epsilon=float(collect_epsilon),
+            ),
             "policy_mode": BACKGROUND_GIF_POLICY_MODE_COLLECT,
             "temperature": float(collect_temperature),
             "epsilon": float(collect_epsilon),
@@ -6538,6 +7031,8 @@ def _capture_checkpoint_selfplay_gif_variant(
     frame_size: int,
     training_env_variant: str,
     training_reward_variant: str,
+    opponent_death_mode: str,
+    opponent_runtime_mode: str,
     natural_bonus_spawn: bool,
 ) -> dict[str, Any]:
     import numpy as np
@@ -6561,6 +7056,7 @@ def _capture_checkpoint_selfplay_gif_variant(
         opponent_checkpoint=None,
         opponent_snapshot_ref=None,
         opponent_checkpoint_state_key=None,
+        opponent_death_mode=opponent_death_mode,
         natural_bonus_spawn=bool(natural_bonus_spawn),
     )
 
@@ -6655,6 +7151,7 @@ def _capture_checkpoint_selfplay_gif_variant(
         "frame_stride_physical_steps": int(frame_stride),
         "seed": int(seed),
         "natural_bonus_spawn": bool(natural_bonus_spawn),
+        "opponent_death_mode": opponent_death_mode,
         "checkpoint_ref": checkpoint_ref,
         "checkpoint_label": clean_checkpoint_label,
         "max_steps": max_step_limit,
@@ -6751,6 +7248,7 @@ def _capture_checkpoint_selfplay_gif_variant(
         },
         "failure": failure,
         "surface": _to_plain(surface),
+        "training_opponent_runtime_mode": opponent_runtime_mode,
         "artifacts": {
             "gif": {**runs.file_summary(gif_path, mount=RUNS_MOUNT), **gif_artifact},
             "raw_frames": frames_artifact,
@@ -6776,6 +7274,8 @@ def _run_checkpoint_selfplay_gif(
     frame_size: int,
     training_env_variant: str,
     training_reward_variant: str,
+    opponent_death_mode: str = DEFAULT_OPPONENT_DEATH_MODE,
+    opponent_runtime_mode: str = DEFAULT_OPPONENT_RUNTIME_MODE,
     natural_bonus_spawn: bool = TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN,
     collect_temperature: float = DEFAULT_BACKGROUND_GIF_COLLECT_TEMPERATURE,
     collect_epsilon: float = DEFAULT_BACKGROUND_GIF_COLLECT_EPSILON,
@@ -6859,6 +7359,8 @@ def _run_checkpoint_selfplay_gif(
                 frame_size=int(frame_size),
                 training_env_variant=training_env_variant,
                 training_reward_variant=training_reward_variant,
+                opponent_death_mode=opponent_death_mode,
+                opponent_runtime_mode=opponent_runtime_mode,
                 natural_bonus_spawn=bool(natural_bonus_spawn),
             )
             variants[str(result["variant_id"])] = result
@@ -6893,6 +7395,8 @@ def _run_checkpoint_selfplay_gif(
             "checkpoint_state_key": found_key,
             "training_env_variant": training_env_variant,
             "training_reward_variant": training_reward_variant,
+            "opponent_death_mode": opponent_death_mode,
+            "opponent_runtime_mode": opponent_runtime_mode,
             "natural_bonus_spawn": bool(natural_bonus_spawn),
             "capture_env_variant": ENV_VARIANT_SOURCE_STATE_TURN_COMMIT,
             "capture_env_reason": (
@@ -7527,9 +8031,35 @@ def _two_seat_background_eval_config(
     background_gif_fps: float,
     background_gif_scale: int,
     background_gif_frame_size: int,
-    background_gif_collect_temperature: float = DEFAULT_BACKGROUND_GIF_COLLECT_TEMPERATURE,
-    background_gif_collect_epsilon: float = DEFAULT_BACKGROUND_GIF_COLLECT_EPSILON,
+    background_gif_collect_temperature: float | None = None,
+    background_gif_collect_epsilon: float | None = None,
 ) -> dict[str, Any]:
+    training_collect_temperature = float(
+        payload.get("collect_temperature", DEFAULT_BACKGROUND_GIF_COLLECT_TEMPERATURE)
+    )
+    training_collect_epsilon = float(
+        payload.get("collect_epsilon", DEFAULT_BACKGROUND_GIF_COLLECT_EPSILON)
+    )
+    gif_collect_temperature_source = (
+        BACKGROUND_GIF_COLLECT_SETTINGS_SOURCE_TRAINING
+        if background_gif_collect_temperature is None
+        else BACKGROUND_GIF_COLLECT_SETTINGS_SOURCE_OVERRIDE
+    )
+    gif_collect_epsilon_source = (
+        BACKGROUND_GIF_COLLECT_SETTINGS_SOURCE_TRAINING
+        if background_gif_collect_epsilon is None
+        else BACKGROUND_GIF_COLLECT_SETTINGS_SOURCE_OVERRIDE
+    )
+    gif_collect_temperature = (
+        training_collect_temperature
+        if background_gif_collect_temperature is None
+        else float(background_gif_collect_temperature)
+    )
+    gif_collect_epsilon = (
+        training_collect_epsilon
+        if background_gif_collect_epsilon is None
+        else float(background_gif_collect_epsilon)
+    )
     return {
         "enabled": bool(background_eval_enabled),
         "launch_kind": background_eval_launch_kind,
@@ -7558,8 +8088,12 @@ def _two_seat_background_eval_config(
             "fps": float(background_gif_fps),
             "scale": int(background_gif_scale),
             "frame_size": int(background_gif_frame_size),
-            "collect_temperature": float(background_gif_collect_temperature),
-            "collect_epsilon": float(background_gif_collect_epsilon),
+            "collect_temperature": float(gif_collect_temperature),
+            "collect_epsilon": float(gif_collect_epsilon),
+            "collect_temperature_source": gif_collect_temperature_source,
+            "collect_epsilon_source": gif_collect_epsilon_source,
+            "training_collect_temperature": float(training_collect_temperature),
+            "training_collect_epsilon": float(training_collect_epsilon),
             "natural_bonus_spawn": bool(
                 payload.get("natural_bonus_spawn", TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN)
             ),
@@ -8023,6 +8557,8 @@ def lightzero_curvytron_visual_survival_checkpoint_eval_and_inspect(
     opponent_checkpoint_ref: str | None = None,
     opponent_snapshot_ref: str | None = None,
     opponent_checkpoint_state_key: str | None = None,
+    opponent_death_mode: str = DEFAULT_OPPONENT_DEATH_MODE,
+    opponent_runtime_mode: str = DEFAULT_OPPONENT_RUNTIME_MODE,
     natural_bonus_spawn: bool = TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN,
 ) -> dict[str, Any]:
     return _run_checkpoint_eval_and_inspect(
@@ -8047,6 +8583,8 @@ def lightzero_curvytron_visual_survival_checkpoint_eval_and_inspect(
         opponent_checkpoint_ref=opponent_checkpoint_ref,
         opponent_snapshot_ref=opponent_snapshot_ref,
         opponent_checkpoint_state_key=opponent_checkpoint_state_key,
+        opponent_death_mode=opponent_death_mode,
+        opponent_runtime_mode=opponent_runtime_mode,
         natural_bonus_spawn=bool(natural_bonus_spawn),
     )
 
@@ -8069,6 +8607,8 @@ def lightzero_curvytron_visual_survival_checkpoint_selfplay_gif(
     frame_size: int = DEFAULT_BACKGROUND_GIF_FRAME_SIZE,
     training_env_variant: str = DEFAULT_ENV_VARIANT,
     training_reward_variant: str = DEFAULT_REWARD_VARIANT,
+    opponent_death_mode: str = DEFAULT_OPPONENT_DEATH_MODE,
+    opponent_runtime_mode: str = DEFAULT_OPPONENT_RUNTIME_MODE,
     natural_bonus_spawn: bool = TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN,
     collect_temperature: float = DEFAULT_BACKGROUND_GIF_COLLECT_TEMPERATURE,
     collect_epsilon: float = DEFAULT_BACKGROUND_GIF_COLLECT_EPSILON,
@@ -8090,13 +8630,20 @@ def lightzero_curvytron_visual_survival_checkpoint_selfplay_gif(
         frame_size=frame_size,
         training_env_variant=training_env_variant,
         training_reward_variant=training_reward_variant,
+        opponent_death_mode=opponent_death_mode,
+        opponent_runtime_mode=opponent_runtime_mode,
         natural_bonus_spawn=bool(natural_bonus_spawn),
         collect_temperature=float(collect_temperature),
         collect_epsilon=float(collect_epsilon),
     )
 
 
-@app.function(image=image, volumes={str(RUNS_MOUNT): runs_volume}, timeout=8 * 60 * 60, cpu=1.0)
+@app.function(
+    image=image,
+    volumes={str(RUNS_MOUNT): runs_volume},
+    timeout=DEFAULT_BACKGROUND_EVAL_POLLER_MODAL_TIMEOUT_SEC,
+    cpu=1.0,
+)
 def lightzero_curvytron_visual_survival_checkpoint_eval_poller(
     run_id: str = DEFAULT_RUN_ID,
     attempt_id: str = DEFAULT_ATTEMPT_ID,
@@ -8109,6 +8656,8 @@ def lightzero_curvytron_visual_survival_checkpoint_eval_poller(
     opponent_checkpoint_ref: str | None = None,
     opponent_snapshot_ref: str | None = None,
     opponent_checkpoint_state_key: str | None = None,
+    opponent_death_mode: str = DEFAULT_OPPONENT_DEATH_MODE,
+    opponent_runtime_mode: str = DEFAULT_OPPONENT_RUNTIME_MODE,
     background_eval_compute: str = DEFAULT_BACKGROUND_EVAL_COMPUTE,
     background_eval_id_prefix: str = DEFAULT_BACKGROUND_EVAL_ID_PREFIX,
     background_eval_seed_count: int = DEFAULT_BACKGROUND_EVAL_SEED_COUNT,
@@ -8144,6 +8693,8 @@ def lightzero_curvytron_visual_survival_checkpoint_eval_poller(
         opponent_checkpoint_ref=opponent_checkpoint_ref,
         opponent_snapshot_ref=opponent_snapshot_ref,
         opponent_checkpoint_state_key=opponent_checkpoint_state_key,
+        opponent_death_mode=opponent_death_mode,
+        opponent_runtime_mode=opponent_runtime_mode,
         background_eval_enabled=True,
         background_eval_compute=background_eval_compute,
         background_eval_id_prefix=background_eval_id_prefix,
@@ -8206,8 +8757,15 @@ def lightzero_curvytron_visual_survival_cpu(
     ego_action_straight_override_probability: float = (
         DEFAULT_EGO_ACTION_STRAIGHT_OVERRIDE_PROBABILITY
     ),
+    policy_action_repeat_min: int = DEFAULT_POLICY_ACTION_REPEAT_MIN,
+    policy_action_repeat_max: int = DEFAULT_POLICY_ACTION_REPEAT_MAX,
+    policy_action_repeat_extra_probability: float = (
+        DEFAULT_POLICY_ACTION_REPEAT_EXTRA_PROBABILITY
+    ),
     control_noise_profile_id: str = DEFAULT_CONTROL_NOISE_PROFILE_ID,
     disable_death_for_profile: bool = DEFAULT_DISABLE_DEATH_FOR_PROFILE,
+    opponent_death_mode: str = DEFAULT_OPPONENT_DEATH_MODE,
+    opponent_runtime_mode: str = DEFAULT_OPPONENT_RUNTIME_MODE,
     env_telemetry_stride: int = DEFAULT_ENV_TELEMETRY_STRIDE,
     env_manager_type: str = DEFAULT_ENV_MANAGER_TYPE,
     opponent_policy_kind: str = DEFAULT_OPPONENT_POLICY_KIND,
@@ -8264,8 +8822,13 @@ def lightzero_curvytron_visual_survival_cpu(
         reward_variant=reward_variant,
         source_state_trail_render_mode=source_state_trail_render_mode,
         ego_action_straight_override_probability=ego_action_straight_override_probability,
+        policy_action_repeat_min=policy_action_repeat_min,
+        policy_action_repeat_max=policy_action_repeat_max,
+        policy_action_repeat_extra_probability=policy_action_repeat_extra_probability,
         control_noise_profile_id=control_noise_profile_id,
         disable_death_for_profile=disable_death_for_profile,
+        opponent_death_mode=opponent_death_mode,
+        opponent_runtime_mode=opponent_runtime_mode,
         env_telemetry_stride=env_telemetry_stride,
         env_manager_type=env_manager_type,
         opponent_policy_kind=opponent_policy_kind,
@@ -8299,7 +8862,7 @@ def lightzero_curvytron_visual_survival_cpu(
 @app.function(
     image=image,
     volumes={str(RUNS_MOUNT): runs_volume},
-    timeout=8 * 60 * 60,
+    timeout=DEFAULT_STOCK_TRAIN_MODAL_TIMEOUT_SEC,
     cpu=64.0,
     memory=65536,
 )
@@ -8311,13 +8874,21 @@ def lightzero_curvytron_visual_survival_cpu64(**kwargs: Any) -> dict[str, Any]:
     kwargs.setdefault("profile_volume_commit", DEFAULT_PROFILE_VOLUME_COMMIT)
     kwargs.setdefault("opponent_use_cuda", DEFAULT_OPPONENT_USE_CUDA)
     kwargs.setdefault("source_state_trail_render_mode", DEFAULT_SOURCE_STATE_TRAIL_RENDER_MODE)
+    kwargs.setdefault("policy_action_repeat_min", DEFAULT_POLICY_ACTION_REPEAT_MIN)
+    kwargs.setdefault("policy_action_repeat_max", DEFAULT_POLICY_ACTION_REPEAT_MAX)
+    kwargs.setdefault(
+        "policy_action_repeat_extra_probability",
+        DEFAULT_POLICY_ACTION_REPEAT_EXTRA_PROBABILITY,
+    )
+    kwargs.setdefault("opponent_death_mode", DEFAULT_OPPONENT_DEATH_MODE)
+    kwargs.setdefault("opponent_runtime_mode", DEFAULT_OPPONENT_RUNTIME_MODE)
     return _run_visual_survival_train(compute=COMPUTE_CPU64, **kwargs)
 
 
 @app.function(
     image=image,
     volumes={str(RUNS_MOUNT): runs_volume},
-    timeout=8 * 60 * 60,
+    timeout=DEFAULT_STOCK_TRAIN_MODAL_TIMEOUT_SEC,
     cpu=8.0,
     memory=32768,
     gpu=CHEAP_GPU_RESOURCE,
@@ -8351,8 +8922,15 @@ def lightzero_curvytron_visual_survival_gpu(
     ego_action_straight_override_probability: float = (
         DEFAULT_EGO_ACTION_STRAIGHT_OVERRIDE_PROBABILITY
     ),
+    policy_action_repeat_min: int = DEFAULT_POLICY_ACTION_REPEAT_MIN,
+    policy_action_repeat_max: int = DEFAULT_POLICY_ACTION_REPEAT_MAX,
+    policy_action_repeat_extra_probability: float = (
+        DEFAULT_POLICY_ACTION_REPEAT_EXTRA_PROBABILITY
+    ),
     control_noise_profile_id: str = DEFAULT_CONTROL_NOISE_PROFILE_ID,
     disable_death_for_profile: bool = DEFAULT_DISABLE_DEATH_FOR_PROFILE,
+    opponent_death_mode: str = DEFAULT_OPPONENT_DEATH_MODE,
+    opponent_runtime_mode: str = DEFAULT_OPPONENT_RUNTIME_MODE,
     env_telemetry_stride: int = DEFAULT_ENV_TELEMETRY_STRIDE,
     env_manager_type: str = DEFAULT_ENV_MANAGER_TYPE,
     opponent_policy_kind: str = DEFAULT_OPPONENT_POLICY_KIND,
@@ -8409,8 +8987,13 @@ def lightzero_curvytron_visual_survival_gpu(
         reward_variant=reward_variant,
         source_state_trail_render_mode=source_state_trail_render_mode,
         ego_action_straight_override_probability=ego_action_straight_override_probability,
+        policy_action_repeat_min=policy_action_repeat_min,
+        policy_action_repeat_max=policy_action_repeat_max,
+        policy_action_repeat_extra_probability=policy_action_repeat_extra_probability,
         control_noise_profile_id=control_noise_profile_id,
         disable_death_for_profile=disable_death_for_profile,
+        opponent_death_mode=opponent_death_mode,
+        opponent_runtime_mode=opponent_runtime_mode,
         env_telemetry_stride=env_telemetry_stride,
         env_manager_type=env_manager_type,
         opponent_policy_kind=opponent_policy_kind,
@@ -8444,7 +9027,7 @@ def lightzero_curvytron_visual_survival_gpu(
 @app.function(
     image=image,
     volumes={str(RUNS_MOUNT): runs_volume},
-    timeout=8 * 60 * 60,
+    timeout=DEFAULT_STOCK_TRAIN_MODAL_TIMEOUT_SEC,
     cpu=40.0,
     memory=65536,
     gpu=CHEAP_GPU_RESOURCE,
@@ -8457,13 +9040,21 @@ def lightzero_curvytron_visual_survival_gpu_cpu40(**kwargs: Any) -> dict[str, An
     kwargs.setdefault("profile_volume_commit", DEFAULT_PROFILE_VOLUME_COMMIT)
     kwargs.setdefault("opponent_use_cuda", DEFAULT_OPPONENT_USE_CUDA)
     kwargs.setdefault("source_state_trail_render_mode", DEFAULT_SOURCE_STATE_TRAIL_RENDER_MODE)
+    kwargs.setdefault("policy_action_repeat_min", DEFAULT_POLICY_ACTION_REPEAT_MIN)
+    kwargs.setdefault("policy_action_repeat_max", DEFAULT_POLICY_ACTION_REPEAT_MAX)
+    kwargs.setdefault(
+        "policy_action_repeat_extra_probability",
+        DEFAULT_POLICY_ACTION_REPEAT_EXTRA_PROBABILITY,
+    )
+    kwargs.setdefault("opponent_death_mode", DEFAULT_OPPONENT_DEATH_MODE)
+    kwargs.setdefault("opponent_runtime_mode", DEFAULT_OPPONENT_RUNTIME_MODE)
     return _run_visual_survival_train(compute=COMPUTE_GPU_L4_T4_CPU40, **kwargs)
 
 
 @app.function(
     image=image,
     volumes={str(RUNS_MOUNT): runs_volume},
-    timeout=8 * 60 * 60,
+    timeout=DEFAULT_STOCK_TRAIN_MODAL_TIMEOUT_SEC,
     cpu=40.0,
     memory=65536,
     gpu=H100_GPU_RESOURCE,
@@ -8476,13 +9067,21 @@ def lightzero_curvytron_visual_survival_h100_cpu40(**kwargs: Any) -> dict[str, A
     kwargs.setdefault("profile_volume_commit", DEFAULT_PROFILE_VOLUME_COMMIT)
     kwargs.setdefault("opponent_use_cuda", DEFAULT_OPPONENT_USE_CUDA)
     kwargs.setdefault("source_state_trail_render_mode", DEFAULT_SOURCE_STATE_TRAIL_RENDER_MODE)
+    kwargs.setdefault("policy_action_repeat_min", DEFAULT_POLICY_ACTION_REPEAT_MIN)
+    kwargs.setdefault("policy_action_repeat_max", DEFAULT_POLICY_ACTION_REPEAT_MAX)
+    kwargs.setdefault(
+        "policy_action_repeat_extra_probability",
+        DEFAULT_POLICY_ACTION_REPEAT_EXTRA_PROBABILITY,
+    )
+    kwargs.setdefault("opponent_death_mode", DEFAULT_OPPONENT_DEATH_MODE)
+    kwargs.setdefault("opponent_runtime_mode", DEFAULT_OPPONENT_RUNTIME_MODE)
     return _run_visual_survival_train(compute=COMPUTE_GPU_H100_CPU40, **kwargs)
 
 
 @app.function(
     image=image,
     volumes={str(RUNS_MOUNT): runs_volume},
-    timeout=8 * 60 * 60,
+    timeout=DEFAULT_STOCK_TRAIN_MODAL_TIMEOUT_SEC,
     cpu=40.0,
     memory=65536,
     gpu=H100X2_GPU_RESOURCE,
@@ -8495,6 +9094,14 @@ def lightzero_curvytron_visual_survival_h100x2_cpu40(**kwargs: Any) -> dict[str,
     kwargs.setdefault("profile_volume_commit", DEFAULT_PROFILE_VOLUME_COMMIT)
     kwargs.setdefault("opponent_use_cuda", DEFAULT_OPPONENT_USE_CUDA)
     kwargs.setdefault("source_state_trail_render_mode", DEFAULT_SOURCE_STATE_TRAIL_RENDER_MODE)
+    kwargs.setdefault("policy_action_repeat_min", DEFAULT_POLICY_ACTION_REPEAT_MIN)
+    kwargs.setdefault("policy_action_repeat_max", DEFAULT_POLICY_ACTION_REPEAT_MAX)
+    kwargs.setdefault(
+        "policy_action_repeat_extra_probability",
+        DEFAULT_POLICY_ACTION_REPEAT_EXTRA_PROBABILITY,
+    )
+    kwargs.setdefault("opponent_death_mode", DEFAULT_OPPONENT_DEATH_MODE)
+    kwargs.setdefault("opponent_runtime_mode", DEFAULT_OPPONENT_RUNTIME_MODE)
     return _run_visual_survival_train(compute=COMPUTE_GPU_H100X2_CPU40, **kwargs)
 
 
@@ -8593,7 +9200,18 @@ def _compact_train_result_for_output(result: Any) -> Any:
             "profile_env_timing_enabled": command.get("profile_env_timing_enabled"),
             "lightzero_multi_gpu": command.get("lightzero_multi_gpu"),
             "source_max_steps": command.get("source_max_steps"),
+            "ego_action_straight_override_probability": command.get(
+                "ego_action_straight_override_probability"
+            ),
+            "policy_action_repeat_min": command.get("policy_action_repeat_min"),
+            "policy_action_repeat_max": command.get("policy_action_repeat_max"),
+            "policy_action_repeat_extra_probability": command.get(
+                "policy_action_repeat_extra_probability"
+            ),
+            "control_noise_profile_id": command.get("control_noise_profile_id"),
             "disable_death_for_profile": command.get("disable_death_for_profile"),
+            "opponent_death_mode": command.get("opponent_death_mode"),
+            "opponent_runtime_mode": command.get("opponent_runtime_mode"),
             "env_telemetry_stride": command.get("env_telemetry_stride"),
             "save_ckpt_after_iter": command.get("save_ckpt_after_iter"),
         },
@@ -8681,8 +9299,15 @@ def main(
     ego_action_straight_override_probability: float = (
         DEFAULT_EGO_ACTION_STRAIGHT_OVERRIDE_PROBABILITY
     ),
+    policy_action_repeat_min: int = DEFAULT_POLICY_ACTION_REPEAT_MIN,
+    policy_action_repeat_max: int = DEFAULT_POLICY_ACTION_REPEAT_MAX,
+    policy_action_repeat_extra_probability: float = (
+        DEFAULT_POLICY_ACTION_REPEAT_EXTRA_PROBABILITY
+    ),
     control_noise_profile_id: str = DEFAULT_CONTROL_NOISE_PROFILE_ID,
     disable_death_for_profile: bool = DEFAULT_DISABLE_DEATH_FOR_PROFILE,
+    opponent_death_mode: str = DEFAULT_OPPONENT_DEATH_MODE,
+    opponent_runtime_mode: str = DEFAULT_OPPONENT_RUNTIME_MODE,
     env_telemetry_stride: int = DEFAULT_ENV_TELEMETRY_STRIDE,
     env_manager_type: str = DEFAULT_ENV_MANAGER_TYPE,
     wait_for_train: bool = False,
@@ -8774,14 +9399,24 @@ def main(
     background_gif_fps: float = DEFAULT_BACKGROUND_GIF_FPS,
     background_gif_scale: int = DEFAULT_BACKGROUND_GIF_SCALE,
     background_gif_frame_size: int = DEFAULT_BACKGROUND_GIF_FRAME_SIZE,
-    background_gif_collect_temperature: float = DEFAULT_BACKGROUND_GIF_COLLECT_TEMPERATURE,
-    background_gif_collect_epsilon: float = DEFAULT_BACKGROUND_GIF_COLLECT_EPSILON,
+    background_gif_collect_temperature: float | None = None,
+    background_gif_collect_epsilon: float | None = None,
     output_detail: str = OUTPUT_DETAIL_COMPACT,
 ) -> None:
     if output_detail not in OUTPUT_DETAIL_CHOICES:
         raise ValueError(
             f"output_detail must be one of {OUTPUT_DETAIL_CHOICES!r}; got {output_detail!r}"
         )
+    resolved_background_gif_collect_temperature = (
+        DEFAULT_BACKGROUND_GIF_COLLECT_TEMPERATURE
+        if background_gif_collect_temperature is None
+        else float(background_gif_collect_temperature)
+    )
+    resolved_background_gif_collect_epsilon = (
+        DEFAULT_BACKGROUND_GIF_COLLECT_EPSILON
+        if background_gif_collect_epsilon is None
+        else float(background_gif_collect_epsilon)
+    )
     if profile_spawn and mode != "profile":
         raise ValueError("profile_spawn is only valid with mode='profile'")
     if mode == OPPONENT_SMOKE_MODE:
@@ -9049,8 +9684,13 @@ def main(
         "reward_variant": reward_variant,
         "source_state_trail_render_mode": source_state_trail_render_mode,
         "ego_action_straight_override_probability": ego_action_straight_override_probability,
+        "policy_action_repeat_min": policy_action_repeat_min,
+        "policy_action_repeat_max": policy_action_repeat_max,
+        "policy_action_repeat_extra_probability": policy_action_repeat_extra_probability,
         "control_noise_profile_id": control_noise_profile_id,
         "disable_death_for_profile": disable_death_for_profile,
+        "opponent_death_mode": opponent_death_mode,
+        "opponent_runtime_mode": opponent_runtime_mode,
         "env_telemetry_stride": env_telemetry_stride,
         "env_manager_type": env_manager_type,
         "opponent_policy_kind": opponent_policy_kind,
@@ -9076,8 +9716,8 @@ def main(
         "background_gif_fps": background_gif_fps,
         "background_gif_scale": background_gif_scale,
         "background_gif_frame_size": background_gif_frame_size,
-        "background_gif_collect_temperature": background_gif_collect_temperature,
-        "background_gif_collect_epsilon": background_gif_collect_epsilon,
+        "background_gif_collect_temperature": resolved_background_gif_collect_temperature,
+        "background_gif_collect_epsilon": resolved_background_gif_collect_epsilon,
     }
     exp_name_ref = (runs.attempt_train_ref(TASK_ID, run_id, attempt_id) / "lightzero_exp").as_posix()
     poller_call = None
@@ -9097,6 +9737,8 @@ def main(
             opponent_checkpoint_ref=opponent_checkpoint_ref,
             opponent_snapshot_ref=snapshot_ref,
             opponent_checkpoint_state_key=state_key,
+            opponent_death_mode=opponent_death_mode,
+            opponent_runtime_mode=opponent_runtime_mode,
             background_eval_compute=background_eval_compute,
             background_eval_id_prefix=background_eval_id_prefix,
             background_eval_seed_count=background_eval_seed_count,
@@ -9112,8 +9754,8 @@ def main(
             background_gif_fps=background_gif_fps,
             background_gif_scale=background_gif_scale,
             background_gif_frame_size=background_gif_frame_size,
-            background_gif_collect_temperature=background_gif_collect_temperature,
-            background_gif_collect_epsilon=background_gif_collect_epsilon,
+            background_gif_collect_temperature=resolved_background_gif_collect_temperature,
+            background_gif_collect_epsilon=resolved_background_gif_collect_epsilon,
             poll_interval_sec=background_eval_poll_interval_sec,
             stable_polls=background_eval_poll_stable_polls,
             max_runtime_sec=background_eval_poller_max_runtime_sec,

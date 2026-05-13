@@ -32,7 +32,11 @@ from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env imp
     LIGHTZERO_SOURCE_STATE_VISUAL_SURVIVAL_ENV_ID,
     LIGHTZERO_SOURCE_STATE_VISUAL_SURVIVAL_ENV_TYPE,
     LIGHTZERO_SOURCE_STATE_VISUAL_SURVIVAL_IMPORT_NAMES,
+    OPPONENT_DEATH_MODE_IMMORTAL,
+    OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP,
     OPPONENT_POLICY_KIND_NONE_CENTRALIZED_JOINT_ACTION,
+    OPPONENT_POLICY_KIND_PROACTIVE_WALL_AVOIDANT,
+    REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME,
     SOURCE_STATE_CANVAS_LIKE_GRAY64_SCHEMA_HASH,
     SOURCE_STATE_CANVAS_LIKE_GRAY64_SCHEMA_ID,
     SOURCE_STATE_CANVAS_LIKE_GRAY64_SURFACE,
@@ -52,6 +56,8 @@ from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env imp
     STACKED_SOURCE_STATE_GRAY64_SCHEMA_HASH,
     STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID,
     STACKED_SOURCE_STATE_GRAY64_SHAPE,
+    SURVIVAL_PLUS_BONUS_NO_OUTCOME_BONUS_REWARD,
+    SURVIVAL_PLUS_BONUS_NO_OUTCOME_REWARD_SCHEMA_ID,
     _normalize_player_perspective,
     _player_perspective_lut,
 )
@@ -665,6 +671,101 @@ def test_source_state_fixed_opponent_config_names_non_self_play_runtime_contract
     assert config["fixed_opponent_is_two_seat_self_play"] is False
 
 
+def test_source_state_survival_plus_bonus_no_outcome_keeps_survival_without_catch():
+    env = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
+        {
+            "seed": 91,
+            "source_max_steps": 4,
+            "natural_bonus_spawn": False,
+            "reward_variant": REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME,
+        }
+    )
+
+    env.reset(seed=91)
+    timestep = env.step(1)
+
+    assert timestep.done is False
+    assert timestep.reward == 1.0
+    assert timestep.info["reward_schema_id"] == (
+        SURVIVAL_PLUS_BONUS_NO_OUTCOME_REWARD_SCHEMA_ID
+    )
+    assert timestep.info["reward_perspective"] == (
+        "ego_player_dense_survival_plus_same_step_bonus_no_outcome"
+    )
+    assert timestep.info["dense_survival_helper_for_ego"] == 1.0
+    assert timestep.info["bonus_catch_count_step_for_ego"] == 0
+    assert timestep.info["bonus_pickup_reward_for_ego"] == 0.0
+    assert timestep.info["sparse_outcome_reward_for_ego"] == 0.0
+    assert timestep.info["terminal_outcome_bonus"] == 0.0
+    assert timestep.info["winner_bonus"] == 0.0
+    assert timestep.info["loser_penalty"] == 0.0
+
+
+def test_source_state_survival_plus_bonus_no_outcome_rewards_same_step_bonus():
+    env = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
+        {
+            "seed": 92,
+            "source_max_steps": 4,
+            "natural_bonus_spawn": False,
+            "reward_variant": REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME,
+        }
+    )
+
+    env.reset(seed=92)
+    env._env.seed_active_bonus(
+        row=0,
+        bonus_type="BonusSelfSmall",
+        x=15.0,
+        y=15.0,
+        radius=3.0,
+    )
+
+    catch_timestep = env.step(1)
+    next_timestep = env.step(1)
+
+    assert catch_timestep.done is False
+    assert catch_timestep.info["bonus_catch_count_step_for_ego"] == 1
+    assert catch_timestep.info["bonus_pickup_reward_per_catch"] == (
+        SURVIVAL_PLUS_BONUS_NO_OUTCOME_BONUS_REWARD
+    )
+    assert catch_timestep.info["bonus_pickup_reward_for_ego"] == (
+        SURVIVAL_PLUS_BONUS_NO_OUTCOME_BONUS_REWARD
+    )
+    assert catch_timestep.info["dense_survival_helper_for_ego"] == 1.0
+    assert catch_timestep.reward == (
+        1.0 + SURVIVAL_PLUS_BONUS_NO_OUTCOME_BONUS_REWARD
+    )
+    assert next_timestep.info["bonus_catch_count_step_for_ego"] == 0
+    assert next_timestep.info["bonus_pickup_reward_for_ego"] == 0.0
+    assert next_timestep.reward == 1.0
+
+
+def test_source_state_survival_plus_bonus_no_outcome_excludes_terminal_outcome():
+    env = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
+        {
+            "seed": 93,
+            "source_max_steps": 64,
+            "natural_bonus_spawn": False,
+            "reward_variant": REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME,
+        }
+    )
+
+    env.reset(seed=93)
+    env._env.state["pos"][0, 0] = np.array([-1.0, -1.0], dtype=np.float64)
+    timestep = env.step(1)
+
+    assert timestep.done is True
+    assert timestep.reward == 0.0
+    assert timestep.info["trainer_reward"] == 0.0
+    assert timestep.info["dense_survival_helper_for_ego"] == 0.0
+    assert timestep.info["bonus_pickup_reward_for_ego"] == 0.0
+    assert timestep.info["sparse_outcome_reward_for_ego"] == -1.0
+    assert timestep.info["terminal_outcome_bonus"] == 0.0
+    assert timestep.info["final_step_training_reward_map"]["player_0"] == 0.0
+    assert timestep.info["source_terminal_reward_map"]["player_0"] == -1.0
+    assert timestep.info["final_reward_map"]["player_0"] == -1.0
+
+
 def test_source_state_visual_survival_allows_explicit_fast_trail_mode_metadata():
     env = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
         {
@@ -705,6 +806,90 @@ def test_source_state_visual_survival_rejects_unknown_trail_mode():
         CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
             {"source_state_trail_render_mode": "mystery_trails"}
         )
+
+
+def test_source_state_visual_survival_opponent_immortal_still_allows_ego_wall_death():
+    env = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
+        {
+            "seed": 70,
+            "source_max_steps": 64,
+            "natural_bonus_spawn": False,
+            "opponent_death_mode": OPPONENT_DEATH_MODE_IMMORTAL,
+        }
+    )
+
+    env.reset(seed=70)
+    env._env.state["pos"][0, 0] = np.array([-1.0, -1.0], dtype=np.float64)
+    env._env.state["pos"][0, 1] = np.array([-1.0, -1.0], dtype=np.float64)
+    timestep = env.step(1)
+
+    assert timestep.done is True
+    assert timestep.info["death_mode"] == "normal"
+    assert timestep.info["opponent_death_mode"] == OPPONENT_DEATH_MODE_IMMORTAL
+    assert timestep.info["opponent_death_mode_diagnostic"] is True
+    assert timestep.info["opponent_death_mode_claim"] == (
+        "diagnostic_opponent_immortal_not_source_faithful"
+    )
+    assert bool(env._env.state["alive"][0, 0]) is False
+    assert bool(env._env.state["alive"][0, 1]) is True
+    assert timestep.info["death_player_ids"] == ("player_0",)
+    assert timestep.info["death_cause_name"][0][0] == "wall"
+
+
+def test_source_state_visual_survival_opponent_immortal_blocks_opponent_wall_death():
+    env = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
+        {
+            "seed": 71,
+            "source_max_steps": 64,
+            "natural_bonus_spawn": False,
+            "opponent_death_mode": OPPONENT_DEATH_MODE_IMMORTAL,
+        }
+    )
+
+    env.reset(seed=71)
+    env._env.state["pos"][0, 1] = np.array([-1.0, -1.0], dtype=np.float64)
+    timestep = env.step(1)
+
+    assert timestep.done is False
+    assert timestep.info["death_mode"] == "normal"
+    assert timestep.info["opponent_death_mode"] == OPPONENT_DEATH_MODE_IMMORTAL
+    assert bool(env._env.state["alive"][0, 0]) is True
+    assert bool(env._env.state["alive"][0, 1]) is True
+    assert timestep.info["death_player_ids"] == ()
+
+
+def test_source_state_visual_survival_opponent_immortal_blocks_opponent_body_death():
+    env = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
+        {
+            "seed": 72,
+            "source_max_steps": 64,
+            "natural_bonus_spawn": False,
+            "opponent_death_mode": OPPONENT_DEATH_MODE_IMMORTAL,
+        }
+    )
+
+    env.reset(seed=72)
+    opponent_pos = env._env.state["pos"][0, 1].copy()
+    env._env.state["body_active"][0, 0] = True
+    env._env.state["body_pos"][0, 0] = opponent_pos
+    env._env.state["body_radius"][0, 0] = 8.0
+    env._env.state["body_owner"][0, 0] = 0
+    env._env.state["body_num"][0, 0] = 0
+    env._env.state["body_insert_tick"][0, 0] = 0
+    env._env.state["body_insert_kind"][0, 0] = vector_runtime.BODY_KIND_NORMAL
+    env._env.state["body_write_cursor"][0] = 1
+    env._env.state["world_body_count"][0] = 1
+    env._env.state["body_count"][0, 0] = 1
+
+    timestep = env.step(1)
+
+    assert timestep.done is False
+    assert timestep.info["opponent_death_mode"] == OPPONENT_DEATH_MODE_IMMORTAL
+    assert bool(env._env.state["alive"][0, 0]) is True
+    assert bool(env._env.state["alive"][0, 1]) is True
+    assert timestep.info["death_player_ids"] == ()
+    assert env._last_batch is not None
+    assert env._last_batch.info["step_counters"]["body_hits"] >= 1
 
 
 def test_source_state_visual_survival_profile_no_death_exercises_natural_bonus_timer():
@@ -805,6 +990,108 @@ def test_source_state_visual_survival_action_override_is_explicit_and_seeded():
     assert timestep.info["ego_action_straight_override_probability"] == 1.0
     assert timestep.info["ego_action_straight_override_seed"] == 1040
     assert timestep.info["control_noise_profile_id"] == "straight_override"
+
+
+def test_source_state_visual_survival_action_repeat_is_one_policy_transition():
+    env = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
+        {
+            "seed": 37,
+            "source_max_steps": 32,
+            "natural_bonus_spawn": False,
+            "opponent_runtime_mode": OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP,
+            "reward_variant": REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME,
+            "policy_action_repeat_min": 3,
+            "policy_action_repeat_max": 3,
+            "policy_action_repeat_extra_probability": 0.0,
+        }
+    )
+
+    env.reset(seed=37)
+    timestep = env.step(1)
+
+    assert timestep.done is False
+    assert timestep.info["step_index"] == 0
+    assert timestep.info["physical_step_index"] == 3
+    assert timestep.info["policy_action_repeat_min"] == 3
+    assert timestep.info["policy_action_repeat_max"] == 3
+    assert timestep.info["policy_action_repeat_requested"] == 3
+    assert timestep.info["policy_action_repeat_executed"] == 3
+    assert timestep.info["policy_action_repeat_extra_steps"] == 2
+    assert timestep.info["policy_observation_after_skipped_steps"] == 2
+    assert timestep.info["control_noise_profile_id"] == "policy_action_repeat"
+    assert timestep.info["trainer_reward"] == 3.0
+    assert timestep.info["dense_survival_helper_for_ego"] == 3.0
+    assert timestep.info["bonus_catch_count_step_for_ego"] == 0
+
+
+def test_source_state_visual_survival_proactive_wall_avoidant_turns_from_left_wall():
+    env = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
+        {
+            "seed": 117,
+            "source_max_steps": 64,
+            "natural_bonus_spawn": False,
+            "opponent_policy_kind": OPPONENT_POLICY_KIND_PROACTIVE_WALL_AVOIDANT,
+        }
+    )
+
+    env.reset(seed=117)
+    state = env._env.state
+    map_size = float(state["map_size"][0])
+    opponent = env.opponent_player_index
+    opponent_radius = float(state["radius"][0, opponent])
+    opponent_start = np.asarray(
+        [opponent_radius + 5.0, map_size / 2.0],
+        dtype=np.float64,
+    )
+    state["pos"][0, opponent] = opponent_start
+    state["prev_pos"][0, opponent] = opponent_start
+    state["heading"][0, opponent] = np.pi / 2.0
+    ego_start = np.asarray([map_size * 0.75, map_size / 2.0], dtype=np.float64)
+    state["pos"][0, env.ego_player_index] = ego_start
+    state["prev_pos"][0, env.ego_player_index] = ego_start
+
+    timestep = env.step(1)
+
+    assert timestep.done is False
+    assert timestep.info["opponent_policy_kind"] == (
+        OPPONENT_POLICY_KIND_PROACTIVE_WALL_AVOIDANT
+    )
+    assert timestep.info["opponent_training_relation"] == (
+        "learner_vs_proactive_wall_avoidant"
+    )
+    assert timestep.info["opponent_action_id"] == 0
+    assert bool(state["alive"][0, opponent]) is True
+    assert float(state["pos"][0, opponent, 0]) > float(opponent_start[0])
+    sidecar = timestep.info["opponent_policy_sidecar"]
+    metadata = sidecar["policy_metadata"]
+    assert metadata["opponent_policy_variant"] == "proactive_force_field"
+    assert metadata["nearest_wall_name"] == "left"
+    assert metadata["selected_from_legal_actions"] is True
+    assert metadata["uses_legal_left_straight_right_actions_only"] is True
+    assert metadata["no_teleport_or_bounce"] is True
+
+
+def test_blank_canvas_noop_still_ignores_proactive_wall_avoidant_policy():
+    env = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
+        {
+            "seed": 118,
+            "source_max_steps": 64,
+            "natural_bonus_spawn": False,
+            "opponent_policy_kind": OPPONENT_POLICY_KIND_PROACTIVE_WALL_AVOIDANT,
+            "opponent_runtime_mode": OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP,
+            "reward_variant": REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME,
+        }
+    )
+
+    env.reset(seed=118)
+    timestep = env.step(1)
+
+    assert timestep.info["blank_canvas_noop"] is True
+    assert timestep.info["opponent_action_id"] == 1
+    assert timestep.info["opponent_policy_sidecar"] == {
+        "opponent_runtime_mode": OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP,
+        "action_ignored": True,
+    }
 
 
 def test_source_state_visual_survival_render_does_not_mutate_stack():
@@ -957,6 +1244,127 @@ def test_player_perspective_lut_remaps_only_player_body_and_head_values():
         player_1.reshape(-1),
         np.array([0, 80, 128, 96, 232, 224, 240, 248, 255], dtype=np.uint8),
     )
+
+
+def test_blank_canvas_noop_reset_hides_player_1_but_keeps_public_lifecycle():
+    env = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
+        {
+            "seed": 101,
+            "source_max_steps": 32,
+            "opponent_runtime_mode": OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP,
+            "reward_variant": REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME,
+            "natural_bonus_spawn": False,
+        }
+    )
+
+    observation = env.reset(seed=101)
+
+    assert bool(env._env.state["present"][0, 1])
+    assert bool(env._env.state["alive"][0, 1])
+    assert env.last_reset_info["opponent_runtime_mode"] == "blank_canvas_noop"
+    assert env.last_reset_info["blank_canvas_noop"] is True
+    assert env.last_reset_info["blank_canvas_noop_uses_remove_player"] is False
+    assert env.last_reset_info["blank_canvas_noop_public_player_1_present_alive"] is True
+    assert observation["observation"].shape == STACKED_SOURCE_STATE_GRAY64_SHAPE
+    assert float(observation["observation"][-1].max()) > 0.0
+    assert not bool(env._render_state_view()["present"][0, 1])
+    np.testing.assert_array_equal(
+        env.render("source_state_grayscale64_visual_tensor"),
+        render_source_state_canvas_gray64(
+            env._render_state_view(),
+            row=0,
+            trail_render_mode=env._source_state_trail_render_mode,
+        ),
+    )
+
+
+def test_blank_canvas_noop_steps_without_player_1_artifacts_or_terminal():
+    env = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
+        {
+            "seed": 103,
+            "source_max_steps": 128,
+            "opponent_runtime_mode": OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP,
+            "reward_variant": REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME,
+            "natural_bonus_spawn": False,
+        }
+    )
+    env.reset(seed=103)
+    env._env.seed_active_bonus(
+        row=0,
+        bonus_type="BonusSelfSmall",
+        x=float(env._env.state["pos"][0, 1, 0]),
+        y=float(env._env.state["pos"][0, 1, 1]),
+        radius=20.0,
+    )
+
+    last = None
+    for _ in range(8):
+        last = env.step(1)
+        assert not last.done
+
+    assert last is not None
+    assert bool(env._env.state["present"][0, 1])
+    assert bool(env._env.state["alive"][0, 1])
+    assert not _owner_active(env._env.state, "body", 1)
+    assert not _owner_active(env._env.state, "visual_trail", 1)
+    assert int(env._env.state["bonus_catch_count_step"][0, 1]) == 0
+    assert 1 not in env._env.state["death_player"][0, : int(env._env.state["death_count"][0])]
+    assert last.info["opponent_runtime_mode"] == "blank_canvas_noop"
+    assert last.info["sparse_outcome_reward_for_ego"] == 0.0
+
+
+def test_blank_canvas_noop_scrubs_seeded_player_1_body_before_collision():
+    env = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
+        {
+            "seed": 107,
+            "source_max_steps": 64,
+            "opponent_runtime_mode": OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP,
+            "reward_variant": REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME,
+            "natural_bonus_spawn": False,
+        }
+    )
+    env.reset(seed=107)
+    state = env._env.state
+    state["body_active"][0, 0] = True
+    state["body_owner"][0, 0] = 1
+    state["body_pos"][0, 0] = state["pos"][0, 0]
+    state["body_radius"][0, 0] = 30.0
+    state["body_count"][0, 1] = 1
+    state["world_body_count"][0] = int(state["body_active"][0].sum())
+
+    timestep = env.step(1)
+
+    assert not timestep.done
+    assert bool(state["alive"][0, 0])
+    assert not _owner_active(state, "body", 1)
+
+
+def test_blank_canvas_noop_player_0_wall_death_still_works():
+    env = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
+        {
+            "seed": 109,
+            "source_max_steps": 64,
+            "opponent_runtime_mode": OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP,
+            "reward_variant": REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME,
+            "natural_bonus_spawn": False,
+        }
+    )
+    env.reset(seed=109)
+    env._env.state["pos"][0, 0] = np.asarray([-10.0, -10.0], dtype=np.float64)
+
+    timestep = env.step(1)
+
+    assert timestep.done
+    assert not bool(env._env.state["alive"][0, 0])
+    assert bool(env._env.state["alive"][0, 1])
+    assert 1 not in env._env.state["death_player"][0, : int(env._env.state["death_count"][0])]
+    assert timestep.reward == 0.0
+
+
+def _owner_active(state: dict[str, np.ndarray], prefix: str, owner: int) -> bool:
+    active = state[f"{prefix}_active"]
+    owners = state[f"{prefix}_owner"]
+    return bool((active & (owners == owner)).any())
 
 
 def _space_shape(space):

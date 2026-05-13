@@ -1,95 +1,126 @@
 # Orchestration Plan
 
-Purpose: keep the investigation split into clean lanes while the main thread
-does synthesis and decisions.
+Purpose: keep the CurvyTron exploration work split into clean lanes. The main
+thread plans, synthesizes, and decides. Agents own bounded lanes with narrow
+outputs and clear stop points.
+
+Current phase: the ugly 50-row batch has been stopped. The next executable lane
+is the clean 300-row `curvy-survive-bonus-large-20260513a` manifest. Launch is
+currently held by user request: finish prep, then sleep 30 minutes at the launch
+boundary before submitting anything. Scripted wall-avoidant, random-init frozen
+opponents, and ancestor checkpoint controls are separate gated waves.
 
 ## Active Lanes
 
 | Lane | Owner | Output | Status |
 | --- | --- | --- | --- |
-| Stock frozen-opponent canary | Anscombe notes | tiny CPU `train_muzero` proof with strict checkpoint opponent | passed: `stock-frozen-canary-source-state-s304-20260512` |
-| GPU stock frozen-opponent canary | Darwin notes | same proof with GPU learner and `env_manager_type=base` | passed: `stock-frozen-gpu-base-canary-source-state-s304-20260512b` |
-| Native replay bridge parity | Pasteur / Helmholtz / Ohm / Turing | prove two seat-local `GameSegment`s can push/sample native LightZero targets | passed for tiny hand-authored trace in Modal/LightZero |
-| Stock LightZero dataflow | Hubble | exact dataflow and custom-path seam map | integrated |
-| Current path discrepancy | Harvey/Pascal notes | exact comparison of fixed/frozen, turn-commit, joint-action, and two-seat code paths | first pass integrated |
-| History and paper trail | Dalton plus old notes | timeline of how fixed/frozen, turn-commit, and two-seat were promoted/demoted | deeper pass integrated |
-| Cleanup targets | Rawls plus main thread | stale docs/defaults/scripts that still point to wrong lane | first guardrails patched; more cleanup later |
-| Pong analogy | Dalton plus Boole notes | how custom Pong attempts failed/inconclusive and stock LightZero Pong showed signal | deeper pass integrated |
-| Literature / pitfalls | Ramanujan plus Schrodinger notes | narrow checklist of MuZero/RL pitfalls mapped to our failure | source-backed pass integrated |
+| Feature status audit | Einstein | read-only table of actual implemented opponent/reward/stochasticity/observability features, tests, launch stance, and gaps | done |
+| Manifest/launcher compatibility audit | Singer | verify generated command flags, compute values, dry-run gating, background eval/GIF flags, and row counts against the launcher | done |
+| Matrix critique | Dirac | critique whether the current staged batch aligns with user priorities and avoids stale or over-wide axes | done |
+| Speed display bug | Pascal | why the web UI says `speed unknown` and smallest fix | done: trainer must write `train/progress_latest.json` on checkpoint save |
+| Clean 300-row manifest | main thread | generate, test, and hold `curvy-survive-bonus-large-20260513a`; launch only after the 30-minute hold | active |
+| Grouped Modal submitter | main thread | submit rows into one deployed app with poller+train calls, not one app per row | active |
+| Opponent variant wiring | worker lane | make scripted wall-avoidant opponent first-class if small; otherwise report blocker | active |
+| Ancestor controls | Ramanujan | check whether frozen checkpoint controls are mechanically ready | done: path exists; use only after exact tiny canary |
+
+Recently closed:
+
+- Parfit: local status/export bridge landed for reward, bonus, terminal,
+  action, entropy, failure-rate, and eval-health fields in `eval_checkpoints`.
+- Kuhn: launch-facing matrix docs were cleaned so stale rows are marked
+  archival/non-runnable.
+- Sagan: launch readiness remains blocked; tiny canaries clear plumbing, not
+  the large matrix.
+- Mencius: old stock manifest generator was stale; main thread patched it to
+  fail closed unless `--allow-historical-matrix` is passed.
+- Cicero: local validation round 2 passed `526 passed, 14 skipped`.
+- Goodall/Mill: current dry-run survivaldiag manifest generator exists and was
+  corrected after critique; it emits 50 executable review rows and 10 gated
+  specs, with `current_launch_approved=false`.
+- Rawls/Carson/McClintock and later critiques: blank canvas remains the anchor;
+  passive immortal is a dirty control; scripted/random/checkpoint opponents
+  stay gated until wired and canaried.
+- Einstein/Singer/Dirac: feature status, launcher compatibility, and matrix
+  shape were independently re-audited. No default manifest/launcher blocker was
+  found; docs and manifest metadata were patched to remove row-shape drift and
+  executable-row gate ambiguity.
 
 ## Main-Thread Jobs
 
-1. Keep the high-level worldview simple and current.
-2. Merge returned findings into the working docs.
-3. Promote stable conclusions into design docs and the Coach index.
-4. Avoid launching more large runs until the next gate is explicit.
-5. Keep [open_questions_and_hypotheses.md](open_questions_and_hypotheses.md)
-   and [known_wrong.md](known_wrong.md) current so the investigation does not
-   lose the plot.
+1. Decide lane boundaries and stop conditions.
+2. Merge returned findings into the current source of truth.
+3. Keep old-run conclusions in the background: they inform axis choices, but
+   they are no longer the active lane.
+4. Keep [open_questions_and_hypotheses.md](open_questions_and_hypotheses.md)
+   and [known_wrong.md](known_wrong.md) current.
+5. Promote only stable conclusions into design docs and the Coach index.
 
 ## Investigation DAG
 
 ```text
-history + code path matrix
-        -> postmortem facts
-        -> stock-loop contract
-        -> learning gates
-        -> cleanup edits
-        -> next small proof runs
+local validation round 2
+        -> tells us whether the feature surface is internally coherent
+        -> updates launch gates with tested facts
 
-stock LightZero dataflow
-        -> stock compatibility contract
-        -> native replay bridge contract
-        -> target/replay parity tests
+survivaldiag manifest generator
+        -> turns the matrix design into reviewable commands without launching
+        -> prevents stale reward/opponent/seed schemas from coming back
 
-frozen/recent opponent route
-        -> stock-loop practical training plan
-        -> opponent refresh/eval panel requirements
+matrix critique
+        -> chooses staged blocks and copy counts before any big spend
+        -> decides which axes are main, paired, sentinel, or gated
 
-Pong history analogy
-        -> repeatable lesson from custom Pong -> stock LightZero Pong
-        -> CurvyTron cleanup and next-gate checks
+feature-gap audit
+        -> lists exactly what is still missing before overnight launch
+        -> produces the next canary commands
 
-literature/pitfalls
-        -> local checklist only
-        -> architecture questions and learning gates
+research-doc synthesis
+        -> keeps historical failures from polluting the current path
+        -> updates gotchas and simple rules for future agents
 ```
 
 ## Near-Term Stopping Condition
 
-This research phase is done when we have:
+This prelaunch batch is done when:
 
-- one page that says what went wrong;
-- one page that says which path is trusted for which claim;
-- one page that says how stock LightZero data flows;
-- one cleanup list for stale code/docs;
-- a short list of next proof runs or tests.
+- the clean 300-row manifest generation, tests, and row-name checks pass;
+- the grouped submitter dry run proves rows target one deployed app and include
+  both poller and train calls;
+- the speed display fix has local test coverage and future trainers write
+  `progress_latest.json`;
+- docs say plainly that launch is held until after the 30-minute sleep;
+- surviving subagent results have been folded into the docs.
 
-Current remaining blockers:
+Current blockers by wave:
 
-- one small learning curve on a stock route, after canary plumbing is stable.
-- native bridge integration into an actual two-seat trainer if we choose that
-  route later.
+- Clean 300-row ready wave: not blocked by scripted, random, or ancestor work,
+  but launch is paused by explicit user hold.
+- Scripted wall-avoidant wave: blocked until first-class trainer wiring and
+  exact tiny canary exist.
+- Ancestor control wave: mechanically possible, but blocked on one exact tiny
+  canary with current reward/env/GIF settings.
+- Random-init frozen wave: blocked on immutable generated checkpoint refs and
+  explicit opponent seed fields.
 
 ## Subagent Output Protocol
 
 Every subagent should keep output narrow:
 
 - state whether files were edited;
-- write or propose one target doc when possible;
+- write or propose one target doc when useful;
 - include exact file/line refs for repo claims;
 - avoid broad recommendations unless tied to evidence;
 - separate facts, hypotheses, and next checks;
+- avoid launching runs unless explicitly assigned;
 - avoid calling a path "self-play" without naming the opponent source and
   action semantics.
 
 Preferred landing docs:
 
-- history: `history_timeline.md`;
-- path comparisons: `path_matrix.md`;
-- stock dataflow: `stock_lightzero_dataflow.md`;
-- frozen/recent route: `frozen_recent_opponent_route.md`;
+- active coordination: `delegation_log.md`;
+- current plan: `current_source_of_truth.md`, `todo.md`;
+- matrix plan: `next_overnight_matrix_plan.md`;
 - known mistakes: `known_wrong.md`;
 - open questions: `open_questions_and_hypotheses.md`;
 - cleanup: `cleanup_targets.md`;
-- external research: `muzero_training_pitfalls_literature.md`.
+- background references: existing history/path/dataflow notes.

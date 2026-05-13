@@ -7,6 +7,7 @@ meant to replace noisy manual ``modal volume get`` polling.
 from __future__ import annotations
 
 import json
+import math
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -268,6 +269,41 @@ def _normalise_counts(value: Any) -> dict[str, int]:
     return counts
 
 
+def _first_mapping(value: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
+    for key in keys:
+        candidate = value.get(key)
+        if isinstance(candidate, dict):
+            return candidate
+    return {}
+
+
+def _mean_numeric(rows: list[dict[str, Any]], keys: tuple[str, ...]) -> float | None:
+    values: list[float] = []
+    for row in rows:
+        for key in keys:
+            value = _safe_float(row.get(key))
+            if value is not None:
+                values.append(value)
+                break
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
+def _sum_count_mappings(
+    rows: list[dict[str, Any]],
+    keys: tuple[str, ...],
+) -> dict[str, int]:
+    counts: Counter[str] = Counter()
+    for row in rows:
+        for key in keys:
+            mapping = _normalise_counts(row.get(key))
+            if mapping:
+                counts.update(mapping)
+                break
+    return dict(sorted(counts.items()))
+
+
 def _sum_action_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
     counts: Counter[str] = Counter()
     for row in rows:
@@ -279,7 +315,8 @@ def _outcome_histogram(rows: list[dict[str, Any]]) -> dict[str, int]:
     counts: Counter[str] = Counter()
     for row in rows:
         outcome = (
-            row.get("terminal_reason")
+            row.get("outcome")
+            or row.get("terminal_reason")
             or row.get("death_cause_name")
             or row.get("death_cause")
             or row.get("error_type")
@@ -287,6 +324,201 @@ def _outcome_histogram(rows: list[dict[str, Any]]) -> dict[str, int]:
         )
         counts[str(outcome)] += 1
     return dict(sorted(counts.items()))
+
+
+def _terminal_histogram(rows: list[dict[str, Any]]) -> dict[str, int]:
+    mapped = _sum_count_mappings(
+        rows,
+        (
+            "terminal_cause_histogram",
+            "terminal_reason_histogram",
+            "terminal_histogram",
+            "terminal_reasons",
+        ),
+    )
+    if mapped:
+        return mapped
+    counts: Counter[str] = Counter()
+    for row in rows:
+        cause = (
+            row.get("terminal_cause")
+            or row.get("terminal_reason")
+            or row.get("death_cause_name")
+            or row.get("death_cause")
+            or row.get("error_type")
+        )
+        if cause:
+            counts[str(cause)] += 1
+    return dict(sorted(counts.items()))
+
+
+def _normalised_histogram_entropy(counts: dict[str, int]) -> float | None:
+    total = sum(count for count in counts.values() if count > 0)
+    positive = [count for count in counts.values() if count > 0]
+    if total <= 0 or len(positive) <= 1:
+        return 0.0 if positive else None
+    entropy = -sum((count / total) * math.log(count / total) for count in positive)
+    return entropy / math.log(len(positive))
+
+
+def _mean_numeric_mapping(
+    rows: list[dict[str, Any]],
+    keys: tuple[str, ...],
+) -> dict[str, float]:
+    sums: Counter[str] = Counter()
+    counts: Counter[str] = Counter()
+    for row in rows:
+        mapping = _first_mapping(row, keys)
+        for key, raw_value in mapping.items():
+            value = _safe_float(raw_value)
+            if value is None:
+                continue
+            sums[str(key)] += value
+            counts[str(key)] += 1
+    return {
+        key: sums[key] / counts[key]
+        for key in sorted(sums)
+        if counts[key] > 0
+    }
+
+
+def _eval_checkpoint_extra_fields(
+    aggregate: dict[str, Any],
+    rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    extras: dict[str, Any] = {}
+    for key in (
+        "mean_reward",
+        "reward_mean",
+        "mean_training_reward",
+        "training_reward",
+        "mean_bonus_count",
+        "bonus_count",
+        "mean_bonus_pickup_count",
+        "bonus_pickup_count",
+        "mean_bonus_reward",
+        "bonus_reward",
+        "bonus_pickup_reward",
+        "action_entropy",
+        "failure_rate",
+    ):
+        value = _safe_float(aggregate.get(key))
+        if value is not None:
+            extras[key] = value
+    for key in ("eval_health", "health"):
+        if aggregate.get(key) is not None:
+            extras[key] = aggregate.get(key)
+    for key in ("reward_components", "mean_reward_components"):
+        value = aggregate.get(key)
+        if isinstance(value, dict):
+            extras[key] = value
+
+    mean_training_reward = _mean_numeric(
+        rows,
+        ("training_reward", "mean_training_reward", "mean_reward", "reward_mean"),
+    )
+    if "mean_training_reward" not in extras and mean_training_reward is not None:
+        extras["mean_training_reward"] = mean_training_reward
+    mean_reward = _mean_numeric(rows, ("mean_reward", "reward_mean"))
+    if "mean_reward" not in extras and mean_reward is not None:
+        extras["mean_reward"] = mean_reward
+    mean_bonus_count = _mean_numeric(rows, ("bonus_count", "mean_bonus_count"))
+    if "mean_bonus_count" not in extras and mean_bonus_count is not None:
+        extras["mean_bonus_count"] = mean_bonus_count
+    mean_bonus_pickup_count = _mean_numeric(
+        rows,
+        ("bonus_pickup_count", "mean_bonus_pickup_count"),
+    )
+    if "mean_bonus_pickup_count" not in extras and mean_bonus_pickup_count is not None:
+        extras["mean_bonus_pickup_count"] = mean_bonus_pickup_count
+    mean_bonus_reward = _mean_numeric(
+        rows,
+        ("bonus_reward", "mean_bonus_reward", "bonus_pickup_reward"),
+    )
+    if "mean_bonus_reward" not in extras and mean_bonus_reward is not None:
+        extras["mean_bonus_reward"] = mean_bonus_reward
+
+    reward_components = _first_mapping(
+        aggregate,
+        ("mean_reward_components", "reward_components"),
+    )
+    if not reward_components:
+        reward_components = _mean_numeric_mapping(
+            rows,
+            ("reward_components", "mean_reward_components"),
+        )
+    if reward_components and "mean_reward_components" not in extras:
+        extras["mean_reward_components"] = reward_components
+
+    action_histogram = _first_mapping(
+        aggregate,
+        ("action_histogram", "ego_action_histogram", "selected_action_histogram"),
+    )
+    for key in ("ego_action_histogram", "selected_action_histogram"):
+        value = aggregate.get(key)
+        if isinstance(value, dict):
+            extras[key] = {
+                str(item_key): item_value
+                for item_key, item_value in sorted(
+                    value.items(),
+                    key=lambda item: str(item[0]),
+                )
+            }
+    if not action_histogram:
+        action_histogram = _sum_count_mappings(
+            rows,
+            ("action_histogram", "ego_action_histogram", "selected_action_histogram"),
+        )
+    if action_histogram:
+        extras["action_histogram"] = {
+            str(key): value
+            for key, value in sorted(action_histogram.items(), key=lambda item: str(item[0]))
+        }
+        if "action_entropy" not in extras:
+            extras["action_entropy"] = _normalised_histogram_entropy(
+                _normalise_counts(action_histogram)
+            )
+
+    terminal_histogram = _first_mapping(
+        aggregate,
+        (
+            "terminal_cause_histogram",
+            "terminal_reason_histogram",
+            "terminal_histogram",
+            "terminal_reasons",
+        ),
+    )
+    for key in ("terminal_reason_histogram", "terminal_histogram", "terminal_reasons"):
+        value = aggregate.get(key)
+        if isinstance(value, dict):
+            extras[key] = {
+                str(item_key): item_value
+                for item_key, item_value in sorted(
+                    value.items(),
+                    key=lambda item: str(item[0]),
+                )
+            }
+    if not terminal_histogram:
+        terminal_histogram = _terminal_histogram(rows)
+    if terminal_histogram:
+        extras["terminal_cause_histogram"] = {
+            str(key): value
+            for key, value in sorted(
+                terminal_histogram.items(),
+                key=lambda item: str(item[0]),
+            )
+        }
+
+    ok_count = _safe_float(aggregate.get("ok_count"))
+    failure_count = _safe_float(aggregate.get("failure_count"))
+    if "failure_rate" not in extras and failure_count is not None:
+        denominator = (ok_count or 0.0) + failure_count
+        if denominator > 0:
+            extras["failure_rate"] = failure_count / denominator
+    if "eval_health" not in extras and failure_count is not None:
+        extras["eval_health"] = "has_failures" if failure_count > 0 else "ok"
+
+    return extras
 
 
 def _rows_for_checkpoint(manifest: dict[str, Any], checkpoint: str) -> list[dict[str, Any]]:
@@ -353,8 +585,9 @@ def _eval_manifest_rollup(
         key=lambda item: _checkpoint_sort_key(item[0]),
     ):
         rows = _rows_for_checkpoint(manifest, checkpoint)
+        action_counts = _sum_action_counts(rows)
         action_summary = _action_summary(
-            _sum_action_counts(rows),
+            action_counts,
             collapse_threshold=collapse_threshold,
         )
         checkpoint_rows.append(
@@ -371,7 +604,9 @@ def _eval_manifest_rollup(
                 "ok_count": aggregate.get("ok_count"),
                 "capped_count": aggregate.get("capped_count"),
                 "failure_count": aggregate.get("failure_count"),
-                "outcome_histogram": _outcome_histogram(rows),
+                "outcome_histogram": aggregate.get("outcome_histogram")
+                if isinstance(aggregate.get("outcome_histogram"), dict)
+                else _outcome_histogram(rows),
                 "action_summary": action_summary,
                 "row_action_collapsed_count": sum(
                     1
@@ -382,6 +617,7 @@ def _eval_manifest_rollup(
                     ).get("collapsed")
                     is True
                 ),
+                **_eval_checkpoint_extra_fields(aggregate, rows),
             }
         )
 
@@ -916,8 +1152,10 @@ def _print_curve_summary(rows: list[dict[str, Any]]) -> None:
         "points",
         "first_iter",
         "first_mean",
+        "first_outcomes",
         "best_iter",
         "best_mean",
+        "best_outcomes",
         "latest_iter",
         "latest_mean",
         "latest_max",
@@ -1107,6 +1345,8 @@ def _print_eval_summary(rows: list[dict[str, Any]]) -> None:
                         "",
                         "",
                         "",
+                        "",
+                        "",
                         str(row.get("checkpoint_count") or 0),
                         str(row.get("latest_checkpoint") or ""),
                         str(row.get("eval_manifest_count") or 0),
@@ -1133,8 +1373,10 @@ def _print_eval_summary(rows: list[dict[str, Any]]) -> None:
             str(len(points)),
             str(first.get("iteration") if first.get("iteration") is not None else ""),
             _format_float(first.get("mean_steps")),
+            _format_counts(first.get("outcome_histogram")),
             str(best.get("iteration") if best.get("iteration") is not None else ""),
             _format_float(best.get("mean_steps")),
+            _format_counts(best.get("outcome_histogram")),
             str(latest.get("iteration") if latest.get("iteration") is not None else ""),
             _format_float(latest.get("mean_steps")),
             str(latest.get("max_steps") or ""),
@@ -1240,7 +1482,7 @@ def main(
     else:
         selected_run_ids, preset_attempt_ids = _preset_run_ids(preset)
     selected_attempt_ids = _split_csv(attempt_ids) or preset_attempt_ids
-    if output == "eval-summary":
+    if output in {"eval-summary", "eval-json"}:
         rows = curvytron_run_eval_curves.remote(
             selected_run_ids,
             selected_attempt_ids,
@@ -1270,8 +1512,10 @@ def main(
         _print_curve_summary(rows)
     elif output == "eval-summary":
         _print_eval_summary(rows)
+    elif output == "eval-json":
+        print(json.dumps(rows, indent=2, sort_keys=True))
     else:
         raise ValueError(
             "output must be table, json, curve-table, curve-summary, "
-            "curve-json, or eval-summary"
+            "curve-json, eval-summary, or eval-json"
         )

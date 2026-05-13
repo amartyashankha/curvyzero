@@ -47,6 +47,8 @@ from curvyzero.infra.modal.lightzero_curvyzero_stacked_debug_visual_survival_tra
     DEFAULT_N_EPISODE,
     DEFAULT_N_EVALUATOR_EPISODE,
     DEFAULT_NUM_SIMULATIONS,
+    DEFAULT_OPPONENT_DEATH_MODE,
+    DEFAULT_OPPONENT_RUNTIME_MODE,
     DEFAULT_OPPONENT_USE_CUDA,
     DEFAULT_OPPONENT_POLICY_KIND,
     DEFAULT_REWARD_VARIANT,
@@ -644,6 +646,8 @@ def _make_policy_and_env(
     opponent_checkpoint_state_key: str | None,
     opponent_use_cuda: bool = DEFAULT_OPPONENT_USE_CUDA,
     natural_bonus_spawn: bool = TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN,
+    opponent_death_mode: str = DEFAULT_OPPONENT_DEATH_MODE,
+    opponent_runtime_mode: str = DEFAULT_OPPONENT_RUNTIME_MODE,
 ) -> tuple[Any, Any, dict[str, Any]]:
     from ding.config import compile_config
     from ding.envs import get_vec_env_setting
@@ -680,6 +684,8 @@ def _make_policy_and_env(
         opponent_snapshot_ref=opponent_snapshot_ref,
         opponent_checkpoint_state_key=opponent_checkpoint_state_key,
         natural_bonus_spawn=bool(natural_bonus_spawn),
+        opponent_death_mode=opponent_death_mode,
+        opponent_runtime_mode=opponent_runtime_mode,
     )
     model_env_variant = model_env_variant or env_variant
     # Only used to rebuild the checkpoint model shape; survival scoring stays steps-based.
@@ -795,6 +801,10 @@ def _run_survival_episode(
     reset_summary = _summarize_observation(observation)
     steps: list[dict[str, Any]] = []
     total_reward = 0.0
+    survival_reward = 0.0
+    sparse_outcome_reward = 0.0
+    bonus_pickup_count = 0
+    bonus_reward = 0.0
     actions: list[int] = []
     done = False
     last_info: dict[str, Any] = {}
@@ -814,6 +824,12 @@ def _run_survival_episode(
         total_reward += reward_float
         actions.append(action)
         last_info = _to_plain(info) if isinstance(info, dict) else {"raw_info": _to_plain(info)}
+        survival_reward += float(last_info.get("dense_survival_helper_for_ego") or 0.0)
+        sparse_outcome_reward += float(
+            last_info.get("sparse_outcome_reward_for_ego") or 0.0
+        )
+        bonus_pickup_count += int(last_info.get("bonus_catch_count_step_for_ego") or 0)
+        bonus_reward += float(last_info.get("bonus_pickup_reward_for_ego") or 0.0)
         if step_detail_limit is None or len(steps) < step_detail_limit:
             steps.append(
                 {
@@ -851,6 +867,14 @@ def _run_survival_episode(
         "steps_run": len(actions),
         "steps_survived": steps_survived,
         "total_reward": total_reward,
+        "survival_reward": survival_reward,
+        "sparse_outcome_reward": sparse_outcome_reward,
+        "bonus_pickup_count": bonus_pickup_count,
+        "bonus_reward": bonus_reward,
+        "reward_components": {
+            "survival": survival_reward,
+            "bonus": bonus_reward,
+        },
         "done": bool(done),
         "terminal_reason": terminal_reason,
         "winner": _winner_value_from_info(last_info, "winner"),
@@ -897,6 +921,8 @@ def _eval_checkpoint(
     opponent_checkpoint_state_key: str | None,
     opponent_use_cuda: bool = DEFAULT_OPPONENT_USE_CUDA,
     natural_bonus_spawn: bool = TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN,
+    opponent_death_mode: str = DEFAULT_OPPONENT_DEATH_MODE,
+    opponent_runtime_mode: str = DEFAULT_OPPONENT_RUNTIME_MODE,
 ) -> dict[str, Any]:
     checkpoint = _torch_load(checkpoint_path)
     state_candidate = _find_state_dict(checkpoint)
@@ -920,6 +946,8 @@ def _eval_checkpoint(
         opponent_checkpoint_state_key=opponent_checkpoint_state_key,
         opponent_use_cuda=bool(opponent_use_cuda),
         natural_bonus_spawn=bool(natural_bonus_spawn),
+        opponent_death_mode=opponent_death_mode,
+        opponent_runtime_mode=opponent_runtime_mode,
     )
     episode = _run_survival_episode(
         policy=policy,
@@ -967,6 +995,11 @@ def _row_from_result(job: dict[str, Any], result: dict[str, Any]) -> dict[str, A
         "ok": bool(result.get("ok")),
         "strict_load": status.get("strict_policy_model_load_ok"),
         "training_reward": episode.get("total_reward"),
+        "survival_reward": episode.get("survival_reward"),
+        "sparse_outcome_reward": episode.get("sparse_outcome_reward"),
+        "bonus_pickup_count": episode.get("bonus_pickup_count"),
+        "bonus_reward": episode.get("bonus_reward"),
+        "reward_components": episode.get("reward_components"),
         "action_histogram": episode.get("action_histogram"),
         "elapsed_seconds": result.get("remote_elapsed_sec"),
         "artifact_ref": artifact.get("ref"),
@@ -1120,6 +1153,48 @@ def _survival_aggregate_table(table: list[dict[str, Any]]) -> list[dict[str, Any
             for value in (_number(row.get("training_reward")) for row in rows)
             if value is not None
         ]
+        survival_scores = [
+            value
+            for value in (_number(row.get("survival_reward")) for row in rows)
+            if value is not None
+        ]
+        sparse_outcome_scores = [
+            value
+            for value in (_number(row.get("sparse_outcome_reward")) for row in rows)
+            if value is not None
+        ]
+        bonus_counts = [
+            value
+            for value in (_number(row.get("bonus_pickup_count")) for row in rows)
+            if value is not None
+        ]
+        bonus_scores = [
+            value
+            for value in (_number(row.get("bonus_reward")) for row in rows)
+            if value is not None
+        ]
+        reward_component_keys = sorted(
+            {
+                str(key)
+                for row in rows
+                if isinstance(row.get("reward_components"), dict)
+                for key in row["reward_components"]
+            }
+        )
+        mean_reward_components = {
+            key: _mean(
+                [
+                    value
+                    for value in (
+                        _number(row.get("reward_components", {}).get(key))
+                        for row in rows
+                        if isinstance(row.get("reward_components"), dict)
+                    )
+                    if value is not None
+                ]
+            )
+            for key in reward_component_keys
+        }
         ok_count = sum(1 for row in rows if row.get("ok"))
         capped_count = sum(
             1
@@ -1149,6 +1224,11 @@ def _survival_aggregate_table(table: list[dict[str, Any]]) -> list[dict[str, Any
                 "failure_count": len(rows) - ok_count,
                 "outcome_histogram": _outcome_histogram(rows),
                 "mean_training_reward": _mean(scores),
+                "mean_survival_reward": _mean(survival_scores),
+                "mean_sparse_outcome_reward": _mean(sparse_outcome_scores),
+                "mean_bonus_pickup_count": _mean(bonus_counts),
+                "mean_bonus_reward": _mean(bonus_scores),
+                "mean_reward_components": mean_reward_components,
                 "mean_elapsed_sec": _mean(elapsed),
             }
         )
@@ -1172,6 +1252,12 @@ def _survival_table(table: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "final_action": row.get("final_action"),
             "decision_ms": row.get("decision_ms"),
             "actions": row.get("action_histogram"),
+            "training_reward": row.get("training_reward"),
+            "survival_reward": row.get("survival_reward"),
+            "sparse_outcome_reward": row.get("sparse_outcome_reward"),
+            "bonus_pickup_count": row.get("bonus_pickup_count"),
+            "bonus_reward": row.get("bonus_reward"),
+            "reward_components": row.get("reward_components"),
             "ok": row.get("ok"),
             "strict": row.get("strict_load"),
             "elapsed_sec": row.get("elapsed_seconds"),
@@ -1204,6 +1290,8 @@ def _run_eval(
     opponent_snapshot_ref: str | None,
     opponent_checkpoint_state_key: str | None,
     natural_bonus_spawn: bool = TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN,
+    opponent_death_mode: str = DEFAULT_OPPONENT_DEATH_MODE,
+    opponent_runtime_mode: str = DEFAULT_OPPONENT_RUNTIME_MODE,
 ) -> dict[str, Any]:
     if compute not in COMPUTE_CHOICES:
         raise ValueError(f"unknown compute {compute!r}; expected one of {COMPUTE_CHOICES!r}")
@@ -1278,6 +1366,8 @@ def _run_eval(
         "opponent_checkpoint_ref": opponent_checkpoint_ref,
         "opponent_snapshot_ref": opponent_snapshot_ref,
         "opponent_checkpoint_state_key": opponent_checkpoint_state_key,
+        "opponent_death_mode": opponent_death_mode,
+        "opponent_runtime_mode": opponent_runtime_mode,
         "natural_bonus_spawn": bool(natural_bonus_spawn),
     }
     try:
@@ -1300,6 +1390,8 @@ def _run_eval(
                 opponent_snapshot_ref=opponent_snapshot_ref,
                 opponent_checkpoint_state_key=opponent_checkpoint_state_key,
                 natural_bonus_spawn=bool(natural_bonus_spawn),
+                opponent_death_mode=opponent_death_mode,
+                opponent_runtime_mode=opponent_runtime_mode,
             )
         episode = eval_result["episode"]
         load_state = eval_result["surface"]["load_state_dict"]
@@ -1374,6 +1466,8 @@ def curvytron_visual_survival_eval_cpu(
     opponent_checkpoint_ref: str | None = None,
     opponent_snapshot_ref: str | None = None,
     opponent_checkpoint_state_key: str | None = None,
+    opponent_death_mode: str = DEFAULT_OPPONENT_DEATH_MODE,
+    opponent_runtime_mode: str = DEFAULT_OPPONENT_RUNTIME_MODE,
 ) -> dict[str, Any]:
     return _run_eval(
         compute="cpu",
@@ -1396,6 +1490,8 @@ def curvytron_visual_survival_eval_cpu(
         opponent_checkpoint_ref=opponent_checkpoint_ref,
         opponent_snapshot_ref=opponent_snapshot_ref,
         opponent_checkpoint_state_key=opponent_checkpoint_state_key,
+        opponent_death_mode=opponent_death_mode,
+        opponent_runtime_mode=opponent_runtime_mode,
     )
 
 
@@ -1427,6 +1523,8 @@ def curvytron_visual_survival_eval_gpu(
     opponent_checkpoint_ref: str | None = None,
     opponent_snapshot_ref: str | None = None,
     opponent_checkpoint_state_key: str | None = None,
+    opponent_death_mode: str = DEFAULT_OPPONENT_DEATH_MODE,
+    opponent_runtime_mode: str = DEFAULT_OPPONENT_RUNTIME_MODE,
 ) -> dict[str, Any]:
     return _run_eval(
         compute="gpu-l4-t4",
@@ -1449,6 +1547,8 @@ def curvytron_visual_survival_eval_gpu(
         opponent_checkpoint_ref=opponent_checkpoint_ref,
         opponent_snapshot_ref=opponent_snapshot_ref,
         opponent_checkpoint_state_key=opponent_checkpoint_state_key,
+        opponent_death_mode=opponent_death_mode,
+        opponent_runtime_mode=opponent_runtime_mode,
     )
 
 
@@ -1480,6 +1580,8 @@ def curvytron_visual_survival_eval_gpu_cpu40(
     opponent_checkpoint_ref: str | None = None,
     opponent_snapshot_ref: str | None = None,
     opponent_checkpoint_state_key: str | None = None,
+    opponent_death_mode: str = DEFAULT_OPPONENT_DEATH_MODE,
+    opponent_runtime_mode: str = DEFAULT_OPPONENT_RUNTIME_MODE,
 ) -> dict[str, Any]:
     return _run_eval(
         compute=GPU_L4_T4_CPU40_COMPUTE,
@@ -1502,6 +1604,8 @@ def curvytron_visual_survival_eval_gpu_cpu40(
         opponent_checkpoint_ref=opponent_checkpoint_ref,
         opponent_snapshot_ref=opponent_snapshot_ref,
         opponent_checkpoint_state_key=opponent_checkpoint_state_key,
+        opponent_death_mode=opponent_death_mode,
+        opponent_runtime_mode=opponent_runtime_mode,
     )
 
 

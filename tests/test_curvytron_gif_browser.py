@@ -85,7 +85,9 @@ def _write_summary(
                         "ok": ok,
                     },
                     "collect_t1": {
-                        "label": "Collect T=1",
+                        "label": "Train collect T=1 eps=0.25",
+                        "temperature": 1.0,
+                        "epsilon": 0.25,
                         "gif_ref": collect_gif_ref,
                         "frame_count": frame_count,
                         "ok": ok if write_collect_gif else None,
@@ -629,6 +631,9 @@ def test_summary_row_reports_collect_t1_variant_and_head_token(tmp_path) -> None
     rows_with_collect = browser._list_selfplay_summaries(tmp_path)
 
     assert rows_with_collect[0]["gif_variants"][1]["variant_id"] == "collect_t1"
+    assert rows_with_collect[0]["gif_variants"][1]["label"] == (
+        "Train collect T=1 eps=0.25"
+    )
     assert rows_with_collect[0]["gif_variants"][1]["gif_exists"] is True
     assert browser._head_token(rows_with_collect) != token_without_collect
 

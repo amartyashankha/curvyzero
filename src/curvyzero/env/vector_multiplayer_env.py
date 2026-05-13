@@ -264,6 +264,7 @@ class VectorMultiplayerEnv:
             DEFAULT_NATURAL_BONUS_POSITION_ATTEMPT_CAPACITY
         ),
         death_mode: str = vector_runtime.DEATH_MODE_NORMAL,
+        death_immunity_player_ids: tuple[int, ...] | np.ndarray | None = None,
     ) -> None:
         self.batch_size = _positive_int(batch_size, "batch_size")
         self.player_count = _player_count(player_count)
@@ -337,6 +338,10 @@ class VectorMultiplayerEnv:
         if death_mode not in vector_runtime.DEATH_MODES:
             raise VectorMultiplayerEnvError("death_mode must be 'normal' or 'profile_no_death'")
         self.death_mode = death_mode
+        self.death_immunity_player_ids = _death_immunity_player_ids(
+            death_immunity_player_ids,
+            player_count=self.player_count,
+        )
 
         reference = CurvyTronReferenceDefaults()
         self.map_size = (
@@ -993,6 +998,7 @@ class VectorMultiplayerEnv:
         actions: np.ndarray,
         *,
         timer_advance_ms: float | np.ndarray | None = None,
+        disabled_player_mask: np.ndarray | None = None,
     ) -> VectorMultiplayerBatch:
         """Step one source-shaped decision for every row with int[B,P] actions."""
 
@@ -1022,7 +1028,9 @@ class VectorMultiplayerEnv:
             timer_advance_ms,
             batch_size=self.batch_size,
         )
+        disabled_mask = self._disabled_player_mask(disabled_player_mask)
         action_sidecar["timer_advance_ms"] = timer_advance.copy()
+        action_sidecar["disabled_player_mask"] = disabled_mask.copy()
         self._ensure_seed_generated_random_tape_headroom(
             pre_active,
             min_available=max(
@@ -1034,6 +1042,7 @@ class VectorMultiplayerEnv:
             pre_active=pre_active,
             source_moves=source_moves,
             timer_advance=timer_advance,
+            disabled_player_mask=disabled_mask,
         )
         counters = runtime_result["step_counters"]
         natural_bonus_info = runtime_result["natural_bonus_info"]
@@ -1071,6 +1080,7 @@ class VectorMultiplayerEnv:
             "step_counters": counters,
             "joint_action": np.asarray(actions).copy(),
             "source_moves": source_moves.copy(),
+            "disabled_player_mask": disabled_mask.copy(),
             "action_sidecar": action_sidecar,
             "natural_bonus_info": natural_bonus_info,
             "source_frame_decision": self.source_frame_decision,
@@ -1104,6 +1114,7 @@ class VectorMultiplayerEnv:
         pre_active: np.ndarray,
         source_moves: np.ndarray,
         timer_advance: np.ndarray,
+        disabled_player_mask: np.ndarray,
     ) -> dict[str, Any]:
         if not self.source_frame_decision:
             natural_bonus_info = self._advance_natural_bonus_spawn_timers(
@@ -1125,6 +1136,8 @@ class VectorMultiplayerEnv:
                     event_mode=self.event_mode,
                     timer_advance_ms=timer_advance,
                     death_mode=self.death_mode,
+                    death_immunity_mask=self._death_immunity_mask(),
+                    disabled_player_mask=disabled_player_mask,
                 )
             )
             elapsed = np.where(pre_active, self.decision_ms, 0.0).astype(np.float64)
@@ -1172,6 +1185,8 @@ class VectorMultiplayerEnv:
                     event_mode=self.event_mode,
                     timer_advance_ms=frame_timer_advance,
                     death_mode=self.death_mode,
+                    death_immunity_mask=self._death_immunity_mask(),
+                    disabled_player_mask=disabled_player_mask,
                 )
             )
             for name in total_counters:
@@ -1355,6 +1370,7 @@ class VectorMultiplayerEnv:
                 timer_advance_ms=np.where(warmdown_pending, frame_ms, 0.0).astype(
                     np.float64,
                 ),
+                death_immunity_mask=self._death_immunity_mask(),
             )
         )
         self._append_new_deaths(pre_alive)
@@ -1952,6 +1968,22 @@ class VectorMultiplayerEnv:
             for name, array in self.state.items()
             if name not in PUBLIC_LIFECYCLE_ARRAY_NAMES
         }
+
+    def _death_immunity_mask(self) -> np.ndarray:
+        mask = np.zeros((self.batch_size, self.player_count), dtype=bool)
+        if self.death_immunity_player_ids.size:
+            mask[:, self.death_immunity_player_ids] = True
+        return mask
+
+    def _disabled_player_mask(self, value: np.ndarray | None) -> np.ndarray:
+        if value is None:
+            return np.zeros((self.batch_size, self.player_count), dtype=bool)
+        mask = np.asarray(value)
+        if mask.shape != (self.batch_size, self.player_count):
+            raise VectorMultiplayerEnvError("disabled_player_mask must have shape [B,P]")
+        if mask.dtype != np.bool_:
+            raise VectorMultiplayerEnvError("disabled_player_mask must be a bool array")
+        return mask.copy()
 
     def _ensure_seeded_bonus_arrays(
         self,
@@ -3043,6 +3075,14 @@ class VectorMultiplayerEnv:
             "bonus_support_mode_by_row": bonus_info["mode_by_row"].copy(),
             "public_mechanics_gaps": bonus_info["source_default_gap_claims"],
             "death_mode": self.death_mode,
+            "death_immunity_player_ids": self.death_immunity_player_ids.copy(),
+            "death_immunity_mask": self._death_immunity_mask(),
+            "death_immunity_diagnostic": bool(self.death_immunity_player_ids.size),
+            "death_immunity_claim": (
+                "diagnostic_not_source_faithful"
+                if self.death_immunity_player_ids.size
+                else "none"
+            ),
             "death_suppression_for_profile": (
                 self.death_mode == vector_runtime.DEATH_MODE_PROFILE_NO_DEATH
             ),
@@ -3875,6 +3915,25 @@ def _player_ids(value: tuple[str, ...] | None, *, player_count: int) -> tuple[st
     if len(set(value)) != player_count:
         raise VectorMultiplayerEnvError("player_ids must be unique")
     return value
+
+
+def _death_immunity_player_ids(
+    value: tuple[int, ...] | np.ndarray | None,
+    *,
+    player_count: int,
+) -> np.ndarray:
+    if value is None:
+        return np.zeros(0, dtype=np.int16)
+    ids = np.asarray(value, dtype=np.int16).reshape(-1)
+    if ids.size and (
+        bool((ids < 0).any()) or bool((ids >= int(player_count)).any())
+    ):
+        raise VectorMultiplayerEnvError(
+            "death_immunity_player_ids must contain valid player ids"
+        )
+    if np.unique(ids).size != ids.size:
+        raise VectorMultiplayerEnvError("death_immunity_player_ids must be unique")
+    return ids
 
 
 def _positive_int(value: int, name: str) -> int:

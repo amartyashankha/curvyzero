@@ -1,5 +1,11 @@
 # CurvyTron LightZero Path Matrix
 
+> Historical warning: this path comparison is still useful, but its
+> "recent frozen opponent" optimism predates the v1d readout. Current guidance:
+> keep stock `train_muzero`, avoid the old custom two-seat learning lane, and
+> use [current_source_of_truth.md](current_source_of_truth.md) for the active
+> survival-first opponent plan.
+
 Purpose: prevent different paths from being collapsed into one vague
 "self-play" label.
 

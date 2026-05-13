@@ -1,5 +1,13 @@
 # CurvyTron High-Signal Batch Matrix
 
+> Historical warning: this is a launch ledger and evidence record, not the
+> current next-matrix plan. Early sections still describe recent frozen rows
+> and search/batch sweeps before the v1d readout showed outcome saturation and
+> weak survival. Outcome reward rows here are historical probes, not serious
+> candidates for the next diagnostic lane. Use
+> [current_source_of_truth.md](current_source_of_truth.md) for active survival
+> plus bonus guidance with outcome reward off/zero.
+
 Date: 2026-05-12
 
 Purpose: record the reviewed CurvyTron stock `train_muzero` high-signal matrix
@@ -532,14 +540,36 @@ Follow-up critique notes:
 
 Outcome-readout clarification:
 
-- The eval manifests include win/loss/draw outcome counts. The compact
-  `eval-summary` table now prints `latest_outcomes`.
-- Latest v1d outcomes are mostly `round_survivor_win:8`, including both the
-  weakly improving fixed rows and the flat recent/mid frozen rows.
-- That means outcome alone is not a useful progress signal for these probes.
-  A policy can win quickly while still only surviving around `8` steps.
-- For this phase, read progress as survival curve plus terminal/action
-  diagnostics, not just win count.
+- The eval manifests include learner-centric `win/loss/draw/cap` outcome
+  counts. The compact `eval-summary` table now prints first, best, and latest
+  outcomes, and it prefers the manifest aggregate outcome histogram instead of
+  recomputing from terminal reason strings.
+- Corrected readout: fixed and old-opponent rows often start with losses, then
+  move toward mostly wins. Example fixed rows start around `loss:7,win:1` and
+  later reach `win:7` or `win:8`.
+- Recent frozen rows are different: many are already `win:8` at the first
+  checkpoint and remain around `8` survival steps. That means the outcome signal
+  is already saturated while survival does not improve.
+- This supports the current suspicion: recent/mid frozen opponents are not
+  useful pressure for the next overnight batch. They may simply die too quickly
+  or deterministically, leaving no meaningful outcome gradient.
+- For this phase, read progress as survival curve plus action/terminal
+  diagnostics. Treat win count as secondary and often saturated.
+
+Next-opponent design note:
+
+- A one-player/wall-avoidance sanity lane is reasonable: make opponent pressure
+  non-limiting so the policy learns to survive, not just to outlive a weak
+  opponent.
+- Fastest clean version is not true one-player `player_count=1`; the current
+  public env assumes 2+ players.
+- Safer diagnostic knobs to add before the next overnight batch:
+  - `opponent_death_mode=normal|immortal`, implemented as an ego-only death
+    mode so player 0 can still die but player 1 cannot.
+  - `opponent_trail_mode=normal|none`, implemented by preventing player 1 from
+    printing body/trail geometry, not merely hiding it in the renderer.
+- Do not reuse global `profile_no_death`: it disables death for the ego too and
+  changes the task.
 
 Joint-action note:
 
@@ -605,6 +635,11 @@ Recent may be more realistic; old/mid may produce clearer early signal.
 `reward ablation` separates sparse competitive learning from survival-shaped
 learning. Dense reward is useful only if sparse outcome and held-out survival
 also move.
+
+Historical warning: this reward-ablation framing predates the corrected v1d
+readout. Do not use it to justify outcome reward in the next diagnostic lane;
+current guidance is survival plus bonus reward with outcome reward off/zero.
+See [current_source_of_truth.md](current_source_of_truth.md).
 
 `search/batch sensitivity` checks the two cheapest MuZero knobs before changing
 architecture again.

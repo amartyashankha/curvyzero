@@ -1,5 +1,11 @@
 # Frozen / Recent-Checkpoint Opponent Route
 
+> Historical warning: this note predates the v1d readout. Recent/mid frozen
+> opponents are no longer assumed to be good curriculum; they looked weak or
+> saturated while survival stayed near the floor. Use
+> [current_source_of_truth.md](current_source_of_truth.md) for the active
+> survival-first opponent plan.
+
 Purpose: evaluate whether we can stay close to stock LightZero by training one
 ego policy against a recent frozen opponent, instead of trying to force true
 same-tick live self-play immediately.

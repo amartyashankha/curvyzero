@@ -11,6 +11,9 @@ from curvyzero.infra.modal.lightzero_curvyzero_stacked_debug_visual_survival_tra
 from curvyzero.infra.modal.lightzero_curvyzero_stacked_debug_visual_survival_train import (
     _LightZeroPhaseProfiler as _CurvyTronLightZeroPhaseProfiler,
 )
+from curvyzero.infra.modal.lightzero_curvyzero_stacked_debug_visual_survival_train import (
+    _should_install_lightzero_phase_profile,
+)
 
 
 class BaseLearner:
@@ -60,6 +63,21 @@ def test_lightzero_phase_profiler_can_stop_after_learner_train_calls():
     assert profiler.counts["learner_train_iter_delta"] == 2
     assert "learner_train_sec" in profiler.timers
     assert BaseLearner.train(learner) == "trained"
+
+
+def test_curvytron_train_call_cap_installs_phase_profile_outside_profile_mode():
+    assert _should_install_lightzero_phase_profile(
+        mode="train",
+        stop_after_learner_train_calls=1,
+    )
+    assert not _should_install_lightzero_phase_profile(
+        mode="train",
+        stop_after_learner_train_calls=0,
+    )
+    assert _should_install_lightzero_phase_profile(
+        mode="profile",
+        stop_after_learner_train_calls=0,
+    )
 
 
 class FakeParameter:

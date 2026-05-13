@@ -7,6 +7,31 @@ true before another large learning claim.
 This folder is the working area. Short stable conclusions should flow upward to
 the design docs and the Coach index.
 
+## Current Source
+
+Start here for active work:
+
+- [current_source_of_truth.md](current_source_of_truth.md)
+- [user_priority_snapshot.md](user_priority_snapshot.md)
+- [todo.md](todo.md)
+- [hypotheses_and_evidence.md](hypotheses_and_evidence.md)
+- [v1d_axis_projection.md](v1d_axis_projection.md)
+- [v1d_fresh_eval_summary_2026-05-13.md](v1d_fresh_eval_summary_2026-05-13.md)
+- [next_overnight_matrix_plan.md](next_overnight_matrix_plan.md)
+- [opponent_diagnostic_design.md](opponent_diagnostic_design.md)
+- [blank_canvas_noop_opponent_lane.md](blank_canvas_noop_opponent_lane.md)
+- [scripted_wall_avoidant_opponent_baseline_2026-05-13.md](scripted_wall_avoidant_opponent_baseline_2026-05-13.md)
+- [source_state_reward_wiring_audit_2026-05-13.md](source_state_reward_wiring_audit_2026-05-13.md)
+- [aggressive_matrix_scale_plan.md](aggressive_matrix_scale_plan.md)
+- [launch_gate_checklist.md](launch_gate_checklist.md)
+- [eval_curve_tooling_plan.md](eval_curve_tooling_plan.md)
+- [delegation_log.md](delegation_log.md)
+- [operating_patterns.md](operating_patterns.md)
+- [archive_and_stale_docs.md](archive_and_stale_docs.md)
+
+The older docs below remain useful evidence, but may contain historical claims
+that have been superseded.
+
 ## Current Plain Read
 
 CurvyTron did not fail because visual MuZero is impossible here.

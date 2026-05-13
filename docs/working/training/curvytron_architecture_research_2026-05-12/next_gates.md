@@ -2,7 +2,14 @@
 
 Purpose: define what must pass before another large CurvyTron learning run.
 
-## Gate 1: Stock Fixed/Frozen Control
+## Gate 1: Stock Survivaldiag Blank-Canvas Lane
+
+Current update: fixed/frozen controls are historical context. The active gate
+is the stock survivaldiag blank-canvas lane using `--mode train`,
+`blank_canvas_noop`, `survival_plus_bonus_no_outcome`, high cap `65536`, and a
+live rich-status readout.
+
+## Historical Gate: Stock Fixed/Frozen Control
 
 Run a small-to-medium `source_state_fixed_opponent` stock `train_muzero` curve.
 

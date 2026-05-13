@@ -1,5 +1,11 @@
 # Open Questions And Hypotheses
 
+> Historical warning: this older hypothesis ledger predates the corrected v1d
+> outcome/survival read. Do not use it to justify recent frozen opponents as
+> the main curriculum or broad low-value sweeps. Use
+> [current_source_of_truth.md](current_source_of_truth.md) and
+> [hypotheses_and_evidence.md](hypotheses_and_evidence.md) for active guidance.
+
 Purpose: keep the investigation honest. Each item should eventually move to
 evidence, rejected, or next action.
 

@@ -38,10 +38,138 @@ def _source_state_training_command():
         "learning_proof": False,
         "opponent_policy_kind": train_mod.OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
     }
-    for key in train_mod._source_state_fixed_opponent_readiness_expected():
-        if key in spec:
-            command[key] = spec[key]
+    for key, expected in train_mod._source_state_fixed_opponent_readiness_expected().items():
+        command[key] = spec.get(key, expected)
     return command
+
+
+def test_checkpoint_progress_writer_updates_browser_speed_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(train_mod, "RUNS_MOUNT", tmp_path)
+    exp_name = tmp_path / "training" / train_mod.TASK_ID / "run-a" / "attempts" / "attempt-a" / "train" / "lightzero_exp"
+    attempt_train_root = exp_name.parent
+
+    class FakeBaseLearner:
+        train_iter = 17
+
+        def save_checkpoint(self):
+            checkpoint_path = exp_name / "ckpt" / "iteration_17.pth.tar"
+            checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+            checkpoint_path.write_bytes(b"fake-checkpoint")
+            return {"ok": True}
+
+    def fake_train_muzero():
+        return None
+
+    monkeypatch.setitem(fake_train_muzero.__globals__, "BaseLearner", FakeBaseLearner)
+    restore = train_mod._install_checkpoint_progress_writer(
+        train_muzero=fake_train_muzero,
+        run_id="run-a",
+        attempt_id="attempt-a",
+        exp_name=exp_name,
+        attempt_train_root=attempt_train_root,
+        started_monotonic=0.0,
+    )
+
+    try:
+        assert restore is not None
+        assert FakeBaseLearner().save_checkpoint() == {"ok": True}
+    finally:
+        if restore is not None:
+            restore()
+
+    progress_path = attempt_train_root / "progress_latest.json"
+    progress = json.loads(progress_path.read_text(encoding="utf-8"))
+    assert progress["iteration"] == 17
+    assert progress["learner_train_iter"] == 17
+    assert progress["elapsed_sec"] >= 0.0
+    assert progress["checkpoint_name"] == "iteration_17.pth.tar"
+    assert progress["checkpoint_ref"].endswith("lightzero_exp/ckpt/iteration_17.pth.tar")
+
+
+def test_eval_episode_and_tables_preserve_reward_components(monkeypatch):
+    class FakeEnv:
+        def __init__(self):
+            self.step_index = 0
+
+        def reset(self, seed=None):
+            return {
+                "observation": np.zeros((4, 64, 64), dtype=np.float32),
+                "action_mask": np.ones(3, dtype=np.float32),
+                "to_play": -1,
+            }
+
+        def step(self, action):
+            self.step_index += 1
+            done = self.step_index == 2
+            info = {
+                "terminal_reason": "round_survivor_win" if done else "none",
+                "dense_survival_helper_for_ego": 1.0,
+                "sparse_outcome_reward_for_ego": 0.0,
+                "bonus_catch_count_step_for_ego": 1 if done else 0,
+                "bonus_pickup_reward_for_ego": 5.0 if done else 0.0,
+            }
+            reward = 6.0 if done else 1.0
+            observation = {
+                "observation": np.zeros((4, 64, 64), dtype=np.float32),
+                "action_mask": np.ones(3, dtype=np.float32),
+                "to_play": -1,
+            }
+            return observation, reward, done, info
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        eval_mod,
+        "_policy_eval_action",
+        lambda policy, observation: {"action": 1, "compact_output": {}},
+    )
+
+    episode = eval_mod._run_survival_episode(
+        policy=object(),
+        env=FakeEnv(),
+        seed=123,
+        max_eval_steps=8,
+        step_detail_limit=None,
+    )
+    row = eval_mod._row_from_result(
+        {
+            "index": 0,
+            "checkpoint_label": "iteration_7",
+            "seed": 123,
+            "checkpoint_ref": "ckpt/iteration_7.pth.tar",
+        },
+        {
+            "ok": True,
+            "episode": episode,
+            "status": {"strict_policy_model_load_ok": True},
+            "artifact": {"ref": "eval/row.json"},
+        },
+    )
+    aggregate = eval_mod._survival_aggregate_table([row])[0]
+    survival = eval_mod._survival_table([row])[0]
+
+    assert episode["total_reward"] == 7.0
+    assert episode["survival_reward"] == 2.0
+    assert episode["bonus_pickup_count"] == 1
+    assert episode["bonus_reward"] == 5.0
+    assert episode["reward_components"] == {
+        "bonus": 5.0,
+        "survival": 2.0,
+    }
+    assert row["training_reward"] == 7.0
+    assert row["reward_components"]["bonus"] == 5.0
+    assert aggregate["mean_training_reward"] == 7.0
+    assert aggregate["mean_survival_reward"] == 2.0
+    assert aggregate["mean_bonus_pickup_count"] == 1.0
+    assert aggregate["mean_bonus_reward"] == 5.0
+    assert aggregate["mean_reward_components"] == {
+        "bonus": 5.0,
+        "survival": 2.0,
+    }
+    assert survival["training_reward"] == 7.0
+    assert survival["bonus_pickup_count"] == 1
+    assert survival["reward_components"]["survival"] == 2.0
 
 
 def _source_state_fixed_opponent_wrapper_info():
@@ -225,6 +353,233 @@ def test_stock_frozen_opponent_cuda_can_still_be_explicitly_enabled(monkeypatch,
     assert patched["surface"]["opponent_use_cuda"] is True
 
 
+def test_stock_train_accepts_proactive_wall_avoidant_source_state_opponent(
+    monkeypatch,
+    tmp_path,
+):
+    _install_fake_lightzero_atari_config(monkeypatch)
+
+    patched = train_mod._build_visual_survival_configs(
+        seed=7,
+        exp_name=tmp_path / "exp",
+        telemetry_path=tmp_path / "env_steps.jsonl",
+        cuda=False,
+        max_env_step=128,
+        source_max_steps=64,
+        decision_ms=train_mod.DEFAULT_DECISION_MS,
+        collector_env_num=1,
+        evaluator_env_num=1,
+        n_evaluator_episode=1,
+        n_episode=1,
+        num_simulations=8,
+        batch_size=16,
+        lightzero_eval_freq=0,
+        lightzero_multi_gpu=False,
+        max_train_iter=8,
+        save_ckpt_after_iter=100,
+        env_variant=train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT,
+        reward_variant=train_mod.DEFAULT_REWARD_VARIANT,
+        ego_action_straight_override_probability=0.0,
+        control_noise_profile_id=train_mod.DEFAULT_CONTROL_NOISE_PROFILE_ID,
+        disable_death_for_profile=False,
+        env_telemetry_stride=64,
+        env_manager_type="base",
+        opponent_policy_kind=train_mod.OPPONENT_POLICY_KIND_PROACTIVE_WALL_AVOIDANT,
+        opponent_use_cuda=False,
+        opponent_checkpoint=None,
+        opponent_snapshot_ref=None,
+        opponent_checkpoint_state_key=None,
+    )
+
+    env_cfg = patched["main_config"]["env"]
+    assert (
+        train_mod.OPPONENT_POLICY_KIND_PROACTIVE_WALL_AVOIDANT
+        in train_mod.OPPONENT_POLICY_KIND_CHOICES
+    )
+    assert env_cfg["opponent_policy_kind"] == (
+        train_mod.OPPONENT_POLICY_KIND_PROACTIVE_WALL_AVOIDANT
+    )
+    assert env_cfg["opponent_training_relation"] == (
+        train_mod.OPPONENT_TRAINING_RELATION_PROACTIVE_WALL_AVOIDANT
+    )
+    assert "opponent_checkpoint_path" not in env_cfg
+    assert patched["surface"]["opponent_policy_kind"] == (
+        train_mod.OPPONENT_POLICY_KIND_PROACTIVE_WALL_AVOIDANT
+    )
+
+
+def test_survival_plus_bonus_no_outcome_uses_capped_separate_supports(
+    monkeypatch,
+    tmp_path,
+):
+    _install_fake_lightzero_atari_config(monkeypatch)
+
+    patched = train_mod._build_visual_survival_configs(
+        seed=7,
+        exp_name=tmp_path / "exp",
+        telemetry_path=tmp_path / "env_steps.jsonl",
+        cuda=False,
+        max_env_step=65_536,
+        source_max_steps=65_536,
+        decision_ms=train_mod.DEFAULT_DECISION_MS,
+        collector_env_num=1,
+        evaluator_env_num=1,
+        n_evaluator_episode=1,
+        n_episode=1,
+        num_simulations=8,
+        batch_size=16,
+        lightzero_eval_freq=0,
+        lightzero_multi_gpu=False,
+        max_train_iter=8,
+        save_ckpt_after_iter=100,
+        env_variant=train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT,
+        reward_variant=train_mod.REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME,
+        ego_action_straight_override_probability=0.0,
+        control_noise_profile_id=train_mod.DEFAULT_CONTROL_NOISE_PROFILE_ID,
+        disable_death_for_profile=False,
+        env_telemetry_stride=64,
+        env_manager_type="base",
+        opponent_policy_kind=train_mod.OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
+        opponent_use_cuda=False,
+        opponent_checkpoint=None,
+        opponent_snapshot_ref=None,
+        opponent_checkpoint_state_key=None,
+    )
+
+    model_cfg = patched["main_config"]["policy"]["model"]
+    env_cfg = patched["main_config"]["env"]
+    target_config = env_cfg["lightzero_target_config"]
+    reward_policy = env_cfg["reward_policy"]
+
+    assert train_mod.REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME in (
+        train_mod.REWARD_VARIANT_CHOICES
+    )
+    assert env_cfg["reward_variant"] == (
+        train_mod.REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME
+    )
+    assert reward_policy["sparse_outcome_reward"] is False
+    assert reward_policy["sparse_outcome_telemetry_only"] is True
+    assert reward_policy["same_step_bonus_pickup_reward"] is True
+    assert target_config["uncapped_model_reward_support_scale"] == 2
+    assert target_config["uncapped_model_value_support_scale"] == 131_072
+    assert target_config["model_reward_support_capped"] is False
+    assert target_config["model_value_support_capped"] is True
+    assert target_config["model_support_cap"] == 300
+    assert model_cfg["support_scale"] == 300
+    assert model_cfg["reward_support_size"] == 601
+    assert model_cfg["value_support_size"] == 601
+    assert model_cfg["reward_support_range"] == (-300.0, 301.0, 1.0)
+    assert model_cfg["value_support_range"] == (-300.0, 301.0, 1.0)
+    assert target_config["model_reward_support_requested_scale"] == 2
+    assert target_config["model_value_support_requested_scale"] == 131_072
+    assert target_config["model_reward_support_effective_scale"] == 300
+    assert target_config["model_value_support_effective_scale"] == 300
+    assert patched["surface"]["model_reward_support_size"] == 601
+    assert patched["surface"]["model_value_support_size"] == 601
+
+
+def test_modal_config_passes_opponent_runtime_mode_through(monkeypatch, tmp_path):
+    _install_fake_lightzero_atari_config(monkeypatch)
+
+    patched = train_mod._build_visual_survival_configs(
+        seed=11,
+        exp_name=tmp_path / "exp",
+        telemetry_path=tmp_path / "env_steps.jsonl",
+        cuda=False,
+        max_env_step=128,
+        source_max_steps=128,
+        decision_ms=train_mod.DEFAULT_DECISION_MS,
+        collector_env_num=1,
+        evaluator_env_num=1,
+        n_evaluator_episode=1,
+        n_episode=1,
+        num_simulations=8,
+        batch_size=16,
+        lightzero_eval_freq=0,
+        lightzero_multi_gpu=False,
+        max_train_iter=8,
+        save_ckpt_after_iter=100,
+        env_variant=train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT,
+        reward_variant=train_mod.REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME,
+        ego_action_straight_override_probability=0.0,
+        control_noise_profile_id=train_mod.DEFAULT_CONTROL_NOISE_PROFILE_ID,
+        disable_death_for_profile=False,
+        env_telemetry_stride=64,
+        env_manager_type="base",
+        opponent_policy_kind=train_mod.OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
+        opponent_use_cuda=False,
+        opponent_checkpoint=None,
+        opponent_snapshot_ref=None,
+        opponent_checkpoint_state_key=None,
+        opponent_runtime_mode=train_mod.OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP,
+    )
+
+    env_cfg = patched["main_config"]["env"]
+    surface = patched["surface"]
+    assert env_cfg["opponent_runtime_mode"] == "blank_canvas_noop"
+    assert env_cfg["opponent_collision_effect"] == (
+        "disabled_no_player_1_movement_trail_collision_bonus_side_effects"
+    )
+    assert surface["opponent_runtime_mode"] == "blank_canvas_noop"
+    assert surface["opponent_trail_mode"] == "none_blank_canvas_scrubbed"
+
+
+def test_modal_config_passes_stock_policy_action_repeat_through(monkeypatch, tmp_path):
+    _install_fake_lightzero_atari_config(monkeypatch)
+
+    patched = train_mod._build_visual_survival_configs(
+        seed=13,
+        exp_name=tmp_path / "exp",
+        telemetry_path=tmp_path / "env_steps.jsonl",
+        cuda=False,
+        max_env_step=128,
+        source_max_steps=128,
+        decision_ms=train_mod.DEFAULT_DECISION_MS,
+        collector_env_num=1,
+        evaluator_env_num=1,
+        n_evaluator_episode=1,
+        n_episode=1,
+        num_simulations=8,
+        batch_size=16,
+        lightzero_eval_freq=0,
+        lightzero_multi_gpu=False,
+        max_train_iter=8,
+        save_ckpt_after_iter=100,
+        env_variant=train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT,
+        reward_variant=train_mod.REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME,
+        ego_action_straight_override_probability=0.1,
+        control_noise_profile_id="stock-repeat-smoke",
+        policy_action_repeat_min=1,
+        policy_action_repeat_max=3,
+        policy_action_repeat_extra_probability=0.25,
+        disable_death_for_profile=False,
+        env_telemetry_stride=64,
+        env_manager_type="base",
+        opponent_policy_kind=train_mod.OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
+        opponent_use_cuda=False,
+        opponent_checkpoint=None,
+        opponent_snapshot_ref=None,
+        opponent_checkpoint_state_key=None,
+    )
+
+    env_cfg = patched["main_config"]["env"]
+    surface = patched["surface"]
+    assert env_cfg["ego_action_straight_override_probability"] == 0.1
+    assert env_cfg["policy_action_repeat_min"] == 1
+    assert env_cfg["policy_action_repeat_max"] == 3
+    assert env_cfg["policy_action_repeat_extra_probability"] == 0.25
+    assert env_cfg["policy_action_repeat_semantics"] == (
+        "repeat_selected_policy_action_inside_one_lightzero_env_step"
+    )
+    assert env_cfg["control_noise_profile_id"] == "stock-repeat-smoke"
+    assert surface["policy_action_repeat_min"] == 1
+    assert surface["policy_action_repeat_max"] == 3
+    assert surface["policy_action_repeat_extra_probability"] == 0.25
+    assert surface["policy_action_repeat_semantics"] == (
+        "repeat_selected_policy_action_inside_one_lightzero_env_step"
+    )
+
+
 def test_stock_source_state_trail_render_mode_passes_to_env_config(monkeypatch, tmp_path):
     _install_fake_lightzero_atari_config(monkeypatch)
 
@@ -283,6 +638,51 @@ def test_stock_source_state_trail_render_mode_rejects_unknown_value():
         train_mod._validate_source_state_trail_render_mode("mystery")
 
 
+def test_stock_opponent_death_mode_passes_to_env_config(monkeypatch, tmp_path):
+    _install_fake_lightzero_atari_config(monkeypatch)
+
+    patched = train_mod._build_visual_survival_configs(
+        seed=7,
+        exp_name=tmp_path / "exp",
+        telemetry_path=tmp_path / "env_steps.jsonl",
+        cuda=False,
+        max_env_step=128,
+        source_max_steps=64,
+        decision_ms=train_mod.DEFAULT_DECISION_MS,
+        collector_env_num=1,
+        evaluator_env_num=1,
+        n_evaluator_episode=1,
+        n_episode=1,
+        num_simulations=8,
+        batch_size=16,
+        lightzero_eval_freq=0,
+        lightzero_multi_gpu=False,
+        max_train_iter=8,
+        save_ckpt_after_iter=100,
+        env_variant=train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT,
+        reward_variant=train_mod.DEFAULT_REWARD_VARIANT,
+        ego_action_straight_override_probability=0.0,
+        control_noise_profile_id=train_mod.DEFAULT_CONTROL_NOISE_PROFILE_ID,
+        disable_death_for_profile=False,
+        env_telemetry_stride=64,
+        env_manager_type="base",
+        opponent_policy_kind=train_mod.OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
+        opponent_use_cuda=False,
+        opponent_checkpoint=None,
+        opponent_snapshot_ref=None,
+        opponent_checkpoint_state_key=None,
+        opponent_death_mode=train_mod.OPPONENT_DEATH_MODE_IMMORTAL,
+    )
+
+    env_cfg = patched["main_config"]["env"]
+    assert env_cfg["death_mode"] == "normal"
+    assert env_cfg["opponent_death_mode"] == train_mod.OPPONENT_DEATH_MODE_IMMORTAL
+    assert env_cfg["opponent_death_mode_diagnostic"] is True
+    assert patched["surface"]["opponent_death_mode"] == (
+        train_mod.OPPONENT_DEATH_MODE_IMMORTAL
+    )
+
+
 def test_local_stock_launcher_passes_source_state_trail_render_mode(
     capsys, monkeypatch
 ):
@@ -337,6 +737,7 @@ def test_background_eval_inspection_and_gif_can_be_explicitly_enabled():
             "background_gif_enabled": True,
             "background_gif_frame_size": 512,
             "natural_bonus_spawn": False,
+            "opponent_death_mode": train_mod.OPPONENT_DEATH_MODE_IMMORTAL,
         }
     )
     capped_config = train_mod._background_eval_config_from_command(
@@ -344,6 +745,21 @@ def test_background_eval_inspection_and_gif_can_be_explicitly_enabled():
             "background_eval_enabled": True,
             "background_gif_enabled": True,
             "background_gif_max_steps": 17,
+        }
+    )
+    reward_config = train_mod._background_eval_config_from_command(
+        {
+            "background_eval_enabled": True,
+            "background_gif_enabled": True,
+            "reward_variant": train_mod.REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME,
+        }
+    )
+    reward_override_config = train_mod._background_eval_config_from_command(
+        {
+            "background_eval_enabled": True,
+            "background_gif_enabled": True,
+            "reward_variant": train_mod.REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME,
+            "eval_reward_variant": train_mod.REWARD_VARIANT_SPARSE_OUTCOME,
         }
     )
 
@@ -355,14 +771,45 @@ def test_background_eval_inspection_and_gif_can_be_explicitly_enabled():
     assert config["selfplay_gif"]["step_limit_kind"] == "until_environment_done"
     assert config["selfplay_gif"]["collect_temperature"] == 1.0
     assert config["selfplay_gif"]["collect_epsilon"] == 0.25
+    assert config["opponent_death_mode"] == train_mod.DEFAULT_OPPONENT_DEATH_MODE
+    assert (
+        config["selfplay_gif"]["opponent_death_mode"]
+        == train_mod.DEFAULT_OPPONENT_DEATH_MODE
+    )
     assert (
         train_mod._background_gif_max_steps_arg(config["selfplay_gif"]["max_steps"])
         == 0
     )
     assert config["env_variant"] == train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT
     assert config["selfplay_gif"]["training_reward_variant"] == train_mod.DEFAULT_REWARD_VARIANT
+    assert (
+        reward_config["eval_reward_variant"]
+        == train_mod.REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME
+    )
+    assert (
+        reward_config["reward_variant"]
+        == train_mod.REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME
+    )
+    assert (
+        reward_config["training_reward_variant"]
+        == train_mod.REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME
+    )
+    assert (
+        reward_config["model_reward_variant"]
+        == train_mod.REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME
+    )
+    assert reward_override_config["eval_reward_variant"] == train_mod.REWARD_VARIANT_SPARSE_OUTCOME
+    assert (
+        reward_override_config["training_reward_variant"]
+        == train_mod.REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME
+    )
     assert custom_config["selfplay_gif"]["frame_size"] == 512
     assert custom_config["natural_bonus_spawn"] is False
+    assert custom_config["opponent_death_mode"] == train_mod.OPPONENT_DEATH_MODE_IMMORTAL
+    assert (
+        custom_config["selfplay_gif"]["opponent_death_mode"]
+        == train_mod.OPPONENT_DEATH_MODE_IMMORTAL
+    )
     assert custom_config["selfplay_gif"]["natural_bonus_spawn"] is False
     assert capped_config["selfplay_gif"]["max_steps"] == 17
     assert capped_config["selfplay_gif"]["step_limit_kind"] == "physical_step_cap"
@@ -392,7 +839,54 @@ def test_modal_training_image_copies_curvytron_bonus_sprite_sheet():
     )
 
 
-def test_two_seat_background_gif_uses_background_collect_knobs_not_training_payload():
+def test_two_seat_background_gif_defaults_to_training_collect_knobs():
+    background = train_mod._two_seat_background_eval_config(
+        payload={
+            "run_id": "run-a",
+            "attempt_id": "attempt-a",
+            "seed": 0,
+            "allow_optimizer_step": True,
+            "max_ticks": 64,
+            "natural_bonus_spawn": True,
+            "collect_temperature": 0.2,
+            "collect_epsilon": 0.0,
+        },
+        background_eval_enabled=True,
+        background_eval_launch_kind=train_mod.BACKGROUND_EVAL_LAUNCH_POLLER,
+        background_eval_compute="cpu",
+        background_eval_id_prefix="live_checkpoint",
+        background_eval_seed_count=1,
+        background_eval_seed_rng_seed=0,
+        background_eval_max_steps=64,
+        background_eval_step_detail_limit=2,
+        background_eval_num_simulations=4,
+        background_eval_batch_size=8,
+        background_eval_poll_interval_sec=0.01,
+        background_eval_poll_stable_polls=0,
+        background_eval_poller_max_runtime_sec=1.0,
+        background_eval_poller_idle_after_done_sec=0.0,
+        background_gif_enabled=True,
+        background_gif_seed_offset=10_000,
+        background_gif_max_steps=0,
+        background_gif_frame_stride=1,
+        background_gif_fps=8.0,
+        background_gif_scale=4,
+        background_gif_frame_size=512,
+    )
+
+    assert background["selfplay_gif"]["collect_temperature"] == 0.2
+    assert background["selfplay_gif"]["collect_epsilon"] == 0.0
+    assert (
+        background["selfplay_gif"]["collect_temperature_source"]
+        == train_mod.BACKGROUND_GIF_COLLECT_SETTINGS_SOURCE_TRAINING
+    )
+    assert (
+        background["selfplay_gif"]["collect_epsilon_source"]
+        == train_mod.BACKGROUND_GIF_COLLECT_SETTINGS_SOURCE_TRAINING
+    )
+
+
+def test_two_seat_background_gif_collect_knobs_can_be_overridden():
     background = train_mod._two_seat_background_eval_config(
         payload={
             "run_id": "run-a",
@@ -431,6 +925,14 @@ def test_two_seat_background_gif_uses_background_collect_knobs_not_training_payl
 
     assert background["selfplay_gif"]["collect_temperature"] == 1.0
     assert background["selfplay_gif"]["collect_epsilon"] == 0.25
+    assert (
+        background["selfplay_gif"]["collect_temperature_source"]
+        == train_mod.BACKGROUND_GIF_COLLECT_SETTINGS_SOURCE_OVERRIDE
+    )
+    assert (
+        background["selfplay_gif"]["collect_epsilon_source"]
+        == train_mod.BACKGROUND_GIF_COLLECT_SETTINGS_SOURCE_OVERRIDE
+    )
 
 
 def test_gif_browser_run_marker_is_written_under_run_root(tmp_path, monkeypatch):
@@ -1018,6 +1520,11 @@ def test_eval_outcome_histogram_rolls_up_win_loss_draw_cap_and_errors():
                 "win": 1,
             },
             "mean_training_reward": None,
+            "mean_survival_reward": None,
+            "mean_sparse_outcome_reward": None,
+            "mean_bonus_pickup_count": None,
+            "mean_bonus_reward": None,
+            "mean_reward_components": {},
             "mean_elapsed_sec": None,
         },
         {
@@ -1032,6 +1539,11 @@ def test_eval_outcome_histogram_rolls_up_win_loss_draw_cap_and_errors():
             "failure_count": 0,
             "outcome_histogram": {"win": 1},
             "mean_training_reward": None,
+            "mean_survival_reward": None,
+            "mean_sparse_outcome_reward": None,
+            "mean_bonus_pickup_count": None,
+            "mean_bonus_reward": None,
+            "mean_reward_components": {},
             "mean_elapsed_sec": None,
         },
     ]
@@ -1334,6 +1846,10 @@ def test_live_checkpoint_trigger_spawns_eval_and_selfplay_gif_without_volume_com
     assert eval_call["checkpoint_ref"].endswith("iteration_1.pth.tar")
     assert gif_call["checkpoint_ref"].endswith("iteration_1.pth.tar")
     assert eval_call["env_variant"] == train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT
+    assert (
+        eval_call["reward_variant"]
+        == train_mod.REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME
+    )
     assert eval_call["eval_seed_count"] == 2
     assert eval_call["natural_bonus_spawn"] is False
     assert gif_call["seed"] != 10_007
@@ -1732,6 +2248,10 @@ def test_checkpoint_eval_poller_completes_eval_inspection_and_selfplay_gif_jobs(
     assert gif_call["checkpoint_ref"] == eval_call["checkpoint_ref"]
     assert gif_call["frame_size"] == 320
     assert eval_call["eval_id"] == "live_checkpoint_iteration_1"
+    assert (
+        eval_call["reward_variant"]
+        == train_mod.REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME
+    )
     assert gif_call["eval_id"] == "live_checkpoint_iteration_1"
     assert gif_call["seed"] != 10_003
     assert scheduled["selfplay_gif"]["config"]["base_seed"] == 10_003

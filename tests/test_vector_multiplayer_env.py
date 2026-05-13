@@ -7573,3 +7573,55 @@ def test_4p_terminal_draw_public_env_metadata_matches_source_scores():
     )
     assert batch.final_observation is not None
     assert batch.final_reward is not None
+
+
+def test_disabled_player_mask_skips_side_effects_and_keeps_lifecycle():
+    env = VectorMultiplayerEnv(
+        batch_size=1,
+        player_count=2,
+        seed=503,
+        decision_source_frames=1,
+        natural_bonus_spawn=False,
+    )
+    env.reset(seed=503)
+    state = env.state
+    state["printing"][0, 1] = True
+    state["print_manager_active"][0, 1] = True
+    state["speed"][0, 1] = 50.0
+    state["angular_velocity_per_ms"][0, 1] = 0.01
+    state["has_draw_cursor"][0, 1] = False
+    state["bonus_catch_count_step"][0, 1] = 0
+    player_1_pos = state["pos"][0, 1].copy()
+    owner_1_body_count = int((state["body_active"] & (state["body_owner"] == 1)).sum())
+    owner_1_visual_count = int(
+        (state["visual_trail_active"] & (state["visual_trail_owner"] == 1)).sum()
+    )
+    env.seed_active_bonus(
+        row=0,
+        bonus_type="BonusSelfSmall",
+        x=float(player_1_pos[0]),
+        y=float(player_1_pos[1]),
+        radius=20.0,
+    )
+    disabled = np.asarray([[False, True]], dtype=bool)
+
+    batch = env.step(
+        np.asarray([[1, 1]], dtype=np.int16),
+        disabled_player_mask=disabled,
+    )
+
+    assert bool(state["present"][0, 1])
+    assert bool(state["alive"][0, 1])
+    np.testing.assert_allclose(state["pos"][0, 1], player_1_pos)
+    assert int(state["bonus_catch_count_step"][0, 1]) == 0
+    assert int((state["body_active"] & (state["body_owner"] == 1)).sum()) == (
+        owner_1_body_count
+    )
+    assert int(
+        (state["visual_trail_active"] & (state["visual_trail_owner"] == 1)).sum()
+    ) == owner_1_visual_count
+    np.testing.assert_array_equal(batch.info["disabled_player_mask"], disabled)
+    np.testing.assert_array_equal(
+        batch.info["action_sidecar"]["disabled_player_mask"],
+        disabled,
+    )

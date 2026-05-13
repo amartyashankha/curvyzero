@@ -490,6 +490,8 @@ class VectorStepInput:
     event_mode: str = EVENT_MODE_DEBUG
     timer_advance_ms: Any | None = None
     death_mode: str = DEATH_MODE_NORMAL
+    death_immunity_mask: Any | None = None
+    disabled_player_mask: Any | None = None
 
     @classmethod
     def from_mapping(
@@ -536,6 +538,16 @@ def _step_many_kernel(
         player_count=player_count,
     )
     death_enabled = step_input.death_mode == DEATH_MODE_NORMAL
+    death_immunity_mask = _death_immunity_mask(
+        step_input.death_immunity_mask,
+        row_count=row_count,
+        player_count=player_count,
+    )
+    disabled_player_mask = _disabled_player_mask(
+        step_input.disabled_player_mask,
+        row_count=row_count,
+        player_count=player_count,
+    )
 
     print_manager_mode = step_input.print_manager_mode
     if print_manager_mode is None:
@@ -568,7 +580,12 @@ def _step_many_kernel(
     ).astype(np.int32)
     death_rows = np.zeros(row_count, dtype=bool)
     for player in range(player_count - 1, -1, -1):
-        live_mask = state["alive"][:, player] & ~state["done"] & ~state["overflow"]
+        live_mask = (
+            state["alive"][:, player]
+            & ~state["done"]
+            & ~state["overflow"]
+            & ~disabled_player_mask[:, player]
+        )
         if not live_mask.any():
             continue
 
@@ -648,25 +665,30 @@ def _step_many_kernel(
             live_mask=live_mask & ~wrapped_mask,
         )
         _timer_add(phase_timers, "wall_check_sec", started)
-        if wall_hit_mask.any() and death_enabled:
+        player_death_enabled = death_enabled and not bool(death_immunity_mask[:, player].all())
+        player_mortal_mask = ~death_immunity_mask[:, player]
+        mortal_wall_hit_mask = wall_hit_mask & player_mortal_mask
+        if mortal_wall_hit_mask.any() and player_death_enabled:
             started = _timer_start(phase_timers)
-            state["alive"][wall_hit_mask, player] = False
-            state["death_tick"][wall_hit_mask, player] = state["tick"][wall_hit_mask]
-            state["round_score"][wall_hit_mask, player] += frame_start_deaths[wall_hit_mask]
+            state["alive"][mortal_wall_hit_mask, player] = False
+            state["death_tick"][mortal_wall_hit_mask, player] = state["tick"][mortal_wall_hit_mask]
+            state["round_score"][mortal_wall_hit_mask, player] += frame_start_deaths[
+                mortal_wall_hit_mask
+            ]
             _append_death_list_batched(
                 state,
                 player=player,
-                death_mask=wall_hit_mask,
+                death_mask=mortal_wall_hit_mask,
                 row_count=row_count,
                 death_cause=DEATH_CAUSE_WALL,
                 death_hit_owner=-1,
             )
-            death_rows |= wall_hit_mask
-            counters["normal_wall_deaths"] += int(wall_hit_mask.sum())
+            death_rows |= mortal_wall_hit_mask
+            counters["normal_wall_deaths"] += int(mortal_wall_hit_mask.sum())
             inserted, overflowed = _append_body_points_batched(
                 state,
                 player=player,
-                write_mask=wall_hit_mask,
+                write_mask=mortal_wall_hit_mask,
                 insert_kind=BODY_KIND_DEATH,
             )
             counters["death_points_inserted"] += inserted
@@ -675,14 +697,14 @@ def _step_many_kernel(
 
             if events_enabled:
                 started = _timer_start(phase_timers)
-                _emit_point_events_batched(state, player, wall_hit_mask, important=False)
+                _emit_point_events_batched(state, player, mortal_wall_hit_mask, important=False)
                 _timer_add(phase_timers, "event_emit_sec", started)
 
             started = _timer_start(phase_timers)
             stop_count, stop_points, visual_clears = _stop_print_manager_on_death_batched(
                 state,
                 player=player,
-                death_mask=wall_hit_mask & death_stop_mode,
+                death_mask=mortal_wall_hit_mask & death_stop_mode,
                 events_enabled=events_enabled,
             )
             counters["print_manager_death_stops"] += stop_count
@@ -692,17 +714,19 @@ def _step_many_kernel(
 
             if events_enabled:
                 started = _timer_start(phase_timers)
-                _emit_die_events_batched(state, player, wall_hit_mask)
+                _emit_die_events_batched(state, player, mortal_wall_hit_mask)
                 _emit_score_events_batched(
                     state,
                     player,
-                    wall_hit_mask,
+                    mortal_wall_hit_mask,
                     event_type=EVENT_SCORE_ROUND,
                 )
                 _timer_add(phase_timers, "event_emit_sec", started)
 
         started = _timer_start(phase_timers)
-        wall_block_mask = wall_hit_mask if death_enabled else np.zeros(row_count, dtype=bool)
+        wall_block_mask = (
+            mortal_wall_hit_mask if death_enabled else np.zeros(row_count, dtype=bool)
+        )
         collision_live_mask = live_mask & ~wrapped_mask & ~wall_block_mask
         hit_rows, candidate_count, scanned_slots = _body_collision_rows(
             state,
@@ -721,7 +745,7 @@ def _step_many_kernel(
             counters["body_hits"] += int(hit_rows.size)
 
             if death_enabled:
-                body_hit_mask = detected_body_hit_mask
+                body_hit_mask = detected_body_hit_mask & player_mortal_mask
                 if "invincible" in state:
                     body_hit_mask &= ~_bool_array_shape(
                         state,
@@ -909,6 +933,7 @@ def prepare_step_input(
             batch_size=batch_size,
         ),
         event_mode=event_mode,
+        disabled_player_mask=prepared_batch.get("disabled_player_mask"),
     )
     validate_step_input(step_input)
     return step_input
@@ -5345,6 +5370,46 @@ def validate_step_input(step_input: VectorStepInput) -> None:
 
     if step_input.timer_advance_ms is not None:
         _row_float_input(step_input.timer_advance_ms, batch_size, "timer_advance_ms")
+    if step_input.death_immunity_mask is not None:
+        mask = np.asarray(step_input.death_immunity_mask)
+        if mask.shape != (batch_size, step_input.player_count):
+            raise VectorRuntimeError("death_immunity_mask must have shape [B,P]")
+        if mask.dtype != np.bool_:
+            raise VectorRuntimeError("death_immunity_mask must be a bool array")
+    if step_input.disabled_player_mask is not None:
+        mask = np.asarray(step_input.disabled_player_mask)
+        if mask.shape != (batch_size, step_input.player_count):
+            raise VectorRuntimeError("disabled_player_mask must have shape [B,P]")
+        if mask.dtype != np.bool_:
+            raise VectorRuntimeError("disabled_player_mask must be a bool array")
+
+
+def _death_immunity_mask(
+    value: Any | None,
+    *,
+    row_count: int,
+    player_count: int,
+) -> np.ndarray:
+    if value is None:
+        return np.zeros((row_count, player_count), dtype=bool)
+    mask = np.asarray(value, dtype=bool)
+    if mask.shape != (row_count, player_count):
+        raise VectorRuntimeError("death_immunity_mask must have shape [B,P]")
+    return mask
+
+
+def _disabled_player_mask(
+    value: Any | None,
+    *,
+    row_count: int,
+    player_count: int,
+) -> np.ndarray:
+    if value is None:
+        return np.zeros((row_count, player_count), dtype=bool)
+    mask = np.asarray(value, dtype=bool)
+    if mask.shape != (row_count, player_count):
+        raise VectorRuntimeError("disabled_player_mask must have shape [B,P]")
+    return mask
 
 
 def _row_float_input(value: Any, row_count: int, field: str) -> np.ndarray:
