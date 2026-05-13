@@ -60,13 +60,21 @@ Sources checked:
 
 ## Storage Evidence
 
-The existing training GIF browser uses a training-shaped layout:
+The existing training GIF browser uses a training-shaped layout in the training
+volume:
 
 `training/lightzero-curvytron-visual-survival/<run>/attempts/<attempt>/eval/<eval>/selfplay/...`
 
 Tournament artifacts should not use that. They should use:
 
 `tournaments/curvytron/<tournament_id>/battles/<battle_id>/games/<game_id>/...`
+
+Storage split:
+
+- checkpoint source volume: `curvyzero-runs`, mounted at `/runs`
+- tournament artifact volume: `curvyzero-curvytron-tournaments`, mounted at
+  `/tournament-runs`
+- artifact volume is created with `modal.Volume.from_name(..., version=2)`
 
 ## Risk Evidence
 
@@ -81,6 +89,9 @@ Tournament artifacts should not use that. They should use:
   very large tournament.
 - Pair and tournament aggregates should be recomputable because workers can
   finish out of order.
+- GIF summaries report pixel size. The default tournament GIF frame size is
+  704 by 704, which is the rich source-state canvas size, not the 64 by 64 model
+  input.
 
 ## Current Test Evidence
 

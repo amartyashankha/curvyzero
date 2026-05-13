@@ -646,6 +646,9 @@ def _summary_row(mount: Path, summary_path: Path) -> dict[str, Any] | None:
         "updated_ts": stat.st_mtime,
         "updated_ns": stat.st_mtime_ns,
         "frame_count": _safe_int(summary.get("frame_count")),
+        "frame_size": _safe_int(summary.get("frame_size")),
+        "effective_frame_size": _safe_int(summary.get("effective_frame_size")),
+        "requested_frame_size": _safe_int(summary.get("requested_frame_size")),
         "physical_steps": _safe_int(summary.get("physical_steps")),
         "scalar_steps": _safe_int(summary.get("scalar_steps")),
         "max_steps": _safe_int(summary.get("max_steps")),
@@ -1236,6 +1239,7 @@ def _render_rows(rows: list[dict[str, Any]]) -> str:
                     </div>
                     <div class="facts">
                         <span>{_html_attr(row["frame_count"])} frames</span>
+                        <span>{_html_attr(row.get("effective_frame_size") or row.get("frame_size") or "unknown")} px</span>
                         <span>{_html_attr(steps)} steps</span>
                     </div>
                     <div class="reason">{_html_attr(row["terminal_reason"])}</div>
@@ -1856,6 +1860,7 @@ def _render_page(
                         </div>
                         <div class="facts">
                             <span>${{escapeHtml(row.frame_count)}} frames</span>
+                            <span>${{escapeHtml(row.effective_frame_size || row.frame_size || "unknown")}} px</span>
                             <span>${{escapeHtml(steps)}} steps</span>
                         </div>
                         <div class="reason">${{escapeHtml(row.terminal_reason || "")}}</div>

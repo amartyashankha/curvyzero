@@ -377,6 +377,13 @@ write the `show_in_gif_browser.flag` marker. Optimizer profiling runs with
 not clutter the GIF browser website. The two pre-fix profile markers above were
 removed from the Modal volume.
 
+Checkpoint GIF fidelity fix, 2026-05-13: the checkpoint GIF path now ignores
+small requested frame sizes for the actual saved image and captures the full
+`704x704` source-state RGB frame. Metadata keeps the old requested size under
+`requested_frame_size` and reports the actual value as `effective_frame_size`.
+This does not change model input; training already consumes the full RGB render
+after luma/downsample into the `[4,64,64]` stack.
+
 Superseded custom-adapter overnight recommendation, 2026-05-12: the speed-first lane was
 `fast_gray64_direct`, not `body_circles_fast`. This is a strong semantic visual
 approximation, not browser pixel fidelity. It preserves trail/head positions,

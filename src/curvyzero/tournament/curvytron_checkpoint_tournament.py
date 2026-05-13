@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import random
 import traceback
-from collections import Counter, defaultdict
+from collections import Counter
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Sequence
 
@@ -24,6 +26,10 @@ TOURNAMENT_RUN_MARKER_FILENAME = "show_in_tournament_browser.flag"
 TOURNAMENT_SCHEMA_ID = "curvyzero_curvytron_checkpoint_tournament/v0"
 BATTLE_SCHEMA_ID = "curvyzero_curvytron_checkpoint_tournament_battle/v0"
 GAME_SCHEMA_ID = "curvyzero_curvytron_checkpoint_tournament_game/v0"
+RATING_CONFIG_SCHEMA_ID = "curvyzero_curvytron_checkpoint_rating_config/v0"
+RATING_ROUND_SCHEMA_ID = "curvyzero_curvytron_checkpoint_rating_round/v0"
+RATING_SNAPSHOT_SCHEMA_ID = "curvyzero_curvytron_checkpoint_rating_snapshot/v0"
+RATING_FORMULA_VERSION = "batch_elo_v1"
 
 POLICY_MODE_EVAL = "eval"
 POLICY_MODE_COLLECT = "collect"
@@ -43,6 +49,19 @@ DEFAULT_SAVE_GIF = True
 DEFAULT_SAVE_FRAMES_NPZ = False
 DEFAULT_ORDERED_PAIRS = False
 DEFAULT_INCLUDE_SELF_PAIRS = False
+DEFAULT_RATING_RUN_ID = "elo"
+DEFAULT_RATING_ROUND_COUNT = 1
+DEFAULT_RATING_PAIR_SELECTION = "all_pairs"
+DEFAULT_RATING_INITIAL_RATING = 1500.0
+DEFAULT_RATING_BASE_K = 32.0
+DEFAULT_RATING_K_REFERENCE_GAMES = 50.0
+DEFAULT_RATING_K_MIN = 16.0
+DEFAULT_RATING_K_MAX = 64.0
+DEFAULT_RATING_DELTA_CLAMP = 80.0
+DEFAULT_RATING_DRAW_SCORE = 0.5
+DEFAULT_RATING_MIN_VALID_FRACTION = 0.8
+DEFAULT_RATING_STOP_MAX_DELTA = 10.0
+RATING_PAIR_SELECTION_CHOICES = ("all_pairs", "random")
 
 ALLOWED_TOURNAMENT_ARTIFACT_FILENAMES = frozenset(
     {
@@ -53,6 +72,11 @@ ALLOWED_TOURNAMENT_ARTIFACT_FILENAMES = frozenset(
         "tournament.json",
         "standings.json",
         "complete.json",
+        "config.json",
+        "input.json",
+        "results.json",
+        "ratings.json",
+        "latest.json",
     }
 )
 
@@ -172,6 +196,63 @@ def tournament_standings_ref(tournament_id: str) -> PurePosixPath:
 
 def tournament_complete_ref(tournament_id: str) -> PurePosixPath:
     return tournament_root_ref(tournament_id) / "complete.json"
+
+
+def rating_root_ref(tournament_id: str, rating_run_id: str) -> PurePosixPath:
+    return (
+        tournament_root_ref(tournament_id)
+        / "ratings"
+        / _safe_id(rating_run_id, label="rating_run_id")
+    )
+
+
+def rating_config_ref(tournament_id: str, rating_run_id: str) -> PurePosixPath:
+    return rating_root_ref(tournament_id, rating_run_id) / "config.json"
+
+
+def rating_latest_ref(tournament_id: str, rating_run_id: str) -> PurePosixPath:
+    return rating_root_ref(tournament_id, rating_run_id) / "latest.json"
+
+
+def rating_round_id(round_index: int) -> str:
+    if round_index < 0:
+        raise ValueError("round_index must be non-negative")
+    return f"round-{int(round_index):06d}"
+
+
+def rating_round_root_ref(
+    tournament_id: str,
+    rating_run_id: str,
+    round_id: str,
+) -> PurePosixPath:
+    return rating_root_ref(tournament_id, rating_run_id) / "rounds" / _safe_id(
+        round_id,
+        label="round_id",
+    )
+
+
+def rating_round_input_ref(
+    tournament_id: str,
+    rating_run_id: str,
+    round_id: str,
+) -> PurePosixPath:
+    return rating_round_root_ref(tournament_id, rating_run_id, round_id) / "input.json"
+
+
+def rating_round_results_ref(
+    tournament_id: str,
+    rating_run_id: str,
+    round_id: str,
+) -> PurePosixPath:
+    return rating_round_root_ref(tournament_id, rating_run_id, round_id) / "results.json"
+
+
+def rating_round_ratings_ref(
+    tournament_id: str,
+    rating_run_id: str,
+    round_id: str,
+) -> PurePosixPath:
+    return rating_round_root_ref(tournament_id, rating_run_id, round_id) / "ratings.json"
 
 
 def battle_root_ref(tournament_id: str, battle_id: str) -> PurePosixPath:
@@ -626,6 +707,520 @@ def standings_from_pair_results(pair_results: Sequence[Mapping[str, Any]]) -> di
     }
 
 
+def normalize_rating_spec(raw: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    spec = dict(raw or {})
+    checkpoints = spec.get("checkpoints") or spec.get("checkpoint_refs") or []
+    if isinstance(checkpoints, str):
+        checkpoints = parse_checkpoint_refs(checkpoints)
+    if checkpoints and not isinstance(checkpoints, Sequence):
+        raise ValueError("rating spec checkpoints must be a list or comma-separated refs")
+    pair_selection = str(spec.get("pair_selection", DEFAULT_RATING_PAIR_SELECTION))
+    if pair_selection not in RATING_PAIR_SELECTION_CHOICES:
+        raise ValueError(
+            f"pair_selection must be one of {RATING_PAIR_SELECTION_CHOICES!r}"
+        )
+    pairs_per_round_raw = spec.get("pairs_per_round")
+    pairs_per_round = None
+    if pairs_per_round_raw not in (None, "", 0, "0"):
+        pairs_per_round = int(pairs_per_round_raw)
+        if pairs_per_round < 1:
+            raise ValueError("pairs_per_round must be positive or empty")
+    draw_score = float(spec.get("draw_score", DEFAULT_RATING_DRAW_SCORE))
+    if draw_score != 0.5:
+        raise ValueError("rating v0 requires draw_score=0.5")
+    min_valid_fraction = float(
+        spec.get("min_valid_fraction", DEFAULT_RATING_MIN_VALID_FRACTION)
+    )
+    if not 0.0 <= min_valid_fraction <= 1.0:
+        raise ValueError("min_valid_fraction must be in [0, 1]")
+    k_reference_games = float(
+        spec.get("k_reference_games", DEFAULT_RATING_K_REFERENCE_GAMES)
+    )
+    if k_reference_games <= 0.0:
+        raise ValueError("k_reference_games must be positive")
+    normalized_checkpoints = normalize_checkpoint_specs(list(checkpoints)) if checkpoints else []
+    round_count = int(spec.get("round_count", DEFAULT_RATING_ROUND_COUNT))
+    if round_count < 1:
+        raise ValueError("round_count must be at least 1")
+    games_per_pair = int(spec.get("games_per_pair", DEFAULT_GAMES_PER_PAIR))
+    if games_per_pair < 1:
+        raise ValueError("games_per_pair must be at least 1")
+    return {
+        "schema_id": RATING_CONFIG_SCHEMA_ID,
+        "formula_version": RATING_FORMULA_VERSION,
+        "tournament_id": _safe_id(
+            str(spec.get("tournament_id") or "tournament"),
+            label="tournament_id",
+        ),
+        "rating_run_id": _safe_id(
+            str(spec.get("rating_run_id") or DEFAULT_RATING_RUN_ID),
+            label="rating_run_id",
+        ),
+        "checkpoints": normalized_checkpoints,
+        "round_count": round_count,
+        "pairs_per_round": pairs_per_round,
+        "pair_selection": pair_selection,
+        "games_per_pair": games_per_pair,
+        "ordered_pairs": bool(spec.get("ordered_pairs", DEFAULT_ORDERED_PAIRS)),
+        "include_self_pairs": bool(
+            spec.get("include_self_pairs", DEFAULT_INCLUDE_SELF_PAIRS)
+        ),
+        "seed": int(spec.get("seed", 0)),
+        "max_steps": int(spec.get("max_steps", DEFAULT_MAX_STEPS)),
+        "decision_ms": float(spec.get("decision_ms", DEFAULT_DECISION_MS)),
+        "num_simulations": int(spec.get("num_simulations", DEFAULT_NUM_SIMULATIONS)),
+        "policy_batch_size": int(
+            spec.get("policy_batch_size", DEFAULT_POLICY_BATCH_SIZE)
+        ),
+        "policy_mode": str(spec.get("policy_mode", POLICY_MODE_EVAL)),
+        "collect_temperature": float(
+            spec.get("collect_temperature", DEFAULT_COLLECT_TEMPERATURE)
+        ),
+        "collect_epsilon": float(
+            spec.get("collect_epsilon", DEFAULT_COLLECT_EPSILON)
+        ),
+        "natural_bonus_spawn": bool(spec.get("natural_bonus_spawn", True)),
+        "trail_render_mode": spec.get("trail_render_mode"),
+        "frame_stride": int(spec.get("frame_stride", DEFAULT_FRAME_STRIDE)),
+        "frame_size": int(spec.get("frame_size", DEFAULT_FRAME_SIZE)),
+        "gif_fps": float(spec.get("gif_fps", DEFAULT_GIF_FPS)),
+        "save_gif": bool(spec.get("save_gif", DEFAULT_SAVE_GIF)),
+        "save_frames_npz": bool(
+            spec.get("save_frames_npz", DEFAULT_SAVE_FRAMES_NPZ)
+        ),
+        "action_trace_limit": int(spec.get("action_trace_limit", 128)),
+        "initial_rating": float(
+            spec.get("initial_rating", DEFAULT_RATING_INITIAL_RATING)
+        ),
+        "base_k": float(spec.get("base_k", DEFAULT_RATING_BASE_K)),
+        "k_reference_games": k_reference_games,
+        "k_min": float(spec.get("k_min", DEFAULT_RATING_K_MIN)),
+        "k_max": float(spec.get("k_max", DEFAULT_RATING_K_MAX)),
+        "delta_clamp": float(spec.get("delta_clamp", DEFAULT_RATING_DELTA_CLAMP)),
+        "draw_score": draw_score,
+        "min_valid_fraction": min_valid_fraction,
+        "stop_max_delta": float(
+            spec.get("stop_max_delta", DEFAULT_RATING_STOP_MAX_DELTA)
+        ),
+    }
+
+
+def elo_expected_score(rating_a: float, rating_b: float) -> float:
+    return 1.0 / (1.0 + math.pow(10.0, (float(rating_b) - float(rating_a)) / 400.0))
+
+
+def elo_k_for_games(valid_games: int, rating_spec: Mapping[str, Any]) -> float:
+    if valid_games < 1:
+        return 0.0
+    base = float(rating_spec.get("base_k", DEFAULT_RATING_BASE_K))
+    reference = float(
+        rating_spec.get("k_reference_games", DEFAULT_RATING_K_REFERENCE_GAMES)
+    )
+    k_min = float(rating_spec.get("k_min", DEFAULT_RATING_K_MIN))
+    k_max = float(rating_spec.get("k_max", DEFAULT_RATING_K_MAX))
+    value = base * math.sqrt(float(valid_games) / reference)
+    return max(k_min, min(k_max, value))
+
+
+def clamp_delta(delta: float, rating_spec: Mapping[str, Any]) -> float:
+    limit = abs(float(rating_spec.get("delta_clamp", DEFAULT_RATING_DELTA_CLAMP)))
+    return max(-limit, min(limit, float(delta)))
+
+
+def _rating_battle_id(
+    *,
+    rating_run_id: str,
+    round_id: str,
+    pair_slot: int,
+    player_a: Mapping[str, Any],
+    player_b: Mapping[str, Any],
+) -> str:
+    raw = (
+        f"{rating_run_id}:{round_id}:{pair_slot}:"
+        f"{player_a['checkpoint_id']}:{player_b['checkpoint_id']}"
+    )
+    digest = _short_hash(raw, length=10)
+    short_round = str(round_id).replace("round-", "r")
+    return _safe_id(
+        "rate-"
+        f"{_slug(str(rating_run_id), max_len=14)}-"
+        f"{_slug(short_round, max_len=9)}-"
+        f"pair-{int(pair_slot):06d}-"
+        f"{_slug(str(player_a['checkpoint_id']), max_len=16)}-vs-"
+        f"{_slug(str(player_b['checkpoint_id']), max_len=16)}-"
+        f"{digest}",
+        label="battle_id",
+    )
+
+
+def build_rating_round_pair_specs(
+    rating_spec: Mapping[str, Any],
+    *,
+    previous_snapshot: Mapping[str, Any] | None = None,
+    round_index: int = 0,
+) -> list[dict[str, Any]]:
+    spec = normalize_rating_spec(rating_spec)
+    checkpoints = spec["checkpoints"]
+    if len(checkpoints) < 2 and not spec["include_self_pairs"]:
+        raise ValueError("at least two checkpoints are needed for rating")
+    current_ratings = _rating_rows_by_checkpoint(previous_snapshot)
+    candidates: list[tuple[int, int, dict[str, Any], dict[str, Any]]] = []
+    for i, player_a in enumerate(checkpoints):
+        for j, player_b in enumerate(checkpoints):
+            if not spec["include_self_pairs"] and i == j:
+                continue
+            if not spec["ordered_pairs"] and j <= i:
+                continue
+            candidates.append((i, j, player_a, player_b))
+
+    if spec["pair_selection"] == "random" and spec["pairs_per_round"]:
+        count = min(int(spec["pairs_per_round"]), len(candidates))
+        rng = random.Random(int(spec["seed"]) + int(round_index) * 1_000_003)
+        candidates = rng.sample(candidates, count)
+    elif spec["pairs_per_round"]:
+        candidates = candidates[: int(spec["pairs_per_round"])]
+
+    def sort_key(item: tuple[int, int, dict[str, Any], dict[str, Any]]) -> tuple[Any, ...]:
+        i, j, player_a, player_b = item
+        if spec["pair_selection"] == "random":
+            return (i, j)
+        rating_a = float(
+            current_ratings.get(str(player_a["checkpoint_id"]), {}).get(
+                "rating",
+                spec["initial_rating"],
+            )
+        )
+        rating_b = float(
+            current_ratings.get(str(player_b["checkpoint_id"]), {}).get(
+                "rating",
+                spec["initial_rating"],
+            )
+        )
+        return (abs(rating_a - rating_b), i, j)
+
+    if spec["pair_selection"] != "random":
+        candidates.sort(key=sort_key)
+    round_id = rating_round_id(round_index)
+    pair_specs = []
+    for pair_slot, (_i, _j, player_a, player_b) in enumerate(candidates):
+        battle_id = _rating_battle_id(
+            rating_run_id=spec["rating_run_id"],
+            round_id=round_id,
+            pair_slot=pair_slot,
+            player_a=player_a,
+            player_b=player_b,
+        )
+        pair_specs.append(
+            normalize_pair_spec(
+                {
+                    "tournament_id": spec["tournament_id"],
+                    "battle_id": battle_id,
+                    "pair_index": pair_slot,
+                    "players": [
+                        {"seat": 0, **player_a},
+                        {"seat": 1, **player_b},
+                    ],
+                    "games_per_pair": spec["games_per_pair"],
+                    "seed": int(spec["seed"])
+                    + int(round_index) * 1_000_000
+                    + pair_slot * 10_000,
+                    "max_steps": spec["max_steps"],
+                    "decision_ms": spec["decision_ms"],
+                    "num_simulations": spec["num_simulations"],
+                    "policy_batch_size": spec["policy_batch_size"],
+                    "policy_mode": spec["policy_mode"],
+                    "collect_temperature": spec["collect_temperature"],
+                    "collect_epsilon": spec["collect_epsilon"],
+                    "natural_bonus_spawn": spec["natural_bonus_spawn"],
+                    "trail_render_mode": spec["trail_render_mode"],
+                    "frame_stride": spec["frame_stride"],
+                    "frame_size": spec["frame_size"],
+                    "gif_fps": spec["gif_fps"],
+                    "save_gif": spec["save_gif"],
+                    "save_frames_npz": spec["save_frames_npz"],
+                    "action_trace_limit": spec["action_trace_limit"],
+                }
+            )
+        )
+    return pair_specs
+
+
+def _rating_rows_by_checkpoint(
+    snapshot: Mapping[str, Any] | None,
+) -> dict[str, dict[str, Any]]:
+    if not snapshot:
+        return {}
+    rows = snapshot.get("ratings") or snapshot.get("rows") or []
+    if not isinstance(rows, Sequence):
+        return {}
+    result = {}
+    for row in rows:
+        if isinstance(row, Mapping) and row.get("checkpoint_id"):
+            result[str(row["checkpoint_id"])] = dict(row)
+    return result
+
+
+def _base_rating_rows(
+    checkpoints: Sequence[Mapping[str, Any]],
+    *,
+    previous_snapshot: Mapping[str, Any] | None,
+    rating_spec: Mapping[str, Any],
+) -> dict[str, dict[str, Any]]:
+    previous = _rating_rows_by_checkpoint(previous_snapshot)
+    rows = {}
+    for checkpoint in checkpoints:
+        checkpoint_id = str(checkpoint["checkpoint_id"])
+        prior = previous.get(checkpoint_id, {})
+        rows[checkpoint_id] = {
+            "checkpoint_id": checkpoint_id,
+            "label": checkpoint.get("label") or prior.get("label") or checkpoint_id,
+            "checkpoint_ref": checkpoint.get("checkpoint_ref")
+            or prior.get("checkpoint_ref"),
+            "rating": float(
+                prior.get("rating", rating_spec.get("initial_rating", DEFAULT_RATING_INITIAL_RATING))
+            ),
+            "games": int(prior.get("games", 0) or 0),
+            "wins": int(prior.get("wins", 0) or 0),
+            "losses": int(prior.get("losses", 0) or 0),
+            "draws": int(prior.get("draws", 0) or 0),
+            "failure_count": int(prior.get("failure_count", 0) or prior.get("failures", 0) or 0),
+            "battles": int(prior.get("battles", 0) or 0),
+            "rated_battles": int(prior.get("rated_battles", 0) or 0),
+            "opponent_ids": sorted(str(item) for item in prior.get("opponent_ids", []) or []),
+            "last_battle_ref": prior.get("last_battle_ref"),
+        }
+    return rows
+
+
+def rating_result_from_pair_summary(
+    pair_summary: Mapping[str, Any],
+    rating_spec: Mapping[str, Any],
+) -> dict[str, Any]:
+    spec = normalize_rating_spec(rating_spec)
+    players = pair_summary.get("players")
+    if not isinstance(players, Sequence) or len(players) != 2:
+        raise ValueError("pair summary needs exactly two players for rating")
+    player_a = dict(players[0])
+    player_b = dict(players[1])
+    checkpoint_a = str(player_a["checkpoint_id"])
+    checkpoint_b = str(player_b["checkpoint_id"])
+    games = pair_summary.get("games")
+    if not isinstance(games, Sequence):
+        games = []
+    requested_games = int(
+        (pair_summary.get("settings") or {}).get(
+            "games_per_pair",
+            (pair_summary.get("tally") or {}).get("game_count", len(games)),
+        )
+        or len(games)
+    )
+    wins_a = 0
+    wins_b = 0
+    draws = 0
+    failure_count = 0
+    invalid_count = 0
+    for game in games:
+        if not isinstance(game, Mapping):
+            invalid_count += 1
+            continue
+        if not game.get("ok"):
+            failure_count += 1
+            continue
+        score = game.get("score") if isinstance(game.get("score"), Mapping) else {}
+        outcome = str(score.get("outcome") or "")
+        winner = score.get("winner_seat")
+        if score.get("draw") or outcome == "draw":
+            draws += 1
+        elif winner == 0 or outcome == "seat_0_win":
+            wins_a += 1
+        elif winner == 1 or outcome == "seat_1_win":
+            wins_b += 1
+        else:
+            invalid_count += 1
+    valid_games = wins_a + wins_b + draws
+    min_valid_games = math.ceil(float(requested_games) * float(spec["min_valid_fraction"]))
+    rated = valid_games > 0 and valid_games >= min_valid_games
+    reason = "rated" if rated else "not_enough_valid_games"
+    score_a = None
+    score_b = None
+    if valid_games:
+        score_a = (float(wins_a) + float(spec["draw_score"]) * float(draws)) / float(valid_games)
+        score_b = (float(wins_b) + float(spec["draw_score"]) * float(draws)) / float(valid_games)
+    return {
+        "battle_id": pair_summary.get("battle_id"),
+        "pair_index": int(pair_summary.get("pair_index", 0) or 0),
+        "summary_ref": pair_summary.get("summary_ref"),
+        "checkpoint_a": checkpoint_a,
+        "checkpoint_b": checkpoint_b,
+        "label_a": player_a.get("label"),
+        "label_b": player_b.get("label"),
+        "requested_games": requested_games,
+        "valid_games": int(valid_games),
+        "wins_a": int(wins_a),
+        "wins_b": int(wins_b),
+        "draws": int(draws),
+        "failure_count": int(failure_count),
+        "invalid_count": int(invalid_count),
+        "score_a": score_a,
+        "score_b": score_b,
+        "rated": bool(rated),
+        "rating_skip_reason": None if rated else reason,
+    }
+
+
+def rating_snapshot_from_pair_results(
+    *,
+    pair_results: Sequence[Mapping[str, Any]],
+    rating_spec: Mapping[str, Any],
+    previous_snapshot: Mapping[str, Any] | None = None,
+    round_index: int = 0,
+    created_at: str | None = None,
+) -> dict[str, Any]:
+    spec = normalize_rating_spec(rating_spec)
+    checkpoints = spec["checkpoints"]
+    rows = _base_rating_rows(
+        checkpoints,
+        previous_snapshot=previous_snapshot,
+        rating_spec=spec,
+    )
+    pair_rating_results = [
+        rating_result_from_pair_summary(pair, spec)
+        for pair in pair_results
+    ]
+    pair_rating_results.sort(
+        key=lambda item: (
+            int(item.get("pair_index", 0) or 0),
+            str(item.get("battle_id") or ""),
+        )
+    )
+    start_ratings = {
+        checkpoint_id: float(row["rating"])
+        for checkpoint_id, row in rows.items()
+    }
+    deltas = Counter()
+    rated_pair_count = 0
+    for result in pair_rating_results:
+        checkpoint_a = str(result["checkpoint_a"])
+        checkpoint_b = str(result["checkpoint_b"])
+        for checkpoint_id, label_key in (
+            (checkpoint_a, "label_a"),
+            (checkpoint_b, "label_b"),
+        ):
+            if checkpoint_id not in rows:
+                rows[checkpoint_id] = {
+                    "checkpoint_id": checkpoint_id,
+                    "label": result.get(label_key) or checkpoint_id,
+                    "checkpoint_ref": None,
+                    "rating": float(spec["initial_rating"]),
+                    "games": 0,
+                    "wins": 0,
+                    "losses": 0,
+                    "draws": 0,
+                    "failure_count": 0,
+                    "battles": 0,
+                    "rated_battles": 0,
+                    "opponent_ids": [],
+                    "last_battle_ref": None,
+                }
+                start_ratings[checkpoint_id] = float(spec["initial_rating"])
+        row_a = rows[checkpoint_a]
+        row_b = rows[checkpoint_b]
+        opponents_a = set(row_a.get("opponent_ids") or [])
+        opponents_b = set(row_b.get("opponent_ids") or [])
+        if checkpoint_a != checkpoint_b:
+            opponents_a.add(checkpoint_b)
+            opponents_b.add(checkpoint_a)
+        row_a["opponent_ids"] = sorted(opponents_a)
+        row_b["opponent_ids"] = sorted(opponents_b)
+        row_a["battles"] += 1
+        row_b["battles"] += 1
+        row_a["failure_count"] += int(result["failure_count"])
+        row_b["failure_count"] += int(result["failure_count"])
+        valid_games = int(result["valid_games"])
+        row_a["games"] += valid_games
+        row_b["games"] += valid_games
+        row_a["wins"] += int(result["wins_a"])
+        row_a["losses"] += int(result["wins_b"])
+        row_b["wins"] += int(result["wins_b"])
+        row_b["losses"] += int(result["wins_a"])
+        row_a["draws"] += int(result["draws"])
+        row_b["draws"] += int(result["draws"])
+        row_a["last_battle_ref"] = result.get("summary_ref") or row_a.get("last_battle_ref")
+        row_b["last_battle_ref"] = result.get("summary_ref") or row_b.get("last_battle_ref")
+        if not result["rated"]:
+            continue
+        rated_pair_count += 1
+        row_a["rated_battles"] += 1
+        row_b["rated_battles"] += 1
+        expected_a = elo_expected_score(
+            start_ratings[checkpoint_a],
+            start_ratings[checkpoint_b],
+        )
+        observed_a = float(result["score_a"])
+        k_pair = elo_k_for_games(valid_games, spec)
+        delta_a = clamp_delta(k_pair * (observed_a - expected_a), spec)
+        deltas[checkpoint_a] += delta_a
+        deltas[checkpoint_b] -= delta_a
+        result["rating"] = {
+            "expected_a": expected_a,
+            "observed_a": observed_a,
+            "k_pair": k_pair,
+            "delta_a": delta_a,
+            "rating_a_before": start_ratings[checkpoint_a],
+            "rating_b_before": start_ratings[checkpoint_b],
+        }
+
+    standings = []
+    max_abs_delta = 0.0
+    for checkpoint_id, row in rows.items():
+        delta = float(deltas[checkpoint_id])
+        max_abs_delta = max(max_abs_delta, abs(delta))
+        row["previous_rating"] = float(row["rating"])
+        row["last_round_delta"] = delta
+        row["rating"] = float(row["rating"]) + delta
+        row["distinct_opponents"] = len(row.get("opponent_ids") or [])
+        games = int(row["games"])
+        row["win_rate"] = float(row["wins"]) / float(games) if games else None
+        row["status"] = (
+            "active"
+            if games >= 300 and int(row["distinct_opponents"]) >= 5
+            else "provisional"
+        )
+        standings.append(row)
+    standings.sort(
+        key=lambda row: (
+            -float(row["rating"]),
+            -int(row["games"]),
+            str(row["checkpoint_id"]),
+        )
+    )
+    for rank, row in enumerate(standings, start=1):
+        row["rank"] = rank
+    round_id = rating_round_id(round_index)
+    return {
+        "schema_id": RATING_SNAPSHOT_SCHEMA_ID,
+        "formula_version": RATING_FORMULA_VERSION,
+        "tournament_id": spec["tournament_id"],
+        "rating_run_id": spec["rating_run_id"],
+        "round_id": round_id,
+        "round_index": int(round_index),
+        "created_at": created_at,
+        "rating_spec": {
+            key: value
+            for key, value in spec.items()
+            if key != "checkpoints"
+        },
+        "checkpoint_count": len(standings),
+        "pair_count": len(pair_rating_results),
+        "rated_pair_count": int(rated_pair_count),
+        "invalid_pair_count": int(len(pair_rating_results) - rated_pair_count),
+        "max_abs_delta": float(max_abs_delta),
+        "stable": bool(max_abs_delta <= float(spec["stop_max_delta"])),
+        "ratings": _to_plain(standings),
+        "pair_rating_results": _to_plain(pair_rating_results),
+    }
+
+
 def write_json_artifact(mount: Path, ref: PurePosixPath, payload: Any) -> dict[str, Any]:
     path = runs.volume_path(mount, ref)
     summary = runs.write_json(path, _to_plain(payload))
@@ -810,7 +1405,9 @@ def _policy_action(
 def run_checkpoint_game(
     spec: Mapping[str, Any],
     *,
-    mount: Path,
+    checkpoint_mount: Path | None = None,
+    artifact_mount: Path | None = None,
+    mount: Path | None = None,
     remote_root: Path | None = None,
 ) -> dict[str, Any]:
     import numpy as np
@@ -826,6 +1423,12 @@ def run_checkpoint_game(
         SourceStateGray64Stack4,
         validate_stack_trail_render_mode,
     )
+
+    if mount is not None:
+        checkpoint_mount = checkpoint_mount or mount
+        artifact_mount = artifact_mount or mount
+    if checkpoint_mount is None or artifact_mount is None:
+        raise ValueError("run_checkpoint_game needs checkpoint_mount and artifact_mount")
 
     game = dict(spec)
     pair = normalize_pair_spec({**game, "games_per_pair": 1})
@@ -847,10 +1450,10 @@ def run_checkpoint_game(
         str(game.get("trail_render_mode") or pair.get("trail_render_mode") or TRAIL_RENDER_MODE_DEFAULT)
     )
     root_ref = game_root_ref(tournament_id, battle_id, game_id)
-    root_path = runs.volume_path(mount, root_ref)
-    summary_path = runs.volume_path(mount, game_summary_ref(tournament_id, battle_id, game_id))
-    gif_path = runs.volume_path(mount, game_gif_ref(tournament_id, battle_id, game_id))
-    frames_path = runs.volume_path(mount, game_frames_ref(tournament_id, battle_id, game_id))
+    root_path = runs.volume_path(artifact_mount, root_ref)
+    summary_path = runs.volume_path(artifact_mount, game_summary_ref(tournament_id, battle_id, game_id))
+    gif_path = runs.volume_path(artifact_mount, game_gif_ref(tournament_id, battle_id, game_id))
+    frames_path = runs.volume_path(artifact_mount, game_frames_ref(tournament_id, battle_id, game_id))
     root_path.mkdir(parents=True, exist_ok=True)
 
     policy_loads = []
@@ -868,7 +1471,7 @@ def run_checkpoint_game(
             num_simulations=int(game.get("num_simulations", pair["num_simulations"])),
             batch_size=int(game.get("policy_batch_size", pair["policy_batch_size"])),
             telemetry_path=root_path / f"policy_seat_{player['seat']}_loader_telemetry.jsonl",
-            mount=mount,
+            mount=checkpoint_mount,
             remote_root=remote_root,
             model_env_variant=(
                 str(player["model_env_variant"])
@@ -995,7 +1598,7 @@ def run_checkpoint_game(
     gif_ref = None
     if bool(game.get("save_gif", pair["save_gif"])):
         gif_info = _save_gif(frames, gif_path, fps=float(game.get("gif_fps", pair["gif_fps"])))
-        gif_info["ref"] = runs.file_ref(gif_path, mount=mount)
+        gif_info["ref"] = runs.file_ref(gif_path, mount=artifact_mount)
         artifacts["gif"] = gif_info
         gif_ref = gif_info["ref"]
     frames_ref = None
@@ -1011,7 +1614,7 @@ def run_checkpoint_game(
                 "seed": seed,
             },
         )
-        frames_info["ref"] = runs.file_ref(frames_path, mount=mount)
+        frames_info["ref"] = runs.file_ref(frames_path, mount=artifact_mount)
         artifacts["frames_npz"] = frames_info
         frames_ref = frames_info["ref"]
 
@@ -1045,7 +1648,7 @@ def run_checkpoint_game(
         "trail_render_mode": trail_render_mode,
         "gif_ref": gif_ref,
         "frames_ref": frames_ref,
-        "summary_ref": runs.file_ref(summary_path, mount=mount),
+        "summary_ref": runs.file_ref(summary_path, mount=artifact_mount),
         "policy_loads": policy_loads,
         "artifacts": artifacts,
         "failure": failure,
@@ -1054,12 +1657,22 @@ def run_checkpoint_game(
     return summary
 
 
-def failure_game_summary(spec: Mapping[str, Any], exc: BaseException, *, mount: Path) -> dict[str, Any]:
+def failure_game_summary(
+    spec: Mapping[str, Any],
+    exc: BaseException,
+    *,
+    artifact_mount: Path | None = None,
+    mount: Path | None = None,
+) -> dict[str, Any]:
+    if mount is not None:
+        artifact_mount = artifact_mount or mount
+    if artifact_mount is None:
+        raise ValueError("failure_game_summary needs artifact_mount")
     game = dict(spec)
     pair = normalize_pair_spec({**game, "games_per_pair": 1})
     game_id = _safe_id(str(game.get("game_id") or "game-000000"), label="game_id")
     summary_ref = game_summary_ref(pair["tournament_id"], pair["battle_id"], game_id)
-    summary_path = runs.volume_path(mount, summary_ref)
+    summary_path = runs.volume_path(artifact_mount, summary_ref)
     summary = {
         "schema_id": GAME_SCHEMA_ID,
         "ok": False,

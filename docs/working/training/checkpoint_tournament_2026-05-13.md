@@ -37,7 +37,11 @@ when checkpoint A plays checkpoint B, who tends to die first?
 - At each game step, ask both seat policies for actions and step the shared
   two-player env once.
 - Capture human RGB frames from the env when requested.
-- Store artifacts under `tournaments/curvytron/...`.
+- Read checkpoints from `curvyzero-runs`.
+- Store tournament artifacts in the separate v2 Modal Volume
+  `curvyzero-curvytron-tournaments` under `tournaments/curvytron/...`.
+- Default GIFs use the full 704 by 704 rich RGB source-state canvas, not the
+  64 by 64 grayscale model input.
 
 ## Operating Pattern
 

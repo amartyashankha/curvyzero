@@ -2,6 +2,9 @@
 
 One app owns the whole tournament lane. The lowest-level function runs one game.
 Higher functions fan out over games and checkpoint pairs.
+
+Checkpoint files are read from the training Volume. Tournament summaries and
+GIFs are written to a separate v2 Volume.
 """
 
 from __future__ import annotations
@@ -17,10 +20,12 @@ from curvyzero.tournament import curvytron_checkpoint_tournament as arena
 
 
 APP_NAME = "curvyzero-checkpoint-tournament"
-VOLUME_NAME = "curvyzero-runs"
+CHECKPOINT_VOLUME_NAME = "curvyzero-runs"
+TOURNAMENT_VOLUME_NAME = "curvyzero-curvytron-tournaments"
 LIGHTZERO_VERSION = "0.2.0"
 REMOTE_ROOT = Path("/repo")
 RUNS_MOUNT = Path("/runs")
+TOURNAMENT_MOUNT = Path("/tournament-runs")
 CURVYTRON_BONUS_SPRITE_SHEET_RELATIVE_PATH = (
     "third_party/curvytron-reference/web/images/bonus.png"
 )
@@ -36,6 +41,7 @@ image = (
         "numpy>=1.26",
         "cloudpickle>=3",
         "pillow>=10",
+        "fastapi>=0.110",
     )
     .env({"PYTHONPATH": str(REMOTE_ROOT / "src")})
     .add_local_dir(Path.cwd() / "src", remote_path=str(REMOTE_ROOT / "src"), copy=True)
@@ -45,15 +51,35 @@ image = (
         copy=True,
     )
 )
-runs_volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
+checkpoint_volume = modal.Volume.from_name(
+    CHECKPOINT_VOLUME_NAME,
+    create_if_missing=True,
+).read_only()
+tournament_volume = modal.Volume.from_name(
+    TOURNAMENT_VOLUME_NAME,
+    create_if_missing=True,
+    version=2,
+)
 app = modal.App(APP_NAME)
 
 
-def _commit_volume() -> str | None:
-    if not hasattr(runs_volume, "commit"):
+def _checkpoint_volumes() -> dict[str, Any]:
+    return {RUNS_MOUNT.as_posix(): checkpoint_volume}
+
+
+def _tournament_volumes() -> dict[str, Any]:
+    return {TOURNAMENT_MOUNT.as_posix(): tournament_volume}
+
+
+def _game_volumes() -> dict[str, Any]:
+    return {**_checkpoint_volumes(), **_tournament_volumes()}
+
+
+def _commit_volume(volume: Any = tournament_volume) -> str | None:
+    if not hasattr(volume, "commit"):
         return None
     try:
-        runs_volume.commit()
+        volume.commit()
     except Exception as exc:  # pragma: no cover - remote Volume resilience.
         return f"{type(exc).__name__}: {exc}"
     return None
@@ -78,17 +104,18 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 
 def _path_for_ref(ref: str | Path) -> Path:
-    return runs.volume_path(RUNS_MOUNT, arena.validate_tournament_artifact_ref(ref))
+    return runs.volume_path(TOURNAMENT_MOUNT, arena.validate_tournament_artifact_ref(ref))
 
 
 def _write_tournament_marker(tournament_id: str) -> dict[str, Any]:
     ref = arena.tournament_marker_ref(tournament_id)
     payload = {
         "schema_id": "curvyzero_curvytron_tournament_browser_marker/v0",
+        "artifact_volume_name": TOURNAMENT_VOLUME_NAME,
         "tournament_id": runs.clean_id(tournament_id, label="tournament_id"),
         "created_at": runs.utc_timestamp(),
     }
-    return arena.write_json_artifact(RUNS_MOUNT, ref, payload)
+    return arena.write_json_artifact(TOURNAMENT_MOUNT, ref, payload)
 
 
 def _write_tournament_manifest(spec: Mapping[str, Any], *, status: str) -> dict[str, Any]:
@@ -97,35 +124,42 @@ def _write_tournament_manifest(spec: Mapping[str, Any], *, status: str) -> dict[
     payload = {
         "schema_id": arena.TOURNAMENT_SCHEMA_ID,
         "app_name": APP_NAME,
+        "artifact_volume_name": TOURNAMENT_VOLUME_NAME,
+        "checkpoint_volume_name": CHECKPOINT_VOLUME_NAME,
         "tournament_id": tournament_id,
         "status": status,
         "updated_at": runs.utc_timestamp(),
         "spec": arena._to_plain(dict(spec)),
     }
-    return arena.write_json_artifact(RUNS_MOUNT, ref, payload)
+    return arena.write_json_artifact(TOURNAMENT_MOUNT, ref, payload)
 
 
 @app.function(
     image=image,
-    volumes={RUNS_MOUNT.as_posix(): runs_volume},
+    volumes=_game_volumes(),
     cpu=1.0,
     memory=4096,
     timeout=30 * 60,
     max_containers=500,
 )
 def curvytron_tournament_game(game_spec: dict[str, Any]) -> dict[str, Any]:
-    reload_error = _reload_volume(runs_volume)
+    checkpoint_reload_error = _reload_volume(checkpoint_volume)
     try:
         result = arena.run_checkpoint_game(
             game_spec,
-            mount=RUNS_MOUNT,
+            checkpoint_mount=RUNS_MOUNT,
+            artifact_mount=TOURNAMENT_MOUNT,
             remote_root=REMOTE_ROOT,
         )
     except Exception as exc:  # pragma: no cover - remote dependency diagnosis.
-        result = arena.failure_game_summary(game_spec, exc, mount=RUNS_MOUNT)
-    commit_error = _commit_volume()
-    if reload_error:
-        result["reload_error"] = reload_error
+        result = arena.failure_game_summary(
+            game_spec,
+            exc,
+            artifact_mount=TOURNAMENT_MOUNT,
+        )
+    commit_error = _commit_volume(tournament_volume)
+    if checkpoint_reload_error:
+        result["checkpoint_reload_error"] = checkpoint_reload_error
     if commit_error:
         result["commit_error"] = commit_error
     print(json.dumps(arena._to_plain(arena._compact_game_result(result)), sort_keys=True))
@@ -134,18 +168,18 @@ def curvytron_tournament_game(game_spec: dict[str, Any]) -> dict[str, Any]:
 
 @app.function(
     image=image,
-    volumes={RUNS_MOUNT.as_posix(): runs_volume},
+    volumes=_tournament_volumes(),
     cpu=0.5,
     memory=1024,
     timeout=4 * 60 * 60,
     max_containers=100,
 )
 def curvytron_tournament_pair(pair_spec: dict[str, Any]) -> dict[str, Any]:
-    _reload_volume(runs_volume)
+    _reload_volume(tournament_volume)
     pair = arena.normalize_pair_spec(pair_spec)
     started_at = runs.utc_timestamp()
     spec_ref = arena.battle_root_ref(pair["tournament_id"], pair["battle_id"]) / "pair_spec.json"
-    arena.write_json_artifact(RUNS_MOUNT, spec_ref, pair)
+    arena.write_json_artifact(TOURNAMENT_MOUNT, spec_ref, pair)
     game_specs = arena.build_game_specs_for_pair(pair)
     game_results = list(
         curvytron_tournament_game.map(
@@ -161,11 +195,11 @@ def curvytron_tournament_pair(pair_spec: dict[str, Any]) -> dict[str, Any]:
         pair["battle_id"],
     ).as_posix()
     arena.write_json_artifact(
-        RUNS_MOUNT,
+        TOURNAMENT_MOUNT,
         arena.battle_summary_ref(pair["tournament_id"], pair["battle_id"]),
         summary,
     )
-    commit_error = _commit_volume()
+    commit_error = _commit_volume(tournament_volume)
     if commit_error:
         summary["commit_error"] = commit_error
     print(json.dumps(arena._to_plain({"battle_id": pair["battle_id"], "tally": summary["tally"]}), sort_keys=True))
@@ -174,14 +208,14 @@ def curvytron_tournament_pair(pair_spec: dict[str, Any]) -> dict[str, Any]:
 
 @app.function(
     image=image,
-    volumes={RUNS_MOUNT.as_posix(): runs_volume},
+    volumes=_tournament_volumes(),
     cpu=1.0,
     memory=2048,
     timeout=12 * 60 * 60,
     max_containers=10,
 )
 def curvytron_tournament_run(tournament_spec: dict[str, Any]) -> dict[str, Any]:
-    _reload_volume(runs_volume)
+    _reload_volume(tournament_volume)
     spec = dict(tournament_spec)
     tournament_id = runs.clean_id(str(spec.get("tournament_id") or runs.new_run_id("arena")), label="tournament_id")
     spec["tournament_id"] = tournament_id
@@ -234,11 +268,17 @@ def curvytron_tournament_run(tournament_spec: dict[str, Any]) -> dict[str, Any]:
     standings = arena.standings_from_pair_results(pair_results)
     standings["tournament_id"] = tournament_id
     standings["created_at"] = runs.utc_timestamp()
-    arena.write_json_artifact(RUNS_MOUNT, arena.tournament_standings_ref(tournament_id), standings)
+    arena.write_json_artifact(
+        TOURNAMENT_MOUNT,
+        arena.tournament_standings_ref(tournament_id),
+        standings,
+    )
     complete = {
         "schema_id": arena.TOURNAMENT_SCHEMA_ID,
         "ok": all(bool(pair.get("ok")) for pair in pair_results),
         "app_name": APP_NAME,
+        "artifact_volume_name": TOURNAMENT_VOLUME_NAME,
+        "checkpoint_volume_name": CHECKPOINT_VOLUME_NAME,
         "tournament_id": tournament_id,
         "started_at": started_at,
         "ended_at": runs.utc_timestamp(),
@@ -250,9 +290,13 @@ def curvytron_tournament_run(tournament_spec: dict[str, Any]) -> dict[str, Any]:
         ],
         "standings_ref": arena.tournament_standings_ref(tournament_id).as_posix(),
     }
-    arena.write_json_artifact(RUNS_MOUNT, arena.tournament_complete_ref(tournament_id), complete)
+    arena.write_json_artifact(
+        TOURNAMENT_MOUNT,
+        arena.tournament_complete_ref(tournament_id),
+        complete,
+    )
     _write_tournament_manifest({**spec, "pair_count": len(pair_specs)}, status="completed")
-    commit_error = _commit_volume()
+    commit_error = _commit_volume(tournament_volume)
     if commit_error:
         complete["commit_error"] = commit_error
     print(json.dumps(arena._to_plain(complete), sort_keys=True))
@@ -427,10 +471,10 @@ def _build_fastapi_app(volume: Any):
     ) -> HTMLResponse:
         if fresh:
             _reload_volume(volume, force=True)
-        tournaments = _list_tournaments(RUNS_MOUNT)
+        tournaments = _list_tournaments(TOURNAMENT_MOUNT)
         selected = _default_tournament_id(tournaments, tournament_id)
         battles = (
-            _list_battles(RUNS_MOUNT, tournament_id=selected, limit=limit, offset=offset)
+            _list_battles(TOURNAMENT_MOUNT, tournament_id=selected, limit=limit, offset=offset)
             if selected
             else {"rows": [], "total": 0, "limit": limit, "offset": offset}
         )
@@ -447,7 +491,7 @@ def _build_fastapi_app(volume: Any):
     def tournaments(fresh: bool = False) -> JSONResponse:
         if fresh:
             _reload_volume(volume, force=True)
-        return JSONResponse({"tournaments": _list_tournaments(RUNS_MOUNT)}, headers=DYNAMIC_HEADERS)
+        return JSONResponse({"tournaments": _list_tournaments(TOURNAMENT_MOUNT)}, headers=DYNAMIC_HEADERS)
 
     @web_app.get("/api/battles")
     def battles(
@@ -458,10 +502,10 @@ def _build_fastapi_app(volume: Any):
     ) -> JSONResponse:
         if fresh:
             _reload_volume(volume, force=True)
-        tournaments = _list_tournaments(RUNS_MOUNT)
+        tournaments = _list_tournaments(TOURNAMENT_MOUNT)
         selected = _default_tournament_id(tournaments, tournament_id)
         page = (
-            _list_battles(RUNS_MOUNT, tournament_id=selected, limit=limit, offset=offset)
+            _list_battles(TOURNAMENT_MOUNT, tournament_id=selected, limit=limit, offset=offset)
             if selected
             else {"rows": [], "total": 0, "limit": limit, "offset": offset}
         )
@@ -475,7 +519,7 @@ def _build_fastapi_app(volume: Any):
             return Response(str(exc), status_code=400)
         if safe_ref.name != "game.gif":
             return Response("not a tournament GIF ref", status_code=400)
-        path = runs.volume_path(RUNS_MOUNT, safe_ref)
+        path = runs.volume_path(TOURNAMENT_MOUNT, safe_ref)
         if not path.is_file():
             return Response("GIF not found", status_code=404)
         stat = path.stat()
@@ -497,7 +541,7 @@ def _build_fastapi_app(volume: Any):
             return Response(str(exc), status_code=400)
         if safe_ref.suffix != ".json":
             return Response("not a JSON ref", status_code=400)
-        path = runs.volume_path(RUNS_MOUNT, safe_ref)
+        path = runs.volume_path(TOURNAMENT_MOUNT, safe_ref)
         if not path.is_file():
             return Response("JSON not found", status_code=404)
         return Response(
@@ -511,7 +555,7 @@ def _build_fastapi_app(volume: Any):
 
 @app.function(
     image=image,
-    volumes={RUNS_MOUNT.as_posix(): runs_volume},
+    volumes=_tournament_volumes(),
     timeout=300,
     cpu=4,
     memory=4096,
@@ -520,7 +564,7 @@ def _build_fastapi_app(volume: Any):
 @modal.concurrent(max_inputs=50)
 @modal.asgi_app()
 def curvytron_tournament_browser():
-    return _build_fastapi_app(runs_volume)
+    return _build_fastapi_app(tournament_volume)
 
 
 @app.local_entrypoint()
@@ -548,7 +592,6 @@ def main(
         raise ValueError("tournament mode needs at least two checkpoint refs")
 
     common = {
-        "tournament_id": resolved_tournament_id,
         "games_per_pair": int(games_per_pair),
         "seed": int(seed),
         "max_steps": int(max_steps),
@@ -559,7 +602,7 @@ def main(
         "save_gif": bool(save_gif),
     }
     if mode == "tournament":
-        spec = {"checkpoints": refs, **common}
+        spec = {"tournament_id": resolved_tournament_id, "checkpoints": refs, **common}
         call = curvytron_tournament_run.spawn(spec)
     else:
         pair = arena.build_pair_specs(

@@ -41,8 +41,72 @@ REWARD_SURVIVAL_ONLY_GATED = "survival_only"
 RENDER_FAST = "body_circles_fast"
 RENDER_BROWSER = "browser_lines"
 SOURCE_MAX_STEPS = 65_536
+DECISION_MS = 200.0
 ACTION_REPEAT_SEED_OFFSET = 2027
 STRAIGHT_OVERRIDE_SEED_OFFSET = 1009
+
+TRAIN_KWARGS_REQUIRED_FOR_GROUPED_SUBMIT: tuple[str, ...] = (
+    "mode",
+    "seed",
+    "run_id",
+    "attempt_id",
+    "max_env_step",
+    "max_train_iter",
+    "source_max_steps",
+    "decision_ms",
+    "collector_env_num",
+    "evaluator_env_num",
+    "n_evaluator_episode",
+    "n_episode",
+    "num_simulations",
+    "batch_size",
+    "lightzero_eval_freq",
+    "skip_lightzero_eval_in_profile",
+    "profile_cuda_sync_enabled",
+    "profile_allow_auto_resume",
+    "profile_volume_commit",
+    "lightzero_multi_gpu",
+    "save_ckpt_after_iter",
+    "stop_after_learner_train_calls",
+    "env_variant",
+    "reward_variant",
+    "source_state_trail_render_mode",
+    "ego_action_straight_override_probability",
+    "policy_action_repeat_min",
+    "policy_action_repeat_max",
+    "policy_action_repeat_extra_probability",
+    "control_noise_profile_id",
+    "disable_death_for_profile",
+    "opponent_death_mode",
+    "opponent_runtime_mode",
+    "env_telemetry_stride",
+    "env_manager_type",
+    "opponent_policy_kind",
+    "opponent_use_cuda",
+    "opponent_checkpoint_ref",
+    "opponent_snapshot_ref",
+    "opponent_checkpoint_report_ref",
+    "opponent_checkpoint_state_key",
+    "background_eval_enabled",
+    "background_eval_launch_kind",
+    "background_eval_compute",
+    "background_eval_id_prefix",
+    "background_eval_seed_count",
+    "background_eval_seed_rng_seed",
+    "background_eval_max_steps",
+    "background_eval_step_detail_limit",
+    "background_eval_num_simulations",
+    "background_eval_batch_size",
+    "background_gif_enabled",
+    "background_gif_seed_offset",
+    "background_gif_max_steps",
+    "background_gif_frame_stride",
+    "background_gif_fps",
+    "background_gif_scale",
+    "background_gif_frame_size",
+    "background_gif_collect_temperature",
+    "background_gif_collect_epsilon",
+)
 
 DEFAULT_MATRIX_NAME = "curvy-survive-bonus-large"
 DEFAULT_RUN_PREFIX = "curvy-survive-bonus"
@@ -1003,6 +1067,7 @@ def _train_kwargs_for_row(row: Row, *, run_id: str, attempt_id: str) -> dict[str
         "max_env_step": row.max_env_step,
         "max_train_iter": row.max_train_iter,
         "source_max_steps": SOURCE_MAX_STEPS,
+        "decision_ms": DECISION_MS,
         "collector_env_num": row.collector_env_num,
         "evaluator_env_num": row.evaluator_env_num,
         "n_evaluator_episode": row.n_evaluator_episode,
@@ -1010,7 +1075,13 @@ def _train_kwargs_for_row(row: Row, *, run_id: str, attempt_id: str) -> dict[str
         "num_simulations": row.num_simulations,
         "batch_size": row.batch_size,
         "lightzero_eval_freq": row.lightzero_eval_freq,
+        "skip_lightzero_eval_in_profile": True,
+        "profile_cuda_sync_enabled": False,
+        "profile_allow_auto_resume": False,
+        "profile_volume_commit": False,
+        "lightzero_multi_gpu": False,
         "save_ckpt_after_iter": row.save_ckpt_after_iter,
+        "stop_after_learner_train_calls": 0,
         "env_variant": ENV_SOURCE_STATE_FIXED_OPPONENT,
         "reward_variant": row.reward_variant,
         "source_state_trail_render_mode": row.source_state_trail_render_mode,
@@ -1025,10 +1096,15 @@ def _train_kwargs_for_row(row: Row, *, run_id: str, attempt_id: str) -> dict[str
         "control_noise_profile_id": row.stochasticity.control_noise_profile_id,
         "opponent_death_mode": row.opponent_death_mode,
         "opponent_runtime_mode": row.opponent_runtime_mode,
+        "disable_death_for_profile": False,
+        "env_telemetry_stride": 1,
         "env_manager_type": row.env_manager_type,
         "opponent_policy_kind": row.opponent_policy_kind,
+        "opponent_use_cuda": False,
         "opponent_checkpoint_ref": row.opponent_checkpoint_ref,
         "opponent_snapshot_ref": row.opponent_snapshot_ref,
+        "opponent_checkpoint_report_ref": None,
+        "opponent_checkpoint_state_key": None,
         "background_eval_enabled": row.background_eval_enabled,
         "background_eval_launch_kind": row.background_eval_launch_kind,
         "background_eval_compute": row.background_eval_compute,
@@ -1036,6 +1112,7 @@ def _train_kwargs_for_row(row: Row, *, run_id: str, attempt_id: str) -> dict[str
         "background_eval_seed_count": row.background_eval_seed_count,
         "background_eval_seed_rng_seed": row.eval_seed,
         "background_eval_max_steps": row.background_eval_max_steps,
+        "background_eval_step_detail_limit": 4,
         "background_eval_num_simulations": row.background_eval_num_simulations,
         "background_eval_batch_size": row.background_eval_batch_size,
         "background_gif_enabled": row.background_gif_enabled,
@@ -1097,6 +1174,16 @@ def _poller_kwargs_for_row(row: Row, *, run_id: str, attempt_id: str) -> dict[st
     }
 
 
+def _validate_train_kwargs_shape(row_id: str, train_kwargs: dict[str, Any]) -> None:
+    missing = [
+        key for key in TRAIN_KWARGS_REQUIRED_FOR_GROUPED_SUBMIT if key not in train_kwargs
+    ]
+    if missing:
+        raise ValueError(
+            f"row {row_id} grouped train kwargs missing required keys: {missing}"
+        )
+
+
 def _manifest_row(
     row: Row,
     *,
@@ -1123,6 +1210,7 @@ def _manifest_row(
     opponent_contract = _opponent_contract(row)
     train_ref = _ref("training", TASK_ID, run_id, "attempts", attempt_id, "train")
     train_kwargs = _train_kwargs_for_row(row, run_id=run_id, attempt_id=attempt_id)
+    _validate_train_kwargs_shape(row.row_id, train_kwargs)
     poller_kwargs = _poller_kwargs_for_row(row, run_id=run_id, attempt_id=attempt_id)
     return {
         "schema_id": ROW_SCHEMA_ID,

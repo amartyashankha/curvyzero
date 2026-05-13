@@ -9,6 +9,70 @@ from pathlib import Path
 from typing import Any, Sequence
 
 
+TRAIN_KWARGS_REQUIRED_FOR_GROUPED_SUBMIT: tuple[str, ...] = (
+    "mode",
+    "seed",
+    "run_id",
+    "attempt_id",
+    "max_env_step",
+    "max_train_iter",
+    "source_max_steps",
+    "decision_ms",
+    "collector_env_num",
+    "evaluator_env_num",
+    "n_evaluator_episode",
+    "n_episode",
+    "num_simulations",
+    "batch_size",
+    "lightzero_eval_freq",
+    "skip_lightzero_eval_in_profile",
+    "profile_cuda_sync_enabled",
+    "profile_allow_auto_resume",
+    "profile_volume_commit",
+    "lightzero_multi_gpu",
+    "save_ckpt_after_iter",
+    "stop_after_learner_train_calls",
+    "env_variant",
+    "reward_variant",
+    "source_state_trail_render_mode",
+    "ego_action_straight_override_probability",
+    "policy_action_repeat_min",
+    "policy_action_repeat_max",
+    "policy_action_repeat_extra_probability",
+    "control_noise_profile_id",
+    "disable_death_for_profile",
+    "opponent_death_mode",
+    "opponent_runtime_mode",
+    "env_telemetry_stride",
+    "env_manager_type",
+    "opponent_policy_kind",
+    "opponent_use_cuda",
+    "opponent_checkpoint_ref",
+    "opponent_snapshot_ref",
+    "opponent_checkpoint_report_ref",
+    "opponent_checkpoint_state_key",
+    "background_eval_enabled",
+    "background_eval_launch_kind",
+    "background_eval_compute",
+    "background_eval_id_prefix",
+    "background_eval_seed_count",
+    "background_eval_seed_rng_seed",
+    "background_eval_max_steps",
+    "background_eval_step_detail_limit",
+    "background_eval_num_simulations",
+    "background_eval_batch_size",
+    "background_gif_enabled",
+    "background_gif_seed_offset",
+    "background_gif_max_steps",
+    "background_gif_frame_stride",
+    "background_gif_fps",
+    "background_gif_scale",
+    "background_gif_frame_size",
+    "background_gif_collect_temperature",
+    "background_gif_collect_epsilon",
+)
+
+
 def _call_id(call: Any) -> str | None:
     value = getattr(call, "object_id", None) or getattr(call, "id", None)
     return None if value is None else str(value)
@@ -59,6 +123,14 @@ def _launch_row(row: dict[str, Any], *, app_name: str, dry_run: bool) -> dict[st
         raise ValueError(f"row {row.get('row_id')} lacks deployed function names")
     if not isinstance(train_kwargs, dict) or not isinstance(poller_kwargs, dict):
         raise ValueError(f"row {row.get('row_id')} lacks train/poller kwargs")
+    missing_train_kwargs = [
+        key for key in TRAIN_KWARGS_REQUIRED_FOR_GROUPED_SUBMIT if key not in train_kwargs
+    ]
+    if missing_train_kwargs:
+        raise ValueError(
+            f"row {row.get('row_id')} train_kwargs missing required keys: "
+            f"{missing_train_kwargs}"
+        )
 
     record = {
         "row_id": row.get("row_id"),

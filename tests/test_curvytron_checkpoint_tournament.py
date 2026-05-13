@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+import numpy as np
 import pytest
 
 from curvyzero.infra.modal import curvyzero_checkpoint_tournament as modal_arena
@@ -53,6 +54,27 @@ def test_build_game_specs_for_pair_uses_stable_ids_and_seeds() -> None:
     ]
     assert [game["seed"] for game in games] == [7, 8, 9]
     assert all(game["max_steps"] == 64 for game in games)
+
+
+def test_default_gif_frame_size_is_full_raw_canvas_size(tmp_path) -> None:
+    Image = pytest.importorskip("PIL.Image")
+    pair = arena.build_pair_specs(
+        tournament_id="arena-a",
+        checkpoints=[_checkpoint_ref("run-a", 0), _checkpoint_ref("run-b", 10)],
+    )[0]
+    game = arena.build_game_specs_for_pair(pair)[0]
+    path = tmp_path / "game.gif"
+    frames = np.zeros(
+        (2, arena.DEFAULT_FRAME_SIZE, arena.DEFAULT_FRAME_SIZE, 3),
+        dtype=np.uint8,
+    )
+
+    info = arena._save_gif(frames, path, fps=arena.DEFAULT_GIF_FPS)
+
+    assert game["frame_size"] == 704
+    assert info["pixel_size"] == [704, 704]
+    with Image.open(path) as image:
+        assert image.size == (704, 704)
 
 
 def test_pair_spec_rejects_unknown_policy_mode() -> None:

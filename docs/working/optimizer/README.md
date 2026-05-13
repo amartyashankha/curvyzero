@@ -193,6 +193,12 @@ use `--no-background-gif-enabled`; that now also suppresses the
 For real wide Coach matrices, leave GIFs enabled but cap them explicitly; the
 default GIF max-steps value means no GIF-specific cap.
 
+Checkpoint GIF fidelity fix, 2026-05-13: checkpoint self-play GIF workers now
+always save the full `704x704` source-state RGB canvas. Older `128`/`320` GIF
+requests are recorded as `requested_frame_size` only; `effective_frame_size` is
+`704`. This fixes the observability path only. The trainer was already using
+full RGB render -> luma/area downsample -> `[4,64,64]` stack.
+
 This lane owns speed/training-loop setup synthesis: how CurvyTron visual
 LightZero-style stacked-frame rollouts, sidecar scalar diagnostics,
 policy/search, replay, reset/autoreset, Modal jobs, and learner boundaries

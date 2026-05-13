@@ -412,7 +412,8 @@ DEFAULT_BACKGROUND_GIF_MAX_STEPS = 0
 DEFAULT_BACKGROUND_GIF_FRAME_STRIDE = 1
 DEFAULT_BACKGROUND_GIF_FPS = 8.0
 DEFAULT_BACKGROUND_GIF_SCALE = 4
-DEFAULT_BACKGROUND_GIF_FRAME_SIZE = SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE
+CHECKPOINT_SELFPLAY_GIF_FRAME_SIZE = SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE
+DEFAULT_BACKGROUND_GIF_FRAME_SIZE = CHECKPOINT_SELFPLAY_GIF_FRAME_SIZE
 BACKGROUND_GIF_POLICY_MODE_COLLECT = "collect"
 BACKGROUND_GIF_POLICY_MODE_EVAL_GREEDY = "eval_greedy"
 BACKGROUND_GIF_POLICY_MODE_CHOICES = (
@@ -3715,7 +3716,11 @@ def _run_visual_survival_train(
                 ),
                 "frame_stride": command["background_gif_frame_stride"],
                 "fps": command["background_gif_fps"],
-                "frame_size": command["background_gif_frame_size"],
+                "requested_frame_size": command["background_gif_frame_size"],
+                "frame_size": CHECKPOINT_SELFPLAY_GIF_FRAME_SIZE,
+                "frame_size_policy": (
+                    "checkpoint_selfplay_gif_always_uses_full_source_state_rgb_canvas"
+                ),
                 "collect_temperature": command["background_gif_collect_temperature"],
                 "collect_epsilon": command["background_gif_collect_epsilon"],
             },
@@ -5504,6 +5509,9 @@ def _background_gif_config_from_command(command: dict[str, Any]) -> dict[str, An
     max_steps = _normalize_background_gif_max_steps(
         command.get("background_gif_max_steps", DEFAULT_BACKGROUND_GIF_MAX_STEPS)
     )
+    requested_frame_size = int(
+        command.get("background_gif_frame_size", DEFAULT_BACKGROUND_GIF_FRAME_SIZE)
+    )
     return {
         "enabled": bool(command.get("background_gif_enabled", DEFAULT_BACKGROUND_GIF_ENABLED)),
         "seed": int(command.get("seed", DEFAULT_SEED))
@@ -5521,8 +5529,10 @@ def _background_gif_config_from_command(command: dict[str, Any]) -> dict[str, An
         ),
         "fps": float(command.get("background_gif_fps", DEFAULT_BACKGROUND_GIF_FPS)),
         "scale": int(command.get("background_gif_scale", DEFAULT_BACKGROUND_GIF_SCALE)),
-        "frame_size": int(
-            command.get("background_gif_frame_size", DEFAULT_BACKGROUND_GIF_FRAME_SIZE)
+        "requested_frame_size": requested_frame_size,
+        "frame_size": CHECKPOINT_SELFPLAY_GIF_FRAME_SIZE,
+        "frame_size_policy": (
+            "checkpoint_selfplay_gif_always_uses_full_source_state_rgb_canvas"
         ),
         "collect_temperature": float(
             command.get(
@@ -5853,6 +5863,17 @@ def _spawn_one_checkpoint_background_gif(
         )
     )
     gif_config["natural_bonus_spawn"] = natural_bonus_spawn
+    requested_frame_size = int(
+        gif_config.get(
+            "requested_frame_size",
+            gif_config.get("frame_size", DEFAULT_BACKGROUND_GIF_FRAME_SIZE),
+        )
+    )
+    gif_config["requested_frame_size"] = requested_frame_size
+    gif_config["frame_size"] = CHECKPOINT_SELFPLAY_GIF_FRAME_SIZE
+    gif_config["frame_size_policy"] = (
+        "checkpoint_selfplay_gif_always_uses_full_source_state_rgb_canvas"
+    )
     base_seed = int(gif_config.get("seed", DEFAULT_SEED + DEFAULT_BACKGROUND_GIF_SEED_OFFSET))
     checkpoint_seed_mix = _stable_seed_mix(checkpoint_ref, checkpoint_label, eval_id)
     checkpoint_seed_mixing_enabled = bool(
@@ -7296,6 +7317,8 @@ def _run_checkpoint_selfplay_gif(
         raise ValueError("background_gif_frame_stride must be at least 1")
     if frame_size < 64:
         raise ValueError("background_gif_frame_size must be at least 64")
+    requested_frame_size = int(frame_size)
+    frame_size = int(CHECKPOINT_SELFPLAY_GIF_FRAME_SIZE)
     effective_source_max_steps = max(
         int(source_max_steps),
         int(max_step_limit)
@@ -7414,6 +7437,11 @@ def _run_checkpoint_selfplay_gif(
             "raw_frame_is_browser_pixel": False,
             "raw_frame_shape": [int(frame_size), int(frame_size), 3],
             "saved_frame_shape": [int(frame_size), int(frame_size), 3],
+            "requested_frame_size": int(requested_frame_size),
+            "effective_frame_size": int(frame_size),
+            "frame_size_policy": (
+                "checkpoint_selfplay_gif_always_uses_full_source_state_rgb_canvas"
+            ),
             "gif_filename": "raw.gif",
             "gif_content_kind": "source_state_rgb_canvas_like_rgb_frames",
             "gif_filename_role": "legacy_selfplay_artifact_name",
@@ -7493,6 +7521,12 @@ def _run_checkpoint_selfplay_gif(
             "raw_frame_source": "source_state_rgb_canvas_like",
             "seed": int(seed),
             "seed_role": "effective_checkpoint_selfplay_seed",
+            "requested_frame_size": int(requested_frame_size),
+            "effective_frame_size": int(frame_size),
+            "frame_size": int(frame_size),
+            "frame_size_policy": (
+                "checkpoint_selfplay_gif_always_uses_full_source_state_rgb_canvas"
+            ),
             "max_steps": max_step_limit,
             "step_limit_kind": step_limit_kind,
             "configured_source_max_steps": int(source_max_steps),
@@ -8087,7 +8121,11 @@ def _two_seat_background_eval_config(
             "frame_stride": int(background_gif_frame_stride),
             "fps": float(background_gif_fps),
             "scale": int(background_gif_scale),
-            "frame_size": int(background_gif_frame_size),
+            "requested_frame_size": int(background_gif_frame_size),
+            "frame_size": CHECKPOINT_SELFPLAY_GIF_FRAME_SIZE,
+            "frame_size_policy": (
+                "checkpoint_selfplay_gif_always_uses_full_source_state_rgb_canvas"
+            ),
             "collect_temperature": float(gif_collect_temperature),
             "collect_epsilon": float(gif_collect_epsilon),
             "collect_temperature_source": gif_collect_temperature_source,

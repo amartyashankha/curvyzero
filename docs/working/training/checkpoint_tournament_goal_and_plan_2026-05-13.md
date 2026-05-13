@@ -18,7 +18,9 @@ first thing to trust is the raw battle runner.
 - One function that runs many games for one pair.
 - One function that runs many pairs for a tournament.
 - One basic website that lists tournaments, battles, scores, and sample GIFs.
-- Artifacts live in the shared `curvyzero-runs` Volume under
+- Checkpoints are read from the existing `curvyzero-runs` Volume.
+- Tournament artifacts live in the separate v2 Modal Volume
+  `curvyzero-curvytron-tournaments` under
   `tournaments/curvytron/...`.
 
 ## Product Contract
@@ -69,6 +71,9 @@ Expected result:
 - Do not write shared aggregate files from game workers.
 - Game workers write only their own immutable game summary and optional GIF.
 - Pair and tournament functions write aggregate summaries.
+- The checkpoint volume is mounted read-only by the tournament game worker.
+- The artifact volume is mounted read/write and is the only volume committed by
+  tournament workers.
 - Use Modal `.map(..., order_outputs=False)` for parallel work when waiting for
   all child results is fine.
 - Use `.spawn()` from the local entrypoint so long jobs can run detached.

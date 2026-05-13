@@ -803,7 +803,13 @@ def test_background_eval_inspection_and_gif_can_be_explicitly_enabled():
         reward_override_config["training_reward_variant"]
         == train_mod.REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME
     )
-    assert custom_config["selfplay_gif"]["frame_size"] == 512
+    assert custom_config["selfplay_gif"]["requested_frame_size"] == 512
+    assert custom_config["selfplay_gif"]["frame_size"] == (
+        train_mod.SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE
+    )
+    assert custom_config["selfplay_gif"]["frame_size_policy"] == (
+        "checkpoint_selfplay_gif_always_uses_full_source_state_rgb_canvas"
+    )
     assert custom_config["natural_bonus_spawn"] is False
     assert custom_config["opponent_death_mode"] == train_mod.OPPONENT_DEATH_MODE_IMMORTAL
     assert (
@@ -1857,7 +1863,7 @@ def test_live_checkpoint_trigger_spawns_eval_and_selfplay_gif_without_volume_com
     assert gif_call["frame_stride"] == 2
     assert gif_call["fps"] == 12.0
     assert gif_call["scale"] == 3
-    assert gif_call["frame_size"] == 320
+    assert gif_call["frame_size"] == train_mod.SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE
     assert gif_call["training_env_variant"] == train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT
     assert (
         gif_call["training_reward_variant"]
@@ -1872,7 +1878,10 @@ def test_live_checkpoint_trigger_spawns_eval_and_selfplay_gif_without_volume_com
     assert request["eval_inspection_scheduled"] is True
     assert request["selfplay_gif"]["scheduled"] is True
     assert request["selfplay_gif"]["function_call_id"] == "fc-live-gif-test"
-    assert request["selfplay_gif"]["config"]["frame_size"] == 320
+    assert request["selfplay_gif"]["config"]["requested_frame_size"] == 320
+    assert request["selfplay_gif"]["config"]["frame_size"] == (
+        train_mod.SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE
+    )
     assert request["selfplay_gif"]["config"]["base_seed"] == 10_007
     assert request["selfplay_gif"]["config"]["effective_seed"] == gif_call["seed"]
     assert request["selfplay_gif"]["config"]["checkpoint_seed_mixing_enabled"] is True
@@ -2246,7 +2255,7 @@ def test_checkpoint_eval_poller_completes_eval_inspection_and_selfplay_gif_jobs(
         "training/lightzero-curvytron-visual-survival/run-c/attempts/attempt-c/train/lightzero_exp/ckpt/iteration_1.pth.tar"
     )
     assert gif_call["checkpoint_ref"] == eval_call["checkpoint_ref"]
-    assert gif_call["frame_size"] == 320
+    assert gif_call["frame_size"] == train_mod.SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE
     assert eval_call["eval_id"] == "live_checkpoint_iteration_1"
     assert (
         eval_call["reward_variant"]
