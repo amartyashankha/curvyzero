@@ -173,14 +173,14 @@ Type selection is weighted by `bonusType.prototype.getProbability(game)`.
 The focused fixtures `source_bonus_default_weights_type_rng_step.json` and
 `source_bonus_default_weights_select_game_clear_step.json` pin this for the full
 default enabled order: with two of four present avatars already dead,
-`BonusGameClear` contributes `0.5`, type draw `0.945` still selects
-`BonusAllColor`, and type draw `0.965` selects `BonusGameClear` before the
-position draws.
+`BonusGameClear` contributes `0.5`, the default total weight is `11.5`, type
+draw `0.945` still selects `BonusAllColor`, and type draw `0.965` selects
+`BonusGameClear` before the position draws.
 
 `source_bonus_default_weights_game_clear_full_probability_step.json` pins the
 other side of that dynamic probability branch. With only one of four present
 avatars dead, the source ratio is below `0.5`, `BonusGameClear` contributes its
-full probability `1`, the default total weight is `11.2`, and type draw `0.93`
+full probability `1`, the default total weight is `12.0`, and type draw `0.93`
 selects `BonusGameClear` before the same `(27.255, 73.745)` position draws.
 
 `source_bonus_spawn_cap_twenty_step.json` pins the source cap branch: after
@@ -242,6 +242,21 @@ effects, then writes the final values (`src/shared/model/BaseBonusStack.js:52`,
 `directionInLoop`, `angularVelocityBase`, and `color` by assignment instead of
 addition (`src/server/model/BonusStack.js:97`).
 
+Death clears an avatar's bonus stack without resolving properties back to
+defaults (`src/shared/model/BaseAvatar.js:78`). The fixture
+`source_bonus_self_fast_stack_death_late_expiry_step.json` pins the important
+2P safety case: three stacked `BonusSelfFast` catches raise velocity to `52`,
+normal-wall death empties the active stack but leaves the dead avatar's velocity
+as-is, and later timeout removals emit `bonus:stack remove` events without
+property restore or state resurrection.
+
+`source_bonus_self_fast_expiry_then_wall_death_same_tick_step.json` pins the
+other focused 2P timer ordering: one `BonusSelfFast` timeout is drained before
+the same source-runner step calls `Game.update`. The timeout restores velocity
+to `16`; the following wall-death movement uses that restored speed, p0 reaches
+`x=-1.4`, dies, p1 scores, and the stack remains empty. This is source runner
+and public vector timer ordering, not browser event-loop or pixel proof.
+
 ## Bonus Table
 
 Unless noted, probability is the base `1` from `BaseBonus`
@@ -257,9 +272,9 @@ Unless noted, probability is the base `1` from `BaseBonus`
 | `BonusEnemySlow` | Enemies | `5000` | `1` | `['velocity', -BaseAvatar.prototype.velocity/2]`: `src/server/model/Bonus/BonusEnemySlow.js:22`. |
 | `BonusEnemyFast` | Enemies | `6000` | `1` | `['velocity', 0.75 * BaseAvatar.prototype.velocity]`: `src/server/model/Bonus/BonusEnemyFast.js:20`, `src/server/model/Bonus/BonusEnemyFast.js:29`. |
 | `BonusEnemyBig` | Enemies | `7500` | `1` | `['radius', 1]`: `src/server/model/Bonus/BonusEnemyBig.js:20`, `src/server/model/Bonus/BonusEnemyBig.js:29`. |
-| `BonusEnemyInverse` | Enemies | `5000` | `0.8` | `['inverse', 1]`: `src/server/model/Bonus/BonusEnemyInverse.js:20`, `src/server/model/Bonus/BonusEnemyInverse.js:29`. |
-| `BonusEnemyStraightAngle` | Enemies | `5000` | `0.6` | `['directionInLoop', false]` and `['angularVelocityBase', Math.PI/2]`: `src/server/model/Bonus/BonusEnemyStraightAngle.js:20`, `src/server/model/Bonus/BonusEnemyStraightAngle.js:27`, `src/server/model/Bonus/BonusEnemyStraightAngle.js:36`. |
-| `BonusGameBorderless` | Game | `10000` | `0.8` | `['borderless', true]`: `src/server/model/Bonus/BonusGameBorderless.js:20`, `src/server/model/Bonus/BonusGameBorderless.js:27`, `src/server/model/Bonus/BonusGameBorderless.js:36`. |
+| `BonusEnemyInverse` | Enemies | `5000` | `1` | `['inverse', 1]`: `src/server/model/Bonus/BonusEnemyInverse.js:20`, `src/server/model/Bonus/BonusEnemyInverse.js:29`. |
+| `BonusEnemyStraightAngle` | Enemies | `5000` | `1` | `['directionInLoop', false]` and `['angularVelocityBase', Math.PI/2]`: `src/server/model/Bonus/BonusEnemyStraightAngle.js:20`, `src/server/model/Bonus/BonusEnemyStraightAngle.js:27`, `src/server/model/Bonus/BonusEnemyStraightAngle.js:36`. |
+| `BonusGameBorderless` | Game | `10000` | `1` | `['borderless', true]`: `src/server/model/Bonus/BonusGameBorderless.js:20`, `src/server/model/Bonus/BonusGameBorderless.js:27`, `src/server/model/Bonus/BonusGameBorderless.js:36`. |
 | `BonusAllColor` | All | `7500` | `1` | Rotates each alive avatar to the next alive avatar's color: `src/server/model/Bonus/BonusAllColor.js:22`, `src/server/model/Bonus/BonusAllColor.js:32`, `src/server/model/Bonus/BonusAllColor.js:54`, `src/server/model/Bonus/BonusAllColor.js:66`. |
 | `BonusGameClear` | Game | `0` | Dynamic | Clears trails immediately; probability depends on alive/present ratio: `src/server/model/Bonus/BonusGameClear.js:20`, `src/server/model/Bonus/BonusGameClear.js:29`, `src/server/model/Bonus/BonusGameClear.js:43`. |
 | `BonusSelfGodzilla` | Hidden self class | `5000` | `1` | Not normally selectable. Effects are invincible, printing `100`, radius `10`, velocity `6`: `src/server/model/Bonus/BonusSelfGodzilla.js:22`. |
@@ -362,7 +377,7 @@ event (`src/server/model/Avatar.js:145`, `src/server/model/Avatar.js:148`).
 
 ## Borderless Bonus
 
-`BonusGameBorderless` lasts `10000` ms, has probability `0.8`, and contributes
+`BonusGameBorderless` lasts `10000` ms, has probability `1`, and contributes
 `['borderless', true]` to the game stack
 (`src/server/model/Bonus/BonusGameBorderless.js:20`,
 `src/server/model/Bonus/BonusGameBorderless.js:27`,
@@ -505,8 +520,9 @@ Open probes:
   headless JS traces. The first forced clear trace and natural `BonusGameClear`
   probability/selection metadata are pinned; natural spawned clear catch/effect
   coupling remains open.
-- Test stacked expiration order, especially same-frame expiry and special
-  override properties.
+- Extend stacked expiration/death probes beyond the promoted 2P
+  `BonusSelfFast` wall-death fixtures, especially other bonus types, larger
+  stacks, and special override properties.
 - Test `BonusEnemyStraightAngle` timing for already-turning avatars.
 - Decide whether to keep `BonusSelfGodzilla` only as a hidden source note or add
   a non-default debug scenario for it.

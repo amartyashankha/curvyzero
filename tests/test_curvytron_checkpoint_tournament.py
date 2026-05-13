@@ -258,6 +258,102 @@ def _write_review_fixture(tmp_path):
     return tournament_id, rating_run_id
 
 
+def _write_live_rating_fixture(tmp_path):
+    tournament_id = "arena-live"
+    rating_run_id = "elo-live"
+    marker = tmp_path / arena.tournament_marker_ref(tournament_id)
+    marker.parent.mkdir(parents=True)
+    marker.write_text("{}", encoding="utf-8")
+    refs = [
+        _checkpoint_ref("run-a", 0),
+        _checkpoint_ref("run-b", 10),
+        _checkpoint_ref("run-c", 20),
+    ]
+    spec = arena.normalize_rating_spec(
+        {
+            "tournament_id": tournament_id,
+            "rating_run_id": rating_run_id,
+            "checkpoints": refs,
+            "games_per_pair": 3,
+            "games_per_shard": 2,
+            "save_gif": True,
+            "gif_sample_games_per_pair": 1,
+        }
+    )
+    modal_arena.runs.write_json(
+        tmp_path / arena.rating_config_ref(tournament_id, rating_run_id),
+        {
+            "schema_id": arena.RATING_CONFIG_SCHEMA_ID,
+            "rating_spec": spec,
+        },
+    )
+    round_id = arena.rating_round_id(0)
+    pair_specs = arena.build_rating_round_pair_specs(spec, round_index=0)
+    input_payload = {
+        "schema_id": arena.RATING_ROUND_SCHEMA_ID,
+        "tournament_id": tournament_id,
+        "rating_run_id": rating_run_id,
+        "round_id": round_id,
+        "round_index": 0,
+        "rating_spec": spec,
+        "pair_count": len(pair_specs),
+        "game_count": sum(int(pair["games_per_pair"]) for pair in pair_specs),
+        "pair_specs": pair_specs,
+    }
+    modal_arena.runs.write_json(
+        tmp_path / arena.rating_round_input_ref(tournament_id, rating_run_id, round_id),
+        input_payload,
+    )
+    modal_arena.runs.write_json(
+        tmp_path / arena.rating_progress_ref(tournament_id, rating_run_id),
+        {
+            "schema_id": arena.RATING_PROGRESS_SCHEMA_ID,
+            "tournament_id": tournament_id,
+            "rating_run_id": rating_run_id,
+            "round_id": round_id,
+            "round_index": 0,
+            "status": "running",
+            "phase": "games_running",
+            "pair_count": len(pair_specs),
+            "game_count": input_payload["game_count"],
+        },
+    )
+    pair = pair_specs[0]
+    games = [
+        {
+            **_fake_game(pair, index, "seat_0_win"),
+            "tournament_id": tournament_id,
+            "battle_id": pair["battle_id"],
+            "pair_index": pair["pair_index"],
+        }
+        for index in range(3)
+    ]
+    shard_id = "shard-000000-games-000000-000002"
+    gif_ref = arena.game_gif_ref(
+        tournament_id,
+        pair["battle_id"],
+        "game-000000",
+    ).as_posix()
+    modal_arena.runs.write_json(
+        tmp_path / arena.game_shard_summary_ref(tournament_id, pair["battle_id"], shard_id),
+        {
+            "schema_id": arena.GAME_SHARD_SCHEMA_ID,
+            "tournament_id": tournament_id,
+            "battle_id": pair["battle_id"],
+            "pair_index": pair["pair_index"],
+            "shard_id": shard_id,
+            "shard_index": 0,
+            "game_count": 3,
+            "games": [arena._compact_game_result(game) for game in games],
+            "tally": arena.tally_game_results(games),
+            "game_summary_ref_count": 3,
+            "first_gif_ref": gif_ref,
+            "sample_gif_refs": [gif_ref],
+        },
+    )
+    return tournament_id, rating_run_id, spec, pair
+
+
 def test_build_pair_specs_defaults_to_unordered_no_self_pairs() -> None:
     refs = [_checkpoint_ref("run-a", 0), _checkpoint_ref("run-b", 10), _checkpoint_ref("run-c", 20)]
 
@@ -276,6 +372,47 @@ def test_build_pair_specs_defaults_to_unordered_no_self_pairs() -> None:
     assert pairs[0]["players"][0]["seat"] == 0
     assert pairs[0]["players"][1]["seat"] == 1
     assert pairs[0]["players"][0]["checkpoint_ref"] == refs[0]
+
+
+def test_games_per_pair_must_be_odd() -> None:
+    refs = [_checkpoint_ref("run-a", 0), _checkpoint_ref("run-b", 10)]
+
+    with pytest.raises(ValueError, match="games_per_pair must be odd"):
+        arena.build_pair_specs(
+            tournament_id="arena-a",
+            checkpoints=refs,
+            games_per_pair=2,
+        )
+
+    with pytest.raises(ValueError, match="games_per_pair must be odd"):
+        arena.normalize_rating_spec(
+            {
+                "tournament_id": "arena-a",
+                "rating_run_id": "elo-test",
+                "checkpoints": refs,
+                "games_per_pair": 10,
+            }
+        )
+
+    with pytest.raises(ValueError, match="games_per_pair must be odd"):
+        arena.estimate_tournament_plan(checkpoint_count=2, games_per_pair=50)
+
+
+def test_default_games_per_pair_is_21() -> None:
+    refs = [_checkpoint_ref("run-a", 0), _checkpoint_ref("run-b", 10)]
+
+    spec = arena.normalize_rating_spec(
+        {
+            "tournament_id": "arena-a",
+            "rating_run_id": "elo-test",
+            "checkpoints": refs,
+        }
+    )
+
+    assert arena.DEFAULT_GAMES_PER_PAIR == 21
+    assert spec["games_per_pair"] == 21
+    assert arena.DEFAULT_MAX_STEPS == 8_000
+    assert spec["max_steps"] == 8_000
 
 
 def test_build_game_specs_for_pair_uses_stable_ids_and_seeds() -> None:
@@ -303,13 +440,13 @@ def test_source_timing_settings_pass_through_pair_game_and_rating_specs() -> Non
     pair = arena.build_pair_specs(
         tournament_id="arena-a",
         checkpoints=refs,
-        games_per_pair=2,
+        games_per_pair=3,
         decision_ms=120.0,
         decision_source_frames=6,
         source_physics_step_ms=20.0,
     )[0]
     game = arena.build_game_specs_for_pair(pair)[0]
-    shard = arena.build_game_shard_specs_for_pair(pair, games_per_shard=2)[0]
+    shard = arena.build_game_shard_specs_for_pair(pair, games_per_shard=3)[0]
     rating_spec = arena.normalize_rating_spec(
         {
             "tournament_id": "arena-a",
@@ -414,7 +551,7 @@ def test_shard_tally_pair_summary_matches_game_list_rating() -> None:
             "tournament_id": "arena-a",
             "rating_run_id": "elo-test",
             "checkpoints": refs,
-            "games_per_pair": 4,
+            "games_per_pair": 5,
             "min_valid_fraction": 0.5,
         }
     )
@@ -424,6 +561,7 @@ def test_shard_tally_pair_summary_matches_game_list_rating() -> None:
         _fake_game(pair, 1, "draw"),
         _fake_game(pair, 2, "seat_1_win"),
         _fake_game(pair, 3, "unfinished", ok=False),
+        _fake_game(pair, 4, "unfinished", ok=False),
     ]
     game_summary = arena.summarize_pair_results(pair, games)
     tally_summary = arena.summarize_pair_from_tally(
@@ -620,36 +758,36 @@ def test_compact_game_result_keeps_grouping_keys() -> None:
 def test_tournament_plan_estimate_counts_pairs_games_and_gif_samples() -> None:
     estimate = arena.estimate_tournament_plan(
         checkpoint_count=50,
-        games_per_pair=50,
+        games_per_pair=51,
         save_gif=True,
         gif_sample_games_per_pair=1,
     )
 
     assert estimate["pair_count"] == 1225
-    assert estimate["game_count"] == 61_250
-    assert estimate["game_call_count"] == 61_250
+    assert estimate["game_count"] == 62_475
+    assert estimate["game_call_count"] == 62_475
     assert estimate["gif_count"] == 1225
 
     sharded = arena.estimate_tournament_plan(
         checkpoint_count=50,
-        games_per_pair=50,
+        games_per_pair=51,
         games_per_shard=10,
     )
 
-    assert sharded["game_count"] == 61_250
-    assert sharded["game_call_count"] == 6_125
-    assert sharded["approx_game_worker_commit_count"] == 6_125
+    assert sharded["game_count"] == 62_475
+    assert sharded["game_call_count"] == 7_350
+    assert sharded["approx_game_worker_commit_count"] == 7_350
 
     probe = arena.estimate_tournament_plan(
         checkpoint_count=50,
-        games_per_pair=2,
+        games_per_pair=3,
         pairs_per_round=5,
         save_gif=False,
     )
 
     assert probe["pair_candidate_count"] == 1225
     assert probe["pair_count"] == 5
-    assert probe["game_count"] == 10
+    assert probe["game_count"] == 15
 
 
 def test_default_gif_frame_size_is_full_raw_canvas_size(tmp_path) -> None:
@@ -738,6 +876,71 @@ def test_checkpoint_policy_render_mode_falls_back_to_run_metadata(tmp_path) -> N
     assert arena._checkpoint_runtime_settings_from_ref(ref, mount=tmp_path)[
         "decision_ms"
     ] == 200.0
+
+
+def test_policy_loader_recovers_model_contract_from_checkpoint_metadata(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from curvyzero.infra.modal import lightzero_curvytron_visual_survival_eval as eval_mod
+
+    ref = (
+        "training/lightzero-curvytron-visual-survival/run-a/attempts/attempt-a/"
+        "train/lightzero_exp/ckpt/iteration_0.pth.tar"
+    )
+    checkpoint_path = tmp_path / ref
+    checkpoint_path.parent.mkdir(parents=True)
+    checkpoint_path.write_bytes(b"checkpoint")
+    command_path = (
+        tmp_path
+        / "training/lightzero-curvytron-visual-survival/run-a/attempts/attempt-a/command.json"
+    )
+    command_path.write_text(
+        json.dumps(
+            {
+                "env_variant": "source_state_fixed_opponent",
+                "training_reward_variant": "survival_plus_bonus_no_outcome",
+            }
+        ),
+        encoding="utf-8",
+    )
+    captured: dict[str, object] = {}
+
+    class FakeEnv:
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(eval_mod, "_torch_load", lambda _path: {"weights": {}})
+    monkeypatch.setattr(eval_mod, "_find_state_dict", lambda _payload: ("weights", {}))
+
+    def fake_make_policy_and_env(**kwargs):
+        captured.update(kwargs)
+        return object(), FakeEnv(), {"schema": "fake"}
+
+    monkeypatch.setattr(eval_mod, "_make_policy_and_env", fake_make_policy_and_env)
+
+    loaded = arena._load_policy_from_checkpoint(
+        checkpoint_ref=ref,
+        checkpoint_state_key=None,
+        seed=1,
+        source_max_steps=16,
+        num_simulations=2,
+        batch_size=1,
+        telemetry_path=tmp_path / "telemetry.jsonl",
+        mount=tmp_path,
+        remote_root=None,
+        model_env_variant=None,
+        model_reward_variant=None,
+    )
+
+    assert captured["model_env_variant"] == "source_state_fixed_opponent"
+    assert captured["model_reward_variant"] == "survival_plus_bonus_no_outcome"
+    assert loaded["model_env_variant"] == "source_state_fixed_opponent"
+    assert loaded["model_reward_variant"] == "survival_plus_bonus_no_outcome"
+    assert loaded["model_contract_source"]["metadata"] == {
+        "model_env_variant": "source_state_fixed_opponent",
+        "model_reward_variant": "survival_plus_bonus_no_outcome",
+    }
 
 
 def test_source_frame_runtime_settings_use_source_substeps() -> None:
@@ -1044,7 +1247,7 @@ def test_rating_snapshot_skips_pairs_with_too_many_failures() -> None:
             "tournament_id": "arena-a",
             "rating_run_id": "elo-test",
             "checkpoints": refs,
-            "games_per_pair": 4,
+            "games_per_pair": 5,
             "min_valid_fraction": 0.75,
         }
     )
@@ -1056,6 +1259,7 @@ def test_rating_snapshot_skips_pairs_with_too_many_failures() -> None:
             _fake_game(pair, 1, "unfinished", ok=False),
             _fake_game(pair, 2, "unfinished", ok=False),
             _fake_game(pair, 3, "unfinished", ok=False),
+            _fake_game(pair, 4, "unfinished", ok=False),
         ],
     )
 
@@ -1367,6 +1571,409 @@ def test_review_battle_payload_reads_battle_summary_before_index(
     assert payload["game_count"] == 6
 
 
+def test_review_battle_payload_can_open_live_battle_before_battle_summary(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(modal_arena, "TOURNAMENT_MOUNT", tmp_path)
+    tournament_id = "arena-a"
+    marker = tmp_path / arena.tournament_marker_ref(tournament_id)
+    marker.parent.mkdir(parents=True)
+    marker.write_text("{}", encoding="utf-8")
+    pair = {
+        "battle_id": "battle-live",
+        "players": [
+            {"seat": 0, "checkpoint_id": "ckpt-a", "label": "A"},
+            {"seat": 1, "checkpoint_id": "ckpt-b", "label": "B"},
+        ],
+    }
+    game = {
+        **_fake_game(pair, 0, "seat_0_win"),
+        "gif_ref": (
+            "tournaments/curvytron/arena-a/battles/battle-live/"
+            "games/game-000000/game.gif"
+        ),
+    }
+    modal_arena.runs.write_json(
+        tmp_path / arena.game_summary_ref(tournament_id, "battle-live", "game-000000"),
+        game,
+    )
+
+    def fail_index(*_args, **_kwargs):
+        raise AssertionError("live battle detail should not scan the full battle index")
+
+    monkeypatch.setattr(modal_arena, "_list_battle_index", fail_index)
+
+    payload = modal_arena._review_battle_payload(
+        tmp_path,
+        tournament_id=tournament_id,
+        battle_id="battle-live",
+    )
+
+    assert payload["source"] == "battle_dir"
+    assert payload["game_count"] == 1
+    assert payload["games"][0]["outcome"] == "seat_0_win"
+    assert payload["sample_gif_count"] == 1
+
+
+def test_best_rating_snapshot_builds_provisional_rows_from_live_shards(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(modal_arena, "TOURNAMENT_MOUNT", tmp_path)
+    modal_arena._WEB_CACHE.clear()
+    tournament_id, rating_run_id, spec, _pair = _write_live_rating_fixture(tmp_path)
+
+    snapshot = modal_arena._build_provisional_rating_snapshot_for_run(
+        tmp_path,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+    )
+
+    ids = [row["checkpoint_id"] for row in spec["checkpoints"]]
+    rows_by_id = {row["checkpoint_id"]: row for row in snapshot["ratings"]}
+    assert snapshot["provisional"] is True
+    assert snapshot["source"] == "live_shard_summaries"
+    assert snapshot["completed_pair_count"] == 1
+    assert snapshot["completed_game_count"] == 3
+    assert rows_by_id[ids[0]]["rating"] > rows_by_id[ids[1]]["rating"]
+    assert snapshot["live_pair_results"][0]["sample_gif_refs"]
+
+
+def test_review_rankings_payload_builds_live_provisional_without_written_latest(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(modal_arena, "TOURNAMENT_MOUNT", tmp_path)
+    modal_arena._WEB_CACHE.clear()
+    tournament_id, rating_run_id, _spec, _pair = _write_live_rating_fixture(tmp_path)
+
+    payload = modal_arena._review_rankings_payload(
+        tmp_path,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+        allow_live_provisional=True,
+    )
+
+    assert payload["provisional"] is True
+    assert payload["source"] == "live_shard_summaries"
+    assert payload["total"] == 3
+    assert payload["rows"][0]["games"] == 3
+
+
+def test_best_rating_snapshot_reads_written_provisional_file(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(modal_arena, "TOURNAMENT_MOUNT", tmp_path)
+    modal_arena._WEB_CACHE.clear()
+    tournament_id, rating_run_id, _spec, _pair = _write_live_rating_fixture(tmp_path)
+    provisional = modal_arena._build_provisional_rating_snapshot_for_run(
+        tmp_path,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+    )
+    modal_arena.runs.write_json(
+        tmp_path / modal_arena._rating_provisional_latest_ref(tournament_id, rating_run_id),
+        modal_arena._slim_provisional_rating_snapshot(provisional),
+    )
+
+    snapshot = modal_arena._read_best_rating_snapshot_for_run(
+        tmp_path,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+    )
+
+    assert snapshot["provisional"] is True
+    assert snapshot["ratings"]
+    assert "live_pair_results" not in snapshot
+
+
+def test_cached_live_rating_progress_reads_small_progress_artifact(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(modal_arena, "TOURNAMENT_MOUNT", tmp_path)
+    modal_arena._WEB_CACHE.clear()
+    tournament_id, rating_run_id, _spec, _pair = _write_live_rating_fixture(tmp_path)
+
+    progress = modal_arena._read_cached_live_rating_progress(
+        tmp_path,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+    )
+
+    assert progress["status"] == "running"
+    assert progress["phase"] == "games_running"
+    assert progress["pair_count"] == 3
+    assert progress["game_count"] == 9
+    assert "count_basis" not in progress
+
+
+def test_progress_merges_written_provisional_counts(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(modal_arena, "TOURNAMENT_MOUNT", tmp_path)
+    modal_arena._WEB_CACHE.clear()
+    tournament_id, rating_run_id, _spec, _pair = _write_live_rating_fixture(tmp_path)
+    provisional = modal_arena._build_provisional_rating_snapshot_for_run(
+        tmp_path,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+    )
+    modal_arena.runs.write_json(
+        tmp_path / modal_arena._rating_provisional_latest_ref(tournament_id, rating_run_id),
+        modal_arena._slim_provisional_rating_snapshot(provisional),
+    )
+
+    progress = modal_arena._read_cached_live_rating_progress(
+        tmp_path,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+    )
+
+    assert progress["phase"] == "games_running_with_provisional_ratings"
+    assert progress["provisional_ratings_written"] is True
+    assert progress["completed_pair_count"] == 1
+    assert progress["completed_game_count"] == 3
+
+
+def test_review_checkpoint_payload_enriches_stale_battle_index_from_live_shards(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(modal_arena, "TOURNAMENT_MOUNT", tmp_path)
+    modal_arena._WEB_CACHE.clear()
+    tournament_id, rating_run_id, spec, pair = _write_live_rating_fixture(tmp_path)
+    checkpoint_id = spec["checkpoints"][0]["checkpoint_id"]
+    modal_arena.runs.write_json(
+        tmp_path / arena.tournament_battle_index_ref(tournament_id),
+        {
+            "schema_id": "curvyzero_curvytron_checkpoint_tournament_battle_index/v0",
+            "tournament_id": tournament_id,
+            "total": 1,
+            "rows": [
+                {
+                    "tournament_id": tournament_id,
+                    "battle_id": pair["battle_id"],
+                    "pair_index": pair["pair_index"],
+                    "players": pair["players"],
+                    "checkpoint_ids": [player["checkpoint_id"] for player in pair["players"]],
+                    "summary_ref": arena.battle_summary_ref(
+                        tournament_id,
+                        pair["battle_id"],
+                    ).as_posix(),
+                    "updated_ts": 1.0,
+                }
+            ],
+        },
+    )
+
+    payload = modal_arena._review_checkpoint_payload(
+        tmp_path,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+        checkpoint_id=checkpoint_id,
+        limit=10,
+    )
+
+    assert payload["source"] == "battle_index"
+    assert payload["total"] == 1
+    assert payload["rows"][0]["completed_count"] == 3
+    assert payload["rows"][0]["sample_gif_refs"]
+    assert payload["rows"][0]["first_gif_ref"].endswith("/game.gif")
+
+
+def test_progress_merge_keeps_complete_status(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(modal_arena, "TOURNAMENT_MOUNT", tmp_path)
+    tournament_id, rating_run_id, _spec, _pair = _write_live_rating_fixture(tmp_path)
+    provisional = modal_arena._build_provisional_rating_snapshot_for_run(
+        tmp_path,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+    )
+    modal_arena.runs.write_json(
+        tmp_path / modal_arena._rating_provisional_latest_ref(tournament_id, rating_run_id),
+        modal_arena._slim_provisional_rating_snapshot(provisional),
+    )
+
+    progress = modal_arena._merge_progress_with_provisional_snapshot(
+        tmp_path,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+        progress={"status": "complete", "phase": "ratings_written"},
+    )
+
+    assert progress == {"status": "complete", "phase": "ratings_written"}
+
+
+def test_progress_refresh_spawn_is_throttled(monkeypatch) -> None:
+    modal_arena._WEB_CACHE.clear()
+    calls: list[dict[str, object]] = []
+
+    class FakeCall:
+        object_id = "fc-refresh"
+
+    class FakeProgressFunction:
+        @staticmethod
+        def spawn(payload):
+            calls.append(dict(payload))
+            return FakeCall()
+
+    monkeypatch.setattr(
+        modal_arena,
+        "curvytron_rating_progress",
+        FakeProgressFunction,
+    )
+
+    first = modal_arena._maybe_spawn_rating_progress_refresh(
+        tournament_id="arena-live",
+        rating_run_id="elo-live",
+        progress={"status": "running", "round_index": 2},
+        min_interval_seconds=60.0,
+    )
+    second = modal_arena._maybe_spawn_rating_progress_refresh(
+        tournament_id="arena-live",
+        rating_run_id="elo-live",
+        progress={"status": "running", "round_index": 2},
+        min_interval_seconds=60.0,
+    )
+    complete = modal_arena._maybe_spawn_rating_progress_refresh(
+        tournament_id="arena-live",
+        rating_run_id="elo-live",
+        progress={"status": "complete", "round_index": 2},
+        min_interval_seconds=60.0,
+    )
+
+    assert first == "fc-refresh"
+    assert second == "fc-refresh"
+    assert complete == ""
+    assert calls == [
+        {
+            "tournament_id": "arena-live",
+            "rating_run_id": "elo-live",
+            "round_id": "round-000002",
+            "round_index": 2,
+            "load_summaries": False,
+        }
+    ]
+
+
+def test_provisional_artifacts_write_battle_index_for_checkpoint_drilldown(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(modal_arena, "TOURNAMENT_MOUNT", tmp_path)
+    modal_arena._WEB_CACHE.clear()
+    tournament_id, rating_run_id, spec, pair = _write_live_rating_fixture(tmp_path)
+    provisional = modal_arena._build_provisional_rating_snapshot_for_run(
+        tmp_path,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+    )
+
+    artifacts = modal_arena._write_provisional_rating_artifacts(
+        tmp_path,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+        snapshot=provisional,
+    )
+    payload = modal_arena._review_checkpoint_payload(
+        tmp_path,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+        checkpoint_id=spec["checkpoints"][0]["checkpoint_id"],
+        limit=10,
+    )
+
+    assert artifacts["battle_index"]["total"] == 1
+    assert payload["source"] == "battle_index"
+    assert payload["total"] == 1
+    assert payload["rows"][0]["battle_id"] == pair["battle_id"]
+
+
+def test_review_checkpoint_payload_falls_back_to_checkpoint_live_shards(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(modal_arena, "TOURNAMENT_MOUNT", tmp_path)
+    modal_arena._WEB_CACHE.clear()
+    tournament_id, rating_run_id, spec, pair = _write_live_rating_fixture(tmp_path)
+    provisional = modal_arena._build_provisional_rating_snapshot_for_run(
+        tmp_path,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+    )
+    modal_arena.runs.write_json(
+        tmp_path / modal_arena._rating_provisional_latest_ref(tournament_id, rating_run_id),
+        modal_arena._slim_provisional_rating_snapshot(provisional),
+    )
+
+    payload = modal_arena._review_checkpoint_payload(
+        tmp_path,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+        checkpoint_id=spec["checkpoints"][0]["checkpoint_id"],
+        limit=10,
+    )
+
+    assert payload["source"] == "checkpoint_round_input"
+    assert payload["total"] == 2
+    row_by_id = {row["battle_id"]: row for row in payload["rows"]}
+    assert row_by_id[pair["battle_id"]]["sample_gif_refs"]
+
+
+def test_review_battle_payload_reads_live_shard_summary_without_battle_json(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(modal_arena, "TOURNAMENT_MOUNT", tmp_path)
+    tournament_id, _rating_run_id, _spec, pair = _write_live_rating_fixture(tmp_path)
+
+    payload = modal_arena._review_battle_payload(
+        tmp_path,
+        tournament_id=tournament_id,
+        battle_id=pair["battle_id"],
+    )
+
+    assert payload["source"] == "battle_dir"
+    assert payload["game_count"] == 3
+    assert payload["game_sources"] == ["shard_summary_refs"]
+    assert payload["sample_gif_count"] == 1
+
+
+def test_best_rating_snapshot_prefers_final_latest_over_provisional(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(modal_arena, "TOURNAMENT_MOUNT", tmp_path)
+    modal_arena._WEB_CACHE.clear()
+    tournament_id, rating_run_id, _spec, _pair = _write_live_rating_fixture(tmp_path)
+    modal_arena.runs.write_json(
+        tmp_path / arena.rating_latest_ref(tournament_id, rating_run_id),
+        {
+            "schema_id": arena.RATING_SNAPSHOT_SCHEMA_ID,
+            "tournament_id": tournament_id,
+            "rating_run_id": rating_run_id,
+            "round_id": arena.rating_round_id(0),
+            "ratings": [{"checkpoint_id": "final", "rank": 1, "rating": 1600.0}],
+        },
+    )
+
+    snapshot = modal_arena._read_best_rating_snapshot_for_run(
+        tmp_path,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+    )
+
+    assert snapshot.get("provisional") is not True
+    assert snapshot["ratings"][0]["checkpoint_id"] == "final"
+
+
 def test_render_page_links_rankings_to_checkpoint_battle_evidence(
     tmp_path,
     monkeypatch,
@@ -1409,9 +2016,62 @@ def test_render_page_links_rankings_to_checkpoint_battle_evidence(
     assert "battles-scroll" in html
     assert "battle_id=battle-ab" in html
     assert "battle_id=battle-ab#battle-detail" in html
+    battles_html = html.split("<h2>Battles</h2>", 1)[1]
+    assert battles_html.index("battle_id=battle-ab#battle-detail") < battles_html.index(
+        "battle_id=battle-ac#battle-detail"
+    )
     assert "/battle?tournament_id=arena-a" not in html
     assert "/gif?ref=tournaments/curvytron/arena-a/battles/battle-ab/" in html
     assert "/meta?ref=tournaments/curvytron/arena-a/battles/battle-ab/battle.json" in html
+
+
+def test_render_page_battle_table_has_client_sort_controls(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(modal_arena, "TOURNAMENT_MOUNT", tmp_path)
+    tournament_id, rating_run_id = _write_review_fixture(tmp_path)
+    tournaments = modal_arena._list_tournaments(tmp_path)
+    rating_runs = modal_arena._list_rating_latest_runs(
+        tmp_path,
+        tournament_id=tournament_id,
+    )
+    snapshot = modal_arena._read_rating_snapshot_for_run(
+        tmp_path,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+    )
+    battles = modal_arena._list_battles(
+        tmp_path,
+        tournament_id=tournament_id,
+        checkpoint_id="ckpt-a",
+        limit=10,
+        offset=0,
+    )
+
+    html = modal_arena._render_page(
+        tournaments=tournaments,
+        selected_tournament_id=tournament_id,
+        selected_rating_run_id=rating_run_id,
+        selected_checkpoint_id="ckpt-a",
+        rating_runs=rating_runs,
+        rating_snapshot=snapshot,
+        rating_progress={},
+        battles=battles,
+    )
+
+    assert "data-battle-table" in html
+    assert 'data-sort-key="rank"' in html
+    assert 'data-sort-direction="asc"' in html
+    assert 'data-battle-sort="rank"' in html
+    assert 'data-battle-sort="avgSteps"' in html
+    assert 'data-battle-sort="failures"' in html
+    assert 'data-sort-rank="2"' in html
+    assert 'data-sort-avg-steps="12"' in html
+    assert 'data-sort-failures="0"' in html
+    assert "const applyBattleSort" in html
+    assert "nextDirection" in html
+    assert 'aria-sort="ascending"' in html
 
 
 def test_render_page_expands_selected_battle_games_and_gifs_in_place(
@@ -1463,8 +2123,49 @@ def test_render_page_expands_selected_battle_games_and_gifs_in_place(
     assert "game-000003" in html
     assert "seat_1_win" in html
     assert "/gif?ref=tournaments/curvytron/arena-a/battles/battle-ab/games/game-000004/game.gif" in html
+    assert 'loading="lazy"' in html
+    assert 'decoding="async"' in html
     assert "/meta?ref=tournaments/curvytron/arena-a/battles/battle-ab/games/game-000005/summary.json" in html
     assert "/battle?" not in html
+
+
+def test_render_page_dropdowns_update_url_and_clear_stale_selection() -> None:
+    html = modal_arena._render_page(
+        tournaments=[
+            {"tournament_id": "arena-a", "status": "running", "updated_ts": 2.0},
+            {"tournament_id": "arena-b", "status": "running", "updated_ts": 1.0},
+        ],
+        selected_tournament_id="arena-a",
+        selected_rating_run_id="elo-a",
+        selected_checkpoint_id="ckpt-a",
+        rating_runs=[
+            {
+                "tournament_id": "arena-a",
+                "rating_run_id": "elo-a",
+                "status": "running",
+            },
+            {
+                "tournament_id": "arena-a",
+                "rating_run_id": "elo-b",
+                "status": "running",
+            },
+        ],
+        rating_snapshot={},
+        rating_progress={},
+        battles={"rows": [], "total": 0},
+        selected_battle_id="battle-a",
+    )
+
+    assert 'id="tournament-picker"' in html
+    assert 'data-picker="tournament"' in html
+    assert 'data-picker="rating"' in html
+    assert 'tournamentSelect.addEventListener("change"' in html
+    assert 'ratingSelect.addEventListener("change"' in html
+    assert 'window.location.assign(url.toString())' in html
+    assert 'url.searchParams.delete("checkpoint_id")' in html
+    assert 'url.searchParams.delete("battle_id")' in html
+    assert 'url.searchParams.delete("fresh")' in html
+    assert 'url.searchParams.delete("rating_run_id")' in html
 
 
 def test_tournament_visibility_can_hide_all_except_keep(tmp_path) -> None:
@@ -1759,7 +2460,7 @@ def test_rating_progress_scans_committed_game_summaries(tmp_path) -> None:
     assert path_only_progress["result_counts_known"] is False
     assert pair_only_progress["completed_game_count"] == 0
     assert pair_only_progress["estimated_seen_game_count"] == 3
-    assert pair_only_progress["count_basis"] == "battle_dirs"
+    assert pair_only_progress["count_basis"] == "shard_summary_files"
     assert pair_only_progress["result_counts_known"] is False
 
     modal_arena.runs.write_json(
@@ -1844,11 +2545,34 @@ def test_live_rating_progress_counts_started_battle_dirs(tmp_path) -> None:
         rating_run_id=rating_run_id,
     )
 
-    assert progress["count_basis"] == "battle_dirs"
+    assert progress["count_basis"] == "shard_summary_files"
     assert progress["phase"] == "games_running"
     assert progress["started_pair_count"] == 1
+    assert progress["completed_pair_count"] == 0
     assert progress["estimated_seen_game_count"] == 3
     assert progress["estimated_completion_fraction"] == 1.0
+
+
+def test_live_rating_progress_counts_completed_shard_summaries(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(modal_arena, "TOURNAMENT_MOUNT", tmp_path)
+    modal_arena._WEB_CACHE.clear()
+    tournament_id, rating_run_id, _spec, _pair = _write_live_rating_fixture(tmp_path)
+
+    progress = modal_arena._read_live_rating_progress(
+        tmp_path,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+    )
+
+    assert progress["count_basis"] == "shard_summary_files"
+    assert progress["started_pair_count"] == 1
+    assert progress["completed_pair_count"] == 1
+    assert progress["completed_game_count"] == 3
+    assert progress["recent_started_pairs"][0]["seen_game_count"] == 3
+    assert progress["recent_started_pairs"][0]["complete"] is True
 
 
 def test_rating_reduce_rebuilds_latest_from_game_summaries(tmp_path) -> None:
@@ -1859,7 +2583,7 @@ def test_rating_reduce_rebuilds_latest_from_game_summaries(tmp_path) -> None:
             "tournament_id": tournament_id,
             "rating_run_id": rating_run_id,
             "checkpoints": [_checkpoint_ref("run-a", 0), _checkpoint_ref("run-b", 10)],
-            "games_per_pair": 2,
+            "games_per_pair": 3,
         }
     )
     round_id = arena.rating_round_id(0)
@@ -1880,12 +2604,12 @@ def test_rating_reduce_rebuilds_latest_from_game_summaries(tmp_path) -> None:
             "started_at": "2026-05-13T00:00:00Z",
             "rating_spec": rating_spec,
             "pair_count": len(pairs),
-            "game_count": 2,
+            "game_count": 3,
             "pair_specs": pairs,
         },
     )
     pair = pairs[0]
-    for index, outcome in enumerate(["seat_0_win", "seat_0_win"]):
+    for index, outcome in enumerate(["seat_0_win", "seat_0_win", "seat_0_win"]):
         game = {
             **_fake_game(pair, index, outcome),
             "tournament_id": tournament_id,
@@ -1917,7 +2641,7 @@ def test_rating_reduce_rebuilds_latest_from_game_summaries(tmp_path) -> None:
     assert result["snapshot"]["rated_pair_count"] == 1
     assert latest["ratings"][0]["rating"] > arena.DEFAULT_RATING_INITIAL_RATING
     assert "pair_rating_results" not in latest
-    assert results["pair_rating_results"][0]["valid_games"] == 2
+    assert results["pair_rating_results"][0]["valid_games"] == 3
     assert progress["status"] == "complete"
 
 
@@ -1993,15 +2717,201 @@ def test_render_page_shows_running_rating_progress_without_latest() -> None:
             "estimated_seen_game_count": 920,
             "game_count": 60000,
             "estimated_completion_fraction": 920 / 60000,
+            "updated_at": "2026-05-13T00:00:00Z",
+            "recent_started_pairs": [
+                {
+                    "battle_id": "battle-live",
+                    "pair_index": 12,
+                    "expected_game_count": 10,
+                    "complete": False,
+                }
+            ],
         },
         battles={"rows": [], "total": 0},
     )
 
     assert "Progress" in html
     assert "elo-running (running)" in html
+    assert "Rankings will appear as soon as finished games are visible" in html
+    assert "Rating run exists, but no rating rows were found" not in html
     assert "46/3000" in html
     assert "920/60000" in html
+    assert "Recent Battles" in html
+    assert "battle-live" in html
+    assert "pair 12" in html
     assert 'id="progress-panel"' in html
     assert 'data-tournament-id="arena-running"' in html
+    assert 'data-has-ratings="false"' in html
     assert "/api/rating-progress?" in html
-    assert "window.setInterval" in html
+    assert 'params.set("fresh", "true")' not in html
+    assert "window.setInterval" not in html
+    assert "window.setTimeout" in html
+
+
+def test_render_page_shows_provisional_live_rankings() -> None:
+    html = modal_arena._render_page(
+        tournaments=[
+            {
+                "tournament_id": "arena-running",
+                "status": "rating",
+                "updated_ts": 1.0,
+            }
+        ],
+        selected_tournament_id="arena-running",
+        selected_rating_run_id="elo-running",
+        selected_checkpoint_id="",
+        rating_runs=[
+            {
+                "tournament_id": "arena-running",
+                "rating_run_id": "elo-running",
+                "status": "running",
+            }
+        ],
+        rating_snapshot={
+            "tournament_id": "arena-running",
+            "rating_run_id": "elo-running",
+            "round_id": "round-000000",
+            "provisional": True,
+            "ratings": [
+                {
+                    "rank": 1,
+                    "checkpoint_id": "ckpt-a",
+                    "label": "A",
+                    "rating": 1510.0,
+                    "games": 2,
+                    "wins": 2,
+                    "losses": 0,
+                    "draws": 0,
+                    "win_rate": 1.0,
+                    "distinct_opponents": 1,
+                    "failure_count": 0,
+                }
+            ],
+        },
+        rating_progress={
+            "tournament_id": "arena-running",
+            "rating_run_id": "elo-running",
+            "status": "running",
+            "phase": "games_running",
+            "started_pair_count": 1,
+            "pair_count": 3,
+            "estimated_seen_game_count": 2,
+            "game_count": 6,
+            "estimated_completion_fraction": 1 / 3,
+            "updated_at": "2026-05-13T00:00:00Z",
+        },
+        battles={"rows": [], "total": 0},
+    )
+
+    assert "Live Rankings" in html
+    assert "updating from finished games" in html
+    assert "Rankings will appear as soon as finished games are visible" not in html
+    assert "A" in html
+
+
+def test_dynamic_web_headers_disable_browser_cache() -> None:
+    assert modal_arena.DYNAMIC_HEADERS["Cache-Control"] == "no-store, max-age=0"
+    assert modal_arena.DYNAMIC_HEADERS["Pragma"] == "no-cache"
+    assert modal_arena.DYNAMIC_HEADERS["Expires"] == "0"
+
+
+@pytest.mark.parametrize(
+    ("path", "params"),
+    [
+        ("/", {}),
+        ("/battle", {"battle_id": "battle-a"}),
+    ],
+)
+def test_page_loads_throttle_volume_reload_unless_fresh(
+    tmp_path,
+    monkeypatch,
+    path,
+    params,
+) -> None:
+    fastapi_testclient = pytest.importorskip("fastapi.testclient")
+    TestClient = fastapi_testclient.TestClient
+    calls: list[dict[str, object]] = []
+
+    def fake_reload(_volume, *, force=False, min_interval_sec=None):
+        calls.append({"force": force, "min_interval_sec": min_interval_sec})
+        return None
+
+    monkeypatch.setattr(modal_arena, "TOURNAMENT_MOUNT", tmp_path)
+    monkeypatch.setattr(modal_arena, "_web_reload_volume", fake_reload)
+    client = TestClient(modal_arena._build_fastapi_app(object()))
+
+    response = client.get(path, params=params)
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store, max-age=0"
+    assert response.headers["pragma"] == "no-cache"
+    assert response.headers["expires"] == "0"
+    assert calls
+    assert calls[0]["force"] is False
+    assert calls[0]["min_interval_sec"] == modal_arena.WEB_PAGE_RELOAD_MIN_INTERVAL_SECONDS
+
+    calls.clear()
+    fresh_response = client.get(path, params={**params, "fresh": "true"})
+
+    assert fresh_response.status_code == 200
+    assert calls
+    assert calls[0]["force"] is True
+    assert calls[0]["min_interval_sec"] == modal_arena.WEB_PAGE_RELOAD_MIN_INTERVAL_SECONDS
+
+
+@pytest.mark.parametrize(
+    ("path", "params"),
+    [
+        ("/api/tournaments", {}),
+        ("/api/ratings", {}),
+        ("/api/rating-standings", {}),
+        ("/api/review/rankings", {}),
+        ("/api/review/checkpoint", {"checkpoint_id": "ckpt-a"}),
+        ("/api/review/battle", {"battle_id": "battle-a"}),
+        ("/api/battles", {}),
+    ],
+)
+def test_fresh_api_requests_force_volume_reload(
+    tmp_path,
+    monkeypatch,
+    path,
+    params,
+) -> None:
+    fastapi_testclient = pytest.importorskip("fastapi.testclient")
+    TestClient = fastapi_testclient.TestClient
+
+    calls: list[dict[str, object]] = []
+
+    def fake_reload(_volume, *, force=False, min_interval_sec=None):
+        calls.append({"force": force, "min_interval_sec": min_interval_sec})
+        return None
+
+    monkeypatch.setattr(modal_arena, "TOURNAMENT_MOUNT", tmp_path)
+    monkeypatch.setattr(modal_arena, "_web_reload_volume", fake_reload)
+    client = TestClient(modal_arena._build_fastapi_app(object()))
+
+    response = client.get(path, params={**params, "fresh": "true"})
+
+    assert response.status_code == 200
+    assert calls
+    assert calls[0]["force"] is True
+
+
+def test_web_reload_volume_throttles_after_reload_error(monkeypatch) -> None:
+    class FailingVolume:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def reload(self) -> None:
+            self.calls += 1
+            raise RuntimeError("busy")
+
+    volume = FailingVolume()
+    monkeypatch.setattr(modal_arena, "_LAST_WEB_VOLUME_RELOAD_TS", 0.0)
+
+    error = modal_arena._web_reload_volume(volume, min_interval_sec=60.0)
+    skipped = modal_arena._web_reload_volume(volume, min_interval_sec=60.0)
+
+    assert "RuntimeError: busy" == error
+    assert skipped is None
+    assert volume.calls == 1

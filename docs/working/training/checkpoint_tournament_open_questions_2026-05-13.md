@@ -3,8 +3,14 @@
 ## V0 Questions
 
 - Should default games use greedy eval or training-style collect?
-  - Current V0 default: greedy eval for cleaner deterministic policy comparison.
-  - Every summary records the mode so this can be changed later.
+  - Decision: score tournaments use greedy/eval actions.
+  - Rationale: collect mode is intentionally exploratory; it adds search noise
+    and samples actions from visit counts with temperature. That is useful for
+    training and diagnostics, but it adds variance to the score.
+  - Epsilon is not the main default lever here. In upstream LightZero MuZero it
+    only changes collect actions when eps-greedy collect is enabled; otherwise
+    collect exploration is driven by root noise and temperature sampling.
+  - Every summary records the mode so diagnostic collect runs can stay separate.
 - Should a pair run both seat orders?
   - Current V0 default: unordered pairs, one seat order.
   - Add ordered pairs when seat bias matters.
@@ -22,11 +28,12 @@
   - Evidence: Modal Volume docs warn against concurrent writes to the same file.
   - Risk: if a pair function dies after games finish, summaries may need a
     repair/backfill command later.
-- H3: Greedy eval is a good default for tournament score, but collect mode is
-  useful for diagnosing training-style behavior.
-  - Evidence: GIF work already showed greedy behavior can hide stochastic
-    training behavior.
-  - Risk: mixed policy modes could confuse Elo unless the mode is part of the
+- H3: Greedy eval is the official score default; collect mode is a separately
+  labeled diagnostic.
+  - Evidence: local tournament defaults use `policy_mode=eval`; upstream LightZero
+    MuZero collect samples during data collection, while eval selects the best
+    MCTS action deterministically.
+  - Risk: mixed policy modes would confuse Elo unless the mode is part of the
     tournament identity.
 - H4: The first Elo loop should use batch updates.
   - Evidence: Modal game jobs finish in arbitrary order; game-by-game Elo would

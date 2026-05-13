@@ -1,7 +1,7 @@
 # Environment Active Work
 
 Status: live work tracker
-Date: 2026-05-11
+Date: 2026-05-13
 
 Use this as the short current-state map. Stable contracts live in
 `docs/design/environment/`; detailed evidence lives in the tracker, execution
@@ -25,14 +25,38 @@ Optimizer visual tensor handoff:
 [optimizer_visual_tensor_handoff_2026-05-10.md](optimizer_visual_tensor_handoff_2026-05-10.md).
 Observation-path purge ledger:
 [observation_path_purge_2026-05-11.md](observation_path_purge_2026-05-11.md).
+Full-game fidelity reorientation:
+[full_game_fidelity_reorientation_2026-05-13.md](full_game_fidelity_reorientation_2026-05-13.md).
+Fidelity testing strategy:
+[fidelity_testing_strategy_2026-05-13.md](fidelity_testing_strategy_2026-05-13.md).
+Operating patterns:
+[operating_patterns_2026-05-13.md](operating_patterns_2026-05-13.md).
+Orchestration patterns:
+[orchestration_patterns_2026-05-13.md](orchestration_patterns_2026-05-13.md).
+Current queue:
+[current_queue_2026-05-13.md](current_queue_2026-05-13.md).
+Multiplayer training readiness:
+[multiplayer_training_readiness_2026-05-13.md](multiplayer_training_readiness_2026-05-13.md).
+Source-state multiplayer trainer surface spec:
+[source_state_multiplayer_trainer_surface_spec_2026-05-13.md](source_state_multiplayer_trainer_surface_spec_2026-05-13.md).
+Source-state multiplayer target-row adapter spec:
+[source_state_multiplayer_lightzero_adapter_spec_2026-05-13.md](source_state_multiplayer_lightzero_adapter_spec_2026-05-13.md).
 
 ## Plain Current State
 
 - We are not at full CurvyTron environment fidelity.
-- Current top lane is 2P environment fidelity for training: source-state raw
-  704x704 RGB, 11x11 downsampled gray64, continuous trails, typed bonus
-  sprites/visibility, normal-wall and borderless behavior, and stored-body
-  collision depth.
+- Current top priority is Environment Reconstruction: faithful multiplayer
+  CurvyTron behavior first, then speed/training integration. Keep
+  source-state visual/replay/target-row/sample-batch paths honest, but treat
+  them as guarded downstream interfaces rather than the main focus.
+- Main active threads are multiplayer fidelity gaps, controls fidelity,
+  renderer/fast-path boundary, and docs/orchestration rhythm.
+- Working-memory snapshot: trainer surface done, replay arrays done,
+  repo-owned target-row adapter done, deterministic sample batches done, and
+  fake/injected native `GameSegment` mapping from target rows done.
+  Hume's opt-in real-LightZero construction helper is also done, but it is
+  construction-smoke only. Real LightZero buffer sampled-target parity remains
+  unproven.
 - There is one public runtime name under hardening:
   `VectorMultiplayerEnv`.
 - There is one active 2P visual product path:
@@ -42,14 +66,42 @@ Observation-path purge ledger:
   browser-style source-state renderer for this product image path, and
   `body_circles_fast` is an explicit approximation for speed/profiling. This is
   still native/source-state rendering, not browser canvas pixel parity. It
-  prefers `visual_trail_*` points when present and falls back to sparse body
-  points.
+  prefers `visual_trail_*` points when present and falls back to sparse bodies
+  when visual trail points are absent.
 - Bonus sprites in the current source-state renderer come from the one 300x400
   `web/images/bonus.png` atlas: 3x4 tiles, 12 source-default bonus types.
 - Browser/canvas pixels are not P0, and the current source-state visual gate is
   not browser pixel parity.
-- Trainer wrapper/replay propagation is still open unless a doc names an
-  explicit proof. Do not infer it from gray64 or bonus64 harness passes.
+- Training/profile additions such as `profile_no_death` are intentional
+  project features, not original CurvyTron behavior. Preserve them, but keep
+  their metadata explicit and never cite those runs as source-fidelity proof.
+- Trainer surface, in-memory replay arrays, repo-owned target rows, and
+  deterministic sample batches now have explicit proof for the source-state
+  multiplayer surface. Fake/injected native `GameSegment` mapping is also done,
+  but it is injection-only and does not import LightZero. The opt-in
+  real-LightZero construction helper is done, still construction-smoke only,
+  and still not real `MuZeroGameBuffer` sampled-target parity. Real native
+  LightZero buffer integration, durable artifacts, learner updates, and eval
+  quality remain open; do not infer them from gray64, bonus64, replay-array,
+  target-row, sample-batch, injected-bridge, or construction-helper passes.
+- Current trainer-surface state: `SourceStateMultiplayerTrainerSurface` now
+  wraps `VectorMultiplayerEnv` and emits per-seat source-state visual stacks,
+  live-seat policy-row mappings, masks, survival-plus-bonus rewards, terminal
+  visual final observations, and honest render/source metadata. It rejects
+  `fast_gray64_direct`, defaults to `browser_lines`, and labels
+  `body_circles_fast` approximate. `SourceStateMultiplayerTrainerReplayRecorder`
+  now stores copied in-memory trainer arrays over time, including terminal
+  visual final observations and variable live-policy rows.
+  `SourceStateMultiplayerTargetRowsV0` now consumes those replay arrays plus
+  explicit policy-row records, validates one-step transition alignment,
+  preserves project-only helper metadata, and keeps native LightZero claims
+  false. `SourceStateMultiplayerSampleBatchV0` now builds deterministic sample
+  batches on top of those rows. The injection-only native bridge now maps those
+  rows to injected `GameSegment`-like objects while preserving project-only
+  metadata and keeping native/LightZero/training/buffer/learner claims false;
+  Hume's separate opt-in real-LightZero construction helper is done but remains
+  construction-smoke only, while real buffer sampled-target parity and durable
+  artifact plumbing are later separate work.
 - Confirmed cadence/collision rule: source CurvyTron frames are about 16.67 ms
   from `BaseGame.framerate = (1 / 60) * 1000`. Collision truth is stored body
   circle endpoint overlap plus death/collision metadata, not visual trail
@@ -58,6 +110,39 @@ Observation-path purge ledger:
   `decision_ms`, hold controls for that window, simulate source-sized internal
   frames, and stop early on death. The old pattern of treating one 300 ms
   decision as one physics step can tunnel through stored bodies.
+  Controls-specific evidence and next tests:
+  [controls_fidelity_audit_2026-05-13.md](controls_fidelity_audit_2026-05-13.md).
+- Latest controls proof covers original JS keyboard reduction/server move
+  delivery, 2P/3P/4P public source-frame control mapping, held-control parity,
+  release-to-straight, invalid/live action rejection, inactive noops, one
+  direct terminal early-stop trace, and one LightZero-facing wrapper terminal
+  trace. It does not yet prove terminal-padding noop, touch/gamepad input, real
+  transport/browser integration, or full replay arrays.
+- Latest direct 2P product-route proof covers `VectorMultiplayerEnv` raw RGB ->
+  gray64, seeded `BonusGameClear`, stale trail/body clear, terminal wall death,
+  rewards, final observation masks, and metadata replay. Latest
+  LightZero-facing wrapper proof covers scalar joint-action decoding, raw RGB ->
+  gray64 stack, held source frames, terminal final observation, rewards, masks,
+  and native sidecars.
+- Latest bonus probability fix: original JS effectively gives every
+  non-`BonusGameClear` source-default bonus probability `1`; subclass prototype
+  fields `0.8/0.6/0.8` are not effective type-selection weights.
+- Latest public natural bonus proof pins corrected `BonusGameClear` boundary
+  draws, natural bonus RNG labels/cursors, next-delay scheduling, spawned
+  position, and the full 12-item source-default bonus set.
+- Latest hit-owner stress proof covers 4P newest-owner overlap, 4P source-style
+  corner island order, 3P own-body latency, and 4P two-victim metadata
+  alignment. It still needs raw JS fixtures and product/replay/debug-event
+  propagation for those exact stress cases.
+- Fresh 2026-05-13 local validation: source env, vector runtime, controls,
+  collision, and direct 2P product-route focused tests reported `155 passed`.
+  New multiplayer trainer-surface and replay focused tests reported `14
+  passed`, and the combined surface/replay/product/LightZero-wrapper/render
+  sweep reported `41 passed, 1 skipped`.
+  The full 2P source-state visual gate still reports
+  `canvas_gray64=35/35`, `typed_bonus=12/12`, `final_obs=pass`,
+  `mismatch_pixels=0`, and `max_abs_diff=0.0`. Keep this as a freshness note,
+  not a full-fidelity claim.
 - Strict `VectorTrainerEnv1v1NoBonus` is only a proof/profiling boundary. It is
   not the destination.
 - `VectorMultiplayerEnv` is the intended public runtime name. The
@@ -78,10 +163,19 @@ Observation-path purge ledger:
 - Latest 2P bonus fidelity fix: slow/fast speed bonuses now also change turn
   rate with the source formula, and expiry restores it. This was a real gap
   caught by the current coverage audit.
-- The largest current gaps are 2P trainer observation/final/replay propagation,
-  JS/original stress fixtures for the remaining bonus/collision cases, bonus
-  metadata/replay beyond audit rows, broader 3P/4P lifecycle/public parity, old
-  toy-path quarantine, and final cleanup.
+- Public 3P/4P lifecycle now has a focused mixed-row match-mode proof:
+  reset/warmup, round win, warmdown, one row starting the next round, one row
+  ending the match, masks, rewards, and public final rows.
+- Public env plus trainer/replay now also have a focused P=3/P=4
+  presence/leave proof for one active row and one staged-warmdown row in the
+  same batch. It covers present/alive masks, absent action slots, warmdown
+  next-round carryover, trainer live-policy rows, and replay storage.
+- The largest current environment gaps are broader source-fixture
+  presence/leave breadth, renderer/fast-path boundary guards, JS/original
+  stress fixtures for the remaining bonus/collision cases, bonus
+  metadata/replay beyond audit rows, old toy-path quarantine, and final
+  cleanup. Real LightZero `MuZeroGameBuffer` sampled-target parity remains
+  downstream interface work, not the main reconstruction priority.
 - Latest public base hardening: direct public body/trail/collision canary
   tests, the long 2P reset-to-terminal source rollout, warmdown/match-end
   checks, the 2P metadata replay bridge, and the source-state LightZero wrapper
@@ -136,9 +230,9 @@ Observation-path purge ledger:
   Recorded result:
   `PASS full_2p_source_state_visual_gate canvas_gray64=35/35 typed_bonus=12/12 final_obs=pass canaries=2/2 mismatch_pixels=0 max_abs_diff=0.0 expected_canary_mismatch_pixels=26`.
   This means only that source and vector agreed through the source-state/native
-  render path and that the separate diagnostic bonus64 gate passed. It does not
-  prove real browser canvas pixels, trainer wrapper/replay propagation, or full
-  training readiness.
+  render path and that the separate diagnostic bonus64 gate passed. By itself
+  it does not prove real browser canvas pixels, target rows, native LightZero
+  integration, or full training readiness.
 - Gray64 v0 distinguishes 2P player trails and heads, but every active map
   bonus is value `208`. The separate bonus64 v1 typed/status gate now checks
   active map bonus mask/type planes for all 12 source-default bonus types and
@@ -177,9 +271,22 @@ Observation-path purge ledger:
   capacity now uses `SOURCE_MAX_ACTIVE_BONUSES`. Capacity
   policy still needs promotion for manual/direct stack guard wording and maybe
   a fully blocked generated map if retries never find a position.
-  Remaining gaps include stack/death interactions beyond the fixed
-  `BonusSelfMaster` wall/body guard, full replay arrays/final state, broader
-  3P/4P lifecycle/leave, visual pixel parity, and final cleanup.
+  Latest 2P stack/death proof adds a JS fixture and source/vector/public tests
+  for three stacked `BonusSelfFast` catches followed by normal-wall death:
+  death clears active stack state, does not restore the dead avatar's boosted
+  velocity, and late timeout callbacks stay inert. Remaining gaps include other
+  stack/death combinations. Latest same-step timer proof adds
+  `source_bonus_self_fast_expiry_then_wall_death_same_tick_step.json` and
+  source/public tests for one `BonusSelfFast` expiry draining before a
+  wall-death update: velocity restores to `16`, p0 moves to `x=-1.4`, dies,
+  p1 scores, and the stack remains empty. Trainer/replay now has the matching
+  focused terminal packaging proof for both `BonusSelfFast` cases: final visual
+  observation rows, final reward maps, step counters, death facts, winner/loser
+  facts, and compact bonus audit metadata are preserved in replay records.
+  This is a narrow source-runner, public-vector, and trainer/replay proof, not
+  browser event-loop or render proof. Remaining gaps include other
+  stack/death combinations, broader 3P/4P lifecycle/leave, visual pixel parity,
+  and final cleanup.
 - Docs worker status: this is the only active docs lane now. Keep updates
   concise, and avoid broad refactors unless they directly remove confusion or
   unblock parity tests.
@@ -281,8 +388,10 @@ Current execution wave:
 - Environment owns source truth and reconstruction: public multiplayer
   lifecycle, reset/autoreset/final-observation policy, row-local RNG provenance,
   replay metadata, masks/rewards, and bonus promotion.
-- Optimizer owns visual smoke/profiling and LightZero adapter plumbing.
-  Environment owns only whether visual tensors are source-faithful.
+- Optimizer owns visual smoke/profiling and later real native LightZero buffer
+  plumbing. Environment owns whether visual tensors, replay arrays,
+  repo-owned target rows, and injected bridge rows are source-faithful and
+  honestly claimed.
 - Latest landed pieces: multiplayer final-row metadata, explicit public
   `autoreset_done_rows`, metadata-only multiplayer replay record/chunk
   packaging plus recorder, optional-array fast-runtime `BonusSelfSmall`
@@ -291,11 +400,13 @@ Current execution wave:
   visual truth/schema metadata, local/
   installed no-train scalar LightZero smoke boundaries, and the source-state
   LightZero wrapper fixed-opponent sidecar proof.
-- Active Environment implementation targets are deeper bonus stack/death
-  interactions; fuller bonus metadata/replay audit without claiming full replay
-  arrays; full public replay/final observations; broader lifecycle/multiplayer
-  parity including 3P/4P leave; browser pixel parity later; toy-path
-  quarantine; and final cleanup.
+- Active Environment implementation targets are multiplayer fidelity gaps,
+  controls fidelity, renderer/fast-path boundaries, and docs/orchestration
+  rhythm. Deeper bonus stack/death interactions, fuller bonus metadata/replay
+  audit, broader lifecycle/multiplayer parity including 3P/4P leave, browser
+  pixel parity later, toy-path quarantine, and final cleanup stay in that
+  reconstruction queue. Hume's real-LightZero construction helper is done but
+  remains downstream construction-smoke only.
 - The fixed-opponent source-state route smoke is landed and has a tiny CPU Modal
   proof. Treat it as route evidence only. The low-level natural bonus spawn
   helper is landed, and focused public natural source-default catch/effect paths
@@ -431,35 +542,42 @@ Current fast-path snapshot:
 - Cleanup note: lifecycle metadata now comes from the public env state path
   without the stale overlay plumbing, and old scalar replay builder code has
   been removed. This is maintenance, not a new training claim.
-- This is not full environment fidelity. First gaps now center on the 2P
-  training-fidelity lane: raw/full-res/downsample propagation, continuous-trail
-  and bonus-sprite regressions, wall/borderless/collision stress, fuller bonus
-  metadata/replay audit, full public replay/final observations, broader
-  lifecycle/multiplayer parity, browser pixel parity later, and final cleanup.
-  Current replay preservation is metadata/audit only, not full replay arrays.
+- This is not full environment fidelity. First gaps now center on Environment
+  Reconstruction: multiplayer lifecycle and 3P/4P breadth, controls fidelity,
+  renderer/fast-path boundaries, continuous-trail and bonus-sprite regressions,
+  wall/borderless/collision stress, fuller bonus metadata/replay audit,
+  browser pixel parity later, and final cleanup. Source-backed
+  visual/replay/target rows/sample batches, injected bridge rows, and Hume's
+  construction helper are not real native LightZero-ready until sampled-target
+  buffer parity is proven.
 
 ## Current Environment Gap Queue
 
 Plain remaining issues before stronger environment claims:
 
-1. Finish 2P visual observation fidelity on the current product path: raw
-   704x704 RGB, 11x11 downsampled gray64, frame stack, terminal/final frames,
-   metadata, and no accidental fallback to legacy 64x64/direct drawing.
-2. Keep continuous trail rendering source-faithful enough for training:
+1. Audit full-game multiplayer gaps: lifecycle, presence/leave, scoring,
+   match-end, replay/final observations, bonus stack/death stress, and 3P/4P
+   breadth.
+2. Keep controls fidelity source-backed: source-frame control delivery, held
+   and released inputs, terminal padding, touch/gamepad input, and
+   browser/transport semantics.
+3. Keep renderer/fast-path boundaries explicit: optimized and approximate
+   render paths must stay labeled and separate from engine rule fidelity.
+4. Keep continuous trail rendering source-faithful enough for training:
    `visual_trail_*` first, sparse body connection second, explicit breaks for
    clears/gaps/wraps/resets, and `body_circles_fast` labeled approximate.
-3. Keep typed bonus visibility honest: source atlas sprites for active map
+5. Keep typed bonus visibility honest: source atlas sprites for active map
    bonuses in the RGB path, downsampled visibility in gray64, bonus64/rich
    tensors only as diagnostics, and no claim that gray64 exposes all hidden
    bonus stack facts.
-4. Finish 2P wall/borderless/collision depth: normal-wall priority, borderless
+6. Finish 2P wall/borderless/collision depth: normal-wall priority, borderless
    wrap destination-body behavior, stored-body circle overlap, own-trail latency,
    head-head/death ordering, and source-frame substep decisions that avoid
    tunneling.
-5. Add JS/original fixture parity for the remaining 2P bonus stack/death stress
-   cases that are currently source-env programmatic probes.
-6. Promote final/replay bonus state beyond metadata-only audit rows.
-7. Halley capacity-audit follow-up: generated public random tape auto-extends,
+7. Keep the new JS/original 2P `BonusSelfFast` stack/death fixture green, and
+   add parity for the remaining 2P bonus stack/death stress cases.
+8. Promote final/replay bonus state beyond metadata-only audit rows.
+9. Halley capacity-audit follow-up: generated public random tape auto-extends,
    generated natural bonus position retry is not stopped by
    `natural_bonus_position_attempt_capacity`, and fixture/direct finite tapes
    remain strict. Public natural bonus timer advancement no longer has an
@@ -467,36 +585,38 @@ Plain remaining issues before stronger environment claims:
    fixed-array guard for bad direct runtime fixtures, not a public env bug; a
    fully blocked generated map may still need policy. Keep `max_ticks`, body
    overflow, and event overflow classified as truncation-by-design.
-8. Keep the fixed `BonusSelfMaster` wall-death parity guard green: normal-wall
+10. Keep the fixed `BonusSelfMaster` wall-death parity guard green: normal-wall
    death still kills a SelfMaster/invincible avatar, while body collision
    remains suppressed.
-9. Keep the fixed multi-target `BonusAllColor` event-order and older-wins stack
+11. Keep the fixed multi-target `BonusAllColor` event-order and older-wins stack
    precedence guards green while broader stack/death cases expand.
-10. Timer/random ordering for public bonus scheduling: source/runtime slices are
+12. Timer/random ordering for public bonus scheduling: source/runtime slices are
    pinned, but public ownership of timers, RNG cursor/draw counts, and natural
    bonus scheduling is not broad.
-11. Borderless stack behavior and wrap/collision side effects beyond the seeded
+13. Borderless stack behavior and wrap/collision side effects beyond the seeded
    public `BonusGameBorderless` expiry slice. Source/runtime/public
    duration/expiry is now covered by focused tests and a source fixture.
-12. Fuller bonus public metadata and replay audit: spawned bonus identity,
+14. Fuller bonus public metadata and replay audit: spawned bonus identity,
    catch/expiry/clear events, random cursor/draw counts, active stack facts,
    and source refs. Current replay preservation is metadata/audit only, not
    full replay arrays.
-13. Broader bonus stack/death interactions beyond the current promoted
-   catch/expiry/effect slices.
-14. Full public replay and final observations for multiplayer rows, including
+15. Broader bonus stack/death interactions beyond the promoted
+   `BonusSelfFast` wall-death and current catch/expiry/effect slices.
+16. Full public replay and final observations for multiplayer rows, including
    reset/RNG provenance, terminal facts, reward/mask maps, and final-row policy.
-15. Broader lifecycle and multiplayer parity: natural reset/warmup, warmdown
+17. Broader lifecycle and multiplayer parity: natural reset/warmup, warmdown
    frame movement, next-round/match-end policy, present/absent and leave edges,
    masks, and rewards.
-16. Browser/source pixel parity later, after source state, public replay, and
+18. Browser/source pixel parity later, after source state, public replay, and
    lifecycle rows are stable. Current 704x704 raw -> gray64 source-state raster
    parity is model-observation evidence only, not original browser/canvas pixel
    evidence.
-17. Old toy path quarantine: toy-v0/debug routes are historical smoke evidence
+19. Old toy path quarantine: toy-v0/debug routes are historical smoke evidence
    only, not a product runtime or fidelity proof.
-18. Modal, speed, and fixed-opponent route smokes stay labeled as route evidence
+20. Modal, speed, and fixed-opponent route smokes stay labeled as route evidence
    or measurement evidence. They are not the next environment priority.
+21. Real LightZero `MuZeroGameBuffer` sampled-target parity remains unproven
+   downstream work after environment reconstruction priorities.
 
 ## Current Source State
 
@@ -559,21 +679,29 @@ Plain remaining issues before stronger environment claims:
 
 ## Next Tasks
 
-1. Lock the 2P visual trainer path end to end: raw 704x704 RGB, gray64
-   downsample, frame stack, terminal/final frames, and replay/telemetry metadata.
-2. Keep continuous trails and segment breaks regression-tested across source,
+1. Run the multiplayer fidelity gap audit for lifecycle, presence/leave,
+   scoring, match-end, replay/final observations, bonus stack/death stress, and
+   3P/4P breadth.
+2. Continue the controls fidelity audit for source-frame delivery, held/released
+   inputs, terminal padding, touch/gamepad input, and browser/transport
+   semantics.
+3. Keep renderer/fast-path boundaries explicit; optimized/approximate paths
+   stay labeled and separate from engine rule fidelity.
+4. Keep docs/orchestration rhythm current: docs as working memory, main thread
+   plans/delegates/orchestrates, subagents handle bounded audits/tests/docs.
+5. Keep continuous trails and segment breaks regression-tested across source,
    vector, wrapper, and GIF/raw-frame inspection paths.
-3. Keep bonus sprites/type visibility on the default source-state path; use
+6. Keep bonus sprites/type visibility on the default source-state path; use
    bonus64/rich tensors only for diagnostic proof of hidden bonus facts.
-4. Expand 2P wall/borderless/collision-body-depth parity around wrap,
+7. Expand 2P wall/borderless/collision-body-depth parity around wrap,
    destination-body collisions, wall priority, own-trail latency, head-head/death
    ordering, and source-frame substep decisions.
-5. Add JS/original fixture parity for remaining 2P bonus stack/death stress
-   cases.
-6. Widen bonus public metadata/replay audit for spawn, catch, expiry, clear,
+8. Keep the new JS/original 2P `BonusSelfFast` stack/death fixture green, and
+   add parity for remaining 2P bonus stack/death stress cases.
+9. Widen bonus public metadata/replay audit for spawn, catch, expiry, clear,
    active stack, and RNG facts while keeping the claim metadata-only until full
    replay arrays exist.
-7. Promote Halley's capacity-audit policy: generated public random tape
+10. Promote Halley's capacity-audit policy: generated public random tape
    auto-extends, generated natural bonus position retry is not capped by
    `natural_bonus_position_attempt_capacity`, fixture/direct finite tapes stay
    strict, and public natural bonus timer advancement has no artificial
@@ -581,13 +709,14 @@ Plain remaining issues before stronger environment claims:
    fixed-array guard; a fully blocked generated map may still need policy.
    Designed truncations are `max_ticks`, body overflow, and event
    overflow.
-8. Keep the fixed `BonusSelfMaster` wall/body parity checks in the focused
+11. Keep the fixed `BonusSelfMaster` wall/body parity checks in the focused
    bonus suite.
 9. Finish timer/random ordering for public bonus scheduling.
 10. Finish borderless stack/wrap/collision semantics beyond the seeded public
    expiry slice. Source/runtime/public duration/expiry has focused coverage; do
    not list that proof as missing.
-11. Add broader bonus stack/death interactions one source claim at a time.
+11. Add broader bonus stack/death interactions one source claim at a time,
+    starting from the promoted `BonusSelfFast` wall-death proof.
 12. Fill full public replay and final-observation rows for multiplayer
    lifecycle and bonus states.
 13. Broaden lifecycle/multiplayer parity after the bonus and replay facts are

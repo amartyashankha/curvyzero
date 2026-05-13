@@ -15,7 +15,7 @@
     "notes": [
       "Tiny JS oracle proof for natural BonusManager type selection landing inside BonusGameClear's reduced dynamic probability window.",
       "bonus_rate=1 makes the first pop delay 1500ms, before the source 3000ms PrintManager starts, so no print-manager random draw contaminates this proof.",
-      "Two of four present avatars are forced dead before the pop, so BonusGameClear's probability is 0.5 and the default total weight is 10.7; type draw 0.965 selects the final BonusGameClear bucket.",
+      "Two of four present avatars are forced dead before the pop, so BonusGameClear's probability is 0.5 and the default total weight is 11.5; type draw 0.965 selects the final BonusGameClear bucket.",
       "Paired with source_bonus_default_weights_type_rng_step, this pins both sides of the reduced BonusGameClear selection boundary without claiming catch, clear effects, cap, retry, or vector/runtime support."
     ]
   },

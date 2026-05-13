@@ -1166,6 +1166,91 @@ def test_js_scenario_runner_bonus_self_small_expiry_restores_radius():
     assert not any(event["event"] == "bonus:clear" for event in expiry_frame["events"])
 
 
+def test_js_scenario_runner_bonus_stack_death_late_expiry_stays_inert():
+    payload = _run_js_scenario("source_bonus_self_fast_stack_death_late_expiry_step.json")
+    first, second, third, death_frame, expiry_frame = payload["trace"]
+
+    assert payload["comparison"]["python_target"] == "source-bonus-js-oracle"
+    assert payload["randomCalls"] == []
+
+    p0_first = next(avatar for avatar in first["avatars"] if avatar["name"] == "p0")
+    p0_second = next(avatar for avatar in second["avatars"] if avatar["name"] == "p0")
+    p0_third = next(avatar for avatar in third["avatars"] if avatar["name"] == "p0")
+    assert [p0_first["velocity"], p0_second["velocity"], p0_third["velocity"]] == [
+        28,
+        40,
+        52,
+    ]
+    assert [len(p0_first["activeBonuses"]), len(p0_second["activeBonuses"])] == [1, 2]
+    assert len(p0_third["activeBonuses"]) == 3
+
+    p0_death = next(avatar for avatar in death_frame["avatars"] if avatar["name"] == "p0")
+    p1_death = next(avatar for avatar in death_frame["avatars"] if avatar["name"] == "p1")
+    assert death_frame["game"]["inRound"] is False
+    assert death_frame["game"]["deaths"] == [1]
+    assert p0_death["alive"] is False
+    assert p0_death["velocity"] == 52
+    assert p0_death["activeBonuses"] == []
+    assert p1_death["score"] == 1
+
+    p0_expiry = next(avatar for avatar in expiry_frame["avatars"] if avatar["name"] == "p0")
+    assert p0_expiry["alive"] is False
+    assert p0_expiry["velocity"] == 52
+    assert p0_expiry["activeBonuses"] == []
+    assert [
+        event["data"]["bonus"]["id"]
+        for event in expiry_frame["events"]
+        if event["event"] == "bonus:stack"
+    ] == [3, 2, 1]
+    assert not any(event["event"] == "property" for event in expiry_frame["events"])
+
+
+def test_js_scenario_runner_bonus_self_fast_expiry_before_wall_death():
+    payload = _run_js_scenario(
+        "source_bonus_self_fast_expiry_then_wall_death_same_tick_step.json"
+    )
+    catch_frame, death_frame = payload["trace"]
+    bonus_data = {
+        "id": 1,
+        "type": "BonusSelfFast",
+        "duration": 4000,
+        "effects": [["velocity", 12]],
+    }
+
+    assert payload["comparison"]["python_target"] == "source-bonus-js-oracle"
+    assert payload["comparison"]["scope"].endswith("source runner ordering only")
+    assert payload["randomCalls"] == []
+    catch_avatars = {avatar["name"]: avatar for avatar in catch_frame["avatars"]}
+    death_avatars = {avatar["name"]: avatar for avatar in death_frame["avatars"]}
+
+    assert catch_frame["stepMs"] == 0
+    assert catch_avatars["p0"]["velocity"] == 28
+    assert catch_avatars["p0"]["activeBonuses"] == [bonus_data]
+
+    assert death_frame["stepMs"] == 400
+    assert death_frame["game"]["inRound"] is False
+    assert death_frame["game"]["deaths"] == [1]
+    assert death_frame["game"]["roundWinner"] == 2
+    assert death_avatars["p0"]["velocity"] == 16
+    assert death_avatars["p0"]["x"] == -1.4
+    assert death_avatars["p0"]["alive"] is False
+    assert death_avatars["p0"]["activeBonuses"] == []
+    assert death_avatars["p1"]["score"] == 1
+    assert death_frame["events"][:2] == [
+        {
+            "event": "property",
+            "data": {"avatar": 1, "property": "velocity", "value": 16},
+        },
+        {
+            "event": "bonus:stack",
+            "data": {"avatar": 1, "method": "remove", "bonus": bonus_data},
+        },
+    ]
+    death_event_names = [event["event"] for event in death_frame["events"]]
+    assert death_event_names.index("bonus:stack") < death_event_names.index("die")
+    assert not any(event["event"] == "bonus:clear" for event in death_frame["events"])
+
+
 def test_js_scenario_runner_bonus_game_borderless_expiry_restores_borderless():
     payload = _run_js_scenario_with_game_bonus_stack(
         "source_bonus_game_borderless_expiry_restore_step.json"

@@ -1,0 +1,117 @@
+{
+  "schema_version": "environment-scenario-v0",
+  "scenario_id": "source_bonus_self_fast_expiry_then_wall_death_same_tick_step",
+  "title": "Source BonusSelfFast expiry drains before same-step wall death",
+  "ruleset_id": "curvytron-v1-reference",
+  "provenance": {
+    "labels": [
+      "source-derived",
+      "bonus",
+      "death",
+      "js-oracle"
+    ],
+    "source_target": "third_party/curvytron-reference",
+    "source_commit": "8fec14c",
+    "notes": [
+      "One forced BonusSelfFast map bonus is caught by player 0 on a zero-elapsed source update.",
+      "The next source runner step advances the bonus timeout by 4000 ms before calling Game.update with enough elapsed time for player 0 to hit the normal wall.",
+      "This pins the source-runner/public-vector timer ordering only: expiry restores velocity before movement and wall death, then death clears the stack. It does not claim browser event-loop or pixel-render parity."
+    ]
+  },
+  "source_setup": {
+    "player_count": 2,
+    "map_size": 88,
+    "random": {
+      "math_random": 0.5
+    },
+    "room": {
+      "name": "source-bonus-self-fast-expiry-then-wall-death-same-tick-step",
+      "max_score": 10,
+      "bonuses": [],
+      "bonus_rate": 0
+    },
+    "game": {
+      "started": true,
+      "in_round": true,
+      "borderless": false,
+      "world_active": true
+    }
+  },
+  "player_count": 2,
+  "initial_state": {
+    "active_bonuses": [
+      {
+        "type": "BonusSelfFast",
+        "x": 5,
+        "y": 20
+      }
+    ]
+  },
+  "players": [
+    {
+      "id": "p0",
+      "client_id": "p0-client",
+      "avatar_id": 1,
+      "name": "p0",
+      "color": "#ff0000",
+      "initial": {
+        "x": 5,
+        "y": 20,
+        "angle_rad": 3.141592653589793,
+        "printing": false
+      }
+    },
+    {
+      "id": "p1",
+      "client_id": "p1-client",
+      "avatar_id": 2,
+      "name": "p1",
+      "color": "#00ff00",
+      "initial": {
+        "x": 70,
+        "y": 70,
+        "angle_rad": 0,
+        "printing": false
+      }
+    }
+  ],
+  "steps": [
+    {
+      "tick": 0,
+      "step_ms": 0,
+      "moves": [
+        {
+          "player_id": "p0",
+          "move": 0
+        },
+        {
+          "player_id": "p1",
+          "move": 0
+        }
+      ]
+    },
+    {
+      "tick": 1,
+      "advance_timers_ms": 4000,
+      "step_ms": 400,
+      "moves": [
+        {
+          "player_id": "p0",
+          "move": 0
+        },
+        {
+          "player_id": "p1",
+          "move": 0
+        }
+      ]
+    }
+  ],
+  "comparison": {
+    "kind": "js-oracle-state-trace",
+    "trace_schema_version": "environment-trace-v0",
+    "include_events": true,
+    "python_target": "source-bonus-js-oracle",
+    "source_fidelity_required": true,
+    "scope": "forced 2P BonusSelfFast expiry-before-wall-death source runner ordering only"
+  }
+}

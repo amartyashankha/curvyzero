@@ -33,11 +33,6 @@ _SOURCE_BONUS_DURATIONS_MS = {
     "BonusAllColor": 7_500,
     "BonusGameClear": 0,
 }
-_SOURCE_BONUS_BASE_PROBABILITIES = {
-    "BonusEnemyInverse": 0.8,
-    "BonusEnemyStraightAngle": 0.6,
-    "BonusGameBorderless": 0.8,
-}
 
 
 class SourceEnvError(ValueError):
@@ -2156,7 +2151,7 @@ def _bonus_probability(
         if ratio < 0.5:
             return 1.0
         return _js_round((1.0 - ratio) * 10.0) / 10.0
-    return _SOURCE_BONUS_BASE_PROBABILITIES.get(bonus_type, 1.0)
+    return 1.0
 
 
 def _coerce_bonus_rate(value: float) -> float:

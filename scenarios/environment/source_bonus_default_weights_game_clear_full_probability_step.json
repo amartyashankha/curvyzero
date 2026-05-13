@@ -16,7 +16,7 @@
     "notes": [
       "Tiny JS oracle proof for the full-probability side of BonusGameClear's dynamic type weight.",
       "bonus_rate=1 makes the first pop delay 1500ms, before the source 3000ms PrintManager starts, so no print-manager random draw contaminates this proof.",
-      "One of four present avatars is forced dead before the pop, so BonusGameClear's source ratio is below 0.5 and its probability remains 1; with default total weight 11.2, type draw 0.93 selects the final BonusGameClear bucket.",
+      "One of four present avatars is forced dead before the pop, so BonusGameClear's source ratio is below 0.5 and its probability remains 1; with default total weight 12.0, type draw 0.93 selects the final BonusGameClear bucket.",
       "The same type draw would not select BonusGameClear under the reduced 0.5 probability from the paired two-dead fixtures. This fixture does not claim catch, clear effects, cap, retry, or vector/runtime support."
     ]
   },

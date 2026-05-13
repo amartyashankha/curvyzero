@@ -11,6 +11,12 @@ The first score is simple: who dies first.
 The next score is a small Elo ladder. That is not the first thing to trust. The
 first thing to trust is the raw battle runner.
 
+2026-05-13 pivot: the useful long-term system is not a repeated latest-only
+all-pairs tournament. The useful system is adaptive Elo over every useful
+checkpoint. All-pairs is still a good smoke or audit, but the main product
+should place new checkpoints, run bounded batches, update ratings, and repeat.
+See `checkpoint_tournament_orchestration_2026-05-13.md`.
+
 ## Product Shape
 
 - One Modal app for the whole tournament lane.
@@ -29,10 +35,14 @@ first thing to trust is the raw battle runner.
 - The target runtime shape is simple: a big tournament should run close to the
   speed of one shard, plus Modal autoscale and aggregation overhead. If a design
   makes pair orchestration the bottleneck, it is the wrong shape.
-- The real target is all-pairs at 200-300 checkpoints. At 300 checkpoints,
-  unordered no-self all-pairs is 44,850 battles. At 50 games per battle that is
-  2,242,500 games. Any parent process that holds one row per game is already the
-  wrong shape for that target.
+- The earlier stress target was all-pairs at 200-300 checkpoints. At 300
+  checkpoints, unordered no-self all-pairs is 44,850 battles. At 50 games per
+  battle that is 2,242,500 games. That is useful for stress testing, but it is
+  not the permanent scheduling plan.
+- The current product target is adaptive: every useful checkpoint can enter the
+  pool, but the scheduler chooses a bounded set of useful battles each round.
+  Any parent process that holds one row per game is already the wrong shape for
+  that target too.
 - Modal autoscaling is not instant. Big fan-outs can queue while containers warm
   up, and queue delay plus cold starts can push shards into timeouts. Huge runs
   need idempotent shard refs, retries/backoff, cheap progress checks, and a
@@ -617,3 +627,178 @@ Render-contract rerun at 2026-05-13 16:55-17:05 UTC:
   `704x704`, cached for one day.
 - The detached smoke arena was deleted after validation. The tournament volume
   now keeps only `arena-v1b-latest50-source-render-20260513b`.
+
+Latest-212 all-pairs launch at 2026-05-13 13:22 EDT:
+
+- User asked for a clean slate: purge tournament artifacts, use the latest
+  checkpoint from each of the preserved 212 CurvyTron runs, and run the
+  tournament.
+- The tournament artifact Volume was purged at `tournaments/curvytron`.
+  Training checkpoints in `curvyzero-runs` were not deleted.
+- Source run set is
+  `artifacts/local/curvytron_pruning/curvytron_prune_preserve_20260513c.json`.
+  This avoids prefix drift and stale/half-finished roots.
+- Pre-launch discovery found 212 requested runs, 212 latest checkpoints, and 0
+  missing checkpoints.
+- A two-checkpoint visual smoke completed before launch:
+  `arena-pruned212-visual-smoke-20260513a /
+  elo-visual-smoke-gpp20-gifs3`.
+- Smoke validation pulled the three GIF samples (`game-000000`, `game-000010`,
+  `game-000019`). All were `704x704`, `browser_lines`, had
+  `decision_source_frames=12`, and showed a consistent red/green GIF palette.
+  The smoke tournament was deleted after validation.
+- Regression tests passed before launch:
+  `tests/test_curvytron_checkpoint_tournament.py`,
+  `tests/test_curvytron_two_seat_render_mode.py`, and
+  `tests/test_vector_visual_observation.py`: 113 passed, 2 skipped.
+- First large launch used only 1 GIF per battle. That was stopped and purged
+  because the user asked to preserve the three-sample GIF pattern.
+- Corrected launch, detached:
+  `arena-curvytron-latest212-allpairs-gpp10-gifs3-20260513a /
+  elo-latest212-allpairs-gpp10-gifs3`.
+- Detached rating-loop call id: `fc-01KRH5Y5YV0G63GDSAA9905X4Y`.
+- Launch-time discovery again reported 212 found and 0 missing.
+- Plan estimate: 212 checkpoints, 22,366 unordered no-self pairs, 10 games per
+  pair, 223,660 games total, 22,366 shard calls, and 67,098 GIF samples.
+- Early progress check reported `status=running`, `phase=games_running`,
+  `pair_count=22366`, `game_count=223660`, and `started_pair_count=42`.
+- Website API showed only this corrected GIF-3 tournament after cleanup.
+- A later progress check reported `started_pair_count=1906` and
+  `estimated_seen_game_count=19060`.
+- Modal logs showed completed shard rows with `ok=true`, `game_count=10`, and
+  `failure_count=0` in sampled rows.
+- Pulled three live large-run GIF samples from completed pair `001773`:
+  `game-000000`, `game-000004`, and `game-000009`. All were `704x704`, used
+  `browser_lines`, had `decision_source_frames=12`, had no failure in
+  `summary.json`, and had the same red/green palette.
+
+Website reliability patch at 2026-05-13:
+
+- The website should show useful state before the final reducer writes
+  `latest.json`. It now prefers final ratings when present, otherwise builds a
+  provisional live ranking from committed shard summaries.
+- Provisional rankings are labeled as live/updating. They are not written to
+  `latest.json`, so they should not mark a tournament complete.
+- A separate provisional-rating function now writes
+  `ratings/<run>/provisional_latest.json`. The website reads final
+  `latest.json` first, then this provisional file. It does not scan all shard
+  summaries in web requests.
+- Battle clicks now check direct battle folders before falling back to a large
+  battle-index scan. This is the main fix for slow "open games/GIFs" clicks
+  while a tournament is still running.
+- The web container keeps short in-memory caches for progress, battle detail,
+  GIF bytes, and JSON bytes. Volume reloads clear these caches.
+- Volume reloads are throttled even after a reload failure. This avoids a loop
+  where repeated clicks keep hitting `Volume.reload()` while Modal reports open
+  files.
+- Browser auto-refresh does not force `Volume.reload()`. Large volume reloads
+  are several seconds on the current artifact tree, so the website should read
+  already-published artifacts quickly and let background functions refresh
+  progress/provisional rankings.
+- GIF images in the battle detail are lazy-loaded and decoded async. The full
+  GIF remains the served artifact; preview/downsample GIFs are still a possible
+  follow-up if first-view bandwidth is still too high.
+- Startup marker/config writes are committed early for tournament and rating
+  launches so a running arena can appear in the browser.
+- Shard workers now commit after writing shard summary files. This matters
+  because the website and provisional ranking path read those shard summaries.
+- The rating loop rewrites and commits the final `latest.json` from the returned
+  round snapshot after each round. This gives the parent one more chance to
+  publish rankings if the round container's final commit was flaky.
+- Focused tests after the patch:
+  `PYTHONDONTWRITEBYTECODE=1 uv run pytest tests/test_curvytron_checkpoint_tournament.py -q`
+  passed with 51 tests and 1 skip.
+
+Correctness lane opened:
+
+- Tournament games must represent the policies fairly. The audit questions are:
+  policy observation type, renderer/mode, natural bonus spawn, decision timing,
+  max steps, policy mode, collect temperature/epsilon, checkpoint loading, and
+  whether score tournaments should be deterministic while visual samples may be
+  more diagnostic.
+- Current specs carry many of these knobs, but the contract is not explicit
+  enough yet. Add an evaluation-contract field later so future checkpoints
+  cannot silently drift across observation or environment settings.
+
+Latest-212 relaunch after website patch:
+
+- The old large artifact
+  `arena-curvytron-latest212-allpairs-gpp10-gifs3-20260513a` was deleted from
+  `curvyzero-curvytron-tournaments`.
+- Fresh preflight against
+  `artifacts/local/curvytron_pruning/curvytron_prune_preserve_20260513c.json`
+  found 212 latest checkpoints and 0 missing checkpoints.
+- New detached large run:
+  `arena-curvytron-latest212-allpairs-gpp10-gifs3-20260513b /
+  elo-latest212-allpairs-gpp10-gifs3`.
+- Plan estimate: 22,366 unordered no-self pairs, 223,660 games, 22,366 shard
+  calls, and 67,098 GIF samples.
+- First progress probe found the round input and early battle folders:
+  `started_pair_count=1100`, `estimated_seen_game_count=11000`,
+  `completed_pair_count=0`. That proves launch/discovery/artifact roots are
+  alive, but no rating rows were ready yet.
+- The deployed website loaded the new tournament URL and read the progress
+  file. Standings were empty at that moment because no final or provisional
+  snapshot with rows had landed yet.
+- One detached provisional writer was spawned for this run. This is still a
+  manual poke; the next cleanup is a real cadence or trigger for provisional
+  snapshots during long tournaments.
+
+Odd-battle correction at 2026-05-13 14:30 EDT:
+
+- The `gpp10` run was a bad launch because battles had an even number of games.
+  It was stopped and purged.
+- New invariant for new tournament specs: `games_per_pair` must be odd.
+  Defaults changed from 10 to 11, and the Modal CLI no longer defaults to 2.
+- The rating loop now spawns `curvytron_rating_provisional_loop`, which writes
+  `provisional_latest.json` about once per minute until final `latest.json`
+  exists.
+- Website progress now overlays counts from `provisional_latest.json`, so the
+  progress strip and the standings both reflect the same small live snapshot.
+- Current live large run:
+  `arena-curvytron-latest212-allpairs-gpp11-gifs3-20260513c /
+  elo-latest212-allpairs-gpp11-gifs3`.
+- Plan estimate: 212 checkpoints, 22,366 unordered no-self pairs, 11 games per
+  pair, 11 games per shard, 246,026 games, and 67,098 GIF samples.
+- Remote evidence: shard logs showed active completed rows with
+  `game_count=11`, `ok=true`, `failure_count=0`.
+- Website evidence after redeploy:
+  `/api/rating-standings` returned 212 provisional rows from
+  `live_shard_summaries`; `/api/rating-progress` reported provisional counts of
+  26 completed pairs and 286 completed games at the first check.
+- Provisional-loop log evidence:
+  `status=written`, `rating_count=212`, `completed_pair_count=26`,
+  `completed_game_count=286`, `writes=1`.
+- Scale caveat: a research subagent noted that Elo itself can consume even
+  game counts and that seat-balanced batches are statistically clean. User
+  preference for odd battle winners wins for now, but the scheduling research
+  lane should still audit seat bias and may later use explicit seat-balanced
+  sub-batches inside a larger odd battle contract.
+
+Timestamped latest-212 launch at 2026-05-13 14:56 EDT:
+
+- Source manifest:
+  `artifacts/local/curvytron_pruning/curvytron_prune_preserve_20260513c.json`.
+  It has 212 preserved run IDs. `/tmp/curvy-preserved-212-run-ids.txt` parsed as
+  211 IDs, so it was treated as stale.
+- Focused tournament tests passed before launch:
+  `PYTHONDONTWRITEBYTECODE=1 uv run pytest tests/test_curvytron_checkpoint_tournament.py -q`
+  reported 55 passed and 1 skipped.
+- Modal estimate found 212 latest checkpoints and 0 missing checkpoints.
+- Corrected detached launch:
+  `arena-curvytron-latest212-allpairs-gpp11-gifs3-20260513-145153 /
+  elo-latest212-allpairs-gpp11-gifs3-20260513-145153`.
+- Detached app/function call:
+  `ap-pwmiNrqOksG4dsu4EB9JUz`,
+  `fc-01KRHB5MC4H5GCB6D9E3ZSYGPH`.
+- Plan estimate: 212 checkpoints, 22,366 unordered no-self pairs, 11 games per
+  pair, 11 games per shard, 246,026 games, and 67,098 GIF samples.
+- First attempt used `.spawn()` inside the local entrypoint but omitted Modal
+  CLI `--detach`; that app stopped with 0 tasks. The corrected launch used
+  `modal run --detach`.
+- First live progress probe after the corrected launch showed
+  `status=running`, `phase=games_running`, `started_pair_count=19`,
+  `estimated_seen_game_count=209`, `pair_count=22366`, and `game_count=246026`.
+- The earlier live run
+  `arena-curvytron-latest212-allpairs-gpp11-gifs3-20260513c` was intentionally
+  left alone.

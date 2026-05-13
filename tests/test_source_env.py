@@ -827,6 +827,123 @@ def test_source_env_bonus_self_speed_stack_expiry_restores_prior_velocity():
     ]
 
 
+def test_source_env_bonus_stack_death_late_expiry_matches_js_inertness():
+    env, _scenario, frames = _run_source_bonus_fixture_frames(
+        "source_bonus_self_fast_stack_death_late_expiry_step.json"
+    )
+    first, second, third, death_frame, expiry_frame = frames
+
+    first_p0 = next(avatar for avatar in first["avatars"] if avatar["name"] == "p0")
+    second_p0 = next(avatar for avatar in second["avatars"] if avatar["name"] == "p0")
+    third_p0 = next(avatar for avatar in third["avatars"] if avatar["name"] == "p0")
+    assert [len(first_p0["activeBonuses"]), len(second_p0["activeBonuses"])] == [1, 2]
+    assert len(third_p0["activeBonuses"]) == 3
+
+    death_p0 = next(avatar for avatar in death_frame["avatars"] if avatar["name"] == "p0")
+    expiry_p0 = next(avatar for avatar in expiry_frame["avatars"] if avatar["name"] == "p0")
+    avatar = env.avatar_by_id(1)
+    assert death_frame["game"]["inRound"] is False
+    assert death_p0["alive"] is False
+    assert death_p0["activeBonuses"] == []
+    assert [
+        event["data"]["avatar"] for event in death_frame["events"] if event["event"] == "die"
+    ] == [1]
+    assert expiry_p0["alive"] is False
+    assert expiry_p0["activeBonuses"] == []
+    assert avatar.velocity == 52
+    assert avatar.active_bonuses == []
+    assert [
+        event["data"]["bonus"]["id"]
+        for event in expiry_frame["events"]
+        if event["event"] == "bonus:stack"
+    ] == [3, 2, 1]
+    assert not any(event["event"] == "property" for event in expiry_frame["events"])
+
+    js_payload = _run_js_scenario_oracle(
+        _SCENARIO_DIR / "source_bonus_self_fast_stack_death_late_expiry_step.json"
+    )
+    if js_payload is not None:
+        js_expiry_frame = js_payload["trace"][-1]
+        js_expiry_p0 = next(
+            avatar for avatar in js_expiry_frame["avatars"] if avatar["name"] == "p0"
+        )
+        assert [
+            event
+            for event in expiry_frame["events"]
+            if event["event"] == "bonus:stack"
+        ] == [
+            event
+            for event in js_expiry_frame["events"]
+            if event["event"] == "bonus:stack"
+        ]
+        assert not any(event["event"] == "property" for event in js_expiry_frame["events"])
+        assert expiry_p0["activeBonuses"] == js_expiry_p0["activeBonuses"]
+        assert avatar.velocity == js_expiry_p0["velocity"]
+
+
+def test_source_env_bonus_self_fast_expiry_before_wall_death_matches_js():
+    env, _scenario, frames = _run_source_bonus_fixture_frames(
+        "source_bonus_self_fast_expiry_then_wall_death_same_tick_step.json"
+    )
+    catch_frame, death_frame = frames
+    bonus_data = {
+        "id": 1,
+        "type": "BonusSelfFast",
+        "duration": 4000,
+        "effects": [["velocity", 12]],
+    }
+
+    catch_p0 = next(avatar for avatar in catch_frame["avatars"] if avatar["name"] == "p0")
+    death_p0 = next(avatar for avatar in death_frame["avatars"] if avatar["name"] == "p0")
+    death_p1 = next(avatar for avatar in death_frame["avatars"] if avatar["name"] == "p1")
+    avatar = env.avatar_by_id(1)
+
+    assert catch_p0["activeBonuses"] == [bonus_data]
+    assert death_frame["game"]["inRound"] is False
+    assert death_p0["alive"] is False
+    assert death_p0["x"] == -1.4
+    assert death_p0["activeBonuses"] == []
+    assert death_p1["score"] == 1
+    assert avatar.velocity == 16
+    assert avatar.active_bonuses == []
+    assert {
+        "event": "property",
+        "data": {"avatar": 1, "property": "velocity", "value": 28},
+    } in catch_frame["events"]
+    assert death_frame["events"][:2] == [
+        {
+            "event": "property",
+            "data": {"avatar": 1, "property": "velocity", "value": 16},
+        },
+        {
+            "event": "bonus:stack",
+            "data": {"avatar": 1, "method": "remove", "bonus": bonus_data},
+        },
+    ]
+    death_event_names = [event["event"] for event in death_frame["events"]]
+    assert death_event_names.index("bonus:stack") < death_event_names.index("die")
+    assert {"event": "die", "data": {"avatar": 1, "killer": None, "old": None}} in (
+        death_frame["events"]
+    )
+    assert {"event": "round:end", "data": {"winner": 2}} in death_frame["events"]
+    assert not any(event["event"] == "bonus:clear" for event in death_frame["events"])
+
+    js_payload = _run_js_scenario_oracle(
+        _SCENARIO_DIR / "source_bonus_self_fast_expiry_then_wall_death_same_tick_step.json"
+    )
+    if js_payload is not None:
+        js_death_frame = js_payload["trace"][-1]
+        js_death_p0 = next(
+            avatar for avatar in js_death_frame["avatars"] if avatar["name"] == "p0"
+        )
+        js_event_names = [event["event"] for event in js_death_frame["events"]]
+        assert js_event_names[:2] == ["property", "bonus:stack"]
+        assert js_event_names.index("bonus:stack") < js_event_names.index("die")
+        assert death_p0["x"] == js_death_p0["x"]
+        assert avatar.velocity == js_death_p0["velocity"]
+        assert death_p0["activeBonuses"] == js_death_p0["activeBonuses"]
+
+
 def test_source_env_bonus_enemy_big_targets_other_alive_avatars_and_expires():
     env = _active_source_env(player_count=3)
     assert env.game is not None
@@ -1466,6 +1583,24 @@ def test_source_env_matches_js_oracle_for_default_bonus_weight_type_rng_fixture(
     assert bonus.type == js_bonus_event["data"]["type"] == "BonusAllColor"
     assert source_env._source_number(bonus.x) == js_bonus_event["data"]["x"] == 27.255
     assert source_env._source_number(bonus.y) == js_bonus_event["data"]["y"] == 73.745
+
+
+def test_source_env_default_non_clear_bonus_probabilities_are_base_one():
+    game = source_env.SourceGameState(size=101, max_score=10)
+    avatars = [
+        source_env.SourceAvatarState(id=1, name="p0", alive=True),
+        source_env.SourceAvatarState(id=2, name="p1", alive=True),
+        source_env.SourceAvatarState(id=3, name="p2", alive=False),
+        source_env.SourceAvatarState(id=4, name="p3", alive=False),
+    ]
+
+    for bonus_type in (
+        "BonusEnemyInverse",
+        "BonusEnemyStraightAngle",
+        "BonusGameBorderless",
+    ):
+        assert source_env._bonus_probability(bonus_type, game, avatars) == 1.0
+    assert source_env._bonus_probability("BonusGameClear", game, avatars) == 0.5
 
 
 def test_source_env_matches_js_oracle_for_default_bonus_game_clear_type_rng_fixture():

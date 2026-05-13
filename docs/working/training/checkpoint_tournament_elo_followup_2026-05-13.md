@@ -10,10 +10,16 @@ The reason this matters: the coach will soon have too many checkpoints to judge
 by hand. Raw GIFs help explain behavior, but a rating loop gives a quick map of
 which checkpoints are actually improving.
 
-Scale grounding: this is not just a 50-run toy. The expected next shape is
-all-pairs over 200-300 checkpoints. At 300 checkpoints, unordered no-self
-all-pairs is 44,850 battles. With 50 games per battle, that is 2,242,500 games.
-The system must fan out at shard/game scale while reducing at battle scale.
+2026-05-13 pivot: the next useful version should handle every useful checkpoint
+from every run, not just the latest checkpoint from each run. That makes
+adaptive scheduling the main work. All-pairs remains useful as a stress test or
+audit, but it cannot be the steady-state system.
+
+Scale grounding: this is not just a 50-run toy. If we ever do all-pairs over
+300 checkpoints, unordered no-self all-pairs is 44,850 battles. With 50 games
+per battle, that is 2,242,500 games. But if we include every checkpoint from
+every run, the pool gets much larger than 300. The system must choose a bounded
+set of useful battles, fan out at shard/game scale, and reduce at battle scale.
 
 Modal autoscaling caveat: at this scale, fan-out can outpace warm containers.
 Some work may queue, start late, or time out. The rating lane needs retry and

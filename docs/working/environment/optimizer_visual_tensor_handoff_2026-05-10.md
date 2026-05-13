@@ -53,7 +53,7 @@ source claim: curvyzero_vector_runtime_source_state_gray64/v0
 schema hash: exported as observation_schema_hash/schema_hash
 renderer id: curvyzero_source_state_gray64_numpy/v0
 renderer hash: exported as renderer_impl_hash
-raw render shape: uint8[1,64,64], range [0,255]
+raw render path: uint8 RGB[704,704,3] -> luma -> area-downsampled uint8[1,64,64]
 normalized payload helper: float32[1,64,64], range [0,1]
 surface: source_state_visual_tensor
 truth level: source_state_backed_non_browser_pixel
@@ -65,9 +65,12 @@ source/browser pixel fidelity: false
 ALE usage: none
 ```
 
-It rasterizes vector runtime source-state arrays (`pos`, `radius`, active body
-circles up to `body_write_cursor`, ownership, map size, tick/time, terminal
-flags) into a fixed global grayscale frame. It is stronger than the debug
+It rasterizes vector runtime source-state arrays (`pos`, `radius`,
+`visual_trail_*` when present, active body circles up to `body_write_cursor`,
+ownership, map size, tick/time, terminal flags) into the Environment-owned
+source-state RGB frame, then derives gray64 by luma and area downsampling.
+Direct 64x64 gray rendering is profile/debug plumbing, not this visual
+contract. The contract is stronger than the debug
 occupancy smoke because it is Environment-owned and source-state-backed; it is
 still weaker than browser pixels because it does not prove canvas colors,
 anti-aliasing, exact client prediction, or browser parity artifacts.

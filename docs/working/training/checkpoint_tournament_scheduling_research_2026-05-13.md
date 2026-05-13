@@ -8,6 +8,37 @@ rating theory. It is a small scheduler that avoids quadratic all-pairs runs for
 200-300 checkpoints, keeps Modal artifacts lean, and still gives coach-useful
 rankings.
 
+## 2026-05-13 Pivot
+
+The target is now bigger than "latest checkpoint from each run."
+
+We want to rate every useful checkpoint from every run. That means all-pairs is
+not the normal plan anymore. It can still be used as a stress test or audit, but
+the permanent lane should be online/adaptive:
+
+- new checkpoints enter as provisional players;
+- they play a bounded placement slate;
+- later rounds spend games on nearby ratings, uncertain players, anchors,
+  random bridges, and stale or noisy rematches;
+- rankings should be visible while games are still running;
+- ratings must be recomputable from immutable battle summaries.
+
+The orchestration doc for this pivot is
+`checkpoint_tournament_orchestration_2026-05-13.md`.
+
+## Fresh Research Notes
+
+- Glicko-2 is useful as a design reference because it treats rating confidence
+  as a first-class value. The V0 can fake this with games played, distinct
+  opponents, last rating movement, failure rate, and provisional status before
+  we implement full rating deviation.
+- TrueSkill is useful as a scheduling reference because it talks about match
+  quality. Close matches are usually good, but a new checkpoint can also learn a
+  lot from playing a strong established checkpoint.
+- Swiss pairing is a useful tournament analogy: pair nearby performers and avoid
+  pointless repeats. CurvyTron is different because we run continuous offline
+  rating, so some repeats are good when a battle is stale, close, or noisy.
+
 ## Research Notes
 
 Common ladder systems do three things we should copy:
@@ -113,21 +144,28 @@ Avoiding drift:
 Keep batch Elo. Add adaptive scheduling as pair selection, not as a new rating
 algorithm.
 
+Important implementation rule: for very large pools, do not build every possible
+pair and then sample. Generate the needed candidates from rating bands, anchors,
+lineage neighbors, random bridges, and replay queues directly.
+
 1. Maintain per-checkpoint scheduling metadata derived from latest ratings:
    rating, games, battles, rated battles, distinct opponents, last round delta,
    failure count, provisional/active status.
-2. New checkpoint enters with initial rating from its nearest predecessor if the
+2. Maintain pair history by stable checkpoint-pair key:
+   battle count, total games, last round, last result, failures, draws, and
+   latest battle refs.
+3. New checkpoint enters with initial rating from its nearest predecessor if the
    lineage is known; otherwise use pool median or 1500.
-3. Run placement batches first. Target 8-12 opponents, 10-50 games per opponent,
+4. Run placement batches first. Target 8-12 opponents, 10-50 games per opponent,
    both seats if needed.
-4. After placement, select normal rounds with the 60/20/10/10 mix above.
-5. Enforce graph health:
+5. After placement, select normal rounds with the 60/20/10/10 mix above.
+6. Enforce graph health:
    minimum 5 distinct opponents before active status,
    at least one anchor match per checkpoint family,
    at least one random bridge per rating band per round.
-6. Keep batch reduction: build pair specs, run Modal shards, reduce once, write a
+7. Keep batch reduction: build pair specs, run Modal shards, reduce once, write a
    slim latest snapshot.
-7. Stop or pause when all non-provisional checkpoints have enough games and
+8. Stop or pause when all non-provisional checkpoints have enough games and
    `max_abs_delta` stays below the threshold for two consecutive rounds.
 
 V0 output should remain simple:
@@ -156,7 +194,8 @@ Move from Elo-with-proxies toward explicit uncertainty.
 ## Practical Defaults
 
 - Placement opponents: 8 established checkpoints.
-- Games per placement pair: 20 first, then top up to 50 if the result is close.
+- Games per placement pair: use odd battle sizes for current product runs. Start
+  with 11 or 21, then top up close pairs to 51 if the result matters.
 - Normal round budget: fixed pair count, not all-pairs. Start with
   `min(4 * checkpoint_count, 2000)` pairs per round for 200-300 checkpoint pools.
 - Active status: at least 300 valid games, at least 5 distinct opponents, and
@@ -170,17 +209,17 @@ Assume cleanup leaves 211 valid latest checkpoints. The full unordered no-self
 pool is `211 * 210 / 2 = 22,155` pairs. Do not make the first real post-cleanup
 job all-pairs unless the goal is specifically a burn-in stress test:
 
-- all-pairs, 20 games/pair: 443,100 games
-- all-pairs, 50 games/pair: 1,107,750 games
-- with `games_per_shard=10`, those are 44,310 and 110,775 shard calls
+- all-pairs, 21 games/pair: 465,255 games
+- all-pairs, 51 games/pair: 1,130,005 games
+- with `games_per_shard` equal to `games_per_pair`, those are 22,155 shard calls
 
 Recommended first launch: a conservative random subset that the current
 Modal/Elo system can explain easily.
 
 - Pair selection: seeded random subset of 2,000 unordered pairs.
-- Games: 20 games per pair.
-- Sharding: `games_per_shard=10`.
-- Estimated work: 40,000 games, 4,000 shard calls, about 19 pair appearances per
+- Games: 21 games per pair.
+- Sharding: `games_per_shard=21`.
+- Estimated work: 42,000 games, 2,000 shard calls, about 19 pair appearances per
   checkpoint on average, about 379 game participations per checkpoint on
   average.
 - Artifacts: GIFs off, frames off, lean rating artifacts preferred.
@@ -191,8 +230,8 @@ Modal/Elo system can explain easily.
   checkpoints get at least 8 distinct opponents after the run. If a few do not,
   run a small top-up round.
 
-If the team wants an even safer first step, use 1,055 random pairs, 20
-games/pair, `games_per_shard=10`: 21,100 games and 2,110 shard calls. That is a
+If the team wants an even safer first step, use 1,055 random pairs, 21
+games/pair, `games_per_shard=21`: 22,155 games and 1,055 shard calls. That is a
 good operational smoke, but it is less useful as the first real ladder because
 the average checkpoint only sees about 10 opponents.
 
@@ -203,22 +242,51 @@ More aggressive adaptive/provisional first plan:
    - Use a regular-ish seeded graph, biased to include lineage neighbors and a
      small anchor set.
    - Approximate pair count if balanced: `211 * 8 / 2 = 844`.
-   - At 20 games/pair and `games_per_shard=10`: 16,880 games, 1,688 shard calls.
+   - At 21 games/pair and `games_per_shard=21`: 17,724 games, 844 shard calls.
 2. Adaptive expansion round:
    - Add 1,500 pairs after the first reduction.
    - Mix: 60% near-rating, 20% provisional/high-delta, 10% anchors, 10% random
      bridges.
-   - At 20 games/pair and `games_per_shard=10`: 30,000 games, 3,000 shard calls.
+   - At 21 games/pair and `games_per_shard=21`: 31,500 games, 1,500 shard calls.
 3. Combined aggressive first ladder:
-   - About 2,344 pairs, 46,880 games, 4,688 shard calls.
+   - About 2,344 pairs, 49,224 games, 2,344 shard calls.
    - If anchor placement is implemented as every checkpoint playing many fixed
-     anchors, pair count may rise toward 2,500-3,000; at 20 games/pair this is
-     still 50,000-60,000 games and 5,000-6,000 shard calls.
+     anchors, pair count may rise toward 2,500-3,000; at 21 games/pair this is
+     still 52,500-63,000 games and 2,500-3,000 shard calls.
 
 Use the conservative random subset if adaptive scheduling is not implemented or
 if the cleanup may still contain questionable checkpoints. Use the aggressive
 plan if we trust checkpoint discovery and already have a small compatible anchor
-set from previous runs.
+set.
+
+## Latest-212 All-Pairs Stress Run
+
+2026-05-13 user direction was to try the simple full matrix after cleanup:
+latest checkpoint from every preserved run, all unordered pairs, and no stale
+tournament artifacts visible.
+
+Chosen launch shape after correction:
+
+- Checkpoints: 212 latest refs from the preserved prune manifest.
+- Pair selection: all unordered no-self pairs.
+- Pairs: 22,366.
+- Games per pair: 11.
+- Games per shard: 11.
+- Total games: 246,026.
+- GIF samples: 3 per pair, 67,098 total.
+
+Why this shape:
+
+- It matches the user's direct "all latest checkpoints" request.
+- It keeps one shard per battle, which avoids 223,660 tiny Modal calls.
+- It keeps the three-sample GIF pattern already used by the website and smoke
+  tests: games 0, middle, and latest equivalent for an 11-game battle
+  when using `evenly_spaced`.
+- It is still a stress run, not the long-term scheduler. The longer-term lane
+  should use placement, anchors, random bridges, and near-rating pairs instead
+  of repeating all-pairs at every scale.
+- The first `gpp10` attempt was stopped and purged because even battle sizes are
+  now invalid for new runs.
 
 GIF sampling for the 211-run first job:
 
@@ -320,8 +388,8 @@ uv run --extra modal python -B -m modal run -m curvyzero.infra.modal.curvyzero_c
   --run-id-prefix <RUN_PREFIX> \
   --max-runs 211 \
   --expected-checkpoint-count 211 \
-  --games-per-pair 20 \
-  --games-per-shard 10 \
+  --games-per-pair 21 \
+  --games-per-shard 21 \
   --pairs-per-round 3000 \
   --pair-selection random \
   --gif-sample-games-per-pair 0 \
@@ -336,13 +404,13 @@ finish before the spawned rating loop gets a container, leaving only a stale
 Expected shape for 211 checkpoints:
 
 - sampled pairs: 3,000
-- games: 60,000
-- shard calls at `games_per_shard=10`: 6,000
+- games: 63,000
+- shard calls at `games_per_shard=21`: 3,000
 - average opponents per checkpoint: about 28
 - average game participations per checkpoint: about 569
 
 This is aggressive because it is a real ladder-size run, but sane because it is
-still far below 443,100 games for all-pairs at 20 games/pair.
+still far below 465,255 games for all-pairs at 21 games/pair.
 
 3. Launch:
 
@@ -350,26 +418,45 @@ still far below 443,100 games for all-pairs at 20 games/pair.
 uv run --extra modal python -B -m modal run -m curvyzero.infra.modal.curvyzero_checkpoint_tournament \
   --mode rating \
   --tournament-id arena-rating-200plus-latest-random-20260513a \
-  --rating-run-id elo-latest-rand3000-gpp20 \
+  --rating-run-id elo-latest-rand3000-gpp21 \
   --run-id-prefix <RUN_PREFIX> \
   --max-runs 211 \
   --expected-checkpoint-count 211 \
-  --games-per-pair 20 \
-  --games-per-shard 10 \
+  --games-per-pair 21 \
+  --games-per-shard 21 \
   --pairs-per-round 3000 \
   --pair-selection random \
   --gif-sample-games-per-pair 0 \
   --seed 211013
 ```
 
-If cleanup confidence is lower, reduce to `--pairs-per-round 2000` for 40,000
-games and 4,000 shard calls. If the first 2,000-pair run is clean but too sparse,
+If cleanup confidence is lower, reduce to `--pairs-per-round 2000` for 42,000
+games and 2,000 shard calls. If the first 2,000-pair run is clean but too sparse,
 run a second random bridge/top-up round rather than restarting with all-pairs.
 
 For a first mixed latest-plus-history pool, do not use prefix discovery alone.
 Build an explicit comma-separated `--checkpoint-refs` list containing all latest
 refs plus the 25-50 selected historical refs, then use the same random-pair
 parameters. Keep `--pairs-per-round` at 3,000-3,500 and keep GIFs off.
+
+## 2026-05-13 Research Refresh
+
+- Elo-like systems do not require every pair to play every other pair. They need
+  a connected enough comparison graph. Use all-pairs as a clean baseline or
+  stress test, not as the permanent continuous scheduler.
+- TrueSkill-style matchmaking points toward similarly rated opponents when
+  possible. Those games are usually more informative than repeated obvious
+  mismatches.
+- Glicko-style systems track uncertainty separately from rating. Our V0 can
+  approximate this with games played, distinct opponents, last-round rating
+  movement, and provisional status before adding full Glicko math.
+- Swiss-style tournaments are a useful scheduling analogy: pair near current
+  score/rating, avoid repeats, and get useful rankings with far fewer than all
+  possible games.
+- Caveat: a research pass noted that seat-balanced batches can be statistically
+  cleaner than odd battle sizes if seat bias exists. Current product rule is
+  still odd battle sizes, but keep seat-bias checks on the evaluation-contract
+  list.
 
 ## Open Questions
 
@@ -384,6 +471,29 @@ parameters. Keep `--pairs-per-round` at 3,000-3,500 and keep GIFs off.
 - How many anchors should be fixed forever versus refreshed by cohort?
 - Should failed/collapsed checkpoints stay in the pool as sentinels or be moved
   to a diagnostic-only pool?
+
+## Adaptive Elo Follow-Up
+
+- Default battle size should be 21 games per pair for the next generation of
+  runs. Keep the odd-count rule.
+- Default score-game cap should be long enough that timeouts are rare. Current
+  code default is 8,000 decision steps; if timeout draws remain common, treat
+  that as a real scheduling/correctness signal to investigate, not as a reason
+  to silently lower the cap.
+- The permanent system should not rely on full all-pairs runs. Treat all-pairs
+  as a clean stress test and occasional audit. The steady-state scheduler should
+  add new checkpoints, give them enough games against the existing pool to land
+  roughly correctly, then spend most new games on uncertain or important rank
+  boundaries.
+- Simple V1 scheduler idea:
+  - every new checkpoint plays a few fixed anchors across the rating range;
+  - then it plays nearby ratings after the first provisional update;
+  - replay older existing pairs when they are stale, close in rating, or have a
+    high failure/noise rate;
+  - keep random exploration pairs so the graph stays connected and surprises
+    can surface.
+- Do not make this complex before the website and current batch tournament path
+  are boringly reliable.
 
 ## Sources
 
@@ -407,3 +517,175 @@ parameters. Keep `--pairs-per-round` at 3,000-3,500 and keep GIFs off.
   https://arxiv.org/abs/2203.06063
 - Dueling-bandit Elo scheduling research:
   https://arxiv.org/abs/2201.04480
+
+## Current Design Note, 2026-05-13
+
+Research basis:
+
+- TrueSkill and Glicko both say rating confidence matters, not just rating.
+  For V0, keep batch Elo and use simple confidence proxies: valid games,
+  distinct opponents, last-round delta, failure rate, age, and provisional
+  status.
+- FIDE Swiss rules are the best tournament analogy: pair similar scores,
+  avoid repeats early, keep pairings explainable, and declare the schedule
+  before a round starts.
+- Active Evaluation shows the same ML shape: all-pairs grows as `k choose 2`,
+  while actively chosen pairwise comparisons can find strong systems with far
+  fewer comparisons.
+- Modal wants independent inputs. The scheduler should make a static round
+  manifest, then let workers run shards without sharing mutable rating state.
+
+### 1. Placing New Checkpoints
+
+Every new checkpoint starts `provisional`.
+
+Initial rating:
+
+- Use the previous checkpoint from the same run if lineage is known.
+- Otherwise use the active pool median.
+- If there is no active pool yet, use `1500`.
+
+Placement slate:
+
+- Previous checkpoint from the same run.
+- Current champion.
+- Current median active checkpoint.
+- Current lower-quartile active checkpoint.
+- One stable low baseline or collapse sentinel.
+- Three to six seeded random active checkpoints.
+
+Use 8-12 opponents for placement. Use 21 games per opponent by default. Keep the
+checkpoint provisional until it has at least 300 valid games and at least five
+distinct opponents. If seat bias is not proven small, schedule a seat-swapped
+companion battle for placement pairs and report seat-order effects separately.
+
+### 2. Choosing Opponents Over Time
+
+Do not make all-pairs the steady-state scheduler. Use fixed-size rounds.
+
+Suggested post-placement mix:
+
+- 60% near-rating pairs. These are high-signal because expected score is near
+  0.5.
+- 20% provisional or uncertain checkpoints. Uncertain means low games, low
+  distinct opponents, high last-round delta, high failure rate, or stale rating.
+- 10% anchor pairs. Anchors keep cohorts comparable.
+- 10% random bridges across rating bands. Bridges keep the graph connected and
+  catch surprises.
+
+Candidate pair rules:
+
+- Prefer opponents with similar rating unless the pair is an anchor or bridge.
+- Avoid repeats until both checkpoints meet the distinct-opponent floor.
+- Do not let one long run dominate the budget with many checkpoints from the
+  same lineage.
+- Keep rating pools separate for eval/collect mode, env variant, reward variant,
+  major evaluator changes, and seat-policy changes.
+- Write `schedule_reason` on each pair: `placement`, `near_rating`,
+  `uncertain`, `anchor`, `random_bridge`, or `replay`.
+
+### 3. Games Per Battle
+
+Keep 21 games per battle as the default.
+
+Why:
+
+- The current code already defaults to 21 and rejects even battle sizes.
+- Odd counts avoid a pure win/loss half split. Draws can still create score
+  ties, so this is not a complete tie solution.
+- 21 is a useful scheduler signal without making every pair expensive. With no
+  draws, a true 60% player wins the majority of an 11-game battle about 75% of
+  the time, a 21-game battle about 83% of the time, and a 51-game battle about
+  93% of the time.
+- At a 50/50 matchup, the raw win-rate standard error is about 0.109 for 21
+  games, so one battle is not final truth. It is enough to guide the next round.
+
+Top up important close pairs to 51 or 101 games when the result changes a
+promotion, top-10 ordering, or anchor interpretation. Do not spend 51 games on
+obvious blowouts unless auditing.
+
+### 4. Replaying Existing Battles
+
+Never overwrite an old battle. Replay means a new battle id, new seeds, and a
+link to the earlier pair.
+
+Replay when:
+
+- The pair is close and rank-important.
+- The old result is stale after many new rounds.
+- Either checkpoint has high uncertainty or a large recent rating delta.
+- The battle had many failures, invalid games, or unexpected draws/timeouts.
+- An anchor moves strangely and needs confirmation.
+- A new evaluator, env contract, or seat policy needs a bridge audit.
+
+Do not replay stable, old blowouts just because they are old. Keep old immutable
+summaries so ratings can be recomputed with or without replay batches.
+
+### 5. Keeping Modal Parallel
+
+Keep the round embarrassingly parallel:
+
+- Scheduler writes one `input.json` with static `pair_specs`.
+- Each pair expands to independent games or shards.
+- Prefer `games_per_shard=21` for a 21-game battle so one Modal shard can reuse
+  loaded policies and commit once.
+- Workers write only unique battle/game/shard paths.
+- Workers do not update ratings.
+- One reducer reads committed summaries and writes `results.json`,
+  `ratings.json`, `latest.json`, and `progress.json`.
+- Keep GIFs and frames off for rating rounds. Run tiny GIF canaries or targeted
+  post-rating GIF samples.
+- If a round exceeds Modal map/input limits, split the same round manifest into
+  deterministic chunks and reduce only after all chunks finish.
+
+This matches the current Modal shape: independent `map(..., order_outputs=False)`
+work, sharded tallies, and a single reducer. It also avoids Volume last-write
+conflicts by giving each worker unique files.
+
+### 6. Files To Update Later
+
+Code:
+
+- `src/curvyzero/tournament/curvytron_checkpoint_tournament.py`
+  - Add adaptive pair selection choices and scheduler fields.
+  - Add `schedule_reason`, anchor ids, replay metadata, and deterministic
+    candidate scoring.
+  - Keep batch Elo reduction.
+- `src/curvyzero/infra/modal/curvyzero_checkpoint_tournament.py`
+  - Add CLI fields for adaptive scheduling, anchors, placement mode, replay
+    mode, and schedule-summary artifacts.
+  - Keep the worker path static and parallel.
+- `tests/test_curvytron_checkpoint_tournament.py`
+  - Cover deterministic adaptive selection, placement slates, no-repeat floors,
+    schedule reasons, replay metadata, graph health, and stable reduction from
+    immutable summaries.
+
+Docs:
+
+- `docs/working/training/checkpoint_tournament_scheduling_research_2026-05-13.md`
+  - This note was appended here.
+- `docs/working/training/checkpoint_tournament_elo_followup_2026-05-13.md`
+  - Add operator defaults and launch examples after implementation.
+- `docs/working/training/checkpoint_tournament_todo_2026-05-13.md`
+  - Add implementation tasks and validation gates.
+- `docs/working/training/checkpoint_tournament_validation_2026-05-13.md`
+  - Add scheduler smoke tests, replay-reduce tests, and Modal chunking checks.
+
+Source links used in this refresh:
+
+- TrueSkill overview and match quality:
+  https://www.microsoft.com/en-us/research/project/trueskill-ranking-system/
+- TrueSkill paper:
+  https://www.microsoft.com/en-us/research/publication/trueskilltm-a-bayesian-skill-rating-system-2/
+- Glicko-2 rating, RD, volatility, and rating periods:
+  https://www.glicko.net/glicko/glicko2.pdf
+- FIDE Swiss rules applied from 1 February 2026:
+  https://doc.fide.com/docs/DOC/2025_3FC/CM3-202517.pdf
+- FIDE rating K-factor rules:
+  https://handbook.fide.com/chapter/B022024
+- Active Evaluation:
+  https://aclanthology.org/2022.acl-long.600/
+- Modal scale guide:
+  https://modal.com/docs/guide/scale
+- Modal Volume consistency guide:
+  https://modal.com/docs/guide/volumes

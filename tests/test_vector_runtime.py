@@ -488,6 +488,102 @@ def _add_forced_bonus_self_small_arrays(
     )
 
 
+def _add_forced_bonus_stack_death_arrays(
+    state: dict[str, np.ndarray],
+    scenario_name: str,
+    *,
+    bonus_type_code: int,
+    stack_capacity: int,
+) -> None:
+    scenario = _load_lifecycle_scenario(scenario_name)
+    initial_state = scenario["initial_state"]
+    assert isinstance(initial_state, dict)
+    active_bonuses = initial_state["active_bonuses"]
+    assert isinstance(active_bonuses, list)
+    assert active_bonuses
+    row_count, player_count = state["radius"].shape
+    bonus_capacity = len(active_bonuses)
+
+    state["bonus_world_active"] = np.ones(row_count, dtype=bool)
+    state["bonus_active"] = np.ones((row_count, bonus_capacity), dtype=bool)
+    state["bonus_type"] = np.full((row_count, bonus_capacity), bonus_type_code, dtype=np.int16)
+    bonus_ids = np.arange(1, bonus_capacity + 1, dtype=np.int32)
+    state["bonus_id"] = np.tile(bonus_ids, (row_count, 1))
+    bonus_pos = np.asarray(
+        [
+            [float(bonus["x"]), float(bonus["y"])]
+            for bonus in active_bonuses
+            if isinstance(bonus, dict)
+        ],
+        dtype=np.float64,
+    )
+    state["bonus_pos"] = np.tile(bonus_pos[None, :, :], (row_count, 1, 1))
+    state["bonus_radius"] = np.full(
+        (row_count, bonus_capacity),
+        vector_runtime.SOURCE_BONUS_RADIUS,
+        dtype=np.float64,
+    )
+    state["bonus_count"] = np.full(row_count, bonus_capacity, dtype=np.int32)
+    state["bonus_world_body_count"] = np.full(row_count, bonus_capacity, dtype=np.int32)
+    state["base_radius"] = state["radius"].copy()
+    state["base_speed"] = state["speed"].copy()
+    state["base_angular_velocity_per_ms"] = state["angular_velocity_per_ms"].copy()
+    state["inverse"] = np.zeros((row_count, player_count), dtype=bool)
+    state["base_inverse"] = state["inverse"].copy()
+    state["invincible"] = np.zeros((row_count, player_count), dtype=bool)
+    state["base_invincible"] = state["invincible"].copy()
+    state["avatar_color"] = np.tile(
+        np.arange(player_count, dtype=np.int16),
+        (row_count, 1),
+    )
+    state["base_avatar_color"] = state["avatar_color"].copy()
+    state["radius_power"] = np.zeros((row_count, player_count), dtype=np.int16)
+    state["bonus_stack_count"] = np.zeros((row_count, player_count), dtype=np.int16)
+    state["bonus_stack_id"] = np.full(
+        (row_count, player_count, stack_capacity),
+        -1,
+        dtype=np.int32,
+    )
+    state["bonus_stack_type"] = np.full(
+        (row_count, player_count, stack_capacity),
+        vector_runtime.BONUS_TYPE_NONE,
+        dtype=np.int16,
+    )
+    state["bonus_stack_duration_ms"] = np.zeros(
+        (row_count, player_count, stack_capacity),
+        dtype=np.int32,
+    )
+    state["bonus_stack_radius_power"] = np.zeros(
+        (row_count, player_count, stack_capacity),
+        dtype=np.int16,
+    )
+    state["bonus_stack_velocity_delta"] = np.zeros(
+        (row_count, player_count, stack_capacity),
+        dtype=np.float64,
+    )
+    state["bonus_stack_inverse_delta"] = np.zeros(
+        (row_count, player_count, stack_capacity),
+        dtype=np.int16,
+    )
+    state["bonus_stack_angular_velocity_per_ms"] = np.zeros(
+        (row_count, player_count, stack_capacity),
+        dtype=np.float64,
+    )
+    state["bonus_stack_invincible_delta"] = np.zeros(
+        (row_count, player_count, stack_capacity),
+        dtype=np.int16,
+    )
+    state["bonus_stack_printing_delta"] = np.zeros(
+        (row_count, player_count, stack_capacity),
+        dtype=np.int16,
+    )
+    state["bonus_stack_color"] = np.full(
+        (row_count, player_count, stack_capacity),
+        -1,
+        dtype=np.int16,
+    )
+
+
 def _add_forced_bonus_game_clear_arrays(
     state: dict[str, np.ndarray],
     scenario_name: str,
@@ -1959,8 +2055,8 @@ def test_bonus_type_selection_metadata_pins_reduced_game_clear_edges():
     assert info["surface"] == vector_runtime.BONUS_TYPE_SELECTION_METADATA_SURFACE
     np.testing.assert_array_equal(info["eligible_rows"], np.asarray([True, True]))
     np.testing.assert_allclose(info["game_clear_probability"], [0.5, 0.5])
-    np.testing.assert_allclose(info["total_weight"], [10.7, 10.7])
-    np.testing.assert_allclose(info["weighted_draw"], [10.1115, 10.3255])
+    np.testing.assert_allclose(info["total_weight"], [11.5, 11.5])
+    np.testing.assert_allclose(info["weighted_draw"], [10.8675, 11.0975])
     np.testing.assert_array_equal(
         info["selected_type_code"],
         np.asarray(
@@ -1992,8 +2088,8 @@ def test_bonus_type_selection_metadata_pins_full_probability_game_clear_edge():
     )
 
     np.testing.assert_allclose(info["game_clear_probability"], [1.0, 0.5])
-    np.testing.assert_allclose(info["total_weight"], [11.2, 10.7])
-    np.testing.assert_allclose(info["weighted_draw"], [10.416, 9.951])
+    np.testing.assert_allclose(info["total_weight"], [12.0, 11.5])
+    np.testing.assert_allclose(info["weighted_draw"], [11.16, 10.695])
     np.testing.assert_array_equal(
         info["selected_type_code"],
         np.asarray(
@@ -2002,6 +2098,48 @@ def test_bonus_type_selection_metadata_pins_full_probability_game_clear_edge():
                 vector_runtime.BONUS_TYPE_ALL_COLOR,
             ],
             dtype=np.int16,
+        ),
+    )
+
+
+def test_bonus_type_selection_metadata_pins_non_clear_source_probabilities_at_one():
+    state = _bonus_type_metadata_state(
+        [
+            [True, True, False, False],
+            [True, True, False, False],
+            [True, True, False, False],
+        ],
+    )
+
+    info = vector_runtime.bonus_type_selection_metadata(
+        state,
+        np.asarray([0.63, 0.71, 0.865], dtype=np.float64),
+        player_count=4,
+    )
+
+    np.testing.assert_allclose(info["game_clear_probability"], [0.5, 0.5, 0.5])
+    np.testing.assert_allclose(info["total_weight"], [11.5, 11.5, 11.5])
+    np.testing.assert_allclose(info["weighted_draw"], [7.245, 8.165, 9.9475])
+    np.testing.assert_array_equal(
+        info["selected_type_code"],
+        np.asarray(
+            [
+                vector_runtime.BONUS_TYPE_ENEMY_INVERSE,
+                vector_runtime.BONUS_TYPE_ENEMY_STRAIGHT_ANGLE,
+                vector_runtime.BONUS_TYPE_GAME_BORDERLESS,
+            ],
+            dtype=np.int16,
+        ),
+    )
+    np.testing.assert_array_equal(
+        info["selected_type_name"],
+        np.asarray(
+            [
+                "BonusEnemyInverse",
+                "BonusEnemyStraightAngle",
+                "BonusGameBorderless",
+            ],
+            dtype=object,
         ),
     )
 
@@ -2952,6 +3090,52 @@ def test_step_many_catches_forced_velocity_bonus_and_expiry_restores_speed(
     )
     np.testing.assert_array_equal(state["bonus_stack_count"], np.asarray([[0, 0]]))
     assert int(state["bonus_stack_type"][0, target_player, 0]) == (vector_runtime.BONUS_TYPE_NONE)
+
+
+def test_step_many_bonus_stack_clears_on_wall_death_and_late_expiry_stays_inert():
+    scenario_name = "source_bonus_self_fast_stack_death_late_expiry_step.json"
+    fixture, state = _runtime_fixture_state(f"scenarios/environment/{scenario_name}")
+    _add_forced_bonus_stack_death_arrays(
+        state,
+        scenario_name,
+        bonus_type_code=vector_runtime.BONUS_TYPE_SELF_FAST,
+        stack_capacity=vector_runtime.SOURCE_MAX_ACTIVE_BONUSES,
+    )
+
+    for step_index, expected_speed in enumerate((28.0, 40.0, 52.0)):
+        counters = _step_runtime_fixture(fixture, state, step_index=step_index)
+        assert counters["bonus_self_fast_catches"] == 1
+        assert counters["bonus_stack_appends"] == 1
+        np.testing.assert_array_equal(
+            state["bonus_stack_count"],
+            np.asarray([[step_index + 1, 0]], dtype=np.int16),
+        )
+        assert state["speed"][0, 0] == pytest.approx(expected_speed)
+
+    death_counters = _step_runtime_fixture(fixture, state, step_index=3)
+
+    assert death_counters["normal_wall_deaths"] == 1
+    np.testing.assert_array_equal(state["alive"], np.asarray([[False, True]]))
+    assert state["speed"][0, 0] == pytest.approx(52.0)
+    np.testing.assert_array_equal(state["bonus_stack_count"], np.asarray([[0, 0]]))
+    np.testing.assert_array_equal(
+        state["bonus_stack_type"][0, 0],
+        np.full(vector_runtime.SOURCE_MAX_ACTIVE_BONUSES, vector_runtime.BONUS_TYPE_NONE),
+    )
+    np.testing.assert_array_equal(
+        state["bonus_stack_id"][0, 0],
+        np.full(vector_runtime.SOURCE_MAX_ACTIVE_BONUSES, -1),
+    )
+
+    expiry_counters = _step_runtime_fixture(fixture, state, step_index=4)
+
+    assert expiry_counters["bonus_self_fast_expiries"] == 0
+    assert expiry_counters["bonus_stack_appends"] == 0
+    np.testing.assert_array_equal(state["bonus_stack_count"], np.asarray([[0, 0]]))
+    assert state["speed"][0, 0] == pytest.approx(52.0)
+    event_types = state["event_type"][0, : int(state["event_count"][0])]
+    assert vector_runtime.EVENT_BONUS_STACK not in set(event_types)
+    assert vector_runtime.EVENT_PROPERTY not in set(event_types)
 
 
 def test_step_many_catches_forced_bonus_enemy_big_targets_other_alive_avatar():

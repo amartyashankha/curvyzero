@@ -76,7 +76,21 @@ def _source_die_events(env: CurvyTronSourceEnv) -> list[dict[str, object]]:
     return [event for event in env.events if event["event"] == "die"]
 
 
-def _vector_state(*, borderless: bool = False, body_capacity: int = 8) -> dict[str, np.ndarray]:
+def _vector_state(
+    *,
+    borderless: bool = False,
+    body_capacity: int = 8,
+    player_count: int = 2,
+) -> dict[str, np.ndarray]:
+    if player_count < 2:
+        raise ValueError("player_count must be at least 2")
+    pos = np.zeros((1, player_count, 2), dtype=np.float64)
+    pos[0, 0] = [20.0, 20.0]
+    pos[0, 1] = [60.0, 60.0]
+    for player in range(2, player_count):
+        pos[0, player] = [70.0 + player, 70.0 + player]
+    heading = np.zeros((1, player_count), dtype=np.float64)
+    heading[0, 1:] = math.pi
     return {
         "tick": np.asarray([0], dtype=np.int32),
         "done": np.asarray([False], dtype=bool),
@@ -87,23 +101,31 @@ def _vector_state(*, borderless: bool = False, body_capacity: int = 8) -> dict[s
         "in_round": np.asarray([True], dtype=bool),
         "world_active": np.asarray([True], dtype=bool),
         "world_body_count": np.asarray([0], dtype=np.int32),
-        "present": np.asarray([[True, True]], dtype=bool),
-        "alive": np.asarray([[True, True]], dtype=bool),
-        "pos": np.asarray([[[20.0, 20.0], [60.0, 60.0]]], dtype=np.float64),
-        "prev_pos": np.asarray([[[20.0, 20.0], [60.0, 60.0]]], dtype=np.float64),
-        "heading": np.asarray([[0.0, math.pi]], dtype=np.float64),
-        "angular_velocity_per_ms": np.zeros((1, 2), dtype=np.float64),
-        "speed": np.full((1, 2), vector_runtime.SOURCE_AVATAR_SPEED, dtype=np.float64),
-        "inverse": np.asarray([[False, False]], dtype=bool),
-        "radius": np.full((1, 2), vector_runtime.SOURCE_AVATAR_RADIUS, dtype=np.float64),
-        "trail_latency": np.full((1, 2), 3, dtype=np.int32),
+        "present": np.ones((1, player_count), dtype=bool),
+        "alive": np.ones((1, player_count), dtype=bool),
+        "pos": pos.copy(),
+        "prev_pos": pos.copy(),
+        "heading": heading,
+        "angular_velocity_per_ms": np.zeros((1, player_count), dtype=np.float64),
+        "speed": np.full(
+            (1, player_count),
+            vector_runtime.SOURCE_AVATAR_SPEED,
+            dtype=np.float64,
+        ),
+        "inverse": np.zeros((1, player_count), dtype=bool),
+        "radius": np.full(
+            (1, player_count),
+            vector_runtime.SOURCE_AVATAR_RADIUS,
+            dtype=np.float64,
+        ),
+        "trail_latency": np.full((1, player_count), 3, dtype=np.int32),
         "map_size": np.asarray([88.0], dtype=np.float64),
         "borderless": np.asarray([borderless], dtype=bool),
-        "invincible": np.asarray([[False, False]], dtype=bool),
-        "printing": np.asarray([[False, False]], dtype=bool),
-        "print_manager_active": np.asarray([[False, False]], dtype=bool),
-        "print_manager_distance": np.zeros((1, 2), dtype=np.float64),
-        "print_manager_last_pos": np.zeros((1, 2, 2), dtype=np.float64),
+        "invincible": np.zeros((1, player_count), dtype=bool),
+        "printing": np.zeros((1, player_count), dtype=bool),
+        "print_manager_active": np.zeros((1, player_count), dtype=bool),
+        "print_manager_distance": np.zeros((1, player_count), dtype=np.float64),
+        "print_manager_last_pos": np.zeros((1, player_count, 2), dtype=np.float64),
         "body_active": np.zeros((1, body_capacity), dtype=bool),
         "body_pos": np.zeros((1, body_capacity, 2), dtype=np.float64),
         "body_radius": np.zeros((1, body_capacity), dtype=np.float64),
@@ -112,15 +134,15 @@ def _vector_state(*, borderless: bool = False, body_capacity: int = 8) -> dict[s
         "body_insert_tick": np.full((1, body_capacity), -1, dtype=np.int32),
         "body_insert_kind": np.full((1, body_capacity), -1, dtype=np.int16),
         "body_write_cursor": np.asarray([0], dtype=np.int32),
-        "body_count": np.zeros((1, 2), dtype=np.int32),
-        "live_body_num": np.zeros((1, 2), dtype=np.int32),
+        "body_count": np.zeros((1, player_count), dtype=np.int32),
+        "live_body_num": np.zeros((1, player_count), dtype=np.int32),
         "body_overflow": np.asarray([False], dtype=bool),
         "body_break_before": np.zeros((1, body_capacity), dtype=bool),
-        "visible_trail_count": np.zeros((1, 2), dtype=np.int32),
-        "has_visible_trail_last": np.asarray([[False, False]], dtype=bool),
-        "visible_trail_last_pos": np.zeros((1, 2, 2), dtype=np.float64),
-        "has_draw_cursor": np.asarray([[False, False]], dtype=bool),
-        "draw_cursor_pos": np.zeros((1, 2, 2), dtype=np.float64),
+        "visible_trail_count": np.zeros((1, player_count), dtype=np.int32),
+        "has_visible_trail_last": np.zeros((1, player_count), dtype=bool),
+        "visible_trail_last_pos": np.zeros((1, player_count, 2), dtype=np.float64),
+        "has_draw_cursor": np.zeros((1, player_count), dtype=bool),
+        "draw_cursor_pos": np.zeros((1, player_count, 2), dtype=np.float64),
         "visual_trail_active": np.zeros((1, body_capacity), dtype=bool),
         "visual_trail_pos": np.zeros((1, body_capacity, 2), dtype=np.float64),
         "visual_trail_radius": np.zeros((1, body_capacity), dtype=np.float64),
@@ -128,15 +150,19 @@ def _vector_state(*, borderless: bool = False, body_capacity: int = 8) -> dict[s
         "visual_trail_break_before": np.zeros((1, body_capacity), dtype=bool),
         "visual_trail_write_cursor": np.asarray([0], dtype=np.int32),
         "visual_trail_overflow": np.asarray([False], dtype=bool),
-        "has_visual_trail_last": np.asarray([[False, False]], dtype=bool),
-        "visual_trail_last_pos": np.zeros((1, 2, 2), dtype=np.float64),
-        "death_tick": np.full((1, 2), -1, dtype=np.int32),
+        "has_visual_trail_last": np.zeros((1, player_count), dtype=bool),
+        "visual_trail_last_pos": np.zeros((1, player_count, 2), dtype=np.float64),
+        "death_tick": np.full((1, player_count), -1, dtype=np.int32),
         "death_count": np.asarray([0], dtype=np.int32),
-        "death_player": np.full((1, 2), -1, dtype=np.int16),
-        "death_cause": np.full((1, 2), vector_runtime.DEATH_CAUSE_NONE, dtype=np.int16),
-        "death_hit_owner": np.full((1, 2), -1, dtype=np.int16),
-        "score": np.zeros((1, 2), dtype=np.int32),
-        "round_score": np.zeros((1, 2), dtype=np.int32),
+        "death_player": np.full((1, player_count), -1, dtype=np.int16),
+        "death_cause": np.full(
+            (1, player_count),
+            vector_runtime.DEATH_CAUSE_NONE,
+            dtype=np.int16,
+        ),
+        "death_hit_owner": np.full((1, player_count), -1, dtype=np.int16),
+        "score": np.zeros((1, player_count), dtype=np.int32),
+        "round_score": np.zeros((1, player_count), dtype=np.int32),
         "terminal_reason": np.asarray([vector_runtime.TERMINAL_REASON_NONE], dtype=np.int16),
         "draw": np.asarray([False], dtype=bool),
         "winner": np.asarray([-1], dtype=np.int16),
@@ -193,12 +219,13 @@ def _seed_vector_visual_point(
 
 
 def _step_vector(state: dict[str, np.ndarray], *, step_ms: float = 0.0) -> dict[str, int]:
+    player_count = state["alive"].shape[1]
     return vector_runtime.step_many(
         vector_runtime.VectorStepInput(
             state=state,
             step_ms=np.asarray([step_ms], dtype=np.float64),
-            source_moves=np.zeros((1, 2), dtype=np.int8),
-            player_count=2,
+            source_moves=np.zeros((1, player_count), dtype=np.int8),
+            player_count=player_count,
             print_manager_mode=np.asarray(["none"], dtype=object),
             event_mode=vector_runtime.EVENT_MODE_NONE,
         )
@@ -231,6 +258,59 @@ def test_vector_2p_head_hits_opponent_stored_body_point() -> None:
         ),
     )
     np.testing.assert_array_equal(state["death_hit_owner"], np.asarray([[1, -1]], dtype=np.int16))
+    assert counters["body_hits"] == 1
+
+
+def test_vector_3p_hit_owner_uses_source_newest_first_island_scan() -> None:
+    state = _vector_state(player_count=3)
+    _seed_vector_body(state, owner=1, x=20, y=20)
+    _seed_vector_body(state, owner=2, x=20, y=20)
+
+    counters = _step_vector(state)
+
+    np.testing.assert_array_equal(state["alive"], np.asarray([[False, True, True]]))
+    np.testing.assert_array_equal(
+        state["death_player"],
+        np.asarray([[0, -1, -1]], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        state["death_cause"],
+        np.asarray(
+            [
+                [
+                    vector_runtime.DEATH_CAUSE_OPPONENT_TRAIL,
+                    vector_runtime.DEATH_CAUSE_NONE,
+                    vector_runtime.DEATH_CAUSE_NONE,
+                ]
+            ],
+            dtype=np.int16,
+        ),
+    )
+    np.testing.assert_array_equal(
+        state["death_hit_owner"],
+        np.asarray([[2, -1, -1]], dtype=np.int16),
+    )
+    assert counters["body_hits"] == 1
+
+
+def test_vector_3p_hit_owner_uses_source_live_corner_island_order() -> None:
+    state = _vector_state(player_count=3)
+    state["pos"][0, 0] = [44.0, 20.0]
+    state["prev_pos"][0, 0] = [44.0, 20.0]
+    _seed_vector_body(state, owner=1, x=43.39, y=20)
+    _seed_vector_body(state, owner=2, x=44.61, y=20)
+
+    counters = _step_vector(state)
+
+    np.testing.assert_array_equal(state["alive"], np.asarray([[False, True, True]]))
+    np.testing.assert_array_equal(
+        state["death_player"],
+        np.asarray([[0, -1, -1]], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        state["death_hit_owner"],
+        np.asarray([[1, -1, -1]], dtype=np.int16),
+    )
     assert counters["body_hits"] == 1
 
 

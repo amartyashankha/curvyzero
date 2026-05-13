@@ -38,6 +38,9 @@ The current renderer split is still the right shape:
 - `body_circles_fast`: explicit cheap approximation that preserves the old
   circle-per-body raster. It may be useful for speed tests, but it must be
   labeled approximate.
+- `fast_gray64_direct`: explicit direct-gray/profile mode in self-play plumbing.
+  It bypasses the raw 704x704 RGB -> luma -> downsample path, so do not classify
+  it as a trail render mode or use it as source-state visual-gate evidence.
 - `browser_sprites`: default bonus renderer. It decodes
   `third_party/curvytron-reference/web/images/bonus.png` as the one 300x400 RGBA
   source atlas: 3 columns by 4 rows, 12 nominal 100x100 tiles. It maps source

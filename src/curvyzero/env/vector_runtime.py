@@ -683,6 +683,13 @@ def _step_many_kernel(
                 death_cause=DEATH_CAUSE_WALL,
                 death_hit_owner=-1,
             )
+            _clear_bonus_avatar_stack_on_death_batched(
+                state,
+                player=player,
+                death_mask=mortal_wall_hit_mask,
+                row_count=row_count,
+                player_count=player_count,
+            )
             death_rows |= mortal_wall_hit_mask
             counters["normal_wall_deaths"] += int(mortal_wall_hit_mask.sum())
             inserted, overflowed = _append_body_points_batched(
@@ -768,6 +775,13 @@ def _step_many_kernel(
                     row_count=row_count,
                     death_cause=death_causes,
                     death_hit_owner=hit_owners,
+                )
+                _clear_bonus_avatar_stack_on_death_batched(
+                    state,
+                    player=player,
+                    death_mask=body_hit_mask,
+                    row_count=row_count,
+                    player_count=player_count,
                 )
                 death_rows |= body_hit_mask
                 inserted, overflowed = _append_body_points_batched(
@@ -2295,10 +2309,6 @@ def _source_bonus_probability_for_code(
         return 0.0
     if bonus_type_code == BONUS_TYPE_GAME_CLEAR:
         return game_clear_probability
-    if bonus_type_code in (BONUS_TYPE_ENEMY_INVERSE, BONUS_TYPE_GAME_BORDERLESS):
-        return 0.8
-    if bonus_type_code == BONUS_TYPE_ENEMY_STRAIGHT_ANGLE:
-        return 0.6
     if bonus_type_code in SOURCE_DEFAULT_BONUS_TYPE_CODES:
         return 1.0
     raise VectorRuntimeError(f"unsupported source bonus type code {bonus_type_code}")
@@ -4145,6 +4155,60 @@ def _remove_bonus_stack_slot(
     stack_arrays["count"][row, player] = last
 
 
+def _clear_bonus_avatar_stack_on_death_batched(
+    state: Mapping[str, np.ndarray],
+    *,
+    player: int,
+    death_mask: np.ndarray,
+    row_count: int,
+    player_count: int,
+) -> int:
+    stack_arrays = _optional_bonus_stack_arrays(
+        state,
+        row_count=row_count,
+        player_count=player_count,
+    )
+    if stack_arrays is None or not death_mask.any():
+        return 0
+
+    capacity = int(stack_arrays["id"].shape[2])
+    cleared = 0
+    for row in np.flatnonzero(death_mask):
+        row_int = int(row)
+        cursor = int(stack_arrays["count"][row_int, player])
+        if cursor < 0:
+            raise VectorRuntimeError("bonus_stack_count values must be non-negative")
+        if cursor > capacity:
+            raise VectorRuntimeError("bonus_stack_count cannot exceed stack capacity")
+        if cursor == 0:
+            continue
+        cleared += cursor
+        stack_arrays["count"][row_int, player] = 0
+        stack_arrays["id"][row_int, player, :] = -1
+        stack_arrays["type"][row_int, player, :] = BONUS_TYPE_NONE
+        stack_arrays["duration_ms"][row_int, player, :] = 0
+        stack_arrays["radius_power"][row_int, player, :] = 0
+        velocity_delta = stack_arrays.get("velocity_delta")
+        if isinstance(velocity_delta, np.ndarray):
+            velocity_delta[row_int, player, :] = 0.0
+        inverse_delta = stack_arrays.get("inverse_delta")
+        if isinstance(inverse_delta, np.ndarray):
+            inverse_delta[row_int, player, :] = 0
+        angular_velocity_per_ms = stack_arrays.get("angular_velocity_per_ms")
+        if isinstance(angular_velocity_per_ms, np.ndarray):
+            angular_velocity_per_ms[row_int, player, :] = 0.0
+        invincible_delta = stack_arrays.get("invincible_delta")
+        if isinstance(invincible_delta, np.ndarray):
+            invincible_delta[row_int, player, :] = 0
+        printing_delta = stack_arrays.get("printing_delta")
+        if isinstance(printing_delta, np.ndarray):
+            printing_delta[row_int, player, :] = 0
+        color = stack_arrays.get("color")
+        if isinstance(color, np.ndarray):
+            color[row_int, player, :] = -1
+    return cleared
+
+
 def _remove_bonus_game_stack_slot(
     game_stack_arrays: Mapping[str, np.ndarray],
     *,
@@ -5233,26 +5297,177 @@ def _first_hit_body_owner(
     hit_rows: np.ndarray,
 ) -> np.ndarray:
     owners = np.full(state["tick"].shape[0], -1, dtype=np.int16)
-    capacity = state["body_active"].shape[1]
     for row in hit_rows:
         row_int = int(row)
-        for slot in range(capacity):
-            if not bool(state["body_active"][row_int, slot]):
+        x = float(state["pos"][row_int, player, 0])
+        y = float(state["pos"][row_int, player, 1])
+        radius = float(state["radius"][row_int, player])
+        island_count = _source_world_island_count(float(state["map_size"][row_int]))
+        island_size = float(state["map_size"][row_int]) / island_count
+        for island in _source_body_corner_islands(
+            x=x,
+            y=y,
+            radius=radius,
+            island_size=island_size,
+            island_count=island_count,
+        ):
+            if island is None:
                 continue
-            body_owner = int(state["body_owner"][row_int, slot])
-            own_body = body_owner == player
-            own_delta = int(state["live_body_num"][row_int, player]) - int(
-                state["body_num"][row_int, slot]
+            if not _source_body_in_island_bounds(
+                x=x,
+                y=y,
+                radius=radius,
+                island_x=island[0],
+                island_y=island[1],
+                island_size=island_size,
+            ):
+                continue
+            owner = _first_hit_body_owner_in_source_island(
+                state,
+                row=row_int,
+                player=player,
+                island_x=island[0],
+                island_y=island[1],
+                island_size=island_size,
+                island_count=island_count,
             )
-            if own_body and own_delta <= int(state["trail_latency"][row_int, player]):
-                continue
-            dx = state["body_pos"][row_int, slot, 0] - state["pos"][row_int, player, 0]
-            dy = state["body_pos"][row_int, slot, 1] - state["pos"][row_int, player, 1]
-            radius = state["radius"][row_int, player] + state["body_radius"][row_int, slot]
-            if dx * dx + dy * dy < radius * radius:
-                owners[row_int] = body_owner
+            if owner >= 0:
+                owners[row_int] = owner
                 break
     return owners
+
+
+_SOURCE_BODY_CORNER_SIGNS: tuple[tuple[float, float], ...] = (
+    (-1.0, -1.0),
+    (1.0, -1.0),
+    (-1.0, 1.0),
+    (1.0, 1.0),
+)
+
+
+def _source_world_island_count(map_size: float) -> int:
+    return max(1, _js_round_positive(map_size / 40.0))
+
+
+def _source_body_corner_islands(
+    *,
+    x: float,
+    y: float,
+    radius: float,
+    island_size: float,
+    island_count: int,
+) -> tuple[tuple[int, int] | None, ...]:
+    return tuple(
+        _source_island_by_point(
+            x=x + x_sign * radius,
+            y=y + y_sign * radius,
+            island_size=island_size,
+            island_count=island_count,
+        )
+        for x_sign, y_sign in _SOURCE_BODY_CORNER_SIGNS
+    )
+
+
+def _source_island_by_point(
+    *,
+    x: float,
+    y: float,
+    island_size: float,
+    island_count: int,
+) -> tuple[int, int] | None:
+    island_x = math.floor(x / island_size)
+    island_y = math.floor(y / island_size)
+    if (
+        island_x < 0
+        or island_y < 0
+        or island_x >= island_count
+        or island_y >= island_count
+    ):
+        return None
+    return island_x, island_y
+
+
+def _source_body_in_island_bounds(
+    *,
+    x: float,
+    y: float,
+    radius: float,
+    island_x: int,
+    island_y: int,
+    island_size: float,
+) -> bool:
+    from_x = island_x * island_size
+    from_y = island_y * island_size
+    return (
+        x + radius > from_x
+        and x - radius < from_x + island_size
+        and y + radius > from_y
+        and y - radius < from_y + island_size
+    )
+
+
+def _first_hit_body_owner_in_source_island(
+    state: Mapping[str, np.ndarray],
+    *,
+    row: int,
+    player: int,
+    island_x: int,
+    island_y: int,
+    island_size: float,
+    island_count: int,
+) -> int:
+    capacity = state["body_active"].shape[1]
+    for slot in range(capacity - 1, -1, -1):
+        if not bool(state["body_active"][row, slot]):
+            continue
+        if not _stored_body_has_source_island_corner(
+            state,
+            row=row,
+            slot=slot,
+            island_x=island_x,
+            island_y=island_y,
+            island_size=island_size,
+            island_count=island_count,
+        ):
+            continue
+        body_owner = int(state["body_owner"][row, slot])
+        own_body = body_owner == player
+        own_delta = int(state["live_body_num"][row, player]) - int(
+            state["body_num"][row, slot]
+        )
+        if own_body and own_delta <= int(state["trail_latency"][row, player]):
+            continue
+        dx = state["body_pos"][row, slot, 0] - state["pos"][row, player, 0]
+        dy = state["body_pos"][row, slot, 1] - state["pos"][row, player, 1]
+        radius = state["radius"][row, player] + state["body_radius"][row, slot]
+        if dx * dx + dy * dy < radius * radius:
+            return body_owner
+    return -1
+
+
+def _stored_body_has_source_island_corner(
+    state: Mapping[str, np.ndarray],
+    *,
+    row: int,
+    slot: int,
+    island_x: int,
+    island_y: int,
+    island_size: float,
+    island_count: int,
+) -> bool:
+    body_x = float(state["body_pos"][row, slot, 0])
+    body_y = float(state["body_pos"][row, slot, 1])
+    body_radius = float(state["body_radius"][row, slot])
+    for island in _source_body_corner_islands(
+        x=body_x,
+        y=body_y,
+        radius=body_radius,
+        island_size=island_size,
+        island_count=island_count,
+    ):
+        if island == (island_x, island_y):
+            return True
+    return False
 
 
 def _body_death_causes_from_hit_owners(

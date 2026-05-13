@@ -35,16 +35,18 @@ RATING_CONFIG_SCHEMA_ID = "curvyzero_curvytron_checkpoint_rating_config/v0"
 RATING_ROUND_SCHEMA_ID = "curvyzero_curvytron_checkpoint_rating_round/v0"
 RATING_SNAPSHOT_SCHEMA_ID = "curvyzero_curvytron_checkpoint_rating_snapshot/v0"
 RATING_PROGRESS_SCHEMA_ID = "curvyzero_curvytron_checkpoint_rating_progress/v0"
+RATING_SCHEDULER_STATE_SCHEMA_ID = "curvyzero_curvytron_checkpoint_rating_scheduler_state/v0"
+PAIR_HISTORY_SCHEMA_ID = "curvyzero_curvytron_checkpoint_rating_pair_history/v0"
 RATING_FORMULA_VERSION = "batch_elo_v1"
 
 POLICY_MODE_EVAL = "eval"
 POLICY_MODE_COLLECT = "collect"
 POLICY_MODE_CHOICES = (POLICY_MODE_EVAL, POLICY_MODE_COLLECT)
 
-DEFAULT_GAMES_PER_PAIR = 10
+DEFAULT_GAMES_PER_PAIR = 21
 DEFAULT_GAMES_PER_SHARD = 1
 DEFAULT_REUSE_POLICIES_PER_SHARD = True
-DEFAULT_MAX_STEPS = 512
+DEFAULT_MAX_STEPS = 8_000
 DEFAULT_SOURCE_PHYSICS_STEP_MS = float(SOURCE_PHYSICS_STEP_MS)
 DEFAULT_DECISION_MS = float(DEFAULT_DECISION_SOURCE_FRAMES * DEFAULT_SOURCE_PHYSICS_STEP_MS)
 DEFAULT_NUM_SIMULATIONS = 8
@@ -74,7 +76,7 @@ DEFAULT_RATING_DELTA_CLAMP = 80.0
 DEFAULT_RATING_DRAW_SCORE = 0.5
 DEFAULT_RATING_MIN_VALID_FRACTION = 0.8
 DEFAULT_RATING_STOP_MAX_DELTA = 10.0
-RATING_PAIR_SELECTION_CHOICES = ("all_pairs", "random")
+RATING_PAIR_SELECTION_CHOICES = ("all_pairs", "random", "adaptive_v0")
 
 ALLOWED_TOURNAMENT_ARTIFACT_FILENAMES = frozenset(
     {
@@ -91,6 +93,7 @@ ALLOWED_TOURNAMENT_ARTIFACT_FILENAMES = frozenset(
         "results.json",
         "ratings.json",
         "latest.json",
+        "provisional_latest.json",
         "progress.json",
     }
 )
@@ -98,6 +101,15 @@ ALLOWED_TOURNAMENT_ARTIFACT_FILENAMES = frozenset(
 
 class TournamentRefError(ValueError):
     """Raised when a tournament Volume ref is not safe."""
+
+
+def _validate_games_per_pair(value: int) -> int:
+    games_per_pair = int(value)
+    if games_per_pair < 1:
+        raise ValueError("games_per_pair must be at least 1")
+    if games_per_pair % 2 == 0:
+        raise ValueError("games_per_pair must be odd")
+    return games_per_pair
 
 
 def _to_plain(value: Any) -> Any:
@@ -206,6 +218,32 @@ def normalize_checkpoint_specs(checkpoints: Sequence[str | Mapping[str, Any]]) -
     ]
 
 
+def rating_pool_hash(checkpoints: Sequence[Mapping[str, Any]]) -> str:
+    rows = []
+    for checkpoint in checkpoints:
+        rows.append(
+            {
+                "checkpoint_id": str(checkpoint.get("checkpoint_id") or ""),
+                "checkpoint_ref": str(checkpoint.get("checkpoint_ref") or ""),
+                "model_env_variant": checkpoint.get("model_env_variant"),
+                "model_reward_variant": checkpoint.get("model_reward_variant"),
+                "policy_trail_render_mode": checkpoint.get("policy_trail_render_mode"),
+            }
+        )
+    rows.sort(key=lambda row: (row["checkpoint_id"], row["checkpoint_ref"]))
+    payload = json.dumps(rows, sort_keys=True, separators=(",", ":"))
+    return _short_hash(payload, length=16)
+
+
+def rating_pair_key(checkpoint_id_a: str, checkpoint_id_b: str) -> str:
+    ids = sorted([str(checkpoint_id_a), str(checkpoint_id_b)])
+    digest = _short_hash("\n".join(ids), length=12)
+    return _safe_id(
+        f"pairkey-{_slug(ids[0], max_len=24)}-vs-{_slug(ids[1], max_len=24)}-{digest}",
+        label="pair_key",
+    )
+
+
 def tournament_root_ref(tournament_id: str) -> PurePosixPath:
     return TOURNAMENT_BASE_REF / _safe_id(tournament_id, label="tournament_id")
 
@@ -248,6 +286,14 @@ def rating_latest_ref(tournament_id: str, rating_run_id: str) -> PurePosixPath:
 
 def rating_progress_ref(tournament_id: str, rating_run_id: str) -> PurePosixPath:
     return rating_root_ref(tournament_id, rating_run_id) / "progress.json"
+
+
+def rating_scheduler_state_ref(tournament_id: str, rating_run_id: str) -> PurePosixPath:
+    return rating_root_ref(tournament_id, rating_run_id) / "scheduler_state.json"
+
+
+def rating_pair_history_ref(tournament_id: str, rating_run_id: str) -> PurePosixPath:
+    return rating_root_ref(tournament_id, rating_run_id) / "pair_history.json"
 
 
 def rating_round_id(round_index: int) -> str:
@@ -378,6 +424,7 @@ def build_pair_specs(
     players = normalize_checkpoint_specs(checkpoints)
     if len(players) < 2 and not include_self_pairs:
         raise ValueError("at least two checkpoints are needed for a tournament")
+    games_per_pair = _validate_games_per_pair(int(games_per_pair))
     pair_specs: list[dict[str, Any]] = []
     pair_index = 0
     for i, player_a in enumerate(players):
@@ -399,7 +446,7 @@ def build_pair_specs(
                             {"seat": 0, **player_a},
                             {"seat": 1, **player_b},
                         ],
-                        "games_per_pair": int(games_per_pair),
+                        "games_per_pair": games_per_pair,
                         "seed": int(seed) + pair_index * 10_000,
                         **settings,
                     }
@@ -437,6 +484,9 @@ def normalize_pair_spec(raw: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError(
             f"gif_sample_strategy must be one of {GIF_SAMPLE_STRATEGY_CHOICES!r}"
         )
+    games_per_pair = _validate_games_per_pair(
+        int(raw.get("games_per_pair", DEFAULT_GAMES_PER_PAIR))
+    )
     games_per_shard = int(raw.get("games_per_shard", DEFAULT_GAMES_PER_SHARD))
     if games_per_shard < 1:
         raise ValueError("games_per_shard must be at least 1")
@@ -455,7 +505,7 @@ def normalize_pair_spec(raw: Mapping[str, Any]) -> dict[str, Any]:
         "battle_id": battle_id,
         "pair_index": int(raw.get("pair_index") or 0),
         "players": normalized_players,
-        "games_per_pair": int(raw.get("games_per_pair", DEFAULT_GAMES_PER_PAIR)),
+        "games_per_pair": games_per_pair,
         "games_per_shard": games_per_shard,
         "reuse_policies_per_shard": reuse_policies_per_shard,
         "seed": int(raw.get("seed", 0)),
@@ -630,14 +680,12 @@ def estimate_tournament_plan(
     save_frames_npz: bool = DEFAULT_SAVE_FRAMES_NPZ,
 ) -> dict[str, Any]:
     checkpoint_count = int(checkpoint_count)
-    games_per_pair = int(games_per_pair)
+    games_per_pair = _validate_games_per_pair(int(games_per_pair))
     games_per_shard = int(games_per_shard)
     gif_sample_games_per_pair = int(gif_sample_games_per_pair)
     gif_sample_strategy = str(gif_sample_strategy)
     if checkpoint_count < 0:
         raise ValueError("checkpoint_count must be non-negative")
-    if games_per_pair < 1:
-        raise ValueError("games_per_pair must be at least 1")
     if games_per_shard < 1:
         raise ValueError("games_per_shard must be at least 1")
     if gif_sample_games_per_pair < -1:
@@ -1072,6 +1120,8 @@ def normalize_rating_spec(raw: Mapping[str, Any] | None = None) -> dict[str, Any
         pairs_per_round = int(pairs_per_round_raw)
         if pairs_per_round < 1:
             raise ValueError("pairs_per_round must be positive or empty")
+    if pair_selection == "adaptive_v0" and not pairs_per_round:
+        raise ValueError("adaptive_v0 pair selection requires pairs_per_round")
     draw_score = float(spec.get("draw_score", DEFAULT_RATING_DRAW_SCORE))
     if draw_score != 0.5:
         raise ValueError("rating v0 requires draw_score=0.5")
@@ -1092,9 +1142,9 @@ def normalize_rating_spec(raw: Mapping[str, Any] | None = None) -> dict[str, Any
     round_count = int(spec.get("round_count", DEFAULT_RATING_ROUND_COUNT))
     if round_count < 1:
         raise ValueError("round_count must be at least 1")
-    games_per_pair = int(spec.get("games_per_pair", DEFAULT_GAMES_PER_PAIR))
-    if games_per_pair < 1:
-        raise ValueError("games_per_pair must be at least 1")
+    games_per_pair = _validate_games_per_pair(
+        int(spec.get("games_per_pair", DEFAULT_GAMES_PER_PAIR))
+    )
     games_per_shard = int(spec.get("games_per_shard", DEFAULT_GAMES_PER_SHARD))
     if games_per_shard < 1:
         raise ValueError("games_per_shard must be at least 1")
@@ -1743,6 +1793,76 @@ def _checkpoint_runtime_settings_from_payload(payload: Any) -> dict[str, Any]:
     return settings
 
 
+def _checkpoint_model_contract_from_payload(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, Mapping):
+        return {}
+    candidates: list[Mapping[str, Any]] = []
+    metadata = payload.get("metadata")
+    if isinstance(metadata, Mapping):
+        candidates.append(metadata)
+        observation_contract = metadata.get("observation_contract")
+        if isinstance(observation_contract, Mapping):
+            candidates.append(observation_contract)
+    config = payload.get("config")
+    if isinstance(config, Mapping):
+        candidates.append(config)
+    candidates.append(payload)
+
+    model_env_variant = None
+    model_reward_variant = None
+    for candidate in candidates:
+        if model_env_variant is None:
+            model_env_variant = (
+                candidate.get("model_env_variant")
+                or candidate.get("training_env_variant")
+                or candidate.get("env_variant")
+            )
+        if model_reward_variant is None:
+            model_reward_variant = (
+                candidate.get("model_reward_variant")
+                or candidate.get("training_reward_variant")
+                or candidate.get("reward_variant")
+            )
+    contract: dict[str, Any] = {}
+    if model_env_variant:
+        contract["model_env_variant"] = str(model_env_variant)
+    if model_reward_variant:
+        contract["model_reward_variant"] = str(model_reward_variant)
+    return contract
+
+
+def _checkpoint_model_contract_from_ref(
+    checkpoint_ref: str,
+    *,
+    mount: Path,
+) -> dict[str, Any]:
+    path = runs.require_relative_ref(checkpoint_ref)
+    parts = path.parts
+    metadata_refs: list[PurePosixPath] = []
+    if len(parts) >= 5 and parts[0] == "training" and parts[3] == "attempts":
+        attempt_root = PurePosixPath(*parts[:5])
+        metadata_refs.append(attempt_root / "command.json")
+        metadata_refs.append(attempt_root / "attempt.json")
+    if len(parts) >= 3 and parts[0] == "training":
+        run_root = PurePosixPath(*parts[:3])
+        metadata_refs.append(run_root / "run.json")
+
+    contract: dict[str, Any] = {}
+    for ref in metadata_refs:
+        metadata_path = runs.volume_path(mount, ref)
+        if not metadata_path.exists():
+            continue
+        try:
+            with metadata_path.open("r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except Exception:
+            continue
+        payload_contract = _checkpoint_model_contract_from_payload(payload)
+        for key, value in payload_contract.items():
+            contract.setdefault(key, value)
+    return contract
+
+
 def _checkpoint_policy_trail_render_mode_from_ref(
     checkpoint_ref: str,
     *,
@@ -1835,6 +1955,18 @@ def _load_policy_from_checkpoint(
         _checkpoint_policy_trail_render_mode_from_payload(payload)
         or _checkpoint_policy_trail_render_mode_from_ref(checkpoint_ref, mount=mount)
     )
+    payload_model_contract = _checkpoint_model_contract_from_payload(payload)
+    ref_model_contract = _checkpoint_model_contract_from_ref(checkpoint_ref, mount=mount)
+    effective_model_env_variant = (
+        model_env_variant
+        or payload_model_contract.get("model_env_variant")
+        or ref_model_contract.get("model_env_variant")
+    )
+    effective_model_reward_variant = (
+        model_reward_variant
+        or payload_model_contract.get("model_reward_variant")
+        or ref_model_contract.get("model_reward_variant")
+    )
     runtime_settings = {
         **_checkpoint_runtime_settings_from_ref(checkpoint_ref, mount=mount),
         **_checkpoint_runtime_settings_from_payload(payload),
@@ -1859,8 +1991,14 @@ def _load_policy_from_checkpoint(
         telemetry_path=telemetry_path,
         env_variant=ENV_VARIANT_SOURCE_STATE_TURN_COMMIT,
         reward_variant=DEFAULT_REWARD_VARIANT,
-        model_env_variant=model_env_variant,
-        model_reward_variant=model_reward_variant,
+        model_env_variant=(
+            str(effective_model_env_variant) if effective_model_env_variant else None
+        ),
+        model_reward_variant=(
+            str(effective_model_reward_variant)
+            if effective_model_reward_variant
+            else None
+        ),
         opponent_policy_kind=OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
         opponent_checkpoint=None,
         opponent_snapshot_ref=None,
@@ -1880,6 +2018,20 @@ def _load_policy_from_checkpoint(
         "checkpoint_state_key": found_key,
         "policy_trail_render_mode": policy_trail_render_mode,
         "runtime_settings": runtime_settings,
+        "model_env_variant": (
+            str(effective_model_env_variant) if effective_model_env_variant else None
+        ),
+        "model_reward_variant": (
+            str(effective_model_reward_variant)
+            if effective_model_reward_variant
+            else None
+        ),
+        "model_contract_source": {
+            "explicit_model_env_variant": model_env_variant,
+            "explicit_model_reward_variant": model_reward_variant,
+            "payload": payload_model_contract,
+            "metadata": ref_model_contract,
+        },
         "surface": surface,
     }
 

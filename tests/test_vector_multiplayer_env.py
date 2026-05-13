@@ -793,6 +793,141 @@ def test_public_seeded_bonus_self_small_expiry_restores_radius():
     assert int(env.state["bonus_stack_type"][0, 0, 0]) == vector_runtime.BONUS_TYPE_NONE
 
 
+def test_public_seeded_bonus_stack_clears_on_wall_death_before_late_expiry():
+    scenario_name = "source_bonus_self_fast_stack_death_late_expiry_step.json"
+    scenario_path = f"scenarios/environment/{scenario_name}"
+    state, fixture = _fixture_state(scenario_path, body_capacity=8)
+    env = VectorMultiplayerEnv(
+        batch_size=1,
+        player_count=2,
+        decision_ms=1.0,
+        body_capacity=8,
+        event_capacity=16,
+        timer_capacity=4,
+        random_tape_capacity=8,
+        event_mode="debug-event",
+    )
+    env.reset_from_state_arrays(
+        state,
+        reset_seed=np.asarray([101], dtype=np.uint64),
+    )
+    env.seed_active_bonus(
+        row=0,
+        bonus_type="BonusSelfFast",
+        x=20.0,
+        y=20.0,
+        bonus_id=1,
+        bonus_capacity=3,
+        stack_capacity=vector_runtime.SOURCE_MAX_ACTIVE_BONUSES,
+    )
+    env.state["bonus_active"][0, 1:] = True
+    env.state["bonus_type"][0, 1:] = vector_runtime.BONUS_TYPE_SELF_FAST
+    env.state["bonus_id"][0, 1:] = np.asarray([2, 3], dtype=np.int32)
+    env.state["bonus_pos"][0, 1:] = np.asarray([[20.0, 20.0], [20.0, 20.0]])
+    env.state["bonus_radius"][0, 1:] = vector_runtime.SOURCE_BONUS_RADIUS
+    env.state["bonus_count"][0] = 3
+    env.state["bonus_world_body_count"][0] = 3
+
+    for step_index, expected_speed in enumerate((28.0, 40.0, 52.0)):
+        actions, step_ms = _fixture_actions_for_step(fixture, step_index=step_index)
+        env.decision_ms = step_ms
+        batch = env.step(actions)
+        _assert_seeded_bonus_public_claim(batch)
+        assert batch.info["step_counters"]["bonus_self_fast_catches"] == 1
+        np.testing.assert_array_equal(
+            env.state["bonus_stack_count"],
+            np.asarray([[step_index + 1, 0]], dtype=np.int16),
+        )
+        assert env.state["speed"][0, 0] == pytest.approx(expected_speed)
+
+    actions, step_ms = _fixture_actions_for_step(fixture, step_index=3)
+    env.decision_ms = step_ms
+    death_batch = env.step(actions)
+
+    _assert_seeded_bonus_public_claim(death_batch)
+    assert death_batch.info["step_counters"]["normal_wall_deaths"] == 1
+    assert bool(env.state["done"][0])
+    np.testing.assert_array_equal(env.state["alive"], np.asarray([[False, True]]))
+    np.testing.assert_array_equal(env.state["bonus_stack_count"], np.asarray([[0, 0]]))
+    assert env.state["speed"][0, 0] == pytest.approx(52.0)
+    with pytest.raises(RuntimeError, match="reset must be called"):
+        env.step(
+            actions,
+            timer_advance_ms=_fixture_timer_advance_ms(fixture, step_index=4),
+        )
+    np.testing.assert_array_equal(env.state["bonus_stack_count"], np.asarray([[0, 0]]))
+
+
+def test_public_seeded_bonus_self_fast_expiry_drains_before_wall_death():
+    scenario_name = "source_bonus_self_fast_expiry_then_wall_death_same_tick_step.json"
+    scenario_path = f"scenarios/environment/{scenario_name}"
+    state, fixture = _fixture_state(scenario_path, body_capacity=8)
+    actions, step_ms = _fixture_actions_for_step(fixture, step_index=0)
+    bonus = _first_active_bonus(scenario_name)
+    env = VectorMultiplayerEnv(
+        batch_size=1,
+        player_count=2,
+        decision_ms=step_ms if step_ms > 0.0 else 1.0,
+        body_capacity=8,
+        event_capacity=16,
+        timer_capacity=4,
+        random_tape_capacity=8,
+        event_mode="debug-event",
+    )
+    env.reset_from_state_arrays(
+        state,
+        reset_seed=np.asarray([101], dtype=np.uint64),
+    )
+    if step_ms == 0.0:
+        env.decision_ms = 0.0
+    env.seed_active_bonus(
+        row=0,
+        bonus_type=str(bonus["type"]),
+        x=float(bonus["x"]),
+        y=float(bonus["y"]),
+        bonus_id=1,
+    )
+
+    catch_batch = env.step(actions)
+
+    _assert_seeded_bonus_public_claim(catch_batch)
+    assert catch_batch.info["step_counters"]["bonus_self_fast_catches"] == 1
+    np.testing.assert_array_equal(env.state["bonus_stack_count"], np.asarray([[1, 0]]))
+    assert env.state["speed"][0, 0] == pytest.approx(28.0)
+    np.testing.assert_allclose(env.state["pos"][0, 0], [5.0, 20.0])
+
+    death_actions, death_step_ms = _fixture_actions_for_step(fixture, step_index=1)
+    env.decision_ms = death_step_ms
+    death_batch = env.step(
+        death_actions,
+        timer_advance_ms=_fixture_timer_advance_ms(fixture, step_index=1),
+    )
+
+    _assert_seeded_bonus_public_claim(death_batch)
+    assert death_batch.info["step_counters"]["bonus_self_fast_expiries"] == 1
+    assert death_batch.info["step_counters"]["normal_wall_deaths"] == 1
+    np.testing.assert_array_equal(death_batch.done, np.asarray([True], dtype=bool))
+    np.testing.assert_array_equal(env.state["alive"], np.asarray([[False, True]]))
+    np.testing.assert_array_equal(env.state["score"], np.asarray([[0, 1]], dtype=np.int32))
+    np.testing.assert_array_equal(env.state["bonus_stack_count"], np.asarray([[0, 0]]))
+    assert env.state["speed"][0, 0] == pytest.approx(16.0)
+    np.testing.assert_allclose(env.state["pos"][0, 0], [-1.4, 20.0], atol=1e-9)
+    np.testing.assert_allclose(env.state["pos"][0, 1], [76.4, 70.0], atol=1e-9)
+    np.testing.assert_array_equal(
+        death_batch.info["death_player"],
+        np.asarray([[0, -1]], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        death_batch.info["death_cause"],
+        np.asarray(
+            [[vector_runtime.DEATH_CAUSE_WALL, vector_runtime.DEATH_CAUSE_NONE]],
+            dtype=np.int16,
+        ),
+    )
+    assert death_batch.info["winner_ids"] == [[1]]
+    assert death_batch.info["loser_ids"] == [[0]]
+
+
 def test_public_seeded_bonus_game_clear_immediate_clear_matches_source_fixture():
     env, batch = _step_public_seeded_bonus_fixture_once(
         "source_bonus_game_clear_immediate_step.json",

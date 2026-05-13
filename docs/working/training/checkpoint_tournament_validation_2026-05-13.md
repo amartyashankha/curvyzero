@@ -10,6 +10,18 @@
 - A remote game can write a summary and GIF.
 - The browser can list tournaments and serve GIF/JSON files.
 
+## Adaptive Elo Must Also Prove
+
+- Scheduler output is deterministic from pool, snapshot, round index, and seed.
+- Scheduler output is bounded by the requested battle budget.
+- Scheduler does not build all possible pairs for huge pools.
+- Each adaptive pair has a clear schedule reason.
+- New checkpoints get enough distinct opponents before active status.
+- Replay battles create new battle refs and do not overwrite old summaries.
+- Ratings can still be recomputed from immutable battle summaries.
+- Website reads rankings/progress from small snapshot/index files, not all game
+  summaries.
+
 ## Local Tests
 
 Run:

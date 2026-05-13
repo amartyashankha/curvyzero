@@ -37,8 +37,10 @@ Borderless handling is wraparound:
   `world.getOposite(border[0], border[1])`.
 - `World.getOposite()` maps left to right, right to left, top to bottom, and
   bottom to top.
-- `BonusGameBorderless` has duration `10000`, probability `0.8`, and returns the
-  effect `['borderless', true]`.
+- `BonusGameBorderless` has duration `10000`, effective selection probability
+  `1`, and returns the effect `['borderless', true]`. The subclass declares
+  `probability = 0.8`, but source `BaseBonus.getProbability()` reads the base
+  prototype probability.
 - `GameBonusStack` applies that effect with `target.setBorderless(...)`; bonus
   removal resolves the stack back to the default value.
 - `BonusGameBorderless` is in the default room bonus set.

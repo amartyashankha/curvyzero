@@ -76,7 +76,9 @@ So normal wall death is not a special body in the world. It is a separate edge p
 - `src/client/model/preset/SoloPreset.js:24-30` includes it in the "Solo" preset.
 - `src/client/model/preset/EmptyPreset.js:11-17` has no bonuses, so no borderless bonus.
 - `src/server/model/Bonus/BonusGameBorderless.js:20` sets duration to `10000` ms.
-- `src/server/model/Bonus/BonusGameBorderless.js:27` sets probability to `0.8`.
+- `src/server/model/Bonus/BonusGameBorderless.js:27` declares probability
+  `0.8`, but `BaseBonus.getProbability()` reads the base prototype probability,
+  so the effective selection probability is `1`.
 - `src/server/model/Bonus/BonusGameBorderless.js:36-40` returns the effect `['borderless', true]`.
 - `src/server/model/Bonus/Bonus.js:22-30` applies a bonus and schedules `off()` after its duration.
 - `src/server/model/Bonus/BonusGame.js:40-54` adds/removes the game bonus from `game.bonusStack`.

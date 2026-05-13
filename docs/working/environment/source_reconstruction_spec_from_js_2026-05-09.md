@@ -425,11 +425,16 @@ Bonus effects to reproduce:
 | `BonusEnemySlow` | enemies | `5000` | `1` | velocity `-8` |
 | `BonusEnemyFast` | enemies | `6000` | `1` | velocity `+12` |
 | `BonusEnemyBig` | enemies | `7500` | `1` | radius exponent `+1` |
-| `BonusEnemyInverse` | enemies | `5000` | `0.8` | inverse `+1` |
-| `BonusEnemyStraightAngle` | enemies | `5000` | `0.6` | straight-angle mode, `pi/2` turn base |
-| `BonusGameBorderless` | game | `10000` | `0.8` | borderless true |
+| `BonusEnemyInverse` | enemies | `5000` | `1` | inverse `+1` |
+| `BonusEnemyStraightAngle` | enemies | `5000` | `1` | straight-angle mode, `pi/2` turn base |
+| `BonusGameBorderless` | game | `10000` | `1` | borderless true |
 | `BonusAllColor` | all | `7500` | `1` | rotate alive avatar colors |
 | `BonusGameClear` | game | `0` | dynamic | clear trails immediately |
+
+The `BonusEnemyInverse`, `BonusEnemyStraightAngle`, and `BonusGameBorderless`
+classes declare subclass prototype probabilities, but source
+`BaseBonus.getProbability()` reads `BaseBonus.prototype.probability`, so their
+effective type-selection probability is the base `1`.
 
 Proof status:
 

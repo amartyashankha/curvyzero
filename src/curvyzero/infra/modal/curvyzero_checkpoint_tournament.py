@@ -35,7 +35,20 @@ CURVYTRON_BONUS_SPRITE_SHEET_RELATIVE_PATH = (
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 500
 GIF_CACHE_MAX_AGE_SECONDS = 86_400
-DYNAMIC_HEADERS = {"Cache-Control": "no-store"}
+DYNAMIC_HEADERS = {
+    "Cache-Control": "no-store, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
+WEB_PAGE_RELOAD_MIN_INTERVAL_SECONDS = 30.0
+WEB_PROGRESS_RELOAD_MIN_INTERVAL_SECONDS = 60.0
+WEB_PROGRESS_CACHE_TTL_SECONDS = 5.0
+WEB_BATTLE_DETAIL_CACHE_TTL_SECONDS = 30.0
+WEB_PROVISIONAL_RATING_CACHE_TTL_SECONDS = 30.0
+WEB_GIF_BYTES_CACHE_TTL_SECONDS = 300.0
+WEB_GIF_BYTES_CACHE_MAX_ITEM_BYTES = 24 * 1024 * 1024
+DEFAULT_PROVISIONAL_RATING_INTERVAL_SECONDS = 60.0
+DEFAULT_PROVISIONAL_RATING_MAX_SECONDS = 23 * 60 * 60
 TRAINING_TASK_ID = "lightzero-curvytron-visual-survival"
 LOW_LEVEL_WORKER_RETRIES = modal.Retries(
     max_retries=2,
@@ -71,6 +84,8 @@ tournament_volume = modal.Volume.from_name(
     version=2,
 )
 app = modal.App(APP_NAME)
+_LAST_WEB_VOLUME_RELOAD_TS = 0.0
+_WEB_CACHE: dict[str, tuple[float, Any]] = {}
 
 
 def _checkpoint_volumes() -> dict[str, Any]:
@@ -103,6 +118,60 @@ def _reload_volume(volume: Any, *, force: bool = False) -> str | None:
     except Exception as exc:  # pragma: no cover - remote Volume resilience.
         return f"{type(exc).__name__}: {exc}"
     return None
+
+
+def _web_reload_volume(
+    volume: Any,
+    *,
+    force: bool = False,
+    min_interval_sec: float = WEB_PROGRESS_RELOAD_MIN_INTERVAL_SECONDS,
+) -> str | None:
+    """Refresh the web container's Volume view without reloading on every poll."""
+
+    global _LAST_WEB_VOLUME_RELOAD_TS
+    now = time.monotonic()
+    if not force and now - _LAST_WEB_VOLUME_RELOAD_TS < float(min_interval_sec):
+        return None
+    _LAST_WEB_VOLUME_RELOAD_TS = now
+    error = _reload_volume(volume, force=force)
+    if error is None:
+        _WEB_CACHE.clear()
+    return error
+
+
+def _web_cache_get(key: str, *, ttl_seconds: float) -> Any | None:
+    item = _WEB_CACHE.get(key)
+    if item is None:
+        return None
+    created_at, value = item
+    if time.monotonic() - created_at > float(ttl_seconds):
+        _WEB_CACHE.pop(key, None)
+        return None
+    return value
+
+
+def _web_cache_set(key: str, value: Any) -> Any:
+    _WEB_CACHE[key] = (time.monotonic(), value)
+    return value
+
+
+def _read_cached_file_bytes(
+    path: Path,
+    *,
+    cache_prefix: str,
+    ttl_seconds: float,
+    max_item_bytes: int,
+) -> bytes:
+    stat = path.stat()
+    key = f"{cache_prefix}:{path.as_posix()}:{stat.st_mtime_ns}:{stat.st_size}"
+    if stat.st_size <= int(max_item_bytes):
+        cached = _web_cache_get(key, ttl_seconds=ttl_seconds)
+        if isinstance(cached, bytes):
+            return cached
+    data = path.read_bytes()
+    if len(data) <= int(max_item_bytes):
+        _web_cache_set(key, data)
+    return data
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -283,6 +352,23 @@ def _write_tournament_marker(tournament_id: str) -> dict[str, Any]:
     return _write_tournament_marker_at(TOURNAMENT_MOUNT, tournament_id)
 
 
+def _game_count_from_shard_id(shard_id: str, *, default: int) -> int:
+    parts = str(shard_id or "").split("-games-", 1)
+    if len(parts) != 2:
+        return max(0, int(default))
+    bounds = parts[1].split("-", 1)
+    if len(bounds) != 2:
+        return max(0, int(default))
+    try:
+        start = int(bounds[0])
+        end = int(bounds[1])
+    except ValueError:
+        return max(0, int(default))
+    if end < start:
+        return max(0, int(default))
+    return end - start + 1
+
+
 def _list_tournament_visibility_rows(mount: Path) -> list[dict[str, Any]]:
     base = runs.volume_path(mount, arena.TOURNAMENT_BASE_REF)
     if not base.exists():
@@ -453,12 +539,16 @@ def _compact_battle_index_row(
         "round_id": summary.get("round_id"),
         "round_index": summary.get("round_index"),
         "battle_id": summary.get("battle_id"),
+        "pair_index": summary.get("pair_index"),
         "players": players,
         "checkpoint_ids": checkpoint_ids,
         "tally": summary.get("tally"),
         "ok": summary.get("ok"),
         "summary_ref": summary.get("summary_ref"),
         "first_gif_ref": summary.get("first_gif_ref"),
+        "sample_gif_refs": summary.get("sample_gif_refs"),
+        "shard_summary_refs": summary.get("shard_summary_refs"),
+        "shard_summary_ref_count": summary.get("shard_summary_ref_count"),
         "updated_at": summary.get("ended_at") or summary.get("started_at"),
         "updated_ts": float(updated_ts if updated_ts is not None else time.time()),
     }
@@ -503,13 +593,49 @@ def _write_battle_index(
         "total": len(rows),
         "rows": arena._to_plain(rows),
     }
-    return arena.write_json_artifact(mount, ref, payload)
+    write_summary = arena.write_json_artifact(mount, ref, payload)
+    payload["ref"] = write_summary.get("ref")
+    return arena._to_plain(payload)
 
 
 def _slim_rating_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     slim = dict(snapshot)
     slim.pop("pair_rating_results", None)
     return arena._to_plain(slim)
+
+
+def _slim_provisional_rating_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+    slim = _slim_rating_snapshot(snapshot)
+    slim.pop("live_pair_results", None)
+    return arena._to_plain(slim)
+
+
+def _write_provisional_rating_artifacts(
+    mount: Path,
+    *,
+    tournament_id: str,
+    rating_run_id: str,
+    snapshot: Mapping[str, Any],
+) -> dict[str, Any]:
+    live_pair_results = snapshot.get("live_pair_results")
+    battle_index: dict[str, Any] = {}
+    if isinstance(live_pair_results, Sequence) and not isinstance(
+        live_pair_results,
+        (str, bytes),
+    ):
+        battle_index = _write_battle_index(
+            tournament_id,
+            [dict(row) for row in live_pair_results if isinstance(row, Mapping)],
+            mount=mount,
+        )
+    slim = dict(_slim_provisional_rating_snapshot(snapshot))
+    slim["battle_index_ref"] = arena.tournament_battle_index_ref(tournament_id).as_posix()
+    arena.write_json_artifact(
+        mount,
+        _rating_provisional_latest_ref(tournament_id, rating_run_id),
+        slim,
+    )
+    return arena._to_plain({"snapshot": slim, "battle_index": battle_index})
 
 
 def _read_rating_round_input(
@@ -613,15 +739,39 @@ def _rating_round_progress_payload(
         str(pair["battle_id"]): int(pair.get("pair_index", 0) or 0)
         for pair in pair_specs
     }
+    shard_size_by_battle = {
+        str(pair["battle_id"]): max(
+            1,
+            int(pair.get("games_per_shard") or arena.DEFAULT_GAMES_PER_SHARD),
+        )
+        for pair in pair_specs
+    }
     seen_pair_dir_ids: set[str] = set()
+    seen_shard_game_counts: dict[str, int] = {}
     if pair_only and game_results is None:
         root = runs.volume_path(mount, arena.tournament_root_ref(clean_tournament_id)) / "battles"
         if root.exists():
-            seen_pair_dir_ids = {
-                path.name
-                for path in root.iterdir()
-                if path.is_dir() and path.name in expected_by_battle
-            }
+            for pair in pair_specs:
+                battle_id = str(pair["battle_id"])
+                battle_root = root / runs.clean_id(battle_id, label="battle_id")
+                if not battle_root.exists():
+                    continue
+                seen_pair_dir_ids.add(battle_id)
+                expected = int(expected_by_battle.get(battle_id) or 0)
+                shard_size = max(1, int(shard_size_by_battle.get(battle_id) or 1))
+                seen_count = 0
+                shards_root = battle_root / "shards"
+                if shards_root.exists():
+                    for shard_dir in shards_root.iterdir():
+                        if not shard_dir.is_dir():
+                            continue
+                        if (shard_dir / "summary.json").is_file():
+                            seen_count += _game_count_from_shard_id(
+                                shard_dir.name,
+                                default=shard_size,
+                            )
+                if seen_count:
+                    seen_shard_game_counts[battle_id] = min(expected, seen_count)
         summaries = []
     elif game_results is None:
         summaries: Sequence[tuple[Path | None, dict[str, Any]]] = _iter_rating_game_summaries(
@@ -675,7 +825,10 @@ def _rating_round_progress_payload(
     for pair in pair_specs:
         battle_id = str(pair["battle_id"])
         expected = int(expected_by_battle.get(battle_id) or 0)
-        seen = len(games_by_battle.get(battle_id, []))
+        if pair_only:
+            seen = min(expected, int(seen_shard_game_counts.get(battle_id, 0) or 0))
+        else:
+            seen = len(games_by_battle.get(battle_id, []))
         pair_index = int(pair_index_by_battle.get(battle_id, 0))
         pair_dir_seen = battle_id in seen_pair_dir_ids
         if seen > 0 or pair_dir_seen:
@@ -699,16 +852,29 @@ def _rating_round_progress_payload(
                 {
                     "battle_id": battle_id,
                     "pair_index": pair_index,
-                    "seen_game_count": seen if not pair_only else None,
+                    "seen_game_count": seen if seen else (None if pair_only else 0),
                     "expected_game_count": expected,
                     "complete": bool(expected > 0 and seen >= expected),
                 }
             )
 
     game_count = int(input_payload.get("game_count") or sum(expected_by_battle.values()))
-    completed_game_count = len(seen_games)
+    completed_game_count = (
+        sum(
+            min(
+                int(expected_by_battle.get(battle_id) or 0),
+                int(seen_shard_game_counts.get(battle_id, 0) or 0),
+            )
+            for battle_id in expected_by_battle
+        )
+        if pair_only
+        else len(seen_games)
+    )
     estimated_seen_game_count = (
-        sum(int(expected_by_battle.get(battle_id) or 0) for battle_id in seen_pair_dir_ids)
+        max(
+            completed_game_count,
+            sum(int(expected_by_battle.get(battle_id) or 0) for battle_id in seen_pair_dir_ids),
+        )
         if pair_only
         else None
     )
@@ -751,7 +917,7 @@ def _rating_round_progress_payload(
         "failed_game_count": failed_game_count,
         "unknown_result_count": unknown_result_count,
         "result_counts_known": bool((not pair_only) and unknown_result_count == 0),
-        "count_basis": "battle_dirs" if pair_only else "summary_files",
+        "count_basis": "shard_summary_files" if pair_only else "summary_files",
         "started_pair_count": started_pairs,
         "partial_pair_count": partial_pairs,
         "completed_pair_count": completed_pairs,
@@ -1136,6 +1302,72 @@ def _refs_from_shards(shards: Sequence[Mapping[str, Any]], key: str) -> list[str
         elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
             refs.extend(str(item) for item in value if item)
     return refs
+
+
+def _read_battle_shard_summaries(
+    mount: Path,
+    *,
+    tournament_id: str,
+    battle_id: str,
+) -> list[dict[str, Any]]:
+    root = (
+        runs.volume_path(mount, arena.battle_root_ref(tournament_id, battle_id))
+        / "shards"
+    )
+    if not root.exists():
+        return []
+    shards = []
+    for path in root.glob("*/summary.json"):
+        shard = _read_json(path)
+        if not shard:
+            continue
+        shard.setdefault("summary_ref", runs.file_ref(path, mount=mount))
+        shards.append(shard)
+    shards.sort(
+        key=lambda shard: (
+            int(shard.get("shard_index", 0) or 0),
+            str(shard.get("shard_id") or ""),
+        )
+    )
+    return arena._to_plain(shards)
+
+
+def _summarize_live_pair_from_shards(
+    pair: Mapping[str, Any],
+    *,
+    shards: Sequence[Mapping[str, Any]],
+    rating_run_id: str | None = None,
+    round_id: str | None = None,
+    round_index: int | None = None,
+) -> dict[str, Any]:
+    tally = arena.merge_game_tallies(
+        [
+            dict(shard.get("tally"))
+            for shard in shards
+            if isinstance(shard.get("tally"), Mapping)
+        ]
+    )
+    summary = arena.summarize_pair_from_tally(
+        pair,
+        tally=tally,
+        first_gif_ref=_first_ref_from_shards(shards, "first_gif_ref"),
+    )
+    summary["summary_ref"] = arena.battle_summary_ref(
+        pair["tournament_id"],
+        pair["battle_id"],
+    ).as_posix()
+    summary["shard_summary_refs"] = _refs_from_shards(shards, "summary_ref")
+    summary["shard_summary_ref_count"] = len(summary["shard_summary_refs"])
+    summary["sample_gif_refs"] = _refs_from_shards(shards, "sample_gif_refs")
+    summary["shard_count"] = len(shards)
+    summary["result_detail_mode"] = "live_shard_tally"
+    if rating_run_id:
+        summary["rating_run_id"] = rating_run_id
+    if round_id:
+        summary["round_id"] = round_id
+    if round_index is not None:
+        summary["round_index"] = int(round_index)
+    return arena._to_plain(summary)
 
 
 def _summarize_pair_results_from_shard_tallies(
@@ -1603,9 +1835,6 @@ def curvytron_tournament_game_shard(shard_spec: dict[str, Any]) -> dict[str, Any
             result["checkpoint_reload_error"] = checkpoint_reload_error
         games.append(arena._compact_game_result(result))
 
-    commit_started = time.perf_counter()
-    commit_error = _commit_volume(tournament_volume)
-    commit_seconds = time.perf_counter() - commit_started
     timing = {
         "checkpoint_reload_seconds": reload_seconds,
         "requested_policy_reuse": requested_policy_reuse,
@@ -1613,7 +1842,7 @@ def curvytron_tournament_game_shard(shard_spec: dict[str, Any]) -> dict[str, Any
         "policy_reuse_disabled_reason": reuse_disabled_reason,
         "policy_load_seconds": policy_load_seconds,
         "run_seconds_total": run_seconds_total,
-        "commit_seconds": commit_seconds,
+        "commit_seconds": None,
         "total_seconds": time.perf_counter() - started,
     }
     payload = {
@@ -1632,8 +1861,6 @@ def curvytron_tournament_game_shard(shard_spec: dict[str, Any]) -> dict[str, Any
         payload["policy_load_failure"] = policy_load_failure
     if checkpoint_reload_error:
         payload["checkpoint_reload_error"] = checkpoint_reload_error
-    if commit_error:
-        payload["commit_error"] = commit_error
     tally = arena.tally_game_results(games)
     payload["tally"] = tally
     payload["game_summary_ref_count"] = sum(
@@ -1658,6 +1885,13 @@ def curvytron_tournament_game_shard(shard_spec: dict[str, Any]) -> dict[str, Any
         )
     except Exception as exc:  # pragma: no cover - best-effort telemetry.
         payload["shard_summary_write_error"] = f"{type(exc).__name__}: {exc}"
+    commit_started = time.perf_counter()
+    commit_error = _commit_volume(tournament_volume)
+    commit_seconds = time.perf_counter() - commit_started
+    timing["commit_seconds"] = commit_seconds
+    timing["total_seconds"] = time.perf_counter() - started
+    if commit_error:
+        payload["commit_error"] = commit_error
     if not bool(shard_spec.get("return_games", True)):
         payload.pop("games", None)
     print(
@@ -1734,6 +1968,7 @@ def curvytron_tournament_run(tournament_spec: dict[str, Any]) -> dict[str, Any]:
     started_at = runs.utc_timestamp()
     _write_tournament_marker(tournament_id)
     _write_tournament_manifest(spec, status="running")
+    startup_commit_error = _commit_volume(tournament_volume)
 
     checkpoints = spec.get("checkpoints") or spec.get("checkpoint_refs") or []
     if isinstance(checkpoints, str):
@@ -1873,6 +2108,8 @@ def curvytron_tournament_run(tournament_spec: dict[str, Any]) -> dict[str, Any]:
     commit_error = _commit_volume(tournament_volume)
     if commit_error:
         complete["commit_error"] = commit_error
+    if startup_commit_error:
+        complete["startup_commit_error"] = startup_commit_error
     print(json.dumps(arena._to_plain(complete), sort_keys=True))
     return arena._to_plain({"complete": complete, "standings": standings})
 
@@ -2114,6 +2351,17 @@ def curvytron_rating_loop(rating_spec: dict[str, Any]) -> dict[str, Any]:
         status="rating",
     )
     _write_rating_config(spec)
+    startup_commit_error = _commit_volume(tournament_volume)
+    provisional_call = curvytron_rating_provisional_loop.spawn(
+        {
+            "tournament_id": spec["tournament_id"],
+            "rating_run_id": spec["rating_run_id"],
+        }
+    )
+    provisional_call_id = (
+        getattr(provisional_call, "object_id", None)
+        or getattr(provisional_call, "id", None)
+    )
     previous_snapshot: dict[str, Any] | None = None
     rounds = []
     started_at = runs.utc_timestamp()
@@ -2127,6 +2375,13 @@ def curvytron_rating_loop(rating_spec: dict[str, Any]) -> dict[str, Any]:
             }
         )
         previous_snapshot = result["snapshot"]
+        if isinstance(previous_snapshot, Mapping):
+            arena.write_json_artifact(
+                TOURNAMENT_MOUNT,
+                arena.rating_latest_ref(spec["tournament_id"], spec["rating_run_id"]),
+                _slim_rating_snapshot(previous_snapshot),
+            )
+            _commit_volume(tournament_volume)
         rounds.append(
             {
                 "round_id": result["round_id"],
@@ -2153,6 +2408,7 @@ def curvytron_rating_loop(rating_spec: dict[str, Any]) -> dict[str, Any]:
         "ended_at": runs.utc_timestamp(),
         "round_count_requested": int(spec["round_count"]),
         "round_count_completed": len(rounds),
+        "provisional_rating_call_id": provisional_call_id,
         "rounds": rounds,
         "latest_ref": arena.rating_latest_ref(
             spec["tournament_id"],
@@ -2168,6 +2424,8 @@ def curvytron_rating_loop(rating_spec: dict[str, Any]) -> dict[str, Any]:
     commit_error = _commit_volume(tournament_volume)
     if commit_error:
         complete["commit_error"] = commit_error
+    if startup_commit_error:
+        complete["startup_commit_error"] = startup_commit_error
     print(json.dumps(arena._to_plain(complete), sort_keys=True))
     return arena._to_plain({"complete": complete, "latest": previous_snapshot})
 
@@ -2231,6 +2489,188 @@ def curvytron_rating_progress(progress_spec: dict[str, Any]) -> dict[str, Any]:
         )
     )
     return arena._to_plain(progress)
+
+
+@app.function(
+    image=image,
+    volumes=_tournament_volumes(),
+    cpu=2.0,
+    memory=8192,
+    timeout=60 * 60,
+    max_containers=3,
+)
+def curvytron_rating_provisional(provisional_spec: dict[str, Any]) -> dict[str, Any]:
+    _reload_volume(tournament_volume)
+    tournament_id = runs.clean_id(
+        str(provisional_spec["tournament_id"]),
+        label="tournament_id",
+    )
+    rating_run_id = runs.clean_id(
+        str(provisional_spec.get("rating_run_id") or arena.DEFAULT_RATING_RUN_ID),
+        label="rating_run_id",
+    )
+    snapshot = _build_provisional_rating_snapshot_for_run(
+        TOURNAMENT_MOUNT,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+    )
+    if not snapshot:
+        progress = _read_rating_progress(
+            TOURNAMENT_MOUNT,
+            tournament_id=tournament_id,
+            rating_run_id=rating_run_id,
+        )
+        payload = {
+            "schema_id": arena.RATING_SNAPSHOT_SCHEMA_ID,
+            "tournament_id": tournament_id,
+            "rating_run_id": rating_run_id,
+            "provisional": True,
+            "status": "pending",
+            "rating_count": 0,
+            "progress": progress,
+            "updated_at": runs.utc_timestamp(),
+            "provisional_ref": _rating_provisional_latest_ref(
+                tournament_id,
+                rating_run_id,
+            ).as_posix(),
+        }
+        arena.write_json_artifact(
+            TOURNAMENT_MOUNT,
+            _rating_provisional_latest_ref(tournament_id, rating_run_id),
+            payload,
+        )
+        commit_error = _commit_volume(tournament_volume)
+        if commit_error:
+            payload["commit_error"] = commit_error
+        return arena._to_plain(payload)
+    artifacts = _write_provisional_rating_artifacts(
+        TOURNAMENT_MOUNT,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+        snapshot=snapshot,
+    )
+    slim = artifacts["snapshot"]
+    commit_error = _commit_volume(tournament_volume)
+    if commit_error:
+        slim["commit_error"] = commit_error
+    payload = {
+        "schema_id": arena.RATING_SNAPSHOT_SCHEMA_ID,
+        "tournament_id": tournament_id,
+        "rating_run_id": rating_run_id,
+        "provisional": True,
+        "status": "written",
+        "rating_count": len(slim.get("ratings") or []),
+        "completed_pair_count": slim.get("completed_pair_count"),
+        "completed_game_count": slim.get("completed_game_count"),
+        "provisional_ref": slim.get("provisional_ref"),
+        "battle_index_total": (artifacts.get("battle_index") or {}).get("total"),
+        "updated_at": runs.utc_timestamp(),
+    }
+    if commit_error:
+        payload["commit_error"] = commit_error
+    print(json.dumps(arena._to_plain(payload), sort_keys=True))
+    return arena._to_plain(payload)
+
+
+@app.function(
+    image=image,
+    volumes=_tournament_volumes(),
+    cpu=2.0,
+    memory=8192,
+    timeout=24 * 60 * 60,
+    max_containers=2,
+)
+def curvytron_rating_provisional_loop(loop_spec: dict[str, Any]) -> dict[str, Any]:
+    tournament_id = runs.clean_id(
+        str(loop_spec["tournament_id"]),
+        label="tournament_id",
+    )
+    rating_run_id = runs.clean_id(
+        str(loop_spec.get("rating_run_id") or arena.DEFAULT_RATING_RUN_ID),
+        label="rating_run_id",
+    )
+    interval_seconds = max(
+        15.0,
+        float(loop_spec.get("interval_seconds", DEFAULT_PROVISIONAL_RATING_INTERVAL_SECONDS)),
+    )
+    max_seconds = max(
+        interval_seconds,
+        float(loop_spec.get("max_seconds", DEFAULT_PROVISIONAL_RATING_MAX_SECONDS)),
+    )
+    started = time.monotonic()
+    writes = 0
+    last_payload: dict[str, Any] = {}
+    while True:
+        _reload_volume(tournament_volume)
+        snapshot = _build_provisional_rating_snapshot_for_run(
+            TOURNAMENT_MOUNT,
+            tournament_id=tournament_id,
+            rating_run_id=rating_run_id,
+        )
+        latest = _read_rating_snapshot_for_run(
+            TOURNAMENT_MOUNT,
+            tournament_id=tournament_id,
+            rating_run_id=rating_run_id,
+        )
+        if latest and latest.get("ratings"):
+            last_payload = {
+                "schema_id": arena.RATING_SNAPSHOT_SCHEMA_ID,
+                "tournament_id": tournament_id,
+                "rating_run_id": rating_run_id,
+                "status": "final_snapshot_seen",
+                "rating_count": len(latest.get("ratings") or []),
+                "writes": writes,
+                "updated_at": runs.utc_timestamp(),
+            }
+            print(json.dumps(arena._to_plain(last_payload), sort_keys=True))
+            return arena._to_plain(last_payload)
+        if snapshot and snapshot.get("ratings"):
+            artifacts = _write_provisional_rating_artifacts(
+                TOURNAMENT_MOUNT,
+                tournament_id=tournament_id,
+                rating_run_id=rating_run_id,
+                snapshot=snapshot,
+            )
+            slim = artifacts["snapshot"]
+            commit_error = _commit_volume(tournament_volume)
+            writes += 1
+            last_payload = {
+                "schema_id": arena.RATING_SNAPSHOT_SCHEMA_ID,
+                "tournament_id": tournament_id,
+                "rating_run_id": rating_run_id,
+                "status": "written",
+                "rating_count": len(slim.get("ratings") or []),
+                "completed_pair_count": slim.get("completed_pair_count"),
+                "completed_game_count": slim.get("completed_game_count"),
+                "battle_index_total": (artifacts.get("battle_index") or {}).get("total"),
+                "writes": writes,
+                "updated_at": runs.utc_timestamp(),
+            }
+            if commit_error:
+                last_payload["commit_error"] = commit_error
+            print(json.dumps(arena._to_plain(last_payload), sort_keys=True))
+        elif not last_payload:
+            last_payload = {
+                "schema_id": arena.RATING_SNAPSHOT_SCHEMA_ID,
+                "tournament_id": tournament_id,
+                "rating_run_id": rating_run_id,
+                "status": "waiting_for_shard_summaries",
+                "rating_count": 0,
+                "writes": writes,
+                "updated_at": runs.utc_timestamp(),
+            }
+            arena.write_json_artifact(
+                TOURNAMENT_MOUNT,
+                _rating_provisional_latest_ref(tournament_id, rating_run_id),
+                last_payload,
+            )
+            _commit_volume(tournament_volume)
+        if time.monotonic() - started >= max_seconds:
+            last_payload["status"] = "stopped_after_max_seconds"
+            last_payload["updated_at"] = runs.utc_timestamp()
+            print(json.dumps(arena._to_plain(last_payload), sort_keys=True))
+            return arena._to_plain(last_payload)
+        time.sleep(interval_seconds)
 
 
 @app.function(
@@ -2642,6 +3082,497 @@ def _read_live_rating_progress(
     return progress
 
 
+def _read_cached_live_rating_progress(
+    mount: Path,
+    *,
+    tournament_id: str,
+    rating_run_id: str = "latest",
+) -> dict[str, Any]:
+    cache_key = f"live-progress:{mount}:{tournament_id}:{rating_run_id}"
+    cached = _web_cache_get(cache_key, ttl_seconds=WEB_PROGRESS_CACHE_TTL_SECONDS)
+    if isinstance(cached, dict):
+        return cached
+    progress = _read_rating_progress(
+        mount,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+    )
+    progress = _merge_progress_with_provisional_snapshot(
+        mount,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+        progress=progress,
+    )
+    return _web_cache_set(
+        cache_key,
+        progress,
+    )
+
+
+def _maybe_spawn_rating_progress_refresh(
+    *,
+    tournament_id: str,
+    rating_run_id: str,
+    progress: Mapping[str, Any],
+    min_interval_seconds: float = 30.0,
+) -> str:
+    if not tournament_id or not rating_run_id:
+        return ""
+    if progress.get("status") == "complete":
+        return ""
+    cache_key = f"progress-refresh-spawn:{tournament_id}:{rating_run_id}"
+    cached = _web_cache_get(cache_key, ttl_seconds=min_interval_seconds)
+    if cached:
+        return str(cached)
+    round_index = int(progress.get("round_index", 0) or 0)
+    round_id = str(progress.get("round_id") or arena.rating_round_id(round_index))
+    try:
+        call = curvytron_rating_progress.spawn(
+            {
+                "tournament_id": tournament_id,
+                "rating_run_id": rating_run_id,
+                "round_id": round_id,
+                "round_index": round_index,
+                "load_summaries": False,
+            }
+        )
+        call_id = getattr(call, "object_id", "") or str(call)
+    except Exception as exc:  # pragma: no cover - web best-effort refresh.
+        call_id = f"{type(exc).__name__}: {exc}"
+    _web_cache_set(cache_key, call_id)
+    return str(call_id)
+
+
+def _read_rating_config_for_run(
+    mount: Path,
+    *,
+    tournament_id: str,
+    rating_run_id: str,
+) -> dict[str, Any]:
+    if not tournament_id or not rating_run_id:
+        return {}
+    return _read_json(
+        runs.volume_path(mount, arena.rating_config_ref(tournament_id, rating_run_id))
+    )
+
+
+def _rating_provisional_latest_ref(tournament_id: str, rating_run_id: str) -> Path:
+    return arena.rating_root_ref(tournament_id, rating_run_id) / "provisional_latest.json"
+
+
+def _read_provisional_rating_snapshot_for_run(
+    mount: Path,
+    *,
+    tournament_id: str,
+    rating_run_id: str,
+) -> dict[str, Any]:
+    if not tournament_id or not rating_run_id:
+        return {}
+    return _read_json(
+        runs.volume_path(
+            mount,
+            _rating_provisional_latest_ref(tournament_id, rating_run_id),
+        )
+    )
+
+
+def _merge_progress_with_provisional_snapshot(
+    mount: Path,
+    *,
+    tournament_id: str,
+    rating_run_id: str,
+    progress: Mapping[str, Any],
+) -> dict[str, Any]:
+    merged = dict(progress or {})
+    if merged.get("status") == "complete":
+        return arena._to_plain(merged)
+    snapshot = _read_provisional_rating_snapshot_for_run(
+        mount,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+    )
+    if not snapshot or not snapshot.get("ratings"):
+        return arena._to_plain(merged)
+    completed_pairs = int(snapshot.get("completed_pair_count") or 0)
+    completed_games = int(snapshot.get("completed_game_count") or 0)
+    pair_count = int(
+        merged.get("pair_count")
+        or snapshot.get("total_pair_count")
+        or completed_pairs
+        or 0
+    )
+    game_count = int(
+        merged.get("game_count")
+        or snapshot.get("total_game_count")
+        or completed_games
+        or 0
+    )
+    merged_completed_pairs = max(
+        int(merged.get("completed_pair_count") or 0),
+        completed_pairs,
+    )
+    merged_completed_games = max(
+        int(merged.get("completed_game_count") or 0),
+        completed_games,
+    )
+    estimated_seen_games = max(
+        int(merged.get("estimated_seen_game_count") or 0),
+        merged_completed_games,
+    )
+    merged.update(
+        {
+            "status": merged.get("status") or "running",
+            "phase": "games_running_with_provisional_ratings",
+            "provisional_ratings_written": True,
+            "provisional_rating_count": len(snapshot.get("ratings") or []),
+            "provisional_ref": snapshot.get("provisional_ref"),
+            "completed_pair_count": merged_completed_pairs,
+            "started_pair_count": max(
+                int(merged.get("started_pair_count") or 0),
+                merged_completed_pairs,
+            ),
+            "completed_game_count": merged_completed_games,
+            "estimated_seen_game_count": estimated_seen_games,
+            "pair_count": pair_count,
+            "game_count": game_count,
+            "completion_fraction": (
+                float(merged_completed_games) / float(game_count) if game_count else 0.0
+            ),
+            "estimated_completion_fraction": (
+                float(estimated_seen_games) / float(game_count) if game_count else 0.0
+            ),
+            "updated_at": snapshot.get("updated_at") or merged.get("updated_at"),
+        }
+    )
+    return arena._to_plain(merged)
+
+
+def _live_pair_results_from_shard_summaries(
+    mount: Path,
+    *,
+    input_payload: Mapping[str, Any],
+) -> tuple[list[dict[str, Any]], int]:
+    pair_specs = [
+        dict(pair)
+        for pair in input_payload.get("pair_specs", [])
+        if isinstance(pair, Mapping) and pair.get("battle_id")
+    ]
+    pair_by_battle = {str(pair["battle_id"]): pair for pair in pair_specs}
+    shards_by_battle: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    tournament_id = str(input_payload["tournament_id"])
+    battles_root = (
+        runs.volume_path(mount, arena.tournament_root_ref(tournament_id)) / "battles"
+    )
+    if battles_root.exists():
+        for path in battles_root.glob("*/shards/*/summary.json"):
+            battle_id = path.parents[2].name
+            if battle_id not in pair_by_battle:
+                continue
+            shard = _read_json(path)
+            if not shard:
+                continue
+            shard.setdefault("summary_ref", runs.file_ref(path, mount=mount))
+            shards_by_battle[battle_id].append(shard)
+
+    pair_results: list[dict[str, Any]] = []
+    total_games = 0
+    for pair in pair_specs:
+        battle_id = str(pair["battle_id"])
+        shards = sorted(
+            shards_by_battle.get(battle_id, []),
+            key=lambda shard: (
+                int(shard.get("shard_index", 0) or 0),
+                str(shard.get("shard_id") or ""),
+            ),
+        )
+        if not shards:
+            continue
+        summary = _summarize_live_pair_from_shards(
+            pair,
+            shards=shards,
+            rating_run_id=str(input_payload.get("rating_run_id") or ""),
+            round_id=str(input_payload.get("round_id") or ""),
+            round_index=int(input_payload.get("round_index", 0) or 0),
+        )
+        tally = summary.get("tally") if isinstance(summary.get("tally"), Mapping) else {}
+        total_games += int(tally.get("game_count") or 0)
+        pair_results.append(summary)
+    return arena._to_plain(pair_results), int(total_games)
+
+
+def _build_provisional_rating_snapshot_for_run(
+    mount: Path,
+    *,
+    tournament_id: str,
+    rating_run_id: str,
+) -> dict[str, Any]:
+    if not tournament_id or not rating_run_id:
+        return {}
+    cache_key = f"provisional-rating:{mount}:{tournament_id}:{rating_run_id}"
+    cached = _web_cache_get(
+        cache_key,
+        ttl_seconds=WEB_PROVISIONAL_RATING_CACHE_TTL_SECONDS,
+    )
+    if isinstance(cached, dict):
+        return cached
+
+    config = _read_rating_config_for_run(
+        mount,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+    )
+    spec = config.get("rating_spec") if isinstance(config.get("rating_spec"), Mapping) else {}
+    if not spec:
+        return {}
+    progress = _read_rating_progress(
+        mount,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+    )
+    round_index = int(progress.get("round_index", 0) or 0)
+    round_id = str(progress.get("round_id") or arena.rating_round_id(round_index))
+    try:
+        input_payload = _read_rating_round_input(
+            mount,
+            tournament_id=tournament_id,
+            rating_run_id=rating_run_id,
+            round_id=round_id,
+        )
+    except FileNotFoundError:
+        return {}
+    pair_results, game_count = _live_pair_results_from_shard_summaries(
+        mount,
+        input_payload=input_payload,
+    )
+    if not pair_results:
+        return {}
+    previous_snapshot = _previous_rating_snapshot(
+        mount,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+        round_index=round_index,
+    )
+    snapshot = arena.rating_snapshot_from_pair_results(
+        pair_results=pair_results,
+        rating_spec=spec,
+        previous_snapshot=previous_snapshot,
+        round_index=round_index,
+        created_at=runs.utc_timestamp(),
+    )
+    snapshot["provisional"] = True
+    snapshot["source"] = "live_shard_summaries"
+    snapshot["status"] = "running"
+    snapshot["game_count"] = int(game_count)
+    snapshot["total_pair_count"] = int(input_payload.get("pair_count") or 0)
+    snapshot["total_game_count"] = int(input_payload.get("game_count") or 0)
+    snapshot["completed_pair_count"] = len(pair_results)
+    snapshot["completed_game_count"] = int(game_count)
+    snapshot["latest_ref"] = arena.rating_latest_ref(tournament_id, rating_run_id).as_posix()
+    snapshot["provisional_ref"] = _rating_provisional_latest_ref(
+        tournament_id,
+        rating_run_id,
+    ).as_posix()
+    snapshot["progress_ref"] = arena.rating_progress_ref(tournament_id, rating_run_id).as_posix()
+    snapshot["live_pair_results"] = pair_results
+    return _web_cache_set(cache_key, arena._to_plain(snapshot))
+
+
+def _read_best_rating_snapshot_for_run(
+    mount: Path,
+    *,
+    tournament_id: str,
+    rating_run_id: str,
+    allow_live_provisional: bool = False,
+) -> dict[str, Any]:
+    snapshot = _read_rating_snapshot_for_run(
+        mount,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+    )
+    if snapshot:
+        return snapshot
+    provisional = _read_provisional_rating_snapshot_for_run(
+        mount,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+    )
+    if not allow_live_provisional:
+        return provisional
+    live = _build_provisional_rating_snapshot_for_run(
+        mount,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+    )
+    if not live:
+        return provisional
+    if not provisional:
+        return live
+    live_games = int(live.get("completed_game_count") or live.get("game_count") or 0)
+    provisional_games = int(
+        provisional.get("completed_game_count") or provisional.get("game_count") or 0
+    )
+    return live if live_games >= provisional_games else provisional
+
+
+def _battle_index_from_pair_results(
+    pair_results: Sequence[Mapping[str, Any]],
+    *,
+    checkpoint_id: str = "",
+    limit: int = DEFAULT_LIMIT,
+    offset: int = 0,
+) -> dict[str, Any]:
+    selected_checkpoint_id = str(checkpoint_id or "").strip()
+    rows = []
+    for summary in pair_results:
+        if not isinstance(summary, Mapping):
+            continue
+        row = _compact_battle_index_row(summary)
+        if selected_checkpoint_id and not _battle_matches_checkpoint(
+            row,
+            selected_checkpoint_id,
+        ):
+            continue
+        rows.append(row)
+    rows.sort(
+        key=lambda row: (
+            int(row.get("pair_index", 0) or 0),
+            str(row.get("battle_id") or ""),
+        )
+    )
+    total = len(rows)
+    page = rows[offset : offset + limit]
+    return {
+        "rows": arena._to_plain(page),
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "has_older": offset + limit < total,
+        "has_newer": offset > 0,
+        "source": "live_shard_tallies",
+        "checkpoint_id": selected_checkpoint_id,
+    }
+
+
+def _safe_int_or_none(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _checkpoint_live_shard_battles(
+    mount: Path,
+    *,
+    tournament_id: str,
+    rating_run_id: str,
+    checkpoint_id: str,
+    limit: int = MAX_LIMIT,
+    offset: int = 0,
+) -> dict[str, Any]:
+    if not tournament_id or not rating_run_id or not checkpoint_id:
+        return {
+            "rows": [],
+            "total": 0,
+            "limit": limit,
+            "offset": offset,
+            "has_older": False,
+            "has_newer": offset > 0,
+            "source": "checkpoint_live_shards_unavailable",
+            "checkpoint_id": checkpoint_id,
+        }
+    progress = _read_rating_progress(
+        mount,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+    )
+    round_index = int(progress.get("round_index", 0) or 0)
+    round_id = str(progress.get("round_id") or arena.rating_round_id(round_index))
+    try:
+        input_payload = _read_rating_round_input(
+            mount,
+            tournament_id=tournament_id,
+            rating_run_id=rating_run_id,
+            round_id=round_id,
+        )
+    except FileNotFoundError:
+        return {
+            "rows": [],
+            "total": 0,
+            "limit": limit,
+            "offset": offset,
+            "has_older": False,
+            "has_newer": offset > 0,
+            "source": "checkpoint_live_shards_missing_round_input",
+            "checkpoint_id": checkpoint_id,
+        }
+    pair_results = []
+    for pair in input_payload.get("pair_specs", []):
+        if not isinstance(pair, Mapping) or not pair.get("battle_id"):
+            continue
+        pair_row = dict(pair)
+        if not _battle_matches_checkpoint(pair_row, checkpoint_id):
+            continue
+        pair_row["summary_ref"] = arena.battle_summary_ref(
+            tournament_id,
+            str(pair_row["battle_id"]),
+        ).as_posix()
+        pair_row["rating_run_id"] = rating_run_id
+        pair_row["round_id"] = round_id
+        pair_row["round_index"] = round_index
+        pair_results.append(pair_row)
+    page = _battle_index_from_pair_results(
+        pair_results,
+        checkpoint_id=checkpoint_id,
+        limit=limit,
+        offset=offset,
+    )
+    page["source"] = "checkpoint_round_input"
+    page["round_id"] = round_id
+    page["round_index"] = round_index
+    return arena._to_plain(page)
+
+
+def _enrich_battle_row_from_live_shards(
+    mount: Path,
+    row: Mapping[str, Any],
+) -> dict[str, Any]:
+    tournament_id = str(row.get("tournament_id") or "")
+    battle_id = str(row.get("battle_id") or "")
+    if not tournament_id or not battle_id:
+        return dict(row)
+    if row.get("tally") and (row.get("sample_gif_refs") or row.get("first_gif_ref")):
+        return dict(row)
+    shards = _read_battle_shard_summaries(
+        mount,
+        tournament_id=tournament_id,
+        battle_id=battle_id,
+    )
+    if not shards:
+        return dict(row)
+    summary = _summarize_live_pair_from_shards(
+        row,
+        shards=shards,
+        rating_run_id=str(row.get("rating_run_id") or ""),
+        round_id=str(row.get("round_id") or ""),
+        round_index=_safe_int_or_none(row.get("round_index")),
+    )
+    enriched = dict(row)
+    for key in (
+        "tally",
+        "ok",
+        "summary_ref",
+        "first_gif_ref",
+        "sample_gif_refs",
+        "shard_summary_refs",
+        "shard_summary_ref_count",
+        "shard_count",
+        "result_detail_mode",
+    ):
+        if key in summary:
+            enriched[key] = summary[key]
+    return arena._to_plain(enriched)
+
+
 def _assert_checkpoint_count(
     *,
     refs: Sequence[str],
@@ -2738,6 +3669,40 @@ def _battle_opponent_for_checkpoint(
     return {}
 
 
+def _checkpoint_battle_sort_key(
+    row: Mapping[str, Any],
+    checkpoint_id: str,
+    rank_by_checkpoint: Mapping[str, int],
+) -> tuple[int, int, str]:
+    opponent = _battle_opponent_for_checkpoint(row, checkpoint_id)
+    opponent_id = str(opponent.get("checkpoint_id") or "")
+    try:
+        opponent_rank = int(rank_by_checkpoint.get(opponent_id) or 1_000_000)
+    except (TypeError, ValueError):
+        opponent_rank = 1_000_000
+    try:
+        pair_index = int(row.get("pair_index", 0) or 0)
+    except (TypeError, ValueError):
+        pair_index = 0
+    return opponent_rank, pair_index, str(row.get("battle_id") or "")
+
+
+def _sort_checkpoint_battle_rows(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    checkpoint_id: str,
+    rank_by_checkpoint: Mapping[str, int],
+) -> list[dict[str, Any]]:
+    return sorted(
+        [dict(row) for row in rows if isinstance(row, Mapping)],
+        key=lambda row: _checkpoint_battle_sort_key(
+            row,
+            checkpoint_id,
+            rank_by_checkpoint,
+        ),
+    )
+
+
 def _wins_for_checkpoint(row: Mapping[str, Any], checkpoint_id: str) -> int:
     tally = row.get("tally") if isinstance(row.get("tally"), Mapping) else {}
     wins_by_checkpoint = (
@@ -2794,20 +3759,22 @@ def _review_rankings_payload(
     rating_run_id: str = "latest",
     limit: int = 100,
     offset: int = 0,
+    allow_live_provisional: bool = False,
 ) -> dict[str, Any]:
     tournaments = _list_tournaments(mount)
     selected_tournament = _default_tournament_id(tournaments, tournament_id)
     rating_runs = (
-        _list_rating_latest_runs(mount, tournament_id=selected_tournament)
+        _list_rating_runs(mount, tournament_id=selected_tournament)
         if selected_tournament
         else []
     )
     selected_rating_run = _default_rating_run_id(rating_runs, rating_run_id)
     snapshot = (
-        _read_rating_snapshot_for_run(
+        _read_best_rating_snapshot_for_run(
             mount,
             tournament_id=selected_tournament,
             rating_run_id=selected_rating_run,
+            allow_live_provisional=allow_live_provisional,
         )
         if selected_tournament and selected_rating_run
         else {}
@@ -2818,6 +3785,8 @@ def _review_rankings_payload(
         "selected_tournament_id": selected_tournament,
         "rating_run_id": selected_rating_run,
         "round_id": snapshot.get("round_id"),
+        "provisional": bool(snapshot.get("provisional")),
+        "source": snapshot.get("source"),
         "rows": arena._to_plain(page),
         "total": len(rows),
         "limit": limit,
@@ -2847,7 +3816,7 @@ def _review_checkpoint_payload(
     selected_tournament = str(rankings.get("selected_tournament_id") or "")
     selected_rating_run = str(rankings.get("rating_run_id") or "")
     snapshot = (
-        _read_rating_snapshot_for_run(
+        _read_best_rating_snapshot_for_run(
             mount,
             tournament_id=selected_tournament,
             rating_run_id=selected_rating_run,
@@ -2868,21 +3837,57 @@ def _review_checkpoint_payload(
         if selected_tournament
         else {"rows": [], "total": 0, "source": "none"}
     )
-    rows = [
+    if (
+        battles.get("source") == "battle_index_missing"
+        and selected_tournament
+        and selected_rating_run
+    ):
+        battles = _checkpoint_live_shard_battles(
+            mount,
+            tournament_id=selected_tournament,
+            rating_run_id=selected_rating_run,
+            checkpoint_id=checkpoint_id,
+            limit=MAX_LIMIT,
+            offset=0,
+        )
+    if battles.get("source") in {
+        "battle_index_missing",
+        "checkpoint_live_shards_missing_round_input",
+        "checkpoint_live_shards_unavailable",
+        "none",
+    }:
+        live_pair_results = snapshot.get("live_pair_results")
+        if (
+            isinstance(live_pair_results, Sequence)
+            and not isinstance(live_pair_results, (str, bytes))
+        ):
+            battles = _battle_index_from_pair_results(
+                live_pair_results,
+                checkpoint_id=checkpoint_id,
+                limit=MAX_LIMIT,
+                offset=0,
+            )
+    source = str(battles.get("source") or "")
+    battle_rows = battles.get("rows", [])
+    raw_rows = _sort_checkpoint_battle_rows(
+        battle_rows if isinstance(battle_rows, Sequence) else [],
+        checkpoint_id=checkpoint_id,
+        rank_by_checkpoint=rank_by_checkpoint,
+    )
+    page_rows = raw_rows[offset : offset + limit]
+    if source in {"battle_index", "checkpoint_round_input", "live_shard_tallies"}:
+        page_rows = [
+            _enrich_battle_row_from_live_shards(mount, row)
+            for row in page_rows
+        ]
+    page = [
         _review_battle_row(
             row,
             checkpoint_id,
             rank_by_checkpoint=rank_by_checkpoint,
         )
-        for row in battles.get("rows", [])
+        for row in page_rows
     ]
-    rows.sort(
-        key=lambda row: (
-            int(row.get("opponent_rank") or 1_000_000),
-            str(row.get("battle_id") or ""),
-        )
-    )
-    page = rows[offset : offset + limit]
     return {
         "selected_tournament_id": selected_tournament,
         "rating_run_id": selected_rating_run,
@@ -2890,12 +3895,12 @@ def _review_checkpoint_payload(
         "checkpoint_id": checkpoint_id,
         "ranking": arena._to_plain(rating_row),
         "rows": arena._to_plain(page),
-        "total": len(rows),
+        "total": len(raw_rows),
         "limit": limit,
         "offset": offset,
-        "has_older": offset + limit < len(rows),
+        "has_older": offset + limit < len(raw_rows),
         "has_newer": offset > 0,
-        "source": battles.get("source"),
+        "source": source,
     }
 
 
@@ -2908,6 +3913,13 @@ def _review_battle_payload(
 ) -> dict[str, Any]:
     tournaments = _list_tournaments(mount)
     selected_tournament = _default_tournament_id(tournaments, tournament_id)
+    cache_key = f"battle-detail:{mount}:{selected_tournament}:{battle_id}:{gif_sample_limit}"
+    cached = _web_cache_get(
+        cache_key,
+        ttl_seconds=WEB_BATTLE_DETAIL_CACHE_TTL_SECONDS,
+    )
+    if isinstance(cached, dict):
+        return cached
     source = "none"
     row: dict[str, Any] = {}
     summary: dict[str, Any] = {}
@@ -2926,27 +3938,74 @@ def _review_battle_payload(
                 "first_gif_ref": summary.get("first_gif_ref"),
             }
         else:
-            page = _list_battle_index(
+            battle_root = runs.volume_path(
                 mount,
-                tournament_id=selected_tournament,
-                limit=1_000_000,
-                offset=0,
+                arena.battle_root_ref(selected_tournament, battle_id),
             )
-            source = str(page.get("source") or "battle_index")
-            row = next(
-                (
-                    dict(item)
-                    for item in page.get("rows", [])
-                    if isinstance(item, Mapping) and str(item.get("battle_id") or "") == battle_id
-                ),
-                {},
-            )
-            summary = _read_battle_summary(
-                mount,
-                tournament_id=selected_tournament,
-                battle_id=battle_id,
-                battle_index_row=row,
-            )
+            if battle_root.exists():
+                shards = _read_battle_shard_summaries(
+                    mount,
+                    tournament_id=selected_tournament,
+                    battle_id=battle_id,
+                )
+                if shards:
+                    summary = {
+                        "tournament_id": selected_tournament,
+                        "battle_id": battle_id,
+                        "tally": arena.merge_game_tallies(
+                            [
+                                dict(shard.get("tally"))
+                                for shard in shards
+                                if isinstance(shard.get("tally"), Mapping)
+                            ]
+                        ),
+                        "shard_summary_refs": _refs_from_shards(
+                            shards,
+                            "summary_ref",
+                        ),
+                        "shard_summary_ref_count": len(shards),
+                        "sample_gif_refs": _refs_from_shards(
+                            shards,
+                            "sample_gif_refs",
+                        ),
+                        "first_gif_ref": _first_ref_from_shards(
+                            shards,
+                            "first_gif_ref",
+                        ),
+                        "shard_count": len(shards),
+                        "result_detail_mode": "live_shard_tally",
+                    }
+                source = "battle_dir"
+                row = {
+                    "tournament_id": selected_tournament,
+                    "battle_id": battle_id,
+                    "tally": summary.get("tally") if summary else None,
+                    "ok": None,
+                    "summary_ref": None,
+                    "first_gif_ref": summary.get("first_gif_ref") if summary else None,
+                }
+            else:
+                page = _list_battle_index(
+                    mount,
+                    tournament_id=selected_tournament,
+                    limit=1_000_000,
+                    offset=0,
+                )
+                source = str(page.get("source") or "battle_index")
+                row = next(
+                    (
+                        dict(item)
+                        for item in page.get("rows", [])
+                        if isinstance(item, Mapping) and str(item.get("battle_id") or "") == battle_id
+                    ),
+                    {},
+                )
+                summary = _read_battle_summary(
+                    mount,
+                    tournament_id=selected_tournament,
+                    battle_id=battle_id,
+                    battle_index_row=row,
+                )
     games, game_sources = (
         _read_game_summary_refs(
             mount,
@@ -2954,7 +4013,7 @@ def _review_battle_payload(
             battle_id=battle_id,
             battle_summary=summary,
         )
-        if selected_tournament and summary
+        if selected_tournament and (summary or row)
         else ([], [])
     )
     summary_without_games = dict(summary)
@@ -2964,7 +4023,7 @@ def _review_battle_payload(
         games=games,
         limit=gif_sample_limit,
     )
-    return {
+    payload = {
         "selected_tournament_id": selected_tournament,
         "battle_id": battle_id,
         "battle": arena._to_plain(row),
@@ -2976,6 +4035,9 @@ def _review_battle_payload(
         "sample_gif_count": len(samples),
         "source": source,
     }
+    if payload["game_count"] or payload["sample_gif_count"] or source == "battle_summary":
+        return _web_cache_set(cache_key, arena._to_plain(payload))
+    return arena._to_plain(payload)
 
 
 def _href(path: str, **params: Any) -> str:
@@ -2994,6 +4056,30 @@ def _page_href(**params: Any) -> str:
 
 def _battle_href(**params: Any) -> str:
     return _href("/battle", **params)
+
+
+def _friendly_progress_label(progress: Mapping[str, Any]) -> str:
+    status = str(progress.get("status") or "")
+    phase = str(progress.get("phase") or "")
+    if status == "complete":
+        return "rankings ready"
+    if phase in {"game_map_started", "games_running", "all_games_seen"}:
+        return "running games"
+    if phase in {"reduced", "ratings_written"}:
+        return "finalizing rankings"
+    if status == "pending":
+        return "starting"
+    return (status or phase or "starting").replace("_", " ")
+
+
+def _short_battle_label(battle_id: str, pair_index: Any = None) -> str:
+    if pair_index is not None:
+        return f"pair {pair_index}"
+    marker = "-pair-"
+    if marker in battle_id:
+        tail = battle_id.split(marker, 1)[1]
+        return f"pair {tail.split('-', 1)[0]}"
+    return battle_id
 
 
 def _read_tournament_json_ref(mount: Path, ref: str) -> dict[str, Any]:
@@ -3261,7 +4347,7 @@ def _render_battle_detail_section(*, payload: Mapping[str, Any]) -> str:
         sample_cards.append(
             f"""
             <a class="gif-card" href="/gif?ref={gif_ref}">
-              <img src="/gif?ref={gif_ref}" alt="{html.escape(caption)}">
+              <img src="/gif?ref={gif_ref}" alt="{html.escape(caption)}" loading="lazy" decoding="async">
               <span>{html.escape(caption or "Sample")}</span>
             </a>
             """
@@ -3342,14 +4428,27 @@ def _render_page(
     battles: dict[str, Any],
     selected_battle_id: str = "",
     battle_detail: Mapping[str, Any] | None = None,
+    volume_reload_error: str = "",
 ) -> str:
     import html
+    import math
 
     def fmt_number(value: Any, *, digits: int = 1) -> str:
         try:
             return f"{float(value):.{digits}f}"
         except (TypeError, ValueError):
             return ""
+
+    def sort_number_attr(value: Any) -> str:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return ""
+        if not math.isfinite(number):
+            return ""
+        if number.is_integer():
+            return str(int(number))
+        return f"{number:.6f}".rstrip("0").rstrip(".")
 
     options = "\n".join(
         f'<option value="{html.escape(row["tournament_id"])}" '
@@ -3372,6 +4471,13 @@ def _render_page(
     )
     rating_html = ""
     if rating_rows:
+        provisional = bool(rating_snapshot.get("provisional"))
+        ranking_title = "Live Rankings" if provisional else "Rankings"
+        ranking_status = (
+            "updating from finished games"
+            if provisional
+            else str(rating_snapshot.get("round_id", ""))
+        )
         body = []
         for row in rating_rows:
             record = row if isinstance(row, Mapping) else {}
@@ -3401,8 +4507,8 @@ def _render_page(
         rating_html = f"""
         <section class="panel">
           <div class="panel-head">
-            <h2>Rankings</h2>
-            <span>{html.escape(str(rating_snapshot.get("rating_run_id", "")))} / {html.escape(str(rating_snapshot.get("round_id", "")))}</span>
+            <h2>{html.escape(ranking_title)}</h2>
+            <span>{html.escape(str(rating_snapshot.get("rating_run_id", "")))} / {html.escape(ranking_status)}</span>
           </div>
           <div class="scroll-panel rankings-scroll">
             <table>
@@ -3413,7 +4519,25 @@ def _render_page(
         </section>
         """
     elif rating_runs:
-        rating_html = '<p class="summary">Rating run exists, but no rating rows were found.</p>'
+        status = str(rating_progress.get("status") or "")
+        if status and status != "complete":
+            friendly_status = _friendly_progress_label(rating_progress)
+            rating_html = f"""
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Rankings</h2>
+                <span>{html.escape(friendly_status)}</span>
+              </div>
+              <p class="in-panel">Rankings will appear as soon as finished games are visible. This page keeps updating while the tournament runs.</p>
+            </section>
+            """
+        else:
+            rating_html = """
+            <section class="panel">
+              <div class="panel-head"><h2>Rankings</h2><span>empty</span></div>
+              <p class="in-panel">This rating run exists, but no rating rows were found.</p>
+            </section>
+            """
     progress_html = ""
     if rating_progress:
         try:
@@ -3421,18 +4545,28 @@ def _render_page(
         except (TypeError, ValueError):
             pct = 0.0
         progress_html = f"""
-        <section class="panel" id="progress-panel" data-tournament-id="{html.escape(selected_tournament_id)}" data-rating-run-id="{html.escape(selected_rating_run_id)}">
+        <section class="panel" id="progress-panel" data-tournament-id="{html.escape(selected_tournament_id)}" data-rating-run-id="{html.escape(selected_rating_run_id)}" data-has-ratings="{html.escape('true' if rating_rows else 'false')}">
           <div class="panel-head">
             <h2>Progress</h2>
-            <span>{html.escape(str(rating_progress.get("rating_run_id") or selected_rating_run_id))}</span>
+            <span data-progress-field="updated">{html.escape(str(rating_progress.get("updated_at") or ""))}</span>
           </div>
           <div class="progress-body">
-            <div><strong data-progress-field="status">{html.escape(str(rating_progress.get("status") or ""))}</strong><span>status</span></div>
-            <div><strong data-progress-field="phase">{html.escape(str(rating_progress.get("phase") or ""))}</strong><span>phase</span></div>
+            <div><strong data-progress-field="status">{html.escape(_friendly_progress_label(rating_progress))}</strong><span>state</span></div>
+            <div><strong data-progress-field="phase">{html.escape(str(rating_progress.get("phase") or ""))}</strong><span>detail</span></div>
             <div><strong data-progress-field="pairs">{html.escape(str(rating_progress.get("started_pair_count") or 0))}/{html.escape(str(rating_progress.get("pair_count") or 0))}</strong><span>pairs started</span></div>
             <div><strong data-progress-field="games">{html.escape(str(rating_progress.get("estimated_seen_game_count") or rating_progress.get("completed_game_count") or 0))}/{html.escape(str(rating_progress.get("game_count") or 0))}</strong><span>games seen</span></div>
             <div><strong data-progress-field="percent">{pct:.1f}%</strong><span>estimated progress</span></div>
           </div>
+        </section>
+        """
+    elif rating_runs:
+        progress_html = f"""
+        <section class="panel" id="progress-panel" data-tournament-id="{html.escape(selected_tournament_id)}" data-rating-run-id="{html.escape(selected_rating_run_id)}" data-has-ratings="{html.escape('true' if rating_rows else 'false')}">
+          <div class="panel-head">
+            <h2>Progress</h2>
+            <span data-progress-field="updated"></span>
+          </div>
+          <p class="in-panel">Tournament state is loading. This page will check again automatically.</p>
         </section>
         """
     checkpoint_html = ""
@@ -3472,7 +4606,13 @@ def _render_page(
     if selected_checkpoint_id:
         rank_by_checkpoint = _rating_rank_by_checkpoint(rating_snapshot)
         body = []
-        for raw_row in battles.get("rows", []):
+        battle_rows = battles.get("rows", [])
+        sorted_battle_rows = _sort_checkpoint_battle_rows(
+            battle_rows if isinstance(battle_rows, Sequence) else [],
+            checkpoint_id=selected_checkpoint_id,
+            rank_by_checkpoint=rank_by_checkpoint,
+        )
+        for sort_index, raw_row in enumerate(sorted_battle_rows):
             row = _review_battle_row(
                 raw_row,
                 selected_checkpoint_id,
@@ -3497,8 +4637,15 @@ def _render_page(
             selected_battle_class = (
                 ' class="selected-row"' if battle_id and battle_id == selected_battle_id else ""
             )
+            opponent_rank_sort = sort_number_attr(row.get("opponent_rank"))
+            avg_steps_sort = sort_number_attr(row.get("average_physical_steps"))
+            failure_count_sort = sort_number_attr(row.get("failure_count"))
             body.append(
-                f"<tr{selected_battle_class}>"
+                f"<tr{selected_battle_class} data-battle-row "
+                f"data-sort-index=\"{sort_index}\" "
+                f"data-sort-rank=\"{html.escape(opponent_rank_sort)}\" "
+                f"data-sort-avg-steps=\"{html.escape(avg_steps_sort)}\" "
+                f"data-sort-failures=\"{html.escape(failure_count_sort)}\">"
                 f"<td>{html.escape(str(row.get('opponent_rank') or ''))}</td>"
                 f"<td title=\"{html.escape(opponent_id)}\"><a href=\"{html.escape(battle_href)}\">{html.escape(opponent_label)}</a></td>"
                 f"<td>{html.escape(str(row.get('checkpoint_wins', 0)))}-"
@@ -3520,8 +4667,8 @@ def _render_page(
                 <span>{html.escape(str(battles.get("total", 0)))} total</span>
               </div>
               <div class="scroll-panel battles-scroll">
-                <table>
-                  <thead><tr><th>Opp. rank</th><th>Opponent</th><th>W-L-D</th><th>Games</th><th>Avg steps</th><th>Failures</th><th>GIF</th><th>JSON</th><th>Battle</th></tr></thead>
+                <table data-battle-table data-sort-key="rank" data-sort-direction="asc">
+                  <thead><tr><th aria-sort="ascending"><button type="button" class="sort-button" data-battle-sort="rank">Opp. rank <span class="sort-indicator" data-sort-indicator="rank">asc</span></button></th><th>Opponent</th><th>W-L-D</th><th>Games</th><th><button type="button" class="sort-button" data-battle-sort="avgSteps">Avg steps <span class="sort-indicator" data-sort-indicator="avgSteps"></span></button></th><th><button type="button" class="sort-button" data-battle-sort="failures">Failures <span class="sort-indicator" data-sort-indicator="failures"></span></button></th><th>GIF</th><th>JSON</th><th>Battle</th></tr></thead>
                   <tbody>{"".join(body)}</tbody>
                 </table>
               </div>
@@ -3529,9 +4676,58 @@ def _render_page(
             """
         else:
             battle_html = '<div class="empty">No battles found for this checkpoint.</div>'
+    elif rating_progress and isinstance(rating_progress.get("recent_started_pairs"), Sequence):
+        recent_rows = [
+            row
+            for row in rating_progress.get("recent_started_pairs", [])
+            if isinstance(row, Mapping) and row.get("battle_id")
+        ]
+        if recent_rows:
+            body = []
+            for row in recent_rows[:50]:
+                battle_id = str(row.get("battle_id") or "")
+                battle_label = _short_battle_label(battle_id, row.get("pair_index"))
+                battle_href = _page_href(
+                    tournament_id=selected_tournament_id,
+                    rating_run_id=selected_rating_run_id,
+                    battle_id=battle_id,
+                )
+                body.append(
+                    "<tr>"
+                    f"<td>{html.escape(str(row.get('pair_index') if row.get('pair_index') is not None else ''))}</td>"
+                    f"<td title=\"{html.escape(battle_id)}\"><a href=\"{html.escape(battle_href)}#battle-detail\">{html.escape(battle_label)}</a></td>"
+                    f"<td>{html.escape(str(row.get('expected_game_count') or ''))}</td>"
+                    f"<td>{html.escape('yes' if row.get('complete') else 'running')}</td>"
+                    f"<td><a href=\"{html.escape(battle_href)}#battle-detail\">Games</a></td>"
+                    "</tr>"
+                )
+            battle_html = f"""
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Recent Battles</h2>
+                <span>live sample</span>
+              </div>
+              <div class="scroll-panel battles-scroll">
+                <table>
+                  <thead><tr><th>Pair</th><th>Battle</th><th>Games</th><th>State</th><th>Open</th></tr></thead>
+                  <tbody>{"".join(body)}</tbody>
+                </table>
+              </div>
+            </section>
+            """
     battle_detail_html = (
         _render_battle_detail_section(payload=battle_detail or {"battle_id": selected_battle_id})
         if selected_battle_id
+        else ""
+    )
+    reload_html = (
+        f"""
+        <section class="panel">
+          <div class="panel-head"><h2>Volume Refresh</h2><span>using last visible data</span></div>
+          <p class="in-panel">{html.escape(volume_reload_error)}</p>
+        </section>
+        """
+        if volume_reload_error
         else ""
     )
     return f"""<!doctype html>
@@ -3570,6 +4766,9 @@ def _render_page(
     table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
     th, td {{ padding: 7px 10px; border-bottom: 1px solid #eef0f3; text-align: left; }}
     th {{ color: #5f6368; font-weight: 600; position: sticky; top: 0; z-index: 1; background: white; }}
+    .sort-button {{ all: unset; display: inline-flex; align-items: center; gap: 4px; cursor: pointer; color: inherit; font: inherit; }}
+    .sort-button:focus-visible {{ outline: 2px solid #1a73e8; outline-offset: 2px; border-radius: 4px; }}
+    .panel .sort-indicator {{ min-width: 28px; color: #80868b; font-size: 11px; }}
     .selected-row td {{ background: #eef4ff; }}
     td:nth-child(n+3) {{ white-space: nowrap; }}
     .empty {{ padding: 60px; text-align: center; background: white; border: 1px dashed #dadce0; border-radius: 8px; color: #80868b; }}
@@ -3582,12 +4781,13 @@ def _render_page(
       <h1>CurvyTron Tournament</h1>
       <p class="summary">Checkpoint battles. Score is who dies first.</p>
     </div>
-    <form method="get">
-      <label>Tournament<br><select name="tournament_id">{options}</select></label>
-      <label>Rating<br><select name="rating_run_id">{rating_options}</select></label>
+    <form method="get" id="tournament-picker">
+      <label>Tournament<br><select name="tournament_id" data-picker="tournament">{options}</select></label>
+      <label>Rating<br><select name="rating_run_id" data-picker="rating">{rating_options}</select></label>
       <button type="submit">Open</button>
     </form>
   </header>
+  {reload_html}
   {progress_html}
   {rating_html}
   {checkpoint_html}
@@ -3596,6 +4796,115 @@ def _render_page(
 </main>
 <script>
 (() => {{
+  const picker = document.getElementById("tournament-picker");
+  const tournamentSelect = picker ? picker.querySelector("[name='tournament_id']") : null;
+  const ratingSelect = picker ? picker.querySelector("[name='rating_run_id']") : null;
+  const disablePicker = () => {{
+    if (!picker) return;
+    picker.querySelectorAll("select, button").forEach((node) => {{
+      node.disabled = true;
+    }});
+  }};
+  const navigatePicker = (changed) => {{
+    if (!picker) return;
+    const url = new URL(window.location.href);
+    const tournamentId = tournamentSelect ? tournamentSelect.value : "";
+    const ratingRunId = ratingSelect ? ratingSelect.value : "";
+    if (tournamentId) {{
+      url.searchParams.set("tournament_id", tournamentId);
+    }} else {{
+      url.searchParams.delete("tournament_id");
+    }}
+    if (changed === "tournament") {{
+      url.searchParams.delete("rating_run_id");
+    }} else if (ratingRunId) {{
+      url.searchParams.set("rating_run_id", ratingRunId);
+    }} else {{
+      url.searchParams.delete("rating_run_id");
+    }}
+    url.searchParams.delete("checkpoint_id");
+    url.searchParams.delete("battle_id");
+    url.searchParams.delete("fresh");
+    url.hash = "";
+    disablePicker();
+    window.location.assign(url.toString());
+  }};
+  if (tournamentSelect) {{
+    tournamentSelect.addEventListener("change", () => navigatePicker("tournament"));
+  }}
+  if (ratingSelect) {{
+    ratingSelect.addEventListener("change", () => navigatePicker("rating"));
+  }}
+  if (picker) {{
+    picker.addEventListener("submit", (event) => {{
+      event.preventDefault();
+      navigatePicker("rating");
+    }});
+  }}
+  const battleTable = document.querySelector("[data-battle-table]");
+  if (battleTable) {{
+    const tbody = battleTable.querySelector("tbody");
+    const sortButtons = battleTable.querySelectorAll("[data-battle-sort]");
+    const sortFields = {{
+      rank: "sortRank",
+      avgSteps: "sortAvgSteps",
+      failures: "sortFailures",
+    }};
+    const sortValue = (row, key) => {{
+      const field = sortFields[key];
+      const raw = field ? row.dataset[field] : "";
+      if (raw === undefined || raw === "") return null;
+      const parsed = Number(raw);
+      return Number.isFinite(parsed) ? parsed : null;
+    }};
+    const originalIndex = (row) => {{
+      const parsed = Number(row.dataset.sortIndex || "0");
+      return Number.isFinite(parsed) ? parsed : 0;
+    }};
+    const updateSortIndicators = (key, direction) => {{
+      battleTable.dataset.sortKey = key;
+      battleTable.dataset.sortDirection = direction;
+      battleTable.querySelectorAll("th[aria-sort]").forEach((cell) => {{
+        cell.removeAttribute("aria-sort");
+      }});
+      battleTable.querySelectorAll("[data-sort-indicator]").forEach((node) => {{
+        node.textContent = node.dataset.sortIndicator === key ? direction : "";
+      }});
+      const activeButton = battleTable.querySelector(`[data-battle-sort="${{key}}"]`);
+      if (activeButton && activeButton.closest("th")) {{
+        activeButton.closest("th").setAttribute(
+          "aria-sort",
+          direction === "asc" ? "ascending" : "descending",
+        );
+      }}
+    }};
+    const applyBattleSort = (key, direction) => {{
+      if (!tbody || !sortFields[key]) return;
+      const multiplier = direction === "desc" ? -1 : 1;
+      const rows = Array.from(tbody.querySelectorAll("[data-battle-row]"));
+      rows.sort((a, b) => {{
+        const left = sortValue(a, key);
+        const right = sortValue(b, key);
+        if (left === null && right === null) return originalIndex(a) - originalIndex(b);
+        if (left === null) return 1;
+        if (right === null) return -1;
+        const diff = (left - right) * multiplier;
+        if (diff !== 0) return diff;
+        return originalIndex(a) - originalIndex(b);
+      }});
+      rows.forEach((row) => tbody.appendChild(row));
+      updateSortIndicators(key, direction);
+    }};
+    sortButtons.forEach((button) => {{
+      button.addEventListener("click", () => {{
+        const key = button.dataset.battleSort || "rank";
+        const currentKey = battleTable.dataset.sortKey || "rank";
+        const currentDirection = battleTable.dataset.sortDirection || "asc";
+        const nextDirection = key === currentKey && currentDirection === "asc" ? "desc" : "asc";
+        applyBattleSort(key, nextDirection);
+      }});
+    }});
+  }}
   const panel = document.getElementById("progress-panel");
   if (!panel) return;
   const fields = {{}};
@@ -3610,27 +4919,71 @@ def _render_page(
   const set = (name, value) => {{
     if (fields[name]) fields[name].textContent = value;
   }};
+  const stateLabel = (progress) => {{
+    if (progress.status === "complete") return "rankings ready";
+    if (["game_map_started", "games_running", "all_games_seen"].includes(progress.phase)) return "running games";
+    if (["reduced", "ratings_written"].includes(progress.phase)) return "finalizing rankings";
+    if (progress.status === "pending") return "starting";
+    return text(progress.status || progress.phase || "starting").replaceAll("_", " ");
+  }};
+  const reloadKey = `curvyzero:tournament-ratings-reloaded:${{panel.dataset.tournamentId}}:${{panel.dataset.ratingRunId}}`;
+  let pollTimer = null;
+  let inFlight = false;
+  let failureCount = 0;
+  const scheduleNext = (delayMs) => {{
+    window.clearTimeout(pollTimer);
+    pollTimer = window.setTimeout(() => refreshProgress().catch(() => {{}}), delayMs);
+  }};
   async function refreshProgress() {{
+    if (inFlight) {{
+      scheduleNext(10000);
+      return;
+    }}
+    inFlight = true;
     const params = new URLSearchParams({{
       tournament_id: panel.dataset.tournamentId || "",
       rating_run_id: panel.dataset.ratingRunId || "",
     }});
-    const response = await fetch("/api/rating-progress?" + params.toString(), {{
-      cache: "no-store",
-    }});
-    if (!response.ok) return;
-    const payload = await response.json();
-    const progress = payload.progress || {{}};
-    const seen = progress.estimated_seen_game_count ?? progress.completed_game_count ?? 0;
-    const fraction = progress.estimated_completion_fraction ?? progress.completion_fraction ?? 0;
-    set("status", text(progress.status));
-    set("phase", text(progress.phase));
-    set("pairs", `${{text(progress.started_pair_count ?? 0)}}/${{text(progress.pair_count ?? 0)}}`);
-    set("games", `${{text(seen)}}/${{text(progress.game_count ?? 0)}}`);
-    set("percent", `${{(100 * number(fraction)).toFixed(1)}}%`);
+    const pollCount = Number(panel.dataset.pollCount || "0") + 1;
+    panel.dataset.pollCount = String(pollCount);
+    try {{
+      const response = await fetch("/api/rating-progress?" + params.toString(), {{
+        cache: "no-store",
+      }});
+      if (!response.ok) throw new Error(`progress ${{response.status}}`);
+      const payload = await response.json();
+      const progress = payload.progress || {{}};
+      const seen = progress.estimated_seen_game_count ?? progress.completed_game_count ?? 0;
+      const fraction = progress.estimated_completion_fraction ?? progress.completion_fraction ?? 0;
+      set("status", stateLabel(progress));
+      set("phase", text(progress.phase));
+      set("pairs", `${{text(progress.started_pair_count ?? 0)}}/${{text(progress.pair_count ?? 0)}}`);
+      set("games", `${{text(seen)}}/${{text(progress.game_count ?? 0)}}`);
+      set("percent", `${{(100 * number(fraction)).toFixed(1)}}%`);
+      set("updated", text(progress.updated_at));
+      failureCount = 0;
+      if (progress.status === "complete" && panel.dataset.hasRatings !== "true" && !sessionStorage.getItem(reloadKey)) {{
+        sessionStorage.setItem(reloadKey, "1");
+        const url = new URL(window.location.href);
+        url.searchParams.set("fresh", "true");
+        window.location.href = url.toString();
+        return;
+      }}
+    }} catch (error) {{
+      failureCount += 1;
+    }} finally {{
+      inFlight = false;
+      const hiddenDelay = document.hidden ? 60000 : 10000;
+      const retryDelay = Math.min(60000, hiddenDelay * Math.max(1, failureCount));
+      scheduleNext(retryDelay);
+    }}
   }}
-  refreshProgress().catch(() => {{}});
-  window.setInterval(() => refreshProgress().catch(() => {{}}), 10000);
+  document.addEventListener("visibilitychange", () => {{
+    if (!document.hidden) {{
+      scheduleNext(250);
+    }}
+  }});
+  scheduleNext(250);
 }})();
 </script>
 </body>
@@ -3715,14 +5068,17 @@ def _build_fastapi_app(volume: Any):
         offset: int = Query(0, ge=0),
         fresh: bool = False,
     ) -> HTMLResponse:
-        if fresh:
-            _reload_volume(volume, force=True)
+        reload_error = _web_reload_volume(
+            volume,
+            force=bool(fresh),
+            min_interval_sec=WEB_PAGE_RELOAD_MIN_INTERVAL_SECONDS,
+        )
         tournaments = _list_tournaments(TOURNAMENT_MOUNT)
         selected = _default_tournament_id(tournaments, tournament_id)
         rating_runs = _list_rating_runs(TOURNAMENT_MOUNT, tournament_id=selected) if selected else []
         selected_rating_run = _default_rating_run_id(rating_runs, rating_run_id)
         rating_snapshot = (
-            _read_rating_snapshot_for_run(
+            _read_best_rating_snapshot_for_run(
                 TOURNAMENT_MOUNT,
                 tournament_id=selected,
                 rating_run_id=selected_rating_run,
@@ -3731,7 +5087,7 @@ def _build_fastapi_app(volume: Any):
             else {}
         )
         rating_progress = (
-            _read_live_rating_progress(
+            _read_cached_live_rating_progress(
                 TOURNAMENT_MOUNT,
                 tournament_id=selected,
                 rating_run_id=selected_rating_run,
@@ -3739,17 +5095,27 @@ def _build_fastapi_app(volume: Any):
             if selected and selected_rating_run
             else {}
         )
-        battles = (
-            _list_battle_index(
+        if selected and checkpoint_id:
+            checkpoint_payload = _review_checkpoint_payload(
                 TOURNAMENT_MOUNT,
                 tournament_id=selected,
+                rating_run_id=selected_rating_run,
+                checkpoint_id=checkpoint_id,
                 limit=limit,
                 offset=offset,
-                checkpoint_id=checkpoint_id,
             )
-            if selected and checkpoint_id
-            else {"rows": [], "total": 0, "limit": limit, "offset": offset}
-        )
+            battles = {
+                "rows": checkpoint_payload.get("rows", []),
+                "total": checkpoint_payload.get("total", 0),
+                "limit": checkpoint_payload.get("limit", limit),
+                "offset": checkpoint_payload.get("offset", offset),
+                "has_older": checkpoint_payload.get("has_older", False),
+                "has_newer": checkpoint_payload.get("has_newer", False),
+                "source": checkpoint_payload.get("source"),
+                "checkpoint_id": checkpoint_id,
+            }
+        else:
+            battles = {"rows": [], "total": 0, "limit": limit, "offset": offset}
         battle_detail = (
             _review_battle_payload(
                 TOURNAMENT_MOUNT,
@@ -3772,6 +5138,7 @@ def _build_fastapi_app(volume: Any):
                 battles=battles,
                 selected_battle_id=battle_id,
                 battle_detail=battle_detail,
+                volume_reload_error=reload_error or "",
             ),
             headers=DYNAMIC_HEADERS,
         )
@@ -3784,8 +5151,11 @@ def _build_fastapi_app(volume: Any):
         checkpoint_id: str = "",
         fresh: bool = False,
     ) -> HTMLResponse:
-        if fresh:
-            _reload_volume(volume, force=True)
+        _web_reload_volume(
+            volume,
+            force=bool(fresh),
+            min_interval_sec=WEB_PAGE_RELOAD_MIN_INTERVAL_SECONDS,
+        )
         payload = _review_battle_payload(
             TOURNAMENT_MOUNT,
             tournament_id=tournament_id,
@@ -3803,22 +5173,30 @@ def _build_fastapi_app(volume: Any):
 
     @web_app.get("/api/tournaments")
     def tournaments(fresh: bool = False) -> JSONResponse:
-        if fresh:
-            _reload_volume(volume, force=True)
-        return JSONResponse({"tournaments": _list_tournaments(TOURNAMENT_MOUNT)}, headers=DYNAMIC_HEADERS)
+        reload_error = _web_reload_volume(volume, force=True) if fresh else None
+        return JSONResponse(
+            {
+                "tournaments": _list_tournaments(TOURNAMENT_MOUNT),
+                "volume_reload_error": reload_error,
+            },
+            headers=DYNAMIC_HEADERS,
+        )
 
     @web_app.get("/api/ratings")
     def ratings(
         tournament_id: str = "",
         fresh: bool = False,
     ) -> JSONResponse:
-        if fresh:
-            _reload_volume(volume, force=True)
+        reload_error = _web_reload_volume(volume, force=True) if fresh else None
         tournaments = _list_tournaments(TOURNAMENT_MOUNT)
         selected = _default_tournament_id(tournaments, tournament_id)
         rows = _list_rating_runs(TOURNAMENT_MOUNT, tournament_id=selected) if selected else []
         return JSONResponse(
-            {"selected_tournament_id": selected, "rating_runs": rows},
+            {
+                "selected_tournament_id": selected,
+                "rating_runs": rows,
+                "volume_reload_error": reload_error,
+            },
             headers=DYNAMIC_HEADERS,
         )
 
@@ -3828,23 +5206,35 @@ def _build_fastapi_app(volume: Any):
         rating_run_id: str = "latest",
         fresh: bool = False,
     ) -> JSONResponse:
-        if fresh:
-            _reload_volume(volume, force=True)
+        reload_error = _web_reload_volume(
+            volume,
+            force=bool(fresh),
+            min_interval_sec=WEB_PROGRESS_RELOAD_MIN_INTERVAL_SECONDS,
+        )
         tournaments = _list_tournaments(TOURNAMENT_MOUNT)
         selected_tournament = _default_tournament_id(tournaments, tournament_id)
+        rating_runs = (
+            _list_rating_runs(TOURNAMENT_MOUNT, tournament_id=selected_tournament)
+            if selected_tournament
+            else []
+        )
+        selected_rating_run = _default_rating_run_id(rating_runs, rating_run_id)
         progress = (
-            _read_live_rating_progress(
+            _read_cached_live_rating_progress(
                 TOURNAMENT_MOUNT,
                 tournament_id=selected_tournament,
-                rating_run_id=rating_run_id,
+                rating_run_id=selected_rating_run,
             )
-            if selected_tournament
+            if selected_tournament and selected_rating_run
             else {}
         )
         return JSONResponse(
             {
                 "selected_tournament_id": selected_tournament,
+                "rating_run_id": selected_rating_run,
                 "progress": progress,
+                "progress_refresh_call_id": "",
+                "volume_reload_error": reload_error,
             },
             headers=DYNAMIC_HEADERS,
         )
@@ -3857,35 +5247,42 @@ def _build_fastapi_app(volume: Any):
         offset: int = Query(0, ge=0),
         fresh: bool = False,
     ) -> JSONResponse:
-        if fresh:
-            _reload_volume(volume, force=True)
+        reload_error = _web_reload_volume(volume, force=True) if fresh else None
         tournaments = _list_tournaments(TOURNAMENT_MOUNT)
         selected_tournament = _default_tournament_id(tournaments, tournament_id)
+        rating_runs = (
+            _list_rating_runs(TOURNAMENT_MOUNT, tournament_id=selected_tournament)
+            if selected_tournament
+            else []
+        )
+        selected_rating_run = _default_rating_run_id(rating_runs, rating_run_id)
         snapshot = (
-            _read_rating_snapshot(
+            _read_best_rating_snapshot_for_run(
                 TOURNAMENT_MOUNT,
                 tournament_id=selected_tournament,
-                rating_run_id=rating_run_id,
+                rating_run_id=selected_rating_run,
             )
-            if selected_tournament
+            if selected_tournament and selected_rating_run
             else {}
         )
         all_rows = snapshot.get("ratings") if isinstance(snapshot.get("ratings"), list) else []
         progress = (
-            _read_live_rating_progress(
+            _read_cached_live_rating_progress(
                 TOURNAMENT_MOUNT,
                 tournament_id=selected_tournament,
-                rating_run_id=rating_run_id,
+                rating_run_id=selected_rating_run,
             )
-            if selected_tournament
+            if selected_tournament and selected_rating_run
             else {}
         )
         rows = all_rows[offset : offset + limit]
         return JSONResponse(
             {
                 "selected_tournament_id": selected_tournament,
-                "rating_run_id": snapshot.get("rating_run_id"),
+                "rating_run_id": snapshot.get("rating_run_id") or selected_rating_run,
                 "round_id": snapshot.get("round_id"),
+                "provisional": bool(snapshot.get("provisional")),
+                "source": snapshot.get("source"),
                 "progress": progress,
                 "rows": rows,
                 "total": len(all_rows),
@@ -3894,6 +5291,7 @@ def _build_fastapi_app(volume: Any):
                 "has_older": offset + limit < len(all_rows),
                 "has_newer": offset > 0,
                 "ratings_ref": snapshot.get("ratings_ref") or snapshot.get("latest_ref"),
+                "volume_reload_error": reload_error,
             },
             headers=DYNAMIC_HEADERS,
         )
@@ -3907,7 +5305,7 @@ def _build_fastapi_app(volume: Any):
         fresh: bool = False,
     ) -> JSONResponse:
         if fresh:
-            _reload_volume(volume, force=True)
+            _web_reload_volume(volume, force=True)
         return JSONResponse(
             _review_rankings_payload(
                 TOURNAMENT_MOUNT,
@@ -3929,7 +5327,7 @@ def _build_fastapi_app(volume: Any):
         fresh: bool = False,
     ) -> JSONResponse:
         if fresh:
-            _reload_volume(volume, force=True)
+            _web_reload_volume(volume, force=True)
         return JSONResponse(
             _review_checkpoint_payload(
                 TOURNAMENT_MOUNT,
@@ -3950,7 +5348,7 @@ def _build_fastapi_app(volume: Any):
         fresh: bool = False,
     ) -> JSONResponse:
         if fresh:
-            _reload_volume(volume, force=True)
+            _web_reload_volume(volume, force=True)
         return JSONResponse(
             _review_battle_payload(
                 TOURNAMENT_MOUNT,
@@ -3970,7 +5368,7 @@ def _build_fastapi_app(volume: Any):
         fresh: bool = False,
     ) -> JSONResponse:
         if fresh:
-            _reload_volume(volume, force=True)
+            _web_reload_volume(volume, force=True)
         tournaments = _list_tournaments(TOURNAMENT_MOUNT)
         selected = _default_tournament_id(tournaments, tournament_id)
         page = (
@@ -3996,7 +5394,7 @@ def _build_fastapi_app(volume: Any):
             return Response("not a tournament GIF ref", status_code=400)
         path = runs.volume_path(TOURNAMENT_MOUNT, safe_ref)
         if not path.is_file():
-            _reload_volume(volume, force=True)
+            _web_reload_volume(volume, force=True)
             if not path.is_file():
                 return Response("GIF not found", status_code=404)
         stat = path.stat()
@@ -4008,7 +5406,16 @@ def _build_fastapi_app(volume: Any):
         }
         if if_none_match == etag:
             return Response(status_code=304, headers=headers)
-        return Response(path.read_bytes(), media_type="image/gif", headers=headers)
+        return Response(
+            _read_cached_file_bytes(
+                path,
+                cache_prefix="gif-bytes",
+                ttl_seconds=WEB_GIF_BYTES_CACHE_TTL_SECONDS,
+                max_item_bytes=WEB_GIF_BYTES_CACHE_MAX_ITEM_BYTES,
+            ),
+            media_type="image/gif",
+            headers=headers,
+        )
 
     @web_app.get("/meta")
     def meta(ref: str) -> Response:
@@ -4020,11 +5427,16 @@ def _build_fastapi_app(volume: Any):
             return Response("not a JSON ref", status_code=400)
         path = runs.volume_path(TOURNAMENT_MOUNT, safe_ref)
         if not path.is_file():
-            _reload_volume(volume, force=True)
+            _web_reload_volume(volume, force=True)
             if not path.is_file():
                 return Response("JSON not found", status_code=404)
         return Response(
-            path.read_bytes(),
+            _read_cached_file_bytes(
+                path,
+                cache_prefix="json-bytes",
+                ttl_seconds=30.0,
+                max_item_bytes=1024 * 1024,
+            ),
             media_type="application/json",
             headers={"Cache-Control": "no-cache"},
         )
@@ -4038,9 +5450,9 @@ def _build_fastapi_app(volume: Any):
     timeout=300,
     cpu=4,
     memory=4096,
-    max_containers=2,
+    max_containers=20,
 )
-@modal.concurrent(max_inputs=50)
+@modal.concurrent(max_inputs=1)
 @modal.asgi_app()
 def curvytron_tournament_browser():
     return _build_fastapi_app(tournament_volume)
@@ -4078,7 +5490,7 @@ def main(
     expected_checkpoint_count: int = 0,
     allow_missing_checkpoints: bool = False,
     checkpoint_iteration: int = -1,
-    games_per_pair: int = 2,
+    games_per_pair: int = arena.DEFAULT_GAMES_PER_PAIR,
     games_per_shard: int = arena.DEFAULT_GAMES_PER_SHARD,
     reuse_policies_per_shard: bool = arena.DEFAULT_REUSE_POLICIES_PER_SHARD,
     rating_run_id: str = arena.DEFAULT_RATING_RUN_ID,
@@ -4131,11 +5543,13 @@ def main(
         "tournament",
         "rating",
         "progress",
+        "provisional",
+        "provisional-loop",
         "reduce",
         "visibility",
     }:
         raise ValueError(
-            "mode must be one of: discover, estimate, game, pair, tournament, rating, progress, reduce, visibility"
+            "mode must be one of: discover, estimate, game, pair, tournament, rating, progress, provisional, provisional-loop, reduce, visibility"
         )
     if mode == "visibility":
         result = curvytron_tournament_visibility.remote(
@@ -4160,7 +5574,7 @@ def main(
             )
         print(json.dumps(arena._to_plain(discovery), indent=2, sort_keys=True))
         return
-    if mode in {"progress", "reduce"}:
+    if mode in {"progress", "provisional", "provisional-loop", "reduce"}:
         if not tournament_id:
             raise ValueError(f"{mode} mode needs --tournament-id")
         progress_spec = {
@@ -4173,6 +5587,38 @@ def main(
         if mode == "progress":
             result = curvytron_rating_progress.remote(progress_spec)
             print(json.dumps(arena._to_plain(result), indent=2, sort_keys=True))
+            return
+        if mode == "provisional":
+            call = curvytron_rating_provisional.spawn(progress_spec)
+            call_id = getattr(call, "object_id", None) or getattr(call, "id", None)
+            payload: dict[str, Any] = {
+                "status": "spawned",
+                "app_name": APP_NAME,
+                "mode": mode,
+                "tournament_id": resolved_tournament_id,
+                "rating_run_id": rating_run_id,
+                "round_index": int(round_index),
+                "function_call_id": call_id,
+            }
+            if wait:
+                payload["result"] = call.get()
+            print(json.dumps(arena._to_plain(payload), indent=2, sort_keys=True))
+            return
+        if mode == "provisional-loop":
+            call = curvytron_rating_provisional_loop.spawn(progress_spec)
+            call_id = getattr(call, "object_id", None) or getattr(call, "id", None)
+            payload = {
+                "status": "spawned",
+                "app_name": APP_NAME,
+                "mode": mode,
+                "tournament_id": resolved_tournament_id,
+                "rating_run_id": rating_run_id,
+                "round_index": int(round_index),
+                "function_call_id": call_id,
+            }
+            if wait:
+                payload["result"] = call.get()
+            print(json.dumps(arena._to_plain(payload), indent=2, sort_keys=True))
             return
         call = curvytron_rating_reduce.spawn(
             {
