@@ -31,6 +31,53 @@ Run:
 This proves the pure helpers and local browser listing. It does not prove
 checkpoint loading.
 
+Latest focused run:
+
+`PYTHONDONTWRITEBYTECODE=1 uv run pytest tests/test_curvytron_checkpoint_tournament.py -q`
+
+Result:
+
+`78 passed, 10 skipped`
+
+Coverage added in this run:
+
+- `adaptive_v0` requires a pair budget.
+- adaptive pair specs are budgeted, unique, and tagged with schedule metadata.
+- schedule metadata survives pair summary creation.
+- pair history accumulates by canonical pair key across seat order.
+- pair history rejects pool-hash mismatch.
+- discovery can select latest, exact iteration, or all checkpoints while
+  scanning timestamped `lightzero_exp_*` directories.
+- Modal rating output helpers write `pair_history.json` and
+  `scheduler_state.json`, and snapshots point at those refs.
+
+Checkpoint discovery regression to keep:
+
+- discovery scans `train/lightzero_exp*/ckpt/iteration_*.pth.tar`;
+- timestamped DI-engine dirs can beat stale fixed `lightzero_exp/ckpt`;
+- resume sidecars and empty checkpoint files do not enter tournament refs;
+- `checkpoint_selection=all` can return more checkpoints than selected runs, so
+  `max_runs` is not treated as the expected checkpoint count in that mode.
+
+Remote discovery smoke:
+
+```text
+uv run --extra modal python -B -m modal run \
+  -m curvyzero.infra.modal.curvyzero_checkpoint_tournament \
+  --mode discover \
+  --run-id-prefix survivaldiag-v1b-20260513h \
+  --max-runs 3 \
+  --checkpoint-selection latest
+```
+
+Result:
+
+- `found_count=3`
+- `missing_count=0`
+- `checkpoint_scan_glob=train/lightzero_exp*/ckpt/iteration_*.pth.tar`
+- returned refs included timestamped `lightzero_exp_260513_*` dirs, proving the
+  tournament path is not limited to stale fixed `lightzero_exp/ckpt`.
+
 ## Modal Smoke
 
 Run one pair with one game:

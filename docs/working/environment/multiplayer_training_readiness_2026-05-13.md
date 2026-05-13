@@ -47,10 +47,12 @@ and [source_state_multiplayer_trainer_surface_spec_2026-05-13.md](source_state_m
    surface/replay final visual rows, final rewards, death metadata, and bonus
    audit metadata. Training still needs other long-run stack/death cases before
    bonus-enabled multiplayer runs can be called source-faithful.
-5. Carry hit-owner stress into product/replay/debug-event propagation.
-   Runtime stress tests cover the important owner-order cases, but training
-   needs those exact 3P/4P cases carried through product rows, replay metadata,
-   debug events, and preferably raw JS fixtures.
+5. Add raw JS oracle fixtures for hit-owner stress.
+   Runtime stress tests cover the important owner-order cases, and focused
+   propagation now carries one 3P terminal case and one 4P nonterminal
+   two-victim case through public env, trainer surface, replay metadata, and
+   debug events. Training still needs raw JS fixtures for those exact 3P/4P
+   stress shapes and broader collision edges.
 6. Widen to 3P/4P only after the 2P ladder is stable.
    Existing 3P/4P scalar projection and metadata artifacts are useful
    scaffolding, not trainer-ready multiplayer. Before 3P/4P training claims,

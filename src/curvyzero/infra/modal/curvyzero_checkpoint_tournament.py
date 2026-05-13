@@ -238,14 +238,61 @@ def _attempt_roots_for_run(run_root: Path) -> list[Path]:
     return roots
 
 
-def _discover_latest_checkpoint_refs(
+def _checkpoint_candidate_rows_for_run(
+    mount: Path,
+    *,
+    run_id: str,
+    checkpoint_iteration: int | None = None,
+) -> list[dict[str, Any]]:
+    run_root = runs.volume_path(mount, runs.run_root_ref(TRAINING_TASK_ID, run_id))
+    candidates: list[dict[str, Any]] = []
+    if not run_root.exists():
+        return candidates
+    for attempt_root in _attempt_roots_for_run(run_root):
+        train_root = attempt_root / "train"
+        for ckpt_dir in sorted(train_root.glob("lightzero_exp*/ckpt")):
+            for checkpoint_path in sorted(ckpt_dir.glob("iteration_*.pth.tar")):
+                if not checkpoint_path.is_file():
+                    continue
+                stat = checkpoint_path.stat()
+                if stat.st_size <= 0:
+                    continue
+                iteration = _checkpoint_iteration_from_path(checkpoint_path)
+                if iteration is None:
+                    continue
+                if checkpoint_iteration is not None and iteration != checkpoint_iteration:
+                    continue
+                candidates.append(
+                    {
+                        "run_id": run_id,
+                        "found": True,
+                        "attempt_id": attempt_root.name,
+                        "exp_dir_name": ckpt_dir.parent.name,
+                        "checkpoint_name": checkpoint_path.name,
+                        "iteration": int(iteration),
+                        "checkpoint_mtime_ns": int(stat.st_mtime_ns),
+                        "checkpoint_size_bytes": int(stat.st_size),
+                        "checkpoint_ref": runs.file_ref(checkpoint_path, mount=mount),
+                        "checkpoint_path": str(checkpoint_path),
+                    }
+                )
+    return candidates
+
+
+def _discover_checkpoint_refs(
     mount: Path,
     *,
     run_ids: Sequence[str] | None = None,
     run_id_prefix: str = "",
     max_runs: int = 0,
     checkpoint_iteration: int | None = None,
+    checkpoint_selection: str = "latest",
 ) -> dict[str, Any]:
+    checkpoint_selection = str(checkpoint_selection or "latest")
+    if checkpoint_selection not in {"latest", "all", "iteration"}:
+        raise ValueError("checkpoint_selection must be one of latest, all, iteration")
+    if checkpoint_selection == "iteration" and checkpoint_iteration is None:
+        raise ValueError("checkpoint_selection=iteration requires checkpoint_iteration")
     ids = [
         runs.clean_id(str(run_id), label="run_id")
         for run_id in (run_ids or [])
@@ -257,43 +304,58 @@ def _discover_latest_checkpoint_refs(
             run_id_prefix=runs.clean_id(run_id_prefix, label="run_id_prefix"),
             max_runs=0,
         )
-    rows = []
+    candidates_by_run: dict[str, list[dict[str, Any]]] = {}
     for run_id in ids:
-        run_root = runs.volume_path(mount, runs.run_root_ref(TRAINING_TASK_ID, run_id))
-        candidates: list[tuple[int, int, Path]] = []
-        if run_root.exists():
-            for attempt_root in _attempt_roots_for_run(run_root):
-                train_root = attempt_root / "train"
-                for ckpt_dir in sorted(train_root.glob("lightzero_exp*/ckpt")):
-                    for checkpoint_path in ckpt_dir.glob("iteration_*.pth.tar"):
-                        iteration = _checkpoint_iteration_from_path(checkpoint_path)
-                        if iteration is None:
-                            continue
-                        if checkpoint_iteration is not None and iteration != checkpoint_iteration:
-                            continue
-                        candidates.append(
-                            (
-                                iteration,
-                                int(checkpoint_path.stat().st_mtime_ns),
-                                checkpoint_path,
-                            )
-                        )
-        if candidates:
-            iteration, _mtime_ns, checkpoint_path = max(
+        candidates_by_run[run_id] = _checkpoint_candidate_rows_for_run(
+            mount,
+            run_id=run_id,
+            checkpoint_iteration=checkpoint_iteration,
+        )
+
+    missing_rows = [
+        {
+            "run_id": run_id,
+            "found": False,
+            "iteration": checkpoint_iteration,
+            "checkpoint_ref": None,
+            "reason": "no_matching_iteration_pth_tar",
+        }
+        for run_id in ids
+        if not candidates_by_run.get(run_id)
+    ]
+    latest_rows = []
+    for run_id, candidates in candidates_by_run.items():
+        if not candidates:
+            continue
+        latest_rows.append(
+            max(
                 candidates,
-                key=lambda item: (item[0], item[1], item[2].as_posix()),
+                key=lambda row: (
+                    int(row.get("iteration") or -1),
+                    int(row.get("checkpoint_mtime_ns") or 0),
+                    str(row.get("checkpoint_ref") or ""),
+                ),
             )
-            rows.append(
-                {
-                    "run_id": run_id,
-                    "found": True,
-                    "iteration": int(iteration),
-                    "checkpoint_mtime_ns": int(_mtime_ns),
-                    "checkpoint_ref": runs.file_ref(checkpoint_path, mount=mount),
-                    "checkpoint_path": str(checkpoint_path),
-                }
-            )
-        else:
+        )
+
+    selected_run_ids = list(ids)
+    selection = "all_requested"
+    if run_id_prefix and max_runs > 0:
+        found_rows = _sort_discovery_rows_by_latest_checkpoint(latest_rows)
+        sorted_missing = sorted(
+            missing_rows,
+            key=lambda row: str(row.get("run_id") or ""),
+        )
+        selected_seed_rows = [*found_rows[:max_runs]]
+        if len(selected_seed_rows) < max_runs:
+            selected_seed_rows.extend(sorted_missing[: max_runs - len(selected_seed_rows)])
+        selected_run_ids = [str(row.get("run_id")) for row in selected_seed_rows]
+        selection = "latest_checkpoint_mtime"
+
+    rows: list[dict[str, Any]] = []
+    for run_id in selected_run_ids:
+        candidates = candidates_by_run.get(run_id, [])
+        if not candidates:
             rows.append(
                 {
                     "run_id": run_id,
@@ -303,34 +365,70 @@ def _discover_latest_checkpoint_refs(
                     "reason": "no_matching_iteration_pth_tar",
                 }
             )
-    selection = "all_requested"
-    if run_id_prefix and max_runs > 0:
-        found_rows = _sort_discovery_rows_by_latest_checkpoint(
-            [row for row in rows if row.get("found")]
+            continue
+        if checkpoint_selection == "all":
+            rows.extend(
+                sorted(
+                    candidates,
+                    key=lambda row: (
+                        int(row.get("iteration") or -1),
+                        str(row.get("attempt_id") or ""),
+                        str(row.get("exp_dir_name") or ""),
+                        str(row.get("checkpoint_ref") or ""),
+                    ),
+                )
+            )
+            continue
+        rows.append(
+            max(
+                candidates,
+                key=lambda row: (
+                    int(row.get("iteration") or -1),
+                    int(row.get("checkpoint_mtime_ns") or 0),
+                    str(row.get("checkpoint_ref") or ""),
+                ),
+            )
         )
-        missing_rows = sorted(
-            [row for row in rows if not row.get("found")],
-            key=lambda row: str(row.get("run_id") or ""),
-        )
-        rows = [*found_rows[:max_runs]]
-        if len(rows) < max_runs:
-            rows.extend(missing_rows[: max_runs - len(rows)])
-        selection = "latest_checkpoint_mtime"
+    found_rows = [row for row in rows if row.get("found")]
+    missing_rows = [row for row in rows if not row.get("found")]
     return {
         "schema_id": "curvyzero_curvytron_checkpoint_discovery/v0",
         "checkpoint_volume_name": CHECKPOINT_VOLUME_NAME,
         "run_id_prefix": run_id_prefix,
+        "checkpoint_selection": checkpoint_selection,
+        "checkpoint_scan_glob": "train/lightzero_exp*/ckpt/iteration_*.pth.tar",
         "selection": selection,
         "requested_run_count": len(ids),
-        "selected_run_count": len(rows),
-        "found_count": sum(1 for row in rows if row.get("found")),
-        "missing_count": sum(1 for row in rows if not row.get("found")),
+        "selected_run_count": len(selected_run_ids),
+        "found_count": len(found_rows),
+        "found_checkpoint_count": len(found_rows),
+        "found_run_count": len({str(row["run_id"]) for row in found_rows}),
+        "missing_count": len(missing_rows),
+        "missing_run_count": len(missing_rows),
         "checkpoint_iteration": checkpoint_iteration,
         "rows": rows,
         "checkpoint_refs": [
             str(row["checkpoint_ref"]) for row in rows if row.get("checkpoint_ref")
         ],
     }
+
+
+def _discover_latest_checkpoint_refs(
+    mount: Path,
+    *,
+    run_ids: Sequence[str] | None = None,
+    run_id_prefix: str = "",
+    max_runs: int = 0,
+    checkpoint_iteration: int | None = None,
+) -> dict[str, Any]:
+    return _discover_checkpoint_refs(
+        mount,
+        run_ids=run_ids,
+        run_id_prefix=run_id_prefix,
+        max_runs=max_runs,
+        checkpoint_iteration=checkpoint_iteration,
+        checkpoint_selection="latest",
+    )
 
 
 def _path_for_ref(ref: str | Path) -> Path:
@@ -1032,6 +1130,79 @@ def _write_rating_progress(
     )
 
 
+def _rating_scheduler_state_payload(
+    *,
+    spec: Mapping[str, Any],
+    round_id: str,
+    round_index: int,
+    pair_specs: Sequence[Mapping[str, Any]],
+    pair_history: Mapping[str, Any],
+) -> dict[str, Any]:
+    reason_counts: dict[str, int] = defaultdict(int)
+    prior_battle_count = 0
+    pair_keys = []
+    for pair in pair_specs:
+        reason = str(pair.get("schedule_reason") or "unspecified")
+        reason_counts[reason] += 1
+        if pair.get("pair_key"):
+            pair_keys.append(str(pair["pair_key"]))
+        schedule = pair.get("schedule") if isinstance(pair.get("schedule"), Mapping) else {}
+        prior_battle_count += int(schedule.get("prior_battle_count") or 0)
+    pool_hash = arena.rating_pool_hash(spec.get("checkpoints") or [])
+    return {
+        "schema_id": arena.RATING_SCHEDULER_STATE_SCHEMA_ID,
+        "app_name": APP_NAME,
+        "artifact_volume_name": TOURNAMENT_VOLUME_NAME,
+        "checkpoint_volume_name": CHECKPOINT_VOLUME_NAME,
+        "tournament_id": spec["tournament_id"],
+        "rating_run_id": spec["rating_run_id"],
+        "pool_hash": pool_hash,
+        "round_id": round_id,
+        "round_index": int(round_index),
+        "updated_at": runs.utc_timestamp(),
+        "pair_selection": spec.get("pair_selection"),
+        "pairs_per_round": spec.get("pairs_per_round"),
+        "pair_count": len(pair_specs),
+        "game_count": sum(int(pair.get("games_per_pair") or 0) for pair in pair_specs),
+        "schedule_reason_counts": dict(sorted(reason_counts.items())),
+        "prior_battle_count": int(prior_battle_count),
+        "scheduled_pair_key_count": len(set(pair_keys)),
+        "pair_history_row_count": len(pair_history.get("rows") or []),
+        "pair_history_ref": arena.rating_pair_history_ref(
+            spec["tournament_id"],
+            spec["rating_run_id"],
+        ).as_posix(),
+        "latest_ref": arena.rating_latest_ref(
+            spec["tournament_id"],
+            spec["rating_run_id"],
+        ).as_posix(),
+    }
+
+
+def _write_rating_scheduler_state(
+    mount: Path,
+    *,
+    spec: Mapping[str, Any],
+    round_id: str,
+    round_index: int,
+    pair_specs: Sequence[Mapping[str, Any]],
+    pair_history: Mapping[str, Any],
+) -> dict[str, Any]:
+    payload = _rating_scheduler_state_payload(
+        spec=spec,
+        round_id=round_id,
+        round_index=round_index,
+        pair_specs=pair_specs,
+        pair_history=pair_history,
+    )
+    arena.write_json_artifact(
+        mount,
+        arena.rating_scheduler_state_ref(spec["tournament_id"], spec["rating_run_id"]),
+        payload,
+    )
+    return arena._to_plain(payload)
+
+
 def _previous_rating_snapshot(
     mount: Path,
     *,
@@ -1058,13 +1229,34 @@ def _write_rating_round_outputs(
     round_id: str,
     round_index: int,
     pair_results: Sequence[Mapping[str, Any]],
+    pair_specs: Sequence[Mapping[str, Any]] | None = None,
     game_count: int,
     started_at: str | None,
     previous_snapshot: Mapping[str, Any] | None,
+    previous_pair_history: Mapping[str, Any] | None = None,
     include_pair_results: bool = True,
     result_detail_mode: str = "games",
 ) -> dict[str, Any]:
     _write_battle_index(spec["tournament_id"], pair_results, mount=mount)
+    pair_history = arena.pair_history_from_pair_results(
+        pair_results,
+        previous_pair_history=previous_pair_history,
+        rating_spec=spec,
+        round_index=round_index,
+    )
+    arena.write_json_artifact(
+        mount,
+        arena.rating_pair_history_ref(spec["tournament_id"], spec["rating_run_id"]),
+        pair_history,
+    )
+    scheduler_state = _write_rating_scheduler_state(
+        mount,
+        spec=spec,
+        round_id=round_id,
+        round_index=round_index,
+        pair_specs=pair_specs or pair_results,
+        pair_history=pair_history,
+    )
     snapshot = arena.rating_snapshot_from_pair_results(
         pair_results=pair_results,
         rating_spec=spec,
@@ -1094,6 +1286,14 @@ def _write_rating_round_outputs(
         round_id,
     ).as_posix()
     snapshot["pair_rating_results_ref"] = results_ref
+    snapshot["pair_history_ref"] = arena.rating_pair_history_ref(
+        spec["tournament_id"],
+        spec["rating_run_id"],
+    ).as_posix()
+    snapshot["scheduler_state_ref"] = arena.rating_scheduler_state_ref(
+        spec["tournament_id"],
+        spec["rating_run_id"],
+    ).as_posix()
     snapshot["game_count"] = int(game_count)
     results_payload = {
         "schema_id": arena.RATING_ROUND_SCHEMA_ID,
@@ -1107,6 +1307,8 @@ def _write_rating_round_outputs(
         "pair_summary_refs": [
             pair.get("summary_ref") for pair in pair_results if pair.get("summary_ref")
         ],
+        "pair_history_ref": snapshot["pair_history_ref"],
+        "scheduler_state_ref": snapshot["scheduler_state_ref"],
         "pair_rating_results": snapshot.get("pair_rating_results", []),
     }
     if include_pair_results:
@@ -1137,7 +1339,13 @@ def _write_rating_round_outputs(
         arena.rating_latest_ref(spec["tournament_id"], spec["rating_run_id"]),
         slim_snapshot,
     )
-    return slim_snapshot
+    return arena._to_plain(
+        {
+            "snapshot": slim_snapshot,
+            "pair_history": pair_history,
+            "scheduler_state": scheduler_state,
+        }
+    )
 
 
 def _reduce_rating_round_from_summaries(
@@ -1207,16 +1415,18 @@ def _reduce_rating_round_from_summaries(
         )
         pair_results.append(summary)
 
-    snapshot = _write_rating_round_outputs(
+    round_outputs = _write_rating_round_outputs(
         mount,
         spec=spec,
         round_id=round_id,
         round_index=round_index,
         pair_results=pair_results,
+        pair_specs=pair_specs,
         game_count=sum(len(games) for games in games_by_battle.values()),
         started_at=str(input_payload.get("started_at") or ""),
         previous_snapshot=previous_snapshot,
     )
+    snapshot = round_outputs["snapshot"]
     progress["reduced_at"] = runs.utc_timestamp()
     progress["allow_partial_reduce"] = bool(allow_partial)
     progress["rated_pair_count"] = snapshot.get("rated_pair_count")
@@ -1225,6 +1435,8 @@ def _reduce_rating_round_from_summaries(
         {
             "progress": progress,
             "snapshot": snapshot,
+            "pair_history": round_outputs.get("pair_history"),
+            "scheduler_state": round_outputs.get("scheduler_state"),
             "pair_count": len(pair_results),
             "game_count": sum(len(games) for games in games_by_battle.values()),
         }
@@ -1653,12 +1865,13 @@ def curvytron_discover_checkpoints(discovery_spec: dict[str, Any]) -> dict[str, 
         if checkpoint_iteration_raw not in (None, "", -1, "-1")
         else None
     )
-    result = _discover_latest_checkpoint_refs(
+    result = _discover_checkpoint_refs(
         RUNS_MOUNT,
         run_ids=run_ids if isinstance(run_ids, Sequence) else [],
         run_id_prefix=str(discovery_spec.get("run_id_prefix") or ""),
         max_runs=int(discovery_spec.get("max_runs") or 0),
         checkpoint_iteration=checkpoint_iteration,
+        checkpoint_selection=str(discovery_spec.get("checkpoint_selection") or "latest"),
     )
     print(json.dumps(arena._to_plain({
         "found_count": result["found_count"],
@@ -2128,10 +2341,14 @@ def curvytron_rating_round(round_spec: dict[str, Any]) -> dict[str, Any]:
     round_index = int(round_spec.get("round_index", 0))
     round_id = arena.rating_round_id(round_index)
     previous_snapshot = round_spec.get("previous_snapshot")
+    previous_pair_history = round_spec.get("pair_history")
+    scheduler_state = round_spec.get("scheduler_state")
     started_at = runs.utc_timestamp()
     pair_specs = arena.build_rating_round_pair_specs(
         spec,
         previous_snapshot=previous_snapshot if isinstance(previous_snapshot, Mapping) else None,
+        scheduler_state=scheduler_state if isinstance(scheduler_state, Mapping) else None,
+        pair_history=previous_pair_history if isinstance(previous_pair_history, Mapping) else None,
         round_index=round_index,
     )
     input_payload = {
@@ -2257,20 +2474,25 @@ def curvytron_rating_round(round_spec: dict[str, Any]) -> dict[str, Any]:
         )
         result_detail_mode = "shard_tallies"
         include_pair_results = False
-    slim_snapshot = _write_rating_round_outputs(
+    round_outputs = _write_rating_round_outputs(
         TOURNAMENT_MOUNT,
         spec=spec,
         round_id=round_id,
         round_index=round_index,
         pair_results=pair_results,
+        pair_specs=pair_specs,
         game_count=game_count,
         started_at=started_at,
         previous_snapshot=(
             previous_snapshot if isinstance(previous_snapshot, Mapping) else None
         ),
+        previous_pair_history=(
+            previous_pair_history if isinstance(previous_pair_history, Mapping) else None
+        ),
         include_pair_results=include_pair_results,
         result_detail_mode=result_detail_mode,
     )
+    slim_snapshot = round_outputs["snapshot"]
     if progress_game_results is None:
         progress = _rating_progress_from_pair_results(
             input_payload=input_payload,
@@ -2291,6 +2513,8 @@ def curvytron_rating_round(round_spec: dict[str, Any]) -> dict[str, Any]:
     progress["reduced_at"] = slim_snapshot.get("ended_at")
     progress["rated_pair_count"] = slim_snapshot.get("rated_pair_count")
     progress["work_summary"] = work_summary
+    progress["pair_history_ref"] = slim_snapshot.get("pair_history_ref")
+    progress["scheduler_state_ref"] = slim_snapshot.get("scheduler_state_ref")
     _write_rating_progress(TOURNAMENT_MOUNT, progress)
     commit_error = _commit_volume(tournament_volume)
     if commit_error:
@@ -2308,12 +2532,14 @@ def curvytron_rating_round(round_spec: dict[str, Any]) -> dict[str, Any]:
         {
             "round_id": round_id,
             "round_index": round_index,
-        "snapshot": slim_snapshot,
-        "pair_count": len(pair_results),
-        "game_count": game_count,
-        "work_summary": work_summary,
-        "rated_pair_count": slim_snapshot["rated_pair_count"],
-    }
+            "snapshot": slim_snapshot,
+            "pair_history": round_outputs.get("pair_history"),
+            "scheduler_state": round_outputs.get("scheduler_state"),
+            "pair_count": len(pair_results),
+            "game_count": game_count,
+            "work_summary": work_summary,
+            "rated_pair_count": slim_snapshot["rated_pair_count"],
+        }
 )
 
 
@@ -2363,6 +2589,18 @@ def curvytron_rating_loop(rating_spec: dict[str, Any]) -> dict[str, Any]:
         or getattr(provisional_call, "id", None)
     )
     previous_snapshot: dict[str, Any] | None = None
+    previous_pair_history = _read_json(
+        runs.volume_path(
+            TOURNAMENT_MOUNT,
+            arena.rating_pair_history_ref(spec["tournament_id"], spec["rating_run_id"]),
+        )
+    ) or None
+    scheduler_state = _read_json(
+        runs.volume_path(
+            TOURNAMENT_MOUNT,
+            arena.rating_scheduler_state_ref(spec["tournament_id"], spec["rating_run_id"]),
+        )
+    ) or None
     rounds = []
     started_at = runs.utc_timestamp()
     stop_when_stable = bool(rating_spec.get("stop_when_stable", False))
@@ -2372,9 +2610,13 @@ def curvytron_rating_loop(rating_spec: dict[str, Any]) -> dict[str, Any]:
                 **spec,
                 "round_index": round_index,
                 "previous_snapshot": previous_snapshot,
+                "pair_history": previous_pair_history,
+                "scheduler_state": scheduler_state,
             }
         )
         previous_snapshot = result["snapshot"]
+        previous_pair_history = result.get("pair_history")
+        scheduler_state = result.get("scheduler_state")
         if isinstance(previous_snapshot, Mapping):
             arena.write_json_artifact(
                 TOURNAMENT_MOUNT,
@@ -2391,6 +2633,8 @@ def curvytron_rating_loop(rating_spec: dict[str, Any]) -> dict[str, Any]:
                 "work_summary": result.get("work_summary"),
                 "rated_pair_count": result["rated_pair_count"],
                 "ratings_ref": previous_snapshot.get("ratings_ref"),
+                "pair_history_ref": previous_snapshot.get("pair_history_ref"),
+                "scheduler_state_ref": previous_snapshot.get("scheduler_state_ref"),
                 "max_abs_delta": previous_snapshot.get("max_abs_delta"),
                 "stable": previous_snapshot.get("stable"),
             }
@@ -3584,7 +3828,13 @@ def _assert_checkpoint_count(
     if allow_missing_checkpoints:
         return
     expected = int(expected_checkpoint_count or 0)
-    if expected <= 0 and int(max_runs or 0) > 0 and discovery is not None:
+    discovery_selection = str((discovery or {}).get("checkpoint_selection") or "latest")
+    if (
+        expected <= 0
+        and int(max_runs or 0) > 0
+        and discovery is not None
+        and discovery_selection != "all"
+    ):
         expected = int(max_runs)
     missing = int(discovery.get("missing_count", 0) or 0) if discovery else 0
     found = len(refs)
@@ -5490,6 +5740,7 @@ def main(
     expected_checkpoint_count: int = 0,
     allow_missing_checkpoints: bool = False,
     checkpoint_iteration: int = -1,
+    checkpoint_selection: str = "latest",
     games_per_pair: int = arena.DEFAULT_GAMES_PER_PAIR,
     games_per_shard: int = arena.DEFAULT_GAMES_PER_SHARD,
     reuse_policies_per_shard: bool = arena.DEFAULT_REUSE_POLICIES_PER_SHARD,
@@ -5531,6 +5782,7 @@ def main(
                 "run_id_prefix": run_id_prefix,
                 "max_runs": int(max_runs),
                 "checkpoint_iteration": int(checkpoint_iteration),
+                "checkpoint_selection": checkpoint_selection,
             }
             )
         refs = [str(ref) for ref in discovery.get("checkpoint_refs", [])]
@@ -5570,6 +5822,7 @@ def main(
                     "run_id_prefix": run_id_prefix,
                     "max_runs": int(max_runs),
                     "checkpoint_iteration": int(checkpoint_iteration),
+                    "checkpoint_selection": checkpoint_selection,
                 }
             )
         print(json.dumps(arena._to_plain(discovery), indent=2, sort_keys=True))

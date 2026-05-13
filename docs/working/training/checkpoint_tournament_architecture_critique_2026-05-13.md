@@ -204,6 +204,36 @@ GIF jobs.
 
 Test: large rating estimate reports zero GIFs unless an explicit cap is set.
 
+### Implicit Strings Become Hidden Contracts
+
+Risk: high.
+
+Why it matters: values such as checkpoint selection names, schedule reasons,
+progress phases, outcome strings, and artifact filenames are now shared across
+Python helpers, Modal route code, JS, tests, and docs. If they stay as scattered
+string literals, future changes can silently split the system.
+
+Simple mitigation: name the contracts first. Keep old behavior, but replace
+repeated literal strings with constants and helper refs.
+
+Test: focused tournament tests plus compile checks stay green after the naming
+cut, and no public ref path changes.
+
+### Pair History Reuses The Wrong Context
+
+Risk: high.
+
+Why it matters: `pool_hash` protects checkpoint identity, but adaptive reuse
+also depends on evaluator context: policy mode, max steps, decision substeps,
+simulation count, and env knobs. Reusing pair history across a changed context
+can make the Elo ladder compare different games.
+
+Simple mitigation: add a separate rating context hash or expand scheduler state
+compatibility checks before large adaptive reuse.
+
+Test: pair history from a different rating context is rejected or clearly
+treated as a new ladder.
+
 ## Modal Notes
 
 From Modal docs checked on 2026-05-13:
@@ -231,10 +261,10 @@ Do not build the giant all-checkpoint system in one jump.
 
 Next safe implementation step:
 
-1. Add pure adaptive scheduler helpers and tests.
-2. Add explicit schedule metadata.
-3. Add bounded all-checkpoint discovery.
-4. Add a tiny adaptive remote smoke with GIFs off.
-5. Add website/index changes before any large adaptive run.
+1. Name implicit contract strings and artifact paths.
+2. Rerun focused tests and compile checks.
+3. Run a tiny adaptive remote smoke with GIFs off.
+4. Add website/index changes before any large adaptive run.
+5. Add rating-context compatibility before serious adaptive reuse.
 
 Keep every lane small enough that failures are easy to explain.

@@ -58,10 +58,11 @@ Checkpoint path caveat:
 - The stable mirror path
   `checkpoints/lightzero_resume_state/iteration_<n>.resume_state.pkl` is a
   resume sidecar, not the model checkpoint used by the tournament runner.
-- The real weight checkpoints seen in the v1b rows are under
-  `attempts/<attempt_id>/train/lightzero_exp/ckpt/iteration_<n>.pth.tar`.
-- For the first 50-run tournament picker, scan each run for the highest
-  `iteration_<n>.pth.tar` under its active attempt `lightzero_exp/ckpt`.
+- Real weight checkpoints may be under
+  `attempts/<attempt_id>/train/lightzero_exp*/ckpt/iteration_<n>.pth.tar`,
+  including timestamped DI-engine experiment directories after restarts.
+- For tournament picking, scan each run/attempt for the highest
+  `iteration_<n>.pth.tar` under `train/lightzero_exp*/ckpt`.
 
 Second pass:
 

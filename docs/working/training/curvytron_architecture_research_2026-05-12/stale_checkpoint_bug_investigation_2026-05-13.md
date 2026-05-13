@@ -36,10 +36,14 @@ Upstream LightZero calls DI-engine `compile_config(...)` inside
 
 Source checked:
 
-- `https://raw.githubusercontent.com/opendilab/LightZero/main/lzero/entry/train_muzero.py`
-- `https://raw.githubusercontent.com/opendilab/DI-engine/main/ding/config/config.py`
-- `https://raw.githubusercontent.com/opendilab/DI-engine/main/ding/worker/learner/base_learner.py`
-- `https://raw.githubusercontent.com/opendilab/DI-engine/main/ding/worker/learner/learner_hook.py`
+- LightZero v0.2.0 `train_muzero`:
+  `https://github.com/opendilab/LightZero/blob/v0.2.0/lzero/entry/train_muzero.py#L72-L127`
+- DI-engine v0.5.3 `compile_config`:
+  `https://github.com/opendilab/DI-engine/blob/v0.5.3/ding/config/config.py#L369-L471`
+- DI-engine v0.5.3 `BaseLearner`:
+  `https://github.com/opendilab/DI-engine/blob/v0.5.3/ding/worker/learner/base_learner.py#L75-L104`
+- DI-engine v0.5.3 `SaveCkptHook`:
+  `https://github.com/opendilab/DI-engine/blob/v0.5.3/ding/worker/learner/learner_hook.py#L127-L169`
 
 In DI-engine `compile_config`, the default is `renew_dir=True`. If
 `cfg.exp_name` already exists, DI-engine appends a timestamp:
@@ -99,11 +103,29 @@ These checks used `modal volume ls` against `curvyzero-runs`.
 | `curvy-mix3cur-r40-blank20-mid20-scr20-rf-s8-c32-l32-rep0-k10-c5-s2306051` | sampled fixed path looked stale | `lightzero_exp_260513_172427/ckpt` has `iteration_0` through `iteration_70000` | Same pattern. |
 | `curvy-mix3cur-r50-blank50-rb-s16-c32-l32-repH-k10-c1-s2302011` | sampled fixed path looked stale | `lightzero_exp_260513_152011/ckpt` has `iteration_0` through `iteration_100000` | Same pattern. |
 | `curvy-mix3cur-r75-blank25-rf-s16-c32-l32-repM-k10-c1-s2303011` | sampled fixed path looked stale | `lightzero_exp_260513_152601/ckpt` has `iteration_0` through `iteration_110000` | Same pattern. |
+| `curvy-mix3cur-r40-blank20-mid20-scr20-rf-s16-c32-l32-repM-k10-c1-s2306011` | sampled fixed path looked stale | `lightzero_exp_260513_151652/ckpt` has through `iteration_40000`; `lightzero_exp_260513_170247/ckpt` has through `iteration_10000`; `lightzero_exp_260513_172955/ckpt` has through `iteration_50000` | Same pattern, with multiple restart fragments. |
 
 This strongly explains why `progress_latest.json` could show a high
 `learner_train_iter` while still reporting `checkpoint_name=iteration_0.pth.tar`:
 the progress writer scanned the old directory, while the learner saved in the
 timestamped directory.
+
+This covers all six rows that the fixed-path status snapshot showed at
+`iteration_0`. The fixed-path health table was therefore misleading for those
+rows; it did not scan the true set of LightZero experiment directories.
+
+The Modal tournament discovery helper was also checked directly against these
+six rows with `--mode discover --checkpoint-selection latest --run-ids ...`.
+It found all six and returned timestamped checkpoint refs:
+
+| Run | Broad discovery latest checkpoint |
+| --- | --- |
+| `curvy-mix2clean-r50-scr50-rf-s8-c32-l32-repH-k10-c1-s2104011` | `lightzero_exp_260513_123802/ckpt/iteration_180000.pth.tar` |
+| `curvy-mix2clean-r50-scr50-rb-s8-c32-l32-rep0-k10-c2-s2104021` | `lightzero_exp_260513_121430/ckpt/iteration_110000.pth.tar` |
+| `curvy-mix3cur-r40-blank20-mid20-scr20-rf-s8-c32-l32-rep0-k10-c5-s2306051` | `lightzero_exp_260513_172427/ckpt/iteration_80000.pth.tar` |
+| `curvy-mix3cur-r50-blank50-rb-s16-c32-l32-repH-k10-c1-s2302011` | `lightzero_exp_260513_152011/ckpt/iteration_110000.pth.tar` |
+| `curvy-mix3cur-r75-blank25-rf-s16-c32-l32-repM-k10-c1-s2303011` | `lightzero_exp_260513_152601/ckpt/iteration_110000.pth.tar` |
+| `curvy-mix3cur-r40-blank20-mid20-scr20-rf-s16-c32-l32-repM-k10-c1-s2306011` | `lightzero_exp_260513_172955/ckpt/iteration_50000.pth.tar` |
 
 ## What The Earlier Evidence Still Means
 
@@ -148,6 +170,19 @@ Those problems can make artifact publication and eval/GIF flaky. But the
 timestamped `exp_name` discovery explains the stale-zero checkpoint read more
 directly.
 
+Latest quick log pass, 2026-05-13 16:23 EDT, against app
+`ap-2mvquK3ZZJvDqleyHS088M` over the previous 6 hours:
+
+- `Runner interrupted`: about 362 log lines.
+- `failed to publish commit`: about 1210 log lines.
+- `PytorchStreamReader failed reading zip archive`: about 201 log lines.
+- `matching_iteration_checkpoint_not_found`: no matching log lines in this
+  app-log search.
+
+These are rough log-line counts, not deduplicated event counts. They support
+the same split: preemption and eval/GIF volume pressure are real, but the
+fixed-path `iteration_0` symptom has a clearer directory-discovery cause.
+
 ## Current Best Diagnosis
 
 Highest-confidence diagnosis:
@@ -166,13 +201,28 @@ Consequences:
 - Auto-resume can resume from stale checkpoints.
 - Current run-health summaries probably undercount progress for restarted rows.
 
+Important tournament nuance: the current Modal tournament discovery helper in
+`src/curvyzero/infra/modal/curvyzero_checkpoint_tournament.py` already scans
+`train_root.glob("lightzero_exp*/ckpt")` when it is asked to discover from run
+roots. That broad scan is the right shape. The footgun remains for any caller
+or side path that hands tournament code only a fixed
+`train/lightzero_exp/ckpt/...` ref, or relies on CurvyZero's stable mirror,
+progress file, status reader, or poller output.
+
+Adjacent manifest nuance: `scripts/build_curvytron_opponent_mixture_manifest.py`
+has default opponent checkpoint refs under `train/lightzero_exp/ckpt`. Those
+were historical fixed refs, not a safe discovery pattern for new runs. New
+opponent/tournament manifests should freeze refs only after a broad
+`lightzero_exp*/ckpt` scan.
+
 ## What Is Not Yet Proven
 
 These need more checks or instrumentation:
 
-- Whether every stale row is explained by timestamped `exp_name` directories.
-  The sampled rows all fit, but the full preserved run set was not exhaustively
-  scanned in this pass.
+- Whether every fixed-path stale row outside the six known `iteration_0` rows is
+  explained by timestamped `exp_name` directories. The six fixed-path
+  `iteration_0` rows all fit, but the full preserved run set was not
+  exhaustively scanned for slower/stale nonzero rows in this pass.
 - Whether any rows also have true checkpoint-save failures.
 - Whether checkpoint corruption comes from eval/GIF reading while a checkpoint
   is still being written, Modal Volume visibility timing, concurrent commits, or
@@ -227,5 +277,22 @@ uv run --extra modal modal app logs ap-2mvquK3ZZJvDqleyHS088M \
    - teach all CurvyZero observers/resume logic to follow the compiled
      `cfg.exp_name`, or
    - both.
+
+## Patch Direction To Consider Later
+
+No source patch was made in this pass, but the likely fix shape is now clearer:
+
+1. In live hooks that run after a save, prefer the actual LightZero learner path
+   (`learner.exp_name` or `engine.exp_name`) over the closed-over original
+   `exp_name`.
+2. In poller, resume, status, and mirror code, scan all sibling
+   `train/lightzero_exp*/ckpt` directories and select by checkpoint iteration,
+   mtime, and size.
+3. Keep the exact selected checkpoint ref and source directory in status,
+   tournament inputs, and eval/GIF summaries. Do not collapse everything to the
+   basename alone when multiple timestamped directories exist.
+4. If possible, prevent DI-engine from silently renewing the directory on
+   intended resume. But do not rely on that alone; broad discovery is still the
+   safer reader-side behavior for old artifacts and restarted jobs.
 
 No code change was made in this investigation.

@@ -1251,6 +1251,84 @@ def test_js_scenario_runner_bonus_self_fast_expiry_before_wall_death():
     assert not any(event["event"] == "bonus:clear" for event in death_frame["events"])
 
 
+def test_js_scenario_runner_bonus_enemy_slow_4p_stack_wall_death_terminal():
+    payload = _run_js_scenario(
+        "source_bonus_enemy_slow_4p_stack_wall_death_terminal_step.json"
+    )
+    catch_frame, death_frame = payload["trace"]
+    catch_avatars = {avatar["name"]: avatar for avatar in catch_frame["avatars"]}
+    death_avatars = {avatar["name"]: avatar for avatar in death_frame["avatars"]}
+    bonus_data = {
+        "id": 1,
+        "type": "BonusEnemySlow",
+        "duration": 5000,
+        "effects": [["velocity", -8]],
+    }
+
+    assert payload["comparison"]["python_target"] == "source-bonus-js-oracle"
+    assert payload["comparison"]["scope"].startswith("forced 4P BonusEnemySlow")
+    assert payload["randomCalls"] == []
+    assert payload["playerCount"] == 4
+
+    assert catch_frame["stepMs"] == 0
+    assert catch_frame["game"]["size"] == 101
+    assert catch_frame["game"]["inRound"] is True
+    assert catch_frame["game"]["deaths"] == []
+    assert [catch_avatars[f"p{index}"]["velocity"] for index in range(4)] == [
+        16,
+        8,
+        8,
+        8,
+    ]
+    assert catch_avatars["p0"]["activeBonuses"] == []
+    assert [catch_avatars[f"p{index}"]["activeBonuses"] for index in (1, 2, 3)] == [
+        [bonus_data],
+        [bonus_data],
+        [bonus_data],
+    ]
+    assert [
+        event["data"]["avatar"]
+        for event in catch_frame["events"]
+        if event["event"] == "bonus:stack"
+    ] == [4, 3, 2]
+    assert [
+        event["data"]
+        for event in catch_frame["events"]
+        if event["event"] == "property"
+    ] == [
+        {"avatar": 4, "property": "velocity", "value": 8},
+        {"avatar": 3, "property": "velocity", "value": 8},
+        {"avatar": 2, "property": "velocity", "value": 8},
+    ]
+    assert not any(event["event"] == "die" for event in catch_frame["events"])
+
+    assert death_frame["stepMs"] == 400
+    assert death_frame["game"]["inRound"] is False
+    assert death_frame["game"]["deaths"] == [4, 3, 2]
+    assert death_frame["game"]["roundWinner"] == 1
+    assert death_avatars["p0"]["alive"] is True
+    assert death_avatars["p0"]["score"] == 3
+    assert death_avatars["p0"]["x"] == 56.4
+    for index, y in ((1, 20), (2, 40), (3, 60)):
+        avatar = death_avatars[f"p{index}"]
+        assert avatar["alive"] is False
+        assert avatar["velocity"] == 8
+        assert avatar["x"] == -2.2
+        assert avatar["y"] == y
+        assert avatar["activeBonuses"] == []
+    assert [
+        event["data"]["avatar"]
+        for event in death_frame["events"]
+        if event["event"] == "die"
+    ] == [4, 3, 2]
+    assert death_frame["events"][-1] == {
+        "event": "round:end",
+        "data": {"winner": 1},
+    }
+    assert not any(event["event"] == "bonus:stack" for event in death_frame["events"])
+    assert not any(event["event"] == "property" for event in death_frame["events"])
+
+
 def test_js_scenario_runner_bonus_game_borderless_expiry_restores_borderless():
     payload = _run_js_scenario_with_game_bonus_stack(
         "source_bonus_game_borderless_expiry_restore_step.json"
@@ -2321,6 +2399,80 @@ def test_js_scenario_runner_pins_collision_order_head_head_single_death():
         {"event": "score:round", "player_id": "p1", "score": 0, "roundScore": 1},
         {"event": "round:end", "winner_id": "p1"},
     ]
+
+
+@pytest.mark.parametrize(
+    (
+        "filename",
+        "expected_player_names",
+        "expected_alive",
+        "expected_scores",
+        "expected_deaths",
+        "expected_round_winner",
+        "expected_world_body_count",
+        "expected_common_events",
+    ),
+    [
+        (
+            "source_hit_owner_3p_two_victims_one_survivor_step.json",
+            ["p0", "p1", "p2"],
+            [False, True, False],
+            [0, 2, 0],
+            [3, 1],
+            2,
+            4,
+            [
+                {"event": "die", "player_id": "p2", "killer_id": "p1", "old": False},
+                {"event": "die", "player_id": "p0", "killer_id": "p1", "old": False},
+                {"event": "round:end", "winner_id": "p1"},
+            ],
+        ),
+        (
+            "source_hit_owner_4p_two_victims_two_survivors_step.json",
+            ["p0", "p1", "p2", "p3"],
+            [False, True, False, True],
+            [0, 0, 0, 0],
+            [3, 1],
+            None,
+            4,
+            [
+                {"event": "die", "player_id": "p2", "killer_id": "p1", "old": False},
+                {"event": "die", "player_id": "p0", "killer_id": "p3", "old": False},
+            ],
+        ),
+    ],
+    ids=["3p-terminal-one-survivor", "4p-nonterminal-two-survivors"],
+)
+def test_js_scenario_runner_pins_multiplayer_hit_owner_stress(
+    filename,
+    expected_player_names,
+    expected_alive,
+    expected_scores,
+    expected_deaths,
+    expected_round_winner,
+    expected_world_body_count,
+    expected_common_events,
+):
+    payload = _run_js_scenario(filename)
+    frame = payload["trace"][0]
+    avatars = {avatar["name"]: avatar for avatar in frame["avatars"]}
+    common_step = project_common_trace(payload)["steps"][0]
+
+    assert payload["comparison"]["python_target"] == "pending-multiplayer-hit-owner-source"
+    assert payload["comparison"]["source_fidelity_required"] is True
+    assert payload["randomCalls"] == []
+    assert frame["stepMs"] == 0
+    assert frame["game"]["deathCount"] == len(expected_deaths)
+    assert frame["game"]["deaths"] == expected_deaths
+    assert frame["game"]["roundWinner"] == expected_round_winner
+    assert frame["game"]["worldBodyCount"] == expected_world_body_count
+    assert [avatars[name]["alive"] for name in expected_player_names] == expected_alive
+    assert [avatars[name]["score"] for name in expected_player_names] == expected_scores
+    assert [
+        event
+        for event in common_step["events"]
+        if event["event"] in {"die", "round:end"}
+    ] == expected_common_events
 
 
 def test_js_scenario_runner_forces_print_manager_and_trail_state_directly(tmp_path):

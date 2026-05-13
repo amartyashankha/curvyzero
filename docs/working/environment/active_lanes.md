@@ -132,8 +132,11 @@ Source-state multiplayer target-row adapter spec:
   position, and the full 12-item source-default bonus set.
 - Latest hit-owner stress proof covers 4P newest-owner overlap, 4P source-style
   corner island order, 3P own-body latency, and 4P two-victim metadata
-  alignment. It still needs raw JS fixtures and product/replay/debug-event
-  propagation for those exact stress cases.
+  alignment. Focused propagation now reaches public env, trainer surface,
+  replay records, and debug die events for one 3P terminal body-hit case and
+  one 4P nonterminal two-victim case. Raw JS oracle fixtures now pin those
+  exact 3P/4P stress shapes, and public `VectorMultiplayerEnv` mirrors them
+  from fixture-seeded state. Broader collision edges remain open.
 - Fresh 2026-05-13 local validation: source env, vector runtime, controls,
   collision, and direct 2P product-route focused tests reported `155 passed`.
   New multiplayer trainer-surface and replay focused tests reported `14
@@ -170,12 +173,15 @@ Source-state multiplayer target-row adapter spec:
   presence/leave proof for one active row and one staged-warmdown row in the
   same batch. It covers present/alive masks, absent action slots, warmdown
   next-round carryover, trainer live-policy rows, and replay storage.
-- The largest current environment gaps are broader source-fixture
-  presence/leave breadth, renderer/fast-path boundary guards, JS/original
-  stress fixtures for the remaining bonus/collision cases, bonus
-  metadata/replay beyond audit rows, old toy-path quarantine, and final
-  cleanup. Real LightZero `MuZeroGameBuffer` sampled-target parity remains
-  downstream interface work, not the main reconstruction priority.
+- Focused source-backed public leave proofs are also green for
+  `source_lifecycle_remove_avatar_to_single_present_3p.json` and
+  `source_lifecycle_remove_avatar_during_warmdown_3p.json`. The largest
+  current environment gaps are broader leave variants, renderer/fast-path
+  boundary guards, JS/original stress fixtures for the remaining
+  bonus/collision cases, bonus metadata/replay beyond audit rows, old toy-path
+  quarantine, and final cleanup. Real LightZero `MuZeroGameBuffer`
+  sampled-target parity remains downstream interface work, not the main
+  reconstruction priority.
 - Latest public base hardening: direct public body/trail/collision canary
   tests, the long 2P reset-to-terminal source rollout, warmdown/match-end
   checks, the 2P metadata replay bridge, and the source-state LightZero wrapper
@@ -283,8 +289,17 @@ Source-state multiplayer target-row adapter spec:
   focused terminal packaging proof for both `BonusSelfFast` cases: final visual
   observation rows, final reward maps, step counters, death facts, winner/loser
   facts, and compact bonus audit metadata are preserved in replay records.
-  This is a narrow source-runner, public-vector, and trainer/replay proof, not
-  browser event-loop or render proof. Remaining gaps include other
+  New 4P target-filter proof covers enemy/all/game bonus targeting with one
+  alive target, one dead seat, and one absent seat: source/public enemy bonuses
+  hit only other alive avatars, all-avatar bonuses hit only alive avatars, and
+  game bonuses update global state. New focused 4P terminal proof covers
+  `BonusEnemySlow` stack/death packaging with a JS oracle fixture, public vector
+  mirror, and trainer/replay check: p0 applies slow stacks to p1/p2/p3, those
+  targets wall-die before expiry, death clears the stack rows without restoring
+  dead-player speed, p0 wins the round, and replay preserves final visual/reward
+  rows, death order, winner/loser facts, step counters, and compact bonus
+  metadata. This is a narrow source-runner, public-vector, and trainer/replay
+  proof, not browser event-loop or render proof. Remaining gaps include other
   stack/death combinations, broader 3P/4P lifecycle/leave, visual pixel parity,
   and final cleanup.
 - Docs worker status: this is the only active docs lane now. Keep updates

@@ -692,6 +692,13 @@ def _expected_source_angular_velocity_for_speed(speed: float) -> float:
     )
 
 
+def _mark_4p_dead_and_absent_bonus_targets(env: VectorMultiplayerEnv) -> None:
+    env.state["present"][0] = np.asarray([True, True, True, False], dtype=bool)
+    env.state["alive"][0] = np.asarray([True, True, False, False], dtype=bool)
+    env.state["printing"][0, 2:] = False
+    env.state["print_manager_active"][0, 2:] = False
+
+
 def test_public_seeded_bonus_support_is_off_by_default():
     env, batch = _step_public_fixture_once(
         "scenarios/environment/source_bonus_self_small_catch_step.json",
@@ -926,6 +933,126 @@ def test_public_seeded_bonus_self_fast_expiry_drains_before_wall_death():
     )
     assert death_batch.info["winner_ids"] == [[1]]
     assert death_batch.info["loser_ids"] == [[0]]
+
+
+def test_public_seeded_bonus_enemy_slow_4p_stack_wall_death_terminal_matches_source():
+    scenario_name = "source_bonus_enemy_slow_4p_stack_wall_death_terminal_step.json"
+    scenario_path = f"scenarios/environment/{scenario_name}"
+    state, fixture = _fixture_state(scenario_path, body_capacity=16)
+    actions, step_ms = _fixture_actions_for_step(fixture, step_index=0)
+    bonus = _first_active_bonus(scenario_name)
+    env = VectorMultiplayerEnv(
+        batch_size=1,
+        player_count=4,
+        decision_ms=step_ms if step_ms > 0.0 else 1.0,
+        body_capacity=16,
+        event_capacity=16,
+        timer_capacity=4,
+        random_tape_capacity=8,
+        event_mode="debug-event",
+    )
+    env.reset_from_state_arrays(
+        state,
+        reset_seed=np.asarray([101], dtype=np.uint64),
+    )
+    if step_ms == 0.0:
+        env.decision_ms = 0.0
+    env.seed_active_bonus(
+        row=0,
+        bonus_type=str(bonus["type"]),
+        x=float(bonus["x"]),
+        y=float(bonus["y"]),
+        bonus_id=1,
+        stack_capacity=vector_runtime.SOURCE_MAX_ACTIVE_BONUSES,
+    )
+
+    catch_batch = env.step(actions)
+
+    _assert_seeded_bonus_public_claim(catch_batch)
+    assert catch_batch.info["step_counters"]["bonus_enemy_slow_catches"] == 1
+    assert catch_batch.info["step_counters"]["bonus_stack_appends"] == 3
+    np.testing.assert_array_equal(catch_batch.done, np.asarray([False], dtype=bool))
+    np.testing.assert_allclose(
+        env.state["speed"],
+        np.asarray([[16.0, 8.0, 8.0, 8.0]], dtype=np.float64),
+    )
+    np.testing.assert_array_equal(
+        env.state["bonus_stack_count"],
+        np.asarray([[0, 1, 1, 1]], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(env.state["bonus_active"], np.asarray([[False]]))
+    np.testing.assert_array_equal(env.state["bonus_count"], np.asarray([0], dtype=np.int32))
+
+    death_actions, death_step_ms = _fixture_actions_for_step(fixture, step_index=1)
+    env.decision_ms = death_step_ms
+    terminal_batch = env.step(
+        death_actions,
+        timer_advance_ms=_fixture_timer_advance_ms(fixture, step_index=1),
+    )
+
+    _assert_seeded_bonus_public_claim(terminal_batch)
+    assert terminal_batch.info["step_counters"]["normal_wall_deaths"] == 3
+    assert terminal_batch.info["step_counters"]["bonus_enemy_slow_expiries"] == 0
+    np.testing.assert_array_equal(terminal_batch.done, np.asarray([True], dtype=bool))
+    np.testing.assert_array_equal(
+        terminal_batch.terminated,
+        np.asarray([True], dtype=bool),
+    )
+    np.testing.assert_array_equal(
+        terminal_batch.info["terminal_reason"],
+        np.asarray([vector_reset.TERMINAL_REASON_SURVIVOR_WIN], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        env.state["alive"],
+        np.asarray([[True, False, False, False]], dtype=bool),
+    )
+    np.testing.assert_array_equal(
+        env.state["score"],
+        np.asarray([[3, 0, 0, 0]], dtype=np.int32),
+    )
+    np.testing.assert_allclose(
+        env.state["speed"],
+        np.asarray([[16.0, 8.0, 8.0, 8.0]], dtype=np.float64),
+    )
+    np.testing.assert_allclose(
+        env.state["pos"],
+        np.asarray([[[56.4, 50.0], [-2.2, 20.0], [-2.2, 40.0], [-2.2, 60.0]]]),
+        atol=1e-9,
+    )
+    np.testing.assert_array_equal(
+        env.state["bonus_stack_count"],
+        np.asarray([[0, 0, 0, 0]], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        terminal_batch.info["death_player"],
+        np.asarray([[3, 2, 1, -1]], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        terminal_batch.info["death_cause"],
+        np.asarray(
+            [
+                [
+                    vector_runtime.DEATH_CAUSE_WALL,
+                    vector_runtime.DEATH_CAUSE_WALL,
+                    vector_runtime.DEATH_CAUSE_WALL,
+                    vector_runtime.DEATH_CAUSE_NONE,
+                ]
+            ],
+            dtype=np.int16,
+        ),
+    )
+    assert terminal_batch.info["winner_ids"] == [[0]]
+    assert terminal_batch.info["loser_ids"] == [[1, 2, 3]]
+    np.testing.assert_array_equal(
+        terminal_batch.reward,
+        np.asarray([[1.0, -1.0, -1.0, -1.0]], dtype=np.float32),
+    )
+    assert terminal_batch.final_observation is not None
+    _assert_public_final_metadata(
+        terminal_batch,
+        [0],
+        expected_reward=terminal_batch.reward,
+    )
 
 
 def test_public_seeded_bonus_game_clear_immediate_clear_matches_source_fixture():
@@ -1492,6 +1619,117 @@ def test_public_seeded_bonus_all_color_overlap_uses_older_stack_until_expiry():
     assert second_expiry_batch.info["step_counters"]["bonus_all_color_expiries"] == 3
     np.testing.assert_array_equal(env.state["avatar_color"], np.asarray([[0, 1, 2]]))
     np.testing.assert_array_equal(env.state["bonus_stack_count"], np.asarray([[0, 0, 0]]))
+
+
+def test_4p_public_seeded_bonus_targets_skip_dead_and_absent_players():
+    env = _direct_public_seeded_bonus_env(
+        player_count=4,
+        positions=[[20.0, 20.0], [50.0, 20.0], [80.0, 20.0], [90.0, 20.0]],
+        bonus_type="BonusEnemySlow",
+    )
+    _mark_4p_dead_and_absent_bonus_targets(env)
+
+    catch_batch = env.step(np.asarray([[1, 1, -1, -1]], dtype=np.int16))
+
+    _assert_seeded_bonus_public_claim(catch_batch)
+    assert catch_batch.info["step_counters"]["bonus_enemy_slow_catches"] == 1
+    assert catch_batch.info["step_counters"]["bonus_stack_appends"] == 1
+    np.testing.assert_array_equal(
+        catch_batch.info["present"],
+        np.asarray([[True, True, True, False]], dtype=bool),
+    )
+    np.testing.assert_array_equal(
+        catch_batch.info["alive"],
+        np.asarray([[True, True, False, False]], dtype=bool),
+    )
+    np.testing.assert_allclose(env.state["speed"], np.asarray([[16.0, 8.0, 16.0, 16.0]]))
+    np.testing.assert_array_equal(
+        env.state["bonus_stack_count"],
+        np.asarray([[0, 1, 0, 0]], dtype=np.int16),
+    )
+    assert int(env.state["bonus_stack_type"][0, 1, 0]) == (
+        vector_runtime.BONUS_TYPE_ENEMY_SLOW
+    )
+
+    expiry_batch = env.step(
+        np.asarray([[1, 1, -1, -1]], dtype=np.int16),
+        timer_advance_ms=vector_runtime.BONUS_ENEMY_SLOW_DURATION_MS,
+    )
+
+    _assert_seeded_bonus_public_claim(expiry_batch)
+    assert expiry_batch.info["step_counters"]["bonus_enemy_slow_expiries"] == 1
+    assert expiry_batch.info["step_counters"]["bonus_stack_appends"] == 0
+    np.testing.assert_allclose(
+        env.state["speed"],
+        np.asarray([[16.0, 16.0, 16.0, 16.0]]),
+    )
+    np.testing.assert_array_equal(
+        env.state["bonus_stack_count"],
+        np.asarray([[0, 0, 0, 0]], dtype=np.int16),
+    )
+
+
+def test_4p_public_seeded_bonus_all_and_game_target_live_or_global_state():
+    all_env = _direct_public_seeded_bonus_env(
+        player_count=4,
+        positions=[[20.0, 20.0], [50.0, 20.0], [80.0, 20.0], [90.0, 20.0]],
+        bonus_type="BonusAllColor",
+    )
+    _mark_4p_dead_and_absent_bonus_targets(all_env)
+    np.testing.assert_array_equal(all_env.state["avatar_color"], np.asarray([[0, 1, 2, 3]]))
+
+    all_batch = all_env.step(np.asarray([[1, 1, -1, -1]], dtype=np.int16))
+
+    _assert_seeded_bonus_public_claim(all_batch)
+    assert all_batch.info["step_counters"]["bonus_all_color_catches"] == 1
+    assert all_batch.info["step_counters"]["bonus_stack_appends"] == 2
+    np.testing.assert_array_equal(
+        all_env.state["avatar_color"],
+        np.asarray([[1, 0, 2, 3]], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        all_env.state["bonus_stack_count"],
+        np.asarray([[1, 1, 0, 0]], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        all_env.state["bonus_stack_color"][0, :, 0],
+        np.asarray([1, 0, -1, -1], dtype=np.int16),
+    )
+
+    all_expiry = all_env.step(
+        np.asarray([[1, 1, -1, -1]], dtype=np.int16),
+        timer_advance_ms=vector_runtime.BONUS_ALL_COLOR_DURATION_MS,
+    )
+
+    _assert_seeded_bonus_public_claim(all_expiry)
+    assert all_expiry.info["step_counters"]["bonus_all_color_expiries"] == 2
+    np.testing.assert_array_equal(
+        all_env.state["avatar_color"],
+        np.asarray([[0, 1, 2, 3]], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        all_env.state["bonus_stack_count"],
+        np.asarray([[0, 0, 0, 0]], dtype=np.int16),
+    )
+
+    game_env = _direct_public_seeded_bonus_env(
+        player_count=4,
+        positions=[[20.0, 20.0], [50.0, 20.0], [80.0, 20.0], [90.0, 20.0]],
+        bonus_type="BonusGameBorderless",
+    )
+    _mark_4p_dead_and_absent_bonus_targets(game_env)
+
+    game_batch = game_env.step(np.asarray([[1, 1, -1, -1]], dtype=np.int16))
+
+    _assert_seeded_bonus_public_claim(game_batch)
+    assert game_batch.info["step_counters"]["bonus_game_borderless_catches"] == 1
+    assert game_batch.info["step_counters"]["bonus_stack_appends"] == 1
+    np.testing.assert_array_equal(game_env.state["borderless"], np.asarray([True]))
+    np.testing.assert_array_equal(
+        game_env.state["bonus_stack_count"],
+        np.asarray([[0, 0, 0, 0]], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(game_env.state["bonus_game_stack_count"], np.asarray([1]))
 
 
 def test_public_seeded_bonus_rejects_unsupported_bonus_types():
@@ -2639,6 +2877,134 @@ def test_2p_public_collision_order_canary_fixture_matches_source_terminal(
         np.asarray([expected_world_body_count], dtype=np.int32),
     )
     _assert_public_final_metadata(batch, [0], expected_reward=batch.reward)
+
+
+@pytest.mark.parametrize(
+    (
+        "scenario_name",
+        "expected_player_count",
+        "expected_done",
+        "expected_alive",
+        "expected_score",
+        "expected_death_count",
+        "expected_death_player",
+        "expected_death_hit_owner",
+        "expected_reward",
+        "expected_winner",
+        "expected_terminal_reason",
+        "expected_world_body_count",
+    ),
+    [
+        (
+            "source_hit_owner_3p_two_victims_one_survivor_step.json",
+            3,
+            True,
+            [False, True, False],
+            [0, 2, 0],
+            2,
+            [2, 0, -1],
+            [1, 1, -1],
+            [-1.0, 1.0, -1.0],
+            1,
+            vector_reset.TERMINAL_REASON_SURVIVOR_WIN,
+            4,
+        ),
+        (
+            "source_hit_owner_4p_two_victims_two_survivors_step.json",
+            4,
+            False,
+            [False, True, False, True],
+            [0, 0, 0, 0],
+            2,
+            [2, 0, -1, -1],
+            [1, 3, -1, -1],
+            [0.0, 0.0, 0.0, 0.0],
+            -1,
+            vector_reset.TERMINAL_REASON_NONE,
+            4,
+        ),
+    ],
+    ids=["3p-terminal-one-survivor", "4p-nonterminal-two-survivors"],
+)
+def test_public_multiplayer_hit_owner_js_oracle_fixture_matches_source(
+    scenario_name: str,
+    expected_player_count: int,
+    expected_done: bool,
+    expected_alive: list[bool],
+    expected_score: list[int],
+    expected_death_count: int,
+    expected_death_player: list[int],
+    expected_death_hit_owner: list[int],
+    expected_reward: list[float],
+    expected_winner: int,
+    expected_terminal_reason: int,
+    expected_world_body_count: int,
+):
+    env, batch = _step_public_fixture_once(
+        f"scenarios/environment/{scenario_name}",
+        body_capacity=8,
+    )
+
+    expected_causes = [
+        (
+            vector_runtime.DEATH_CAUSE_OPPONENT_TRAIL
+            if player >= 0
+            else vector_runtime.DEATH_CAUSE_NONE
+        )
+        for player in expected_death_player
+    ]
+    assert batch.info["metadata_only"] is True
+    assert batch.info["trainer_observation_claim"] is False
+    assert batch.info["player_count"] == expected_player_count
+    np.testing.assert_array_equal(batch.done, np.asarray([expected_done], dtype=bool))
+    np.testing.assert_array_equal(
+        batch.terminated,
+        np.asarray([expected_done], dtype=bool),
+    )
+    np.testing.assert_array_equal(
+        batch.reward,
+        np.asarray([expected_reward], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        batch.info["alive"],
+        np.asarray([expected_alive], dtype=bool),
+    )
+    np.testing.assert_array_equal(
+        batch.info["score"],
+        np.asarray([expected_score], dtype=np.int32),
+    )
+    np.testing.assert_array_equal(
+        batch.info["death_count"],
+        np.asarray([expected_death_count], dtype=np.int32),
+    )
+    np.testing.assert_array_equal(
+        batch.info["death_player"],
+        np.asarray([expected_death_player], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        batch.info["death_cause"],
+        np.asarray([expected_causes], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        batch.info["death_hit_owner"],
+        np.asarray([expected_death_hit_owner], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        batch.info["winner"],
+        np.asarray([expected_winner], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        batch.info["terminal_reason"],
+        np.asarray([expected_terminal_reason], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        env.state["world_body_count"],
+        np.asarray([expected_world_body_count], dtype=np.int32),
+    )
+    if expected_done:
+        _assert_public_final_metadata(batch, [0], expected_reward=batch.reward)
+    else:
+        _assert_public_final_metadata(batch, [], expected_reward=None)
 
 
 def test_2p_public_terminal_step_labels_metadata_only_final_rows():

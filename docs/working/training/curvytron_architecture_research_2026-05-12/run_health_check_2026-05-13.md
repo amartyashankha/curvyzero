@@ -27,6 +27,11 @@ The counts below are still useful for describing what the website/status reader
 saw, but they are not the true highest-checkpoint counts across all LightZero
 experiment directories.
 
+Later correction: all six rows called out below as fixed-path `iteration_0`
+have now been checked and have later checkpoints under timestamped
+`lightzero_exp_260513_*` directories. They are still status/poller failures, but
+not proof that the learner failed to checkpoint.
+
 ## Counts
 
 | Check | Result |
@@ -75,8 +80,10 @@ Latest checkpoint iteration:
 2. 36 rows have not produced a checkpoint for more than 3 hours.
 3. 10 rows have not produced a checkpoint for more than 6 hours. These are
    mostly `mix2`; the preserved `v1b` dependency is also in this group.
-4. 6 rows are still at `iteration_0` after hours. That is suspicious:
-   2 `mix2` rows and 4 `mix3` rows.
+4. 6 rows were still at `iteration_0` in the fixed-path status reader after
+   hours: 2 `mix2` rows and 4 `mix3` rows. Later broad scans found timestamped
+   checkpoint streams for all six, so this is now best read as a checkpoint
+   discovery bug rather than six clear training failures.
 5. One `mix2` row has no eval manifest:
    `curvy-mix2clean-r50-blank25-scr25-rf-s8-c32-l32-rep0-k10-c3-s2106031`.
 6. One non-dependency live row is missing `progress_latest.json`:
@@ -94,14 +101,19 @@ The stale rows are not random. They are concentrated in:
   often among stale rows;
 - a few older survival heavy/search/batch rows.
 
-This does not prove the configs are bad. It does mean these rows should not be
-treated as equally healthy when reading learning signal.
+This does not prove the configs are bad. After the timestamped-directory
+investigation, it also does not prove those configs truly stopped
+checkpointing. It means fixed-path status was especially misleading on these
+rows and must be replaced by a broad `lightzero_exp*/ckpt` scan before reading
+learning signal.
 
 ## Working Interpretation
 
 The live batch is broadly healthy enough to keep monitoring: most rows advanced
 between snapshots, no checkpoints regressed, and eval/GIF artifacts are still
-appearing. But there is a real stale tail. The stale rows may be slow, hung, or
-reporting stale `running` heartbeats. A later fix/investigation should use
-checkpoint mtime and eval/GIF freshness as the primary health criteria, not just
-`train_status`.
+appearing. The fixed-path reader found a stale tail, but later checks showed the
+six fixed-path `iteration_0` rows were actually saving into timestamped
+LightZero directories. Future health checks should use the highest checkpoint
+across all `lightzero_exp*/ckpt` directories, checkpoint mtime, and eval/GIF
+freshness as the primary criteria, not just `train_status` or the fixed
+`lightzero_exp/ckpt` path.

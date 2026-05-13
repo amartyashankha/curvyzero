@@ -257,6 +257,21 @@ to `16`; the following wall-death movement uses that restored speed, p0 reaches
 `x=-1.4`, dies, p1 scores, and the stack remains empty. This is source runner
 and public vector timer ordering, not browser event-loop or pixel proof.
 
+`test_source_env_4p_bonus_targets_skip_dead_and_absent_avatars` and the matching
+public vector tests pin the first 4P target-filter proof: enemy bonuses target
+other alive avatars only, all-avatar bonuses target alive avatars only, absent
+seats are skipped because source reset/remove marks them not alive, and game
+bonuses still apply to global game state. This is a focused source/public
+targeting proof, not broad 3P/4P bonus stack/death replay coverage.
+
+`source_bonus_enemy_slow_4p_stack_wall_death_terminal_step.json` pins the
+focused 4P terminal stack/death case against the JS oracle: p0 catches
+`BonusEnemySlow`, p1/p2/p3 receive slowed stack entries, the slowed targets hit
+the normal wall before the 5000 ms expiry, death clears each dead target stack
+without restoring velocity, and p0 wins the round. The public vector mirror now
+uses the same fixture; trainer/replay has the matching packaging proof. This is
+still a focused case, not broad browser event-loop, render, or every-bonus proof.
+
 ## Bonus Table
 
 Unless noted, probability is the base `1` from `BaseBonus`

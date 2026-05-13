@@ -26,6 +26,17 @@ from curvyzero.infra.modal import run_management as runs
 TOURNAMENT_TASK_ID = "curvytron-checkpoint-tournament"
 TOURNAMENT_BASE_REF = PurePosixPath("tournaments") / "curvytron"
 TOURNAMENT_RUN_MARKER_FILENAME = "show_in_tournament_browser.flag"
+CHECKPOINT_SELECTION_LATEST = "latest"
+CHECKPOINT_SELECTION_ALL = "all"
+CHECKPOINT_SELECTION_ITERATION = "iteration"
+CHECKPOINT_SELECTION_CHOICES = (
+    CHECKPOINT_SELECTION_LATEST,
+    CHECKPOINT_SELECTION_ALL,
+    CHECKPOINT_SELECTION_ITERATION,
+)
+CHECKPOINT_SCAN_GLOB = "train/lightzero_exp*/ckpt/iteration_*.pth.tar"
+CHECKPOINT_EXP_CKPT_DIR_GLOB = "lightzero_exp*/ckpt"
+CHECKPOINT_WEIGHT_FILENAME_GLOB = "iteration_*.pth.tar"
 
 TOURNAMENT_SCHEMA_ID = "curvyzero_curvytron_checkpoint_tournament/v0"
 BATTLE_SCHEMA_ID = "curvyzero_curvytron_checkpoint_tournament_battle/v0"
@@ -66,7 +77,10 @@ DEFAULT_ORDERED_PAIRS = False
 DEFAULT_INCLUDE_SELF_PAIRS = False
 DEFAULT_RATING_RUN_ID = "elo"
 DEFAULT_RATING_ROUND_COUNT = 1
-DEFAULT_RATING_PAIR_SELECTION = "all_pairs"
+RATING_PAIR_SELECTION_ALL_PAIRS = "all_pairs"
+RATING_PAIR_SELECTION_RANDOM = "random"
+RATING_PAIR_SELECTION_ADAPTIVE_V0 = "adaptive_v0"
+DEFAULT_RATING_PAIR_SELECTION = RATING_PAIR_SELECTION_ALL_PAIRS
 DEFAULT_RATING_INITIAL_RATING = 1500.0
 DEFAULT_RATING_BASE_K = 32.0
 DEFAULT_RATING_K_REFERENCE_GAMES = 50.0
@@ -76,25 +90,64 @@ DEFAULT_RATING_DELTA_CLAMP = 80.0
 DEFAULT_RATING_DRAW_SCORE = 0.5
 DEFAULT_RATING_MIN_VALID_FRACTION = 0.8
 DEFAULT_RATING_STOP_MAX_DELTA = 10.0
-RATING_PAIR_SELECTION_CHOICES = ("all_pairs", "random", "adaptive_v0")
+RATING_PAIR_SELECTION_CHOICES = (
+    RATING_PAIR_SELECTION_ALL_PAIRS,
+    RATING_PAIR_SELECTION_RANDOM,
+    RATING_PAIR_SELECTION_ADAPTIVE_V0,
+)
+
+SCHEDULE_REASON_PLACEMENT = "placement"
+SCHEDULE_REASON_NEAR_RATING = "near_rating"
+SCHEDULE_REASON_UNCERTAIN = "uncertain"
+SCHEDULE_REASON_RANDOM_BRIDGE = "random_bridge"
+SCHEDULE_REASON_FILL = "fill"
+SCHEDULE_REASON_CHOICES = (
+    SCHEDULE_REASON_PLACEMENT,
+    SCHEDULE_REASON_NEAR_RATING,
+    SCHEDULE_REASON_UNCERTAIN,
+    SCHEDULE_REASON_RANDOM_BRIDGE,
+    SCHEDULE_REASON_FILL,
+)
+
+ARTIFACT_GAME_GIF_FILENAME = "game.gif"
+ARTIFACT_FRAMES_NPZ_FILENAME = "frames.npz"
+ARTIFACT_SUMMARY_FILENAME = "summary.json"
+ARTIFACT_BATTLE_SUMMARY_FILENAME = "battle.json"
+ARTIFACT_PAIR_SPEC_FILENAME = "pair_spec.json"
+ARTIFACT_TOURNAMENT_MANIFEST_FILENAME = "tournament.json"
+ARTIFACT_TOURNAMENT_STANDINGS_FILENAME = "standings.json"
+ARTIFACT_TOURNAMENT_COMPLETE_FILENAME = "complete.json"
+ARTIFACT_BATTLE_INDEX_FILENAME = "battle_index.json"
+ARTIFACT_CONFIG_FILENAME = "config.json"
+ARTIFACT_INPUT_FILENAME = "input.json"
+ARTIFACT_RESULTS_FILENAME = "results.json"
+ARTIFACT_RATINGS_FILENAME = "ratings.json"
+ARTIFACT_LATEST_FILENAME = "latest.json"
+ARTIFACT_PROVISIONAL_LATEST_FILENAME = "provisional_latest.json"
+ARTIFACT_PROGRESS_FILENAME = "progress.json"
+ARTIFACT_PAIR_HISTORY_FILENAME = "pair_history.json"
+ARTIFACT_SCHEDULER_STATE_FILENAME = "scheduler_state.json"
 
 ALLOWED_TOURNAMENT_ARTIFACT_FILENAMES = frozenset(
     {
-        "game.gif",
-        "frames.npz",
-        "summary.json",
-        "battle.json",
-        "tournament.json",
-        "standings.json",
-        "complete.json",
-        "battle_index.json",
-        "config.json",
-        "input.json",
-        "results.json",
-        "ratings.json",
-        "latest.json",
-        "provisional_latest.json",
-        "progress.json",
+        ARTIFACT_GAME_GIF_FILENAME,
+        ARTIFACT_FRAMES_NPZ_FILENAME,
+        ARTIFACT_SUMMARY_FILENAME,
+        ARTIFACT_BATTLE_SUMMARY_FILENAME,
+        ARTIFACT_PAIR_SPEC_FILENAME,
+        ARTIFACT_TOURNAMENT_MANIFEST_FILENAME,
+        ARTIFACT_TOURNAMENT_STANDINGS_FILENAME,
+        ARTIFACT_TOURNAMENT_COMPLETE_FILENAME,
+        ARTIFACT_BATTLE_INDEX_FILENAME,
+        ARTIFACT_CONFIG_FILENAME,
+        ARTIFACT_INPUT_FILENAME,
+        ARTIFACT_RESULTS_FILENAME,
+        ARTIFACT_RATINGS_FILENAME,
+        ARTIFACT_LATEST_FILENAME,
+        ARTIFACT_PROVISIONAL_LATEST_FILENAME,
+        ARTIFACT_PROGRESS_FILENAME,
+        ARTIFACT_PAIR_HISTORY_FILENAME,
+        ARTIFACT_SCHEDULER_STATE_FILENAME,
     }
 )
 
@@ -249,7 +302,7 @@ def tournament_root_ref(tournament_id: str) -> PurePosixPath:
 
 
 def tournament_manifest_ref(tournament_id: str) -> PurePosixPath:
-    return tournament_root_ref(tournament_id) / "tournament.json"
+    return tournament_root_ref(tournament_id) / ARTIFACT_TOURNAMENT_MANIFEST_FILENAME
 
 
 def tournament_marker_ref(tournament_id: str) -> PurePosixPath:
@@ -257,15 +310,15 @@ def tournament_marker_ref(tournament_id: str) -> PurePosixPath:
 
 
 def tournament_standings_ref(tournament_id: str) -> PurePosixPath:
-    return tournament_root_ref(tournament_id) / "standings.json"
+    return tournament_root_ref(tournament_id) / ARTIFACT_TOURNAMENT_STANDINGS_FILENAME
 
 
 def tournament_complete_ref(tournament_id: str) -> PurePosixPath:
-    return tournament_root_ref(tournament_id) / "complete.json"
+    return tournament_root_ref(tournament_id) / ARTIFACT_TOURNAMENT_COMPLETE_FILENAME
 
 
 def tournament_battle_index_ref(tournament_id: str) -> PurePosixPath:
-    return tournament_root_ref(tournament_id) / "battle_index.json"
+    return tournament_root_ref(tournament_id) / ARTIFACT_BATTLE_INDEX_FILENAME
 
 
 def rating_root_ref(tournament_id: str, rating_run_id: str) -> PurePosixPath:
@@ -277,23 +330,31 @@ def rating_root_ref(tournament_id: str, rating_run_id: str) -> PurePosixPath:
 
 
 def rating_config_ref(tournament_id: str, rating_run_id: str) -> PurePosixPath:
-    return rating_root_ref(tournament_id, rating_run_id) / "config.json"
+    return rating_root_ref(tournament_id, rating_run_id) / ARTIFACT_CONFIG_FILENAME
 
 
 def rating_latest_ref(tournament_id: str, rating_run_id: str) -> PurePosixPath:
-    return rating_root_ref(tournament_id, rating_run_id) / "latest.json"
+    return rating_root_ref(tournament_id, rating_run_id) / ARTIFACT_LATEST_FILENAME
+
+
+def rating_provisional_latest_ref(tournament_id: str, rating_run_id: str) -> PurePosixPath:
+    return rating_root_ref(tournament_id, rating_run_id) / ARTIFACT_PROVISIONAL_LATEST_FILENAME
 
 
 def rating_progress_ref(tournament_id: str, rating_run_id: str) -> PurePosixPath:
-    return rating_root_ref(tournament_id, rating_run_id) / "progress.json"
+    return rating_root_ref(tournament_id, rating_run_id) / ARTIFACT_PROGRESS_FILENAME
 
 
 def rating_scheduler_state_ref(tournament_id: str, rating_run_id: str) -> PurePosixPath:
-    return rating_root_ref(tournament_id, rating_run_id) / "scheduler_state.json"
+    return rating_root_ref(tournament_id, rating_run_id) / ARTIFACT_SCHEDULER_STATE_FILENAME
 
 
 def rating_pair_history_ref(tournament_id: str, rating_run_id: str) -> PurePosixPath:
-    return rating_root_ref(tournament_id, rating_run_id) / "pair_history.json"
+    return rating_root_ref(tournament_id, rating_run_id) / ARTIFACT_PAIR_HISTORY_FILENAME
+
+
+def rating_run_results_ref(tournament_id: str, rating_run_id: str) -> PurePosixPath:
+    return rating_root_ref(tournament_id, rating_run_id) / ARTIFACT_RESULTS_FILENAME
 
 
 def rating_round_id(round_index: int) -> str:
@@ -318,7 +379,7 @@ def rating_round_input_ref(
     rating_run_id: str,
     round_id: str,
 ) -> PurePosixPath:
-    return rating_round_root_ref(tournament_id, rating_run_id, round_id) / "input.json"
+    return rating_round_root_ref(tournament_id, rating_run_id, round_id) / ARTIFACT_INPUT_FILENAME
 
 
 def rating_round_results_ref(
@@ -326,7 +387,7 @@ def rating_round_results_ref(
     rating_run_id: str,
     round_id: str,
 ) -> PurePosixPath:
-    return rating_round_root_ref(tournament_id, rating_run_id, round_id) / "results.json"
+    return rating_round_root_ref(tournament_id, rating_run_id, round_id) / ARTIFACT_RESULTS_FILENAME
 
 
 def rating_round_ratings_ref(
@@ -334,7 +395,7 @@ def rating_round_ratings_ref(
     rating_run_id: str,
     round_id: str,
 ) -> PurePosixPath:
-    return rating_round_root_ref(tournament_id, rating_run_id, round_id) / "ratings.json"
+    return rating_round_root_ref(tournament_id, rating_run_id, round_id) / ARTIFACT_RATINGS_FILENAME
 
 
 def rating_round_progress_ref(
@@ -342,7 +403,7 @@ def rating_round_progress_ref(
     rating_run_id: str,
     round_id: str,
 ) -> PurePosixPath:
-    return rating_round_root_ref(tournament_id, rating_run_id, round_id) / "progress.json"
+    return rating_round_root_ref(tournament_id, rating_run_id, round_id) / ARTIFACT_PROGRESS_FILENAME
 
 
 def battle_root_ref(tournament_id: str, battle_id: str) -> PurePosixPath:
@@ -350,7 +411,11 @@ def battle_root_ref(tournament_id: str, battle_id: str) -> PurePosixPath:
 
 
 def battle_summary_ref(tournament_id: str, battle_id: str) -> PurePosixPath:
-    return battle_root_ref(tournament_id, battle_id) / "battle.json"
+    return battle_root_ref(tournament_id, battle_id) / ARTIFACT_BATTLE_SUMMARY_FILENAME
+
+
+def battle_pair_spec_ref(tournament_id: str, battle_id: str) -> PurePosixPath:
+    return battle_root_ref(tournament_id, battle_id) / ARTIFACT_PAIR_SPEC_FILENAME
 
 
 def game_root_ref(tournament_id: str, battle_id: str, game_id: str) -> PurePosixPath:
@@ -358,7 +423,7 @@ def game_root_ref(tournament_id: str, battle_id: str, game_id: str) -> PurePosix
 
 
 def game_summary_ref(tournament_id: str, battle_id: str, game_id: str) -> PurePosixPath:
-    return game_root_ref(tournament_id, battle_id, game_id) / "summary.json"
+    return game_root_ref(tournament_id, battle_id, game_id) / ARTIFACT_SUMMARY_FILENAME
 
 
 def game_shard_root_ref(tournament_id: str, battle_id: str, shard_id: str) -> PurePosixPath:
@@ -369,15 +434,15 @@ def game_shard_root_ref(tournament_id: str, battle_id: str, shard_id: str) -> Pu
 
 
 def game_shard_summary_ref(tournament_id: str, battle_id: str, shard_id: str) -> PurePosixPath:
-    return game_shard_root_ref(tournament_id, battle_id, shard_id) / "summary.json"
+    return game_shard_root_ref(tournament_id, battle_id, shard_id) / ARTIFACT_SUMMARY_FILENAME
 
 
 def game_gif_ref(tournament_id: str, battle_id: str, game_id: str) -> PurePosixPath:
-    return game_root_ref(tournament_id, battle_id, game_id) / "game.gif"
+    return game_root_ref(tournament_id, battle_id, game_id) / ARTIFACT_GAME_GIF_FILENAME
 
 
 def game_frames_ref(tournament_id: str, battle_id: str, game_id: str) -> PurePosixPath:
-    return game_root_ref(tournament_id, battle_id, game_id) / "frames.npz"
+    return game_root_ref(tournament_id, battle_id, game_id) / ARTIFACT_FRAMES_NPZ_FILENAME
 
 
 def validate_tournament_artifact_ref(ref: str | PurePosixPath) -> PurePosixPath:
@@ -1140,7 +1205,7 @@ def normalize_rating_spec(raw: Mapping[str, Any] | None = None) -> dict[str, Any
         pairs_per_round = int(pairs_per_round_raw)
         if pairs_per_round < 1:
             raise ValueError("pairs_per_round must be positive or empty")
-    if pair_selection == "adaptive_v0" and not pairs_per_round:
+    if pair_selection == RATING_PAIR_SELECTION_ADAPTIVE_V0 and not pairs_per_round:
         raise ValueError("adaptive_v0 pair selection requires pairs_per_round")
     draw_score = float(spec.get("draw_score", DEFAULT_RATING_DRAW_SCORE))
     if draw_score != 0.5:
@@ -1456,6 +1521,9 @@ def select_adaptive_v0_pair_slots(
         )
         return True
 
+    def scheduled_count(reason: str) -> int:
+        return len([slot for slot in slots if slot["schedule_reason"] == reason])
+
     placement_budget = max(1, int(round(budget * 0.2)))
     low_coverage = sorted(
         rows,
@@ -1466,22 +1534,26 @@ def select_adaptive_v0_pair_slots(
         ),
     )
     for row in low_coverage:
-        if len([slot for slot in slots if slot["schedule_reason"] == "placement"]) >= placement_budget:
+        if scheduled_count(SCHEDULE_REASON_PLACEMENT) >= placement_budget:
             break
         target = int(row["index"])
         candidates = [anchor for anchor in anchor_indices if anchor != target]
         if not candidates:
-            candidates = [int(other["index"]) for other in rows if int(other["index"]) != target]
+            candidates = [
+                int(other["index"])
+                for other in rows
+                if int(other["index"]) != target
+            ]
         rng.shuffle(candidates)
         for opponent in candidates:
-            if add_pair(target, opponent, "placement", 1.0):
+            if add_pair(target, opponent, SCHEDULE_REASON_PLACEMENT, 1.0):
                 break
 
     near_budget = max(1, int(round(budget * 0.6)))
     target_order = list(range(len(by_rating)))
     rng.shuffle(target_order)
     for pos in target_order:
-        if len([slot for slot in slots if slot["schedule_reason"] == "near_rating"]) >= near_budget:
+        if scheduled_count(SCHEDULE_REASON_NEAR_RATING) >= near_budget:
             break
         row = by_rating[pos]
         index = int(row["index"])
@@ -1491,7 +1563,7 @@ def select_adaptive_v0_pair_slots(
                 if 0 <= neighbor_pos < len(by_rating):
                     window.append(int(by_rating[neighbor_pos]["index"]))
         for opponent in window:
-            if add_pair(index, opponent, "near_rating", 0.9):
+            if add_pair(index, opponent, SCHEDULE_REASON_NEAR_RATING, 0.9):
                 break
 
     uncertain_budget = max(1, int(round(budget * 0.2)))
@@ -1506,7 +1578,7 @@ def select_adaptive_v0_pair_slots(
         ),
     )
     for row in uncertain_rows:
-        if len([slot for slot in slots if slot["schedule_reason"] == "uncertain"]) >= uncertain_budget:
+        if scheduled_count(SCHEDULE_REASON_UNCERTAIN) >= uncertain_budget:
             break
         index = int(row["index"])
         pos = rating_position[index]
@@ -1517,7 +1589,7 @@ def select_adaptive_v0_pair_slots(
         ]
         rng.shuffle(nearby)
         for opponent in nearby + anchor_indices:
-            if add_pair(index, opponent, "uncertain", 0.8):
+            if add_pair(index, opponent, SCHEDULE_REASON_UNCERTAIN, 0.8):
                 break
 
     bridge_attempts = max(budget * 20, 20)
@@ -1526,7 +1598,7 @@ def select_adaptive_v0_pair_slots(
             break
         i = rng.randrange(len(checkpoints))
         j = rng.randrange(len(checkpoints))
-        if add_pair(i, j, "random_bridge", 0.4):
+        if add_pair(i, j, SCHEDULE_REASON_RANDOM_BRIDGE, 0.4):
             continue
 
     for pos, row in enumerate(by_rating):
@@ -1534,7 +1606,7 @@ def select_adaptive_v0_pair_slots(
             break
         index = int(row["index"])
         for neighbor_pos in range(pos + 1, min(len(by_rating), pos + 17)):
-            if add_pair(index, int(by_rating[neighbor_pos]["index"]), "fill", 0.1):
+            if add_pair(index, int(by_rating[neighbor_pos]["index"]), SCHEDULE_REASON_FILL, 0.1):
                 break
 
     for slot_index, slot in enumerate(slots):
@@ -1554,48 +1626,66 @@ def build_rating_round_pair_specs(
     checkpoints = spec["checkpoints"]
     if len(checkpoints) < 2 and not spec["include_self_pairs"]:
         raise ValueError("at least two checkpoints are needed for rating")
-    current_ratings = _rating_rows_by_checkpoint(previous_snapshot)
-    candidates: list[tuple[int, int, dict[str, Any], dict[str, Any]]] = []
-    for i, player_a in enumerate(checkpoints):
-        for j, player_b in enumerate(checkpoints):
-            if not spec["include_self_pairs"] and i == j:
-                continue
-            if not spec["ordered_pairs"] and (
-                j < i or (not spec["include_self_pairs"] and j == i)
-            ):
-                continue
-            candidates.append((i, j, player_a, player_b))
-
-    if spec["pair_selection"] == "random" and spec["pairs_per_round"]:
-        count = min(int(spec["pairs_per_round"]), len(candidates))
-        rng = random.Random(int(spec["seed"]) + int(round_index) * 1_000_003)
-        candidates = rng.sample(candidates, count)
-    elif spec["pairs_per_round"]:
-        candidates = candidates[: int(spec["pairs_per_round"])]
-
-    def sort_key(item: tuple[int, int, dict[str, Any], dict[str, Any]]) -> tuple[Any, ...]:
-        i, j, player_a, player_b = item
-        if spec["pair_selection"] == "random":
-            return (i, j)
-        rating_a = float(
-            current_ratings.get(str(player_a["checkpoint_id"]), {}).get(
-                "rating",
-                spec["initial_rating"],
-            )
+    if spec["pair_selection"] == RATING_PAIR_SELECTION_ADAPTIVE_V0:
+        candidate_slots = select_adaptive_v0_pair_slots(
+            spec,
+            previous_snapshot=previous_snapshot,
+            scheduler_state=scheduler_state,
+            pair_history=pair_history,
+            round_index=round_index,
         )
-        rating_b = float(
-            current_ratings.get(str(player_b["checkpoint_id"]), {}).get(
-                "rating",
-                spec["initial_rating"],
-            )
-        )
-        return (abs(rating_a - rating_b), i, j)
+    else:
+        current_ratings = _rating_rows_by_checkpoint(previous_snapshot)
+        candidates: list[tuple[int, int, dict[str, Any], dict[str, Any]]] = []
+        for i, player_a in enumerate(checkpoints):
+            for j, player_b in enumerate(checkpoints):
+                if not spec["include_self_pairs"] and i == j:
+                    continue
+                if not spec["ordered_pairs"] and (
+                    j < i or (not spec["include_self_pairs"] and j == i)
+                ):
+                    continue
+                candidates.append((i, j, player_a, player_b))
 
-    if spec["pair_selection"] != "random":
-        candidates.sort(key=sort_key)
+        if spec["pair_selection"] == RATING_PAIR_SELECTION_RANDOM and spec["pairs_per_round"]:
+            count = min(int(spec["pairs_per_round"]), len(candidates))
+            rng = random.Random(int(spec["seed"]) + int(round_index) * 1_000_003)
+            candidates = rng.sample(candidates, count)
+        elif spec["pairs_per_round"]:
+            candidates = candidates[: int(spec["pairs_per_round"])]
+
+        def sort_key(item: tuple[int, int, dict[str, Any], dict[str, Any]]) -> tuple[Any, ...]:
+            i, j, player_a, player_b = item
+            if spec["pair_selection"] == RATING_PAIR_SELECTION_RANDOM:
+                return (i, j)
+            rating_a = float(
+                current_ratings.get(str(player_a["checkpoint_id"]), {}).get(
+                    "rating",
+                    spec["initial_rating"],
+                )
+            )
+            rating_b = float(
+                current_ratings.get(str(player_b["checkpoint_id"]), {}).get(
+                    "rating",
+                    spec["initial_rating"],
+                )
+            )
+            return (abs(rating_a - rating_b), i, j)
+
+        if spec["pair_selection"] != RATING_PAIR_SELECTION_RANDOM:
+            candidates.sort(key=sort_key)
+        candidate_slots = [
+            {
+                "player_a_index": i,
+                "player_b_index": j,
+            }
+            for i, j, _player_a, _player_b in candidates
+        ]
     round_id = rating_round_id(round_index)
     pair_specs = []
-    for pair_slot, (_i, _j, player_a, player_b) in enumerate(candidates):
+    for pair_slot, slot in enumerate(candidate_slots):
+        player_a = checkpoints[int(slot["player_a_index"])]
+        player_b = checkpoints[int(slot["player_b_index"])]
         battle_id = _rating_battle_id(
             rating_run_id=spec["rating_run_id"],
             round_id=round_id,
@@ -1640,6 +1730,20 @@ def build_rating_round_pair_specs(
                     "gif_sample_strategy": spec["gif_sample_strategy"],
                     "save_frames_npz": spec["save_frames_npz"],
                     "action_trace_limit": spec["action_trace_limit"],
+                    "pair_key": slot.get("pair_key"),
+                    "schedule_reason": slot.get("schedule_reason"),
+                    "schedule_priority": slot.get("schedule_priority"),
+                    "scheduled_round_index": slot.get("scheduled_round_index"),
+                    "schedule": (
+                        {
+                            "reason": slot.get("schedule_reason"),
+                            "priority": slot.get("schedule_priority"),
+                            "slot": slot.get("schedule_slot"),
+                            "prior_battle_count": slot.get("prior_battle_count"),
+                        }
+                        if slot.get("schedule_reason")
+                        else None
+                    ),
                 }
             )
         )
@@ -1929,6 +2033,89 @@ def rating_snapshot_from_pair_results(
         "stable": bool(max_abs_delta <= float(spec["stop_max_delta"])),
         "ratings": _to_plain(standings),
         "pair_rating_results": _to_plain(pair_rating_results),
+    }
+
+
+def pair_history_from_pair_results(
+    pair_results: Sequence[Mapping[str, Any]],
+    *,
+    previous_pair_history: Mapping[str, Any] | None = None,
+    rating_spec: Mapping[str, Any],
+    round_index: int = 0,
+) -> dict[str, Any]:
+    spec = normalize_rating_spec(rating_spec)
+    pool_hash = rating_pool_hash(spec["checkpoints"])
+    if previous_pair_history and previous_pair_history.get("pool_hash"):
+        if str(previous_pair_history["pool_hash"]) != pool_hash:
+            raise ValueError("pair history pool_hash does not match rating spec")
+    rows_by_key = _pair_history_rows_by_key(previous_pair_history)
+
+    for summary in pair_results:
+        players = summary.get("players")
+        if not isinstance(players, Sequence) or len(players) != 2:
+            raise ValueError("pair summary needs exactly two players for pair history")
+        checkpoint_ids = [str(players[0]["checkpoint_id"]), str(players[1]["checkpoint_id"])]
+        pair_key = rating_pair_key(checkpoint_ids[0], checkpoint_ids[1])
+        if summary.get("pair_key") and str(summary["pair_key"]) != pair_key:
+            raise ValueError("pair summary pair_key does not match players")
+        row = dict(
+            rows_by_key.get(
+                pair_key,
+                {
+                    "pair_key": pair_key,
+                    "checkpoint_ids": sorted(checkpoint_ids),
+                    "battle_count": 0,
+                    "rated_battle_count": 0,
+                    "game_count": 0,
+                    "valid_game_count": 0,
+                    "draw_count": 0,
+                    "failure_count": 0,
+                    "wins_by_checkpoint": {},
+                    "last_round_index": None,
+                    "last_battle_id": None,
+                    "last_summary_ref": None,
+                },
+            )
+        )
+        tally = summary.get("tally") if isinstance(summary.get("tally"), Mapping) else {}
+        wins_by_checkpoint = Counter(
+            {
+                str(key): int(value)
+                for key, value in (row.get("wins_by_checkpoint") or {}).items()
+            }
+        )
+        for key, value in (
+            tally.get("wins_by_checkpoint")
+            if isinstance(tally.get("wins_by_checkpoint"), Mapping)
+            else {}
+        ).items():
+            wins_by_checkpoint[str(key)] += int(value)
+        game_count = int(tally.get("game_count") or 0)
+        failure_count = int(tally.get("failure_count") or 0)
+        draw_count = int(tally.get("draw_count") or 0)
+        valid_game_count = max(0, game_count - failure_count)
+
+        row["battle_count"] = int(row.get("battle_count") or 0) + 1
+        if valid_game_count:
+            row["rated_battle_count"] = int(row.get("rated_battle_count") or 0) + 1
+        row["game_count"] = int(row.get("game_count") or 0) + game_count
+        row["valid_game_count"] = int(row.get("valid_game_count") or 0) + valid_game_count
+        row["draw_count"] = int(row.get("draw_count") or 0) + draw_count
+        row["failure_count"] = int(row.get("failure_count") or 0) + failure_count
+        row["wins_by_checkpoint"] = dict(sorted(wins_by_checkpoint.items()))
+        row["last_round_index"] = int(round_index)
+        row["last_battle_id"] = summary.get("battle_id")
+        row["last_summary_ref"] = summary.get("summary_ref")
+        rows_by_key[pair_key] = row
+
+    rows = sorted(rows_by_key.values(), key=lambda row: str(row["pair_key"]))
+    return {
+        "schema_id": PAIR_HISTORY_SCHEMA_ID,
+        "tournament_id": spec["tournament_id"],
+        "rating_run_id": spec["rating_run_id"],
+        "pool_hash": pool_hash,
+        "updated_round_index": int(round_index),
+        "rows": _to_plain(rows),
     }
 
 

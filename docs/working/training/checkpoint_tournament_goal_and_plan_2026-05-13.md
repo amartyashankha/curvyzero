@@ -199,9 +199,11 @@ Important checkpoint path note:
 
 - The preserved mirror under `checkpoints/lightzero_resume_state` contains
   resume sidecars such as `iteration_20000.resume_state.pkl`.
-- The actual LightZero weight files used by the tournament runner are currently
-  under
-  `attempts/<attempt_id>/train/lightzero_exp/ckpt/iteration_<n>.pth.tar`.
+- The actual LightZero weight files used by the tournament runner are
+  discovered under
+  `attempts/<attempt_id>/train/lightzero_exp*/ckpt/iteration_<n>.pth.tar`.
+  DI-engine can create timestamped `lightzero_exp_*` directories after
+  restarts, so `train/lightzero_exp/ckpt` alone is not authoritative.
 - The Modal entrypoint can discover these refs with `--mode discover` and
   `--run-id-prefix survivaldiag-v1b-20260513h`.
 - An integrated prefix smoke,

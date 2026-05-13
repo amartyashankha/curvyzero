@@ -30,14 +30,48 @@ The main thread should stay boring and clear:
 1. Re-read this doc, the todo doc, and the scheduling research doc.
 2. Re-read the architecture critique doc.
 3. Check what changed in code before editing.
-4. Delegate research and critique lanes before implementation.
-5. Make small code/doc changes only after the target is clear.
-6. Run focused tests and a small Modal smoke before larger launches.
-7. Update docs with evidence, decisions, and remaining gaps.
-8. Decide the next batch of work from the latest evidence.
+4. Check the active-thread ledger and validation doc.
+5. Delegate research and critique lanes before implementation.
+6. Make small code/doc changes only after the target is clear.
+7. Run focused tests and a small Modal smoke before larger launches.
+8. Update docs with evidence, decisions, and remaining gaps.
+9. Decide the next batch of work from the latest evidence.
 
 If a requested launch no longer matches the current target, stop and rewrite the
 target first.
+
+## Parallelism Rule
+
+Default to embarrassingly parallel work at every level:
+
+- parallel sub-agents for independent research, critique, website, Modal, and
+  code architecture lanes;
+- parallel local reads and tests when they do not write the same files;
+- parallel validation gates when later gates do not require a fresh patch from
+  earlier gates;
+- rerun only the failed gates after a fix when earlier gates are still valid.
+
+The main thread should hold the map and make decisions. It should not serialize
+work just because the task list is written as steps.
+
+## Current Reflection
+
+The useful thing here is not "run a tournament" by itself. The useful thing is a
+rating and inspection lane that lets the coach see which CurvyTron checkpoints
+are actually improving, without drowning in all-pairs compute or stale
+artifacts.
+
+That means the main risks are:
+
+- selecting stale or wrong checkpoints;
+- running policies with the wrong observation contract;
+- letting adaptive Elo look more certain than it is;
+- making the website feel live while it is really stale;
+- letting a huge Modal file hide contract drift.
+
+The current cleanup pivot is therefore in scope. It supports the product goal by
+making the tournament lane easier to reason about before it scales to every
+checkpoint.
 
 ## Sub-Agent Plan
 
@@ -183,19 +217,25 @@ Output:
 
 ## Current Known Code Shape
 
-- The rating helper currently supports `pair_selection` values `all_pairs` and
-  `random`.
-- `build_rating_round_pair_specs(...)` currently builds the full candidate pair
-  list before selection. That is fine for hundreds, but it is the wrong shape
-  for every checkpoint from every run.
+- The rating helper currently supports `pair_selection` values `all_pairs`,
+  `random`, and `adaptive_v0`.
+- `all_pairs` and `random` still use the older full candidate-pair path.
+  `adaptive_v0` must stay bounded and must not materialize all possible pairs.
 - The sharded runner is already useful: `games_per_shard=21` can run one whole
   21-game battle per worker and reuse loaded policies.
 - The current rating loop writes immutable battle summaries and derived rating
   snapshots.
 - Website performance depends on small index/snapshot files. It should not scan
   every game summary in request paths.
-- `normalize_pair_spec(...)` may drop unknown fields, so adaptive metadata needs
-  an explicit `schedule` field or a separate round-input sidecar.
+- `normalize_pair_spec(...)` now preserves explicit adaptive metadata fields,
+  including `pair_key`, `schedule_reason`, and `schedule`.
+- Checkpoint discovery must scan
+  `train/lightzero_exp*/ckpt/iteration_*.pth.tar`, not only
+  `train/lightzero_exp/ckpt`. DI-engine can create timestamped experiment dirs
+  after restarts, and fixed-path discovery can accidentally select stale
+  `iteration_0` policies.
+- Refactor critiques agree that the safest first cleanup is naming contract
+  strings and artifact paths. Module extraction comes later.
 
 ## V0 Adaptive Scheduler Shape
 
@@ -225,6 +265,10 @@ Minimal code shape:
 - add pair history keyed by canonical sorted checkpoint ids, not battle id;
 - store a pool hash in history/scheduler state so old artifacts cannot silently
   mix with a new checkpoint pool.
+
+Status: the pure helper patch and artifact wiring have landed. Rating rounds
+write `pair_history.json` and `scheduler_state.json`, and the parent rating loop
+passes them into the next round. Remote smoke is still pending.
 
 The first adaptive selector must not build all candidate pairs. It should use:
 
@@ -294,11 +338,11 @@ only do close matches. New checkpoints need anchors and random bridges too.
 
 ## Immediate Next Steps
 
-1. Finish the research/design pass.
-2. Add an adaptive pair-selection spec to the docs.
-3. Add a small pure scheduler helper and tests.
-4. Add CLI flags only after the helper contract is stable.
-5. Smoke a tiny adaptive run with explicit checkpoint refs.
+1. Land refactor Cut 1: name repeated contract strings and artifact paths.
+2. Rerun focused tournament tests and compile checks.
+3. Run a tiny adaptive rating smoke with explicit checkpoint refs.
+4. Record the smoke result in validation and active-thread docs.
+5. Add website/per-checkpoint indexes before any large adaptive run.
 6. Then decide whether to run a larger all-checkpoint adaptive job.
 
 ## Guardrails

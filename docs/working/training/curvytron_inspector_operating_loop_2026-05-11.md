@@ -103,3 +103,26 @@ Call the learning claim incomplete or unknown if:
 - the report lacks baseline comparisons
 - death cause is unavailable
 - fixed or frozen opponent results are being used as self-play proof
+
+## Tournament Addendum - 2026-05-13
+
+The checkpoint tournament lane is now part of inspection. Its job is to turn
+many CurvyTron checkpoints into useful evidence for the coach.
+
+Operating loop for this lane:
+
+1. Re-read the tournament orchestration, active-thread, todo, validation, and
+   critique docs before changing code.
+2. Keep the main thread on the map: what is being built, why it matters, what is
+   blocked, what can run in parallel.
+3. Delegate independent work: website critique, Modal ops, scheduler research,
+   refactor review, and validation can run in parallel.
+4. Make one small behavior-preserving cleanup cut at a time.
+5. Test locally after each cut. Smoke Modal only after the local contract is
+   stable.
+6. Record evidence immediately, including what is still not proven.
+7. Do not launch a large tournament until checkpoint discovery, observation
+   contract, scheduler bounds, and website scale are all explicit.
+
+Plain North Star: the coach should be able to see which checkpoints are
+improving, why that belief is supported, and where the evidence is still weak.

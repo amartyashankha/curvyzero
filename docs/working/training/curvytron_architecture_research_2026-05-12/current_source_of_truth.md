@@ -122,8 +122,25 @@ configured directory already exists, so LightZero writes checkpoints under
 `train/lightzero_exp_YYMMDD_HHMMSS/ckpt` while CurvyZero status/poller/resume
 code keeps scanning `train/lightzero_exp/ckpt`. The current investigation doc is
 [stale_checkpoint_bug_investigation_2026-05-13.md](stale_checkpoint_bug_investigation_2026-05-13.md).
-Do not treat fixed-path `iteration_0` as proof that training failed until all
+All six rows that the fixed-path health snapshot showed at `iteration_0` have
+now been sampled and fit this timestamped-directory pattern. Do not treat
+fixed-path `iteration_0` as proof that training failed until all
 `lightzero_exp*` directories have been scanned.
+
+Checkpoint tournament warning: the current Modal tournament discovery helper has
+the right broad `train_root.glob("lightzero_exp*/ckpt")` scan when it discovers
+from run roots. The danger is any caller or manifest that passes fixed
+`train/lightzero_exp/ckpt/...` refs, or uses the trainer's stable mirror/status
+output as the only source. Use
+[checkpoint_tournament_checkpoint_discovery_handoff_2026-05-13.md](../checkpoint_tournament_checkpoint_discovery_handoff_2026-05-13.md)
+for the short external-agent handoff.
+
+Runtime-log split, 2026-05-13: see
+[modal_runtime_failure_classes_2026-05-13.md](modal_runtime_failure_classes_2026-05-13.md).
+Preemption and DI-engine env reset interruptions are real training-hot-path
+interruptions. `DataLossError` and `PytorchStreamReader` failures are mainly
+eval/GIF artifact and checkpoint-reader problems. No CUDA OOM or clear learner
+update-loop crash was found in that read-only log pass.
 
 Fast-render clarification: the trusted stock `--mode train` source-state path
 does not use the old custom/two-seat name `fast_gray64_direct`. Its fast

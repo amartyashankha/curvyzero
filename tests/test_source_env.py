@@ -973,6 +973,63 @@ def test_source_env_bonus_enemy_big_targets_other_alive_avatars_and_expires():
     assert enemy_b.active_bonuses == []
 
 
+def test_source_env_4p_bonus_targets_skip_dead_and_absent_avatars():
+    players = [
+        {"avatar_id": 1, "name": "p0", "color": "#ff0000"},
+        {"avatar_id": 2, "name": "p1", "color": "#00ff00"},
+        {"avatar_id": 3, "name": "p2", "color": "#0000ff"},
+        {"avatar_id": 4, "name": "p3", "color": "#ffff00"},
+    ]
+    env = CurvyTronSourceEnv()
+    env.reset(
+        player_count=4,
+        players=players,
+        present=[True, True, True, False],
+        warmup_ms=0,
+    )
+    env.advance_timers(0)
+    assert env.game is not None
+    env.game.print_start_due_ms = None
+    for avatar_id, x in ((1, 20), (2, 50), (3, 80), (4, 90)):
+        env.set_avatar_state(avatar_id, x=x, y=20, angle=0)
+    env.avatar_by_id(3).alive = False
+    assert env.avatar_by_id(4).present is False
+    assert env.avatar_by_id(4).alive is False
+    env.events.clear()
+
+    env.seed_active_bonus("BonusEnemySlow", x=20, y=20)
+    env.step({}, elapsed_ms=0)
+
+    assert [avatar.velocity for avatar in env.avatars] == [16.0, 8.0, 16.0, 16.0]
+    assert [[bonus.type for bonus in avatar.active_bonuses] for avatar in env.avatars] == [
+        [],
+        ["BonusEnemySlow"],
+        [],
+        [],
+    ]
+    assert [
+        event["data"]
+        for event in env.events
+        if event["event"] == "bonus:stack" and event["data"]["method"] == "add"
+    ] == [
+        {
+            "avatar": 2,
+            "method": "add",
+            "bonus": {
+                "id": 1,
+                "type": "BonusEnemySlow",
+                "duration": 5000,
+                "effects": [["velocity", -8.0]],
+            },
+        },
+    ]
+
+    env.advance_timers(5000)
+
+    assert [avatar.velocity for avatar in env.avatars] == [16.0, 16.0, 16.0, 16.0]
+    assert all(not avatar.active_bonuses for avatar in env.avatars)
+
+
 @pytest.mark.parametrize(
     "bonus_type",
     ["BonusEnemyInverse", "BonusEnemyStraightAngle"],

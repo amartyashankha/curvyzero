@@ -146,15 +146,29 @@ Next:
    observation rows, final reward maps, death metadata, winner/loser facts,
    step counters, and compact bonus audit metadata survive into replay
    records. This is source-runner/public-vector plus trainer/replay
-   preservation, not browser event-loop or pixel proof. Remaining work is
-   broader retry/RNG stress and other stack/death cases without narrowing the
-   default bonus set.
+   preservation, not browser event-loop or pixel proof. New 4P target-filter
+   proof pins the source/public rule that enemy bonuses affect only other alive
+   avatars, all-avatar bonuses affect only alive avatars, absent seats are not
+   targeted because they are not alive, and game bonuses still apply to global
+   game state. New source-backed 4P terminal proof covers `BonusEnemySlow`: a
+   JS oracle fixture and public vector mirror now pin p0 catching the enemy
+   bonus, p1/p2/p3 receiving slowed stack entries, those targets wall-dying
+   before expiry, death clearing their stack rows without restoring dead-player
+   speed, and p0 winning the round. The matching trainer/replay proof preserves
+   final visual rows, final reward rows, death order, winner/loser facts, step
+   counters, and compact bonus metadata.
+   Remaining work is broader retry/RNG stress and other stack/death cases
+   without narrowing the default bonus set.
 5. Hit-owner ordering.
    Latest runtime fix scans source-compatible body-hit corner islands and newest
    bodies first. Latest stress tests cover 4P newest-owner overlap, 4P corner
    island order, 3P own-body latency, and 4P two-victim hit-owner metadata.
-   Remaining work is raw JS oracle fixtures for the exact multiplayer stress
-   cases and product/replay/debug-event propagation for those cases.
+   New focused propagation proof carries a 3P terminal body-hit case and a 4P
+   nonterminal two-victim case through public env, trainer surface, replay
+   records, and debug die events. New raw JS oracle fixtures now pin the exact
+   3P terminal and 4P nonterminal stress shapes, and public
+   `VectorMultiplayerEnv` mirrors them from fixture-seeded state. Remaining
+   work is broader collision edges beyond those two promoted shapes.
 6. Wider multiplayer.
    Public 3P/4P lifecycle now has a focused mixed-row match-mode proof for
    reset/warmup, round win, warmdown, next-round, match-end, masks, rewards,
@@ -163,9 +177,12 @@ Next:
    final rows. Public env plus trainer/replay now also have a focused P=3/P=4
    presence/leave proof for mixed active-row and staged-warmdown removal:
    present/alive masks, absent action slots, warmdown next-round carryover,
-   trainer live-policy rows, and replay array storage. Remaining work is
-   broader source-fixture presence/leave breadth, bonus stack/death stress, and
-   later browser/canvas pixel parity.
+   trainer live-policy rows, and replay array storage. Focused source-backed
+   public proofs also exist for `source_lifecycle_remove_avatar_to_single_present_3p.json`
+   and `source_lifecycle_remove_avatar_during_warmdown_3p.json`. Remaining
+   work is broader leave variants, more 3P/4P bonus stack/death combinations
+   beyond the focused 4P `BonusEnemySlow` terminal replay proof, and later
+   browser/canvas pixel parity.
 7. Native LightZero bridge after environment reconstruction and target
    rows/sample batches.
    Fake/injected native `GameSegment` mapping from

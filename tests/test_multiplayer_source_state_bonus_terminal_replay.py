@@ -123,6 +123,105 @@ def test_replay_preserves_bonus_self_fast_expiry_then_wall_death_terminal_facts(
     )
 
 
+def test_4p_replay_preserves_bonus_enemy_slow_stack_wall_death_terminal_facts():
+    surface = _bonus_enemy_slow_4p_terminal_surface()
+
+    catch = surface.step(np.ones((1, 4), dtype=np.int16))
+
+    assert catch.info["step_counters"]["bonus_enemy_slow_catches"] == 1
+    assert catch.info["step_counters"]["bonus_stack_appends"] == 3
+    np.testing.assert_allclose(
+        surface.env.state["speed"],
+        np.asarray([[16.0, 8.0, 8.0, 8.0]], dtype=np.float64),
+    )
+    np.testing.assert_array_equal(
+        catch.info["bonus_support"]["stack_count"],
+        np.asarray([[0, 1, 1, 1]], dtype=np.int16),
+    )
+
+    _move_bonus_enemy_targets_to_wall_death(surface.env)
+    terminal = surface.step(np.ones((1, 4), dtype=np.int16))
+
+    np.testing.assert_array_equal(terminal.done, np.asarray([True], dtype=bool))
+    np.testing.assert_array_equal(terminal.terminated, np.asarray([True], dtype=bool))
+    np.testing.assert_array_equal(terminal.truncated, np.asarray([False], dtype=bool))
+    np.testing.assert_array_equal(
+        terminal.final_observation_row_mask,
+        np.asarray([True], dtype=bool),
+    )
+    np.testing.assert_array_equal(terminal.final_observation[0], terminal.observation[0])
+    assert int(np.count_nonzero(terminal.final_observation[0])) > 0
+    np.testing.assert_array_equal(
+        terminal.final_reward_map,
+        np.asarray([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(terminal.reward, terminal.final_reward_map)
+    assert terminal.info["step_counters"]["normal_wall_deaths"] == 3
+    assert terminal.info["step_counters"]["bonus_enemy_slow_expiries"] == 0
+    np.testing.assert_array_equal(
+        terminal.info["bonus_support"]["stack_count"],
+        np.asarray([[0, 0, 0, 0]], dtype=np.int16),
+    )
+    np.testing.assert_allclose(
+        surface.env.state["speed"],
+        np.asarray([[16.0, 8.0, 8.0, 8.0]], dtype=np.float64),
+    )
+    np.testing.assert_array_equal(
+        terminal.info["death_player"],
+        np.asarray([[3, 2, 1, -1]], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        terminal.info["death_cause"],
+        np.asarray(
+            [
+                [
+                    vector_runtime.DEATH_CAUSE_WALL,
+                    vector_runtime.DEATH_CAUSE_WALL,
+                    vector_runtime.DEATH_CAUSE_WALL,
+                    vector_runtime.DEATH_CAUSE_NONE,
+                ]
+            ],
+            dtype=np.int16,
+        ),
+    )
+    assert terminal.info["winner_ids"] == [[0]]
+    assert terminal.info["loser_ids"] == [[1, 2, 3]]
+
+    chunk = _record_chunk([catch, terminal])
+    catch_record = chunk.records[0]
+    terminal_record = chunk.records[1]
+    assert chunk.metadata["closed_by_terminal"] is True
+    assert catch_record["bonus_support"]["stack_count"] == [[0, 1, 1, 1]]
+    assert catch_record["step_counters"]["bonus_enemy_slow_catches"] == 1
+    assert terminal_record["terminal_or_final"] is True
+    assert terminal_record["final_observation_rows"] == [0]
+    np.testing.assert_array_equal(
+        chunk.arrays["final_observation"][1],
+        terminal.final_observation,
+    )
+    np.testing.assert_array_equal(
+        chunk.arrays["final_reward_map"][1],
+        terminal.final_reward_map,
+    )
+    assert terminal_record["bonus_support"]["stack_count"] == [[0, 0, 0, 0]]
+    assert terminal_record["death_player"] == [[3, 2, 1, -1]]
+    assert terminal_record["death_cause"] == [
+        [
+            vector_runtime.DEATH_CAUSE_WALL,
+            vector_runtime.DEATH_CAUSE_WALL,
+            vector_runtime.DEATH_CAUSE_WALL,
+            vector_runtime.DEATH_CAUSE_NONE,
+        ]
+    ]
+    assert terminal_record["death_cause_name"] == [["wall", "wall", "wall", "none"]]
+    assert terminal_record["winner_ids"] == [[0]]
+    assert terminal_record["loser_ids"] == [[1, 2, 3]]
+    assert terminal_record["alive"] == [[True, False, False, False]]
+    assert terminal_record["score"] == [[3, 0, 0, 0]]
+    assert terminal_record["step_counters"]["normal_wall_deaths"] == 3
+    assert terminal_record["step_counters"]["bonus_enemy_slow_expiries"] == 0
+
+
 def _source_fixture_surface(
     scenario_name: str,
 ) -> tuple[SourceStateMultiplayerTrainerSurface, dict[str, object]]:
@@ -147,6 +246,61 @@ def _source_fixture_surface(
     surface = SourceStateMultiplayerTrainerSurface(env=env)
     surface.stack.reset_rows(env, np.asarray([True], dtype=bool))
     return surface, fixture
+
+
+def _bonus_enemy_slow_4p_terminal_surface() -> SourceStateMultiplayerTrainerSurface:
+    env = VectorMultiplayerEnv(
+        batch_size=1,
+        player_count=4,
+        decision_ms=1.0,
+        body_capacity=16,
+        event_capacity=64,
+        timer_capacity=8,
+        random_tape_capacity=32,
+        event_mode="debug-event",
+    )
+    env.reset(
+        seed=np.asarray([101], dtype=np.uint64),
+        source_fixture_new_round_time_ms=0.0,
+        source_fixture_warmup_advance_ms=0.0,
+    )
+    env.decision_ms = 0.0
+    env.state["timer_active"][0] = False
+    env.state["pos"][0] = np.asarray(
+        [[50.0, 50.0], [20.0, 20.0], [20.0, 40.0], [20.0, 60.0]],
+        dtype=np.float64,
+    )
+    env.state["prev_pos"][0] = env.state["pos"][0]
+    env.state["heading"][0] = 0.0
+    env.state["alive"][0] = True
+    env.state["present"][0] = True
+    env.state["printing"][0] = False
+    env.state["print_manager_active"][0] = False
+    env.seed_active_bonus(
+        row=0,
+        bonus_type="BonusEnemySlow",
+        x=50.0,
+        y=50.0,
+        bonus_id=1,
+        stack_capacity=vector_runtime.SOURCE_MAX_ACTIVE_BONUSES,
+    )
+    surface = SourceStateMultiplayerTrainerSurface(env=env)
+    surface.stack.reset_rows(env, np.asarray([True], dtype=bool))
+    return surface
+
+
+def _move_bonus_enemy_targets_to_wall_death(env: VectorMultiplayerEnv) -> None:
+    env.decision_ms = 400.0
+    env.state["timer_active"][0] = False
+    env.state["pos"][0, 0] = np.asarray([50.0, 50.0], dtype=np.float64)
+    env.state["heading"][0, 0] = 0.0
+    env.state["pos"][0, 1:4] = np.asarray(
+        [[1.0, 20.0], [1.0, 40.0], [1.0, 60.0]],
+        dtype=np.float64,
+    )
+    env.state["heading"][0, 1:4] = np.pi
+    env.state["prev_pos"][0] = env.state["pos"][0]
+    env.state["print_manager_last_pos"][0] = env.state["pos"][0]
 
 
 def _surface_fixture_step(

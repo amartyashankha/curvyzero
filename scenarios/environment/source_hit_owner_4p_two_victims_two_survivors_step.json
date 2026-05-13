@@ -1,0 +1,161 @@
+{
+  "schema_version": "environment-scenario-v0",
+  "scenario_id": "source_hit_owner_4p_two_victims_two_survivors_step",
+  "title": "Source hit-owner 4P two victims two survivors step",
+  "ruleset_id": "curvytron-v1-reference",
+  "provenance": {
+    "labels": [
+      "source-derived",
+      "body-collision",
+      "hit-owner",
+      "js-oracle-pinned"
+    ],
+    "source_target": "third_party/curvytron-reference",
+    "source_commit": "8fec14c",
+    "notes": [
+      "Four-player JS oracle fixture for the exact nonterminal two-victim hit-owner stress shape used by focused public/trainer/replay propagation tests.",
+      "p2 dies on a p1 body and p0 dies on a p3 body; p1 and p3 remain alive, so the round continues.",
+      "This fixture pins source death event order and killer ownership, not browser pixels or trainer packaging."
+    ]
+  },
+  "source_setup": {
+    "player_count": 4,
+    "map_size": 101,
+    "random": {
+      "math_random": 0.5
+    },
+    "room": {
+      "name": "source-hit-owner-4p-two-victims-two-survivors-step",
+      "max_score": 10,
+      "bonuses": [],
+      "bonus_rate": 0
+    },
+    "game": {
+      "started": true,
+      "in_round": true,
+      "borderless": false,
+      "world_active": true
+    }
+  },
+  "player_count": 4,
+  "initial_state": {
+    "map_size": 101,
+    "world_bodies": [
+      {
+        "player_id": "p1",
+        "x": 20,
+        "y": 75,
+        "radius": 0.6,
+        "num": 0
+      },
+      {
+        "player_id": "p3",
+        "x": 20,
+        "y": 20,
+        "radius": 0.6,
+        "num": 0
+      }
+    ]
+  },
+  "time_policy": {
+    "kind": "fixed",
+    "step_ms": 0
+  },
+  "players": [
+    {
+      "id": "p0",
+      "client_id": "p0-client",
+      "avatar_id": 1,
+      "name": "p0",
+      "color": "#ff0000",
+      "initial": {
+        "x": 20,
+        "y": 20,
+        "angle_rad": 0,
+        "printing": false
+      }
+    },
+    {
+      "id": "p1",
+      "client_id": "p1-client",
+      "avatar_id": 2,
+      "name": "p1",
+      "color": "#00ff00",
+      "initial": {
+        "x": 75,
+        "y": 20,
+        "angle_rad": 0,
+        "printing": false
+      }
+    },
+    {
+      "id": "p2",
+      "client_id": "p2-client",
+      "avatar_id": 3,
+      "name": "p2",
+      "color": "#0000ff",
+      "initial": {
+        "x": 20,
+        "y": 75,
+        "angle_rad": 0,
+        "printing": false
+      }
+    },
+    {
+      "id": "p3",
+      "client_id": "p3-client",
+      "avatar_id": 4,
+      "name": "p3",
+      "color": "#ffff00",
+      "initial": {
+        "x": 75,
+        "y": 75,
+        "angle_rad": 0,
+        "printing": false
+      }
+    }
+  ],
+  "steps": [
+    {
+      "tick": 0,
+      "step_ms": 0,
+      "moves": [
+        {
+          "player_id": "p0",
+          "move": 0
+        },
+        {
+          "player_id": "p1",
+          "move": 0
+        },
+        {
+          "player_id": "p2",
+          "move": 0
+        },
+        {
+          "player_id": "p3",
+          "move": 0
+        }
+      ]
+    }
+  ],
+  "comparison": {
+    "kind": "js-oracle-raw-state-trace",
+    "trace_schema_version": "environment-trace-v0",
+    "include_events": true,
+    "python_target": "pending-multiplayer-hit-owner-source",
+    "source_fidelity_required": true,
+    "expected": {
+      "oracle_command": "node tools/reference_oracle/scenario_runner.js scenarios/environment/source_hit_owner_4p_two_victims_two_survivors_step.json",
+      "final_state": {
+        "alive": [false, true, false, true],
+        "scores": [0, 0, 0, 0],
+        "deathKillers": ["p1", "p3"],
+        "deathCount": 2,
+        "deaths": ["p2", "p0"],
+        "roundWinner": null,
+        "worldBodyCount": 4
+      }
+    }
+  }
+}

@@ -1240,6 +1240,254 @@ def test_rating_pair_specs_carry_shard_settings() -> None:
     assert all(shard["reuse_policies"] is False for shard in shards)
 
 
+def test_adaptive_v0_requires_pair_budget() -> None:
+    with pytest.raises(ValueError, match="requires pairs_per_round"):
+        arena.normalize_rating_spec(
+            {
+                "tournament_id": "arena-a",
+                "rating_run_id": "elo-test",
+                "pair_selection": "adaptive_v0",
+                "checkpoints": [
+                    _checkpoint_ref("run-a", 0),
+                    _checkpoint_ref("run-b", 10),
+                ],
+            }
+        )
+
+
+def test_adaptive_v0_pair_specs_are_budgeted_unique_and_tagged() -> None:
+    refs = [_checkpoint_ref(f"run-{index:02d}", index * 10) for index in range(12)]
+    rating_spec = arena.normalize_rating_spec(
+        {
+            "tournament_id": "arena-a",
+            "rating_run_id": "elo-test",
+            "checkpoints": refs,
+            "pair_selection": "adaptive_v0",
+            "pairs_per_round": 7,
+            "games_per_pair": 3,
+            "seed": 123,
+        }
+    )
+    previous_snapshot = {
+        "ratings": [
+            {
+                "checkpoint_id": checkpoint["checkpoint_id"],
+                "rating": 1500.0 + index * 10.0,
+                "games": index * 20,
+                "distinct_opponents": min(index, 4),
+                "rated_battles": index,
+                "last_round_delta": float(index % 3),
+            }
+            for index, checkpoint in enumerate(rating_spec["checkpoints"])
+        ]
+    }
+
+    pairs = arena.build_rating_round_pair_specs(
+        rating_spec,
+        previous_snapshot=previous_snapshot,
+        round_index=2,
+    )
+
+    assert len(pairs) == 7
+    assert len({pair["pair_key"] for pair in pairs}) == len(pairs)
+    assert {pair["scheduled_round_index"] for pair in pairs} == {2}
+    assert {pair["schedule_reason"] for pair in pairs}
+    assert all(pair.get("schedule", {}).get("reason") for pair in pairs)
+
+
+def test_schedule_metadata_survives_pair_summary() -> None:
+    rating_spec = arena.normalize_rating_spec(
+        {
+            "tournament_id": "arena-a",
+            "rating_run_id": "elo-test",
+            "checkpoints": [
+                _checkpoint_ref("run-a", 0),
+                _checkpoint_ref("run-b", 10),
+                _checkpoint_ref("run-c", 20),
+            ],
+            "pair_selection": "adaptive_v0",
+            "pairs_per_round": 1,
+            "games_per_pair": 3,
+        }
+    )
+    pair = arena.build_rating_round_pair_specs(rating_spec)[0]
+
+    summary = arena.summarize_pair_results(
+        pair,
+        [
+            _fake_game(pair, 0, "seat_0_win"),
+            _fake_game(pair, 1, "draw"),
+            _fake_game(pair, 2, "seat_1_win"),
+        ],
+    )
+
+    assert summary["pair_key"] == pair["pair_key"]
+    assert summary["schedule_reason"] == pair["schedule_reason"]
+    assert summary["schedule"]["reason"] == pair["schedule_reason"]
+
+
+def test_pair_history_accumulates_by_canonical_pair_key_across_seat_order() -> None:
+    checkpoints = [
+        {"checkpoint_ref": _checkpoint_ref("run-a", 0), "checkpoint_id": "ckpt-a"},
+        {"checkpoint_ref": _checkpoint_ref("run-b", 10), "checkpoint_id": "ckpt-b"},
+    ]
+    rating_spec = arena.normalize_rating_spec(
+        {
+            "tournament_id": "arena-a",
+            "rating_run_id": "elo-test",
+            "checkpoints": checkpoints,
+            "games_per_pair": 3,
+        }
+    )
+    pair_key = arena.rating_pair_key("ckpt-a", "ckpt-b")
+    pair_ab = arena.normalize_pair_spec(
+        {
+            "tournament_id": "arena-a",
+            "battle_id": "battle-ab",
+            "players": [
+                {"seat": 0, **rating_spec["checkpoints"][0]},
+                {"seat": 1, **rating_spec["checkpoints"][1]},
+            ],
+            "games_per_pair": 3,
+            "pair_key": pair_key,
+        }
+    )
+    pair_ba = arena.normalize_pair_spec(
+        {
+            "tournament_id": "arena-a",
+            "battle_id": "battle-ba",
+            "players": [
+                {"seat": 0, **rating_spec["checkpoints"][1]},
+                {"seat": 1, **rating_spec["checkpoints"][0]},
+            ],
+            "games_per_pair": 3,
+            "pair_key": pair_key,
+        }
+    )
+    summary_ab = arena.summarize_pair_results(
+        pair_ab,
+        [
+            _fake_game(pair_ab, 0, "seat_0_win"),
+            _fake_game(pair_ab, 1, "seat_0_win"),
+            _fake_game(pair_ab, 2, "draw"),
+        ],
+    )
+    summary_ba = arena.summarize_pair_results(
+        pair_ba,
+        [
+            _fake_game(pair_ba, 0, "seat_0_win"),
+            _fake_game(pair_ba, 1, "seat_1_win"),
+            _fake_game(pair_ba, 2, "draw"),
+        ],
+    )
+
+    first = arena.pair_history_from_pair_results(
+        [summary_ab],
+        rating_spec=rating_spec,
+        round_index=0,
+    )
+    second = arena.pair_history_from_pair_results(
+        [summary_ba],
+        previous_pair_history=first,
+        rating_spec=rating_spec,
+        round_index=1,
+    )
+
+    assert len(second["rows"]) == 1
+    row = second["rows"][0]
+    assert row["pair_key"] == pair_key
+    assert row["battle_count"] == 2
+    assert row["game_count"] == 6
+    assert row["draw_count"] == 2
+    assert row["last_battle_id"] == "battle-ba"
+    assert row["wins_by_checkpoint"]["ckpt-a"] == 3
+    assert row["wins_by_checkpoint"]["ckpt-b"] == 1
+
+
+def test_pair_history_rejects_pool_hash_mismatch() -> None:
+    rating_spec = arena.normalize_rating_spec(
+        {
+            "tournament_id": "arena-a",
+            "rating_run_id": "elo-test",
+            "checkpoints": [
+                _checkpoint_ref("run-a", 0),
+                _checkpoint_ref("run-b", 10),
+            ],
+            "games_per_pair": 3,
+        }
+    )
+
+    with pytest.raises(ValueError, match="pool_hash"):
+        arena.pair_history_from_pair_results(
+            [],
+            previous_pair_history={"pool_hash": "not-the-current-pool"},
+            rating_spec=rating_spec,
+        )
+
+
+def test_rating_round_outputs_write_pair_history_and_scheduler_state(tmp_path) -> None:
+    rating_spec = arena.normalize_rating_spec(
+        {
+            "tournament_id": "arena-a",
+            "rating_run_id": "elo-test",
+            "checkpoints": [
+                _checkpoint_ref("run-a", 0),
+                _checkpoint_ref("run-b", 10),
+                _checkpoint_ref("run-c", 20),
+            ],
+            "pair_selection": "adaptive_v0",
+            "pairs_per_round": 1,
+            "games_per_pair": 3,
+        }
+    )
+    round_id = arena.rating_round_id(0)
+    pair = arena.build_rating_round_pair_specs(rating_spec, round_index=0)[0]
+    summary = arena.summarize_pair_results(
+        pair,
+        [
+            _fake_game(pair, 0, "seat_0_win"),
+            _fake_game(pair, 1, "draw"),
+            _fake_game(pair, 2, "seat_1_win"),
+        ],
+    )
+    summary["summary_ref"] = arena.battle_summary_ref(
+        "arena-a",
+        pair["battle_id"],
+    ).as_posix()
+
+    outputs = modal_arena._write_rating_round_outputs(
+        tmp_path,
+        spec=rating_spec,
+        round_id=round_id,
+        round_index=0,
+        pair_results=[summary],
+        pair_specs=[pair],
+        game_count=3,
+        started_at="2026-05-13T00:00:00Z",
+        previous_snapshot=None,
+    )
+
+    snapshot = outputs["snapshot"]
+    history_path = tmp_path / arena.rating_pair_history_ref("arena-a", "elo-test")
+    scheduler_path = tmp_path / arena.rating_scheduler_state_ref("arena-a", "elo-test")
+    history = json.loads(history_path.read_text(encoding="utf-8"))
+    scheduler = json.loads(scheduler_path.read_text(encoding="utf-8"))
+
+    assert snapshot["pair_history_ref"] == arena.rating_pair_history_ref(
+        "arena-a",
+        "elo-test",
+    ).as_posix()
+    assert snapshot["scheduler_state_ref"] == arena.rating_scheduler_state_ref(
+        "arena-a",
+        "elo-test",
+    ).as_posix()
+    assert outputs["pair_history"]["rows"][0]["pair_key"] == pair["pair_key"]
+    assert history["rows"][0]["pair_key"] == pair["pair_key"]
+    assert scheduler["pair_selection"] == "adaptive_v0"
+    assert scheduler["schedule_reason_counts"][pair["schedule_reason"]] == 1
+    assert scheduler["pair_history_row_count"] == 1
+
+
 def test_rating_snapshot_skips_pairs_with_too_many_failures() -> None:
     refs = [_checkpoint_ref("run-a", 0), _checkpoint_ref("run-b", 10)]
     rating_spec = arena.normalize_rating_spec(
@@ -2335,6 +2583,152 @@ def test_checkpoint_discovery_finds_latest_real_lightzero_weight(tmp_path) -> No
             "iteration_10000.pth.tar"
         )
     ]
+
+
+def test_checkpoint_discovery_scans_timestamped_lightzero_exp_dirs(tmp_path) -> None:
+    run_id = "curvy-mix2clean-r50-example"
+    attempt_id = "attempt-a"
+    latest_attempt = tmp_path / modal_arena.runs.latest_attempt_ref(
+        modal_arena.TRAINING_TASK_ID,
+        run_id,
+    )
+    latest_attempt.parent.mkdir(parents=True)
+    latest_attempt.write_text(json.dumps({"attempt_id": attempt_id}), encoding="utf-8")
+    train_root = tmp_path / modal_arena.runs.attempt_train_ref(
+        modal_arena.TRAINING_TASK_ID,
+        run_id,
+        attempt_id,
+    )
+    fixed = train_root / "lightzero_exp" / "ckpt" / "iteration_0.pth.tar"
+    timestamped = (
+        train_root
+        / "lightzero_exp_260513_123802"
+        / "ckpt"
+        / "iteration_180000.pth.tar"
+    )
+    fixed.parent.mkdir(parents=True)
+    timestamped.parent.mkdir(parents=True)
+    fixed.write_bytes(b"stale")
+    timestamped.write_bytes(b"fresh")
+
+    discovery = modal_arena._discover_checkpoint_refs(
+        tmp_path,
+        run_ids=[run_id],
+    )
+
+    assert discovery["checkpoint_scan_glob"] == "train/lightzero_exp*/ckpt/iteration_*.pth.tar"
+    assert discovery["found_count"] == 1
+    assert discovery["rows"][0]["iteration"] == 180000
+    assert discovery["rows"][0]["exp_dir_name"] == "lightzero_exp_260513_123802"
+    assert "lightzero_exp_260513_123802/ckpt/iteration_180000.pth.tar" in discovery["checkpoint_refs"][0]
+
+
+def test_checkpoint_discovery_iteration_filter_scans_timestamped_dirs(tmp_path) -> None:
+    run_id = "curvy-mix2clean-r50-example"
+    attempt_id = "attempt-a"
+    latest_attempt = tmp_path / modal_arena.runs.latest_attempt_ref(
+        modal_arena.TRAINING_TASK_ID,
+        run_id,
+    )
+    latest_attempt.parent.mkdir(parents=True)
+    latest_attempt.write_text(json.dumps({"attempt_id": attempt_id}), encoding="utf-8")
+    train_root = tmp_path / modal_arena.runs.attempt_train_ref(
+        modal_arena.TRAINING_TASK_ID,
+        run_id,
+        attempt_id,
+    )
+    for iteration in (0, 40000, 180000):
+        ckpt = (
+            train_root
+            / "lightzero_exp_260513_123802"
+            / "ckpt"
+            / f"iteration_{iteration}.pth.tar"
+        )
+        ckpt.parent.mkdir(parents=True, exist_ok=True)
+        ckpt.write_bytes(b"weights")
+
+    discovery = modal_arena._discover_checkpoint_refs(
+        tmp_path,
+        run_ids=[run_id],
+        checkpoint_selection="iteration",
+        checkpoint_iteration=40000,
+    )
+
+    assert discovery["checkpoint_selection"] == "iteration"
+    assert discovery["found_count"] == 1
+    assert discovery["rows"][0]["iteration"] == 40000
+    assert "lightzero_exp_260513_123802/ckpt/iteration_40000.pth.tar" in discovery["checkpoint_refs"][0]
+
+
+def test_checkpoint_discovery_all_returns_all_nonempty_weight_files(tmp_path) -> None:
+    run_id = "curvy-mix2clean-r50-example"
+    attempt_id = "attempt-a"
+    latest_attempt = tmp_path / modal_arena.runs.latest_attempt_ref(
+        modal_arena.TRAINING_TASK_ID,
+        run_id,
+    )
+    latest_attempt.parent.mkdir(parents=True)
+    latest_attempt.write_text(json.dumps({"attempt_id": attempt_id}), encoding="utf-8")
+    train_root = tmp_path / modal_arena.runs.attempt_train_ref(
+        modal_arena.TRAINING_TASK_ID,
+        run_id,
+        attempt_id,
+    )
+    fixed = train_root / "lightzero_exp" / "ckpt" / "iteration_0.pth.tar"
+    timestamped = (
+        train_root
+        / "lightzero_exp_260513_123802"
+        / "ckpt"
+        / "iteration_180000.pth.tar"
+    )
+    empty = (
+        train_root
+        / "lightzero_exp_260513_123802"
+        / "ckpt"
+        / "iteration_190000.pth.tar"
+    )
+    resume = (
+        tmp_path
+        / modal_arena.runs.checkpoints_root_ref(modal_arena.TRAINING_TASK_ID, run_id)
+        / "lightzero_resume_state"
+        / "iteration_200000.resume_state.pkl"
+    )
+    fixed.parent.mkdir(parents=True)
+    timestamped.parent.mkdir(parents=True)
+    resume.parent.mkdir(parents=True)
+    fixed.write_bytes(b"fixed")
+    timestamped.write_bytes(b"timestamped")
+    empty.write_bytes(b"")
+    resume.write_bytes(b"resume")
+
+    discovery = modal_arena._discover_checkpoint_refs(
+        tmp_path,
+        run_ids=[run_id],
+        checkpoint_selection="all",
+    )
+
+    assert discovery["checkpoint_selection"] == "all"
+    assert discovery["found_count"] == 2
+    assert discovery["found_run_count"] == 1
+    assert [row["iteration"] for row in discovery["rows"]] == [0, 180000]
+    assert {row["exp_dir_name"] for row in discovery["rows"]} == {
+        "lightzero_exp",
+        "lightzero_exp_260513_123802",
+    }
+    assert all(not ref.endswith("resume_state.pkl") for ref in discovery["checkpoint_refs"])
+
+
+def test_checkpoint_count_guard_does_not_treat_max_runs_as_checkpoint_count_for_all_selection() -> None:
+    modal_arena._assert_checkpoint_count(
+        refs=["a", "b", "c", "d"],
+        discovery={
+            "checkpoint_selection": "all",
+            "found_count": 4,
+            "missing_count": 0,
+            "selected_run_count": 2,
+        },
+        max_runs=2,
+    )
 
 
 def test_checkpoint_discovery_prefix_limit_selects_most_recent_checkpoints(tmp_path) -> None:
