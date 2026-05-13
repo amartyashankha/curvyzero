@@ -60,3 +60,23 @@ def test_grouped_submitter_dry_run_selects_rows_and_preserves_two_call_shape(tmp
         record["train_function"] == "lightzero_curvytron_visual_survival_gpu_cpu40"
         for record in records
     )
+
+
+def test_grouped_submitter_rejects_incomplete_train_kwargs():
+    submit = _load_script(SUBMIT_SCRIPT, "submit_curvytron_survivaldiag_submit_missing")
+    manifest = _manifest_payload()
+    row = dict(manifest["rows"][0])
+    row["train_kwargs"] = dict(row["train_kwargs"])
+    row["train_kwargs"].pop("decision_ms")
+
+    try:
+        submit._launch_row(
+            row,
+            app_name=manifest["guards"]["deployed_app_name"],
+            dry_run=True,
+        )
+    except ValueError as exc:
+        assert "train_kwargs missing required keys" in str(exc)
+        assert "decision_ms" in str(exc)
+    else:
+        raise AssertionError("incomplete train kwargs were accepted")

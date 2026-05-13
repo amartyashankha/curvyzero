@@ -75,9 +75,27 @@ The first UI should not try to explain everything. It should answer:
 - Who won more?
 - Can I open a sample GIF and JSON?
 
+## Scale Constraint
+
+Treat all-pairs as the default future shape, not a special case. For 200
+checkpoints, unordered no-self all-pairs is 19,900 battles. For 300 checkpoints,
+it is 44,850 battles. At 50 games per battle, that is up to 2,242,500 games.
+
+The parent process should not gather one object per game for those runs. Shard
+workers may run multiple games, but the parent should reduce from shard tallies
+into one summary per battle. The review website should read ratings and battle
+indexes, not scan game summaries.
+
+Modal autoscaling caveat: high fan-out is necessary, but it is not magic.
+Containers may not appear immediately, some shards may sit in queues, and slow
+starts can cause timeouts. The large-run pattern needs retries, backoff,
+idempotent artifact paths, cheap progress, and resumable reduce.
+
 ## Open Questions
 
 - How high Modal autoscaling should be pushed for 300x300x50 scale.
+- What retry/backoff settings are safest when Modal autoscale lags under very
+  large fan-out.
 - Whether round-robin should include both A-vs-B and B-vs-A separately.
 - How many GIFs to save for very large tournaments; likely not every game.
 - Whether the website should rank checkpoints by Elo/Bradley-Terry later.
@@ -87,3 +105,44 @@ The first UI should not try to explain everything. It should answer:
 The first version should not over-model tournament formats. A round-robin pair
 matrix plus raw win/loss/draw counts is enough. More ranking math can be added
 after the basic runner is proven.
+
+## 2026-05-13 Inspector Update
+
+- The review website should stay one-page:
+  rankings at the top, selected checkpoint battles below, selected battle games
+  and GIF samples below that.
+- Battle detail now reads shard summary files first. This avoids scanning every
+  per-game directory on page load.
+- Tournament GIF samples default to evenly spaced games within a battle. For a
+  12-game battle with 5 samples, the saved samples are games `0, 3, 6, 8, 11`.
+- Large rating runs should keep GIFs off unless the run is explicitly a visual
+  sample run.
+- Old tournament browser clutter is hidden by removing
+  `show_in_tournament_browser.flag`. This does not delete the actual tournament
+  artifacts.
+- Keep latest-checkpoint-per-run as the first real 200+ checkpoint tournament
+  target. Historical checkpoints are useful later as anchors, but including
+  every checkpoint immediately explodes the pair budget.
+- 2026-05-13 16:00 UTC browser cleanup:
+  only `arena-rating-211-latest-random-20260513b` should be visible in the
+  tournament dropdown. Older arena artifacts remain on disk, but their
+  `show_in_tournament_browser.flag` files are hidden.
+- The tournament website must show running progress from `progress.json` before
+  ratings exist. An empty page for a running arena is a product bug.
+- The browser now polls `/api/rating-progress` every 10 seconds for the
+  selected arena/rating run. It does not force Volume reloads and does not
+  reload the page.
+- The first 211-checkpoint sampled rating run completed:
+  3,000 random pairs, 60,000 games, 211 rating rows, no GIF samples by design.
+- That no-GIF run was purged because the website needs battle GIFs to be useful.
+  The replacement live arena is
+  `arena-rating-211-latest-random-gifs-20260513a`, with 3 GIF samples per
+  20-game battle.
+- Current visual-review rule: large rating runs should still avoid every-game
+  GIF capture, but they must save a small representative GIF sample per battle
+  when the run is meant to be inspected through the tournament website.
+- The first and second website hierarchy levels must be bounded scroll panels.
+  Do not let rankings or battles expand the whole page.
+- Final check for the replacement arena:
+  the website can now show rankings, checkpoint battles, and battle GIF samples
+  for `arena-rating-211-latest-random-gifs-20260513a`.

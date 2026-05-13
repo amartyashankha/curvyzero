@@ -1094,6 +1094,71 @@ def test_blank_canvas_noop_still_ignores_proactive_wall_avoidant_policy():
     }
 
 
+def test_opponent_mixture_selects_once_per_reset_not_per_step():
+    env = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
+        {
+            "seed": 119,
+            "source_max_steps": 64,
+            "natural_bonus_spawn": False,
+            "reward_variant": REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME,
+            "opponent_mixture": {
+                "seed": 5,
+                "entries": [
+                    {
+                        "name": "blank",
+                        "weight": 1,
+                        "opponent_policy_kind": "fixed_straight",
+                        "opponent_runtime_mode": OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP,
+                    }
+                ],
+            },
+        }
+    )
+
+    env.reset(seed=119)
+    first = env.step(1)
+    second = env.step(2)
+
+    assert first.info["opponent_mixture_enabled"] is True
+    assert first.info["opponent_mixture_selection_unit"] == "episode_reset"
+    assert first.info["opponent_mixture_entry_name"] == "blank"
+    assert second.info["opponent_mixture_entry_name"] == "blank"
+    assert first.info["opponent_runtime_mode"] == OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP
+    assert second.info["opponent_runtime_mode"] == OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP
+    assert first.info["opponent_policy_sidecar"]["action_ignored"] is True
+    assert second.info["opponent_policy_sidecar"]["action_ignored"] is True
+
+
+def test_opponent_mixture_supports_passive_immortal_dirty_control():
+    env = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
+        {
+            "seed": 120,
+            "source_max_steps": 64,
+            "natural_bonus_spawn": False,
+            "opponent_mixture": {
+                "entries": [
+                    {
+                        "name": "passive_immortal",
+                        "weight": 1,
+                        "opponent_policy_kind": "fixed_straight",
+                        "opponent_death_mode": OPPONENT_DEATH_MODE_IMMORTAL,
+                    }
+                ]
+            },
+        }
+    )
+
+    env.reset(seed=120)
+    env._env.state["pos"][0, 1] = np.array([-1.0, -1.0], dtype=np.float64)
+    timestep = env.step(1)
+
+    assert timestep.done is False
+    assert timestep.info["opponent_mixture_entry_name"] == "passive_immortal"
+    assert timestep.info["opponent_policy_kind"] == "fixed_straight"
+    assert timestep.info["opponent_death_mode"] == OPPONENT_DEATH_MODE_IMMORTAL
+    assert bool(env._env.state["alive"][0, 1]) is True
+
+
 def test_source_state_visual_survival_render_does_not_mutate_stack():
     env = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv({"seed": 41})
     observation = env.reset(seed=41)

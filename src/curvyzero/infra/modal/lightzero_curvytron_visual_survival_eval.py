@@ -65,6 +65,7 @@ from curvyzero.infra.modal.lightzero_curvyzero_stacked_debug_visual_survival_tra
     _normalize_opponent_policy_kind_for_env,
     _normalize_reward_variant_for_env,
     _resolve_opponent_checkpoint_for_env,
+    _resolve_opponent_mixture_for_env,
     _to_plain,
     image,
     runs_volume,
@@ -100,6 +101,56 @@ EVAL_TIMEOUT_SEC = 20 * 60
 COMPUTE_CHOICES = ("cpu", "gpu-l4-t4", GPU_L4_T4_CPU40_COMPUTE)
 
 app = modal.App(APP_NAME)
+
+
+def _is_transient_volume_commit_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return (
+        exc.__class__.__name__ in {"DataLossError", "GRPCError", "RetryError"}
+        or "failed to publish commit" in text
+        or "transport is closing" in text
+        or "deadline" in text
+    )
+
+
+def _commit_runs_volume_with_backoff(
+    *,
+    label: str,
+    attempts: int = 6,
+    initial_jitter_sec: float = 0.0,
+    max_sleep_sec: float = 20.0,
+) -> None:
+    if not hasattr(runs_volume, "commit"):
+        return
+    if initial_jitter_sec > 0:
+        time.sleep(random.uniform(0.0, float(initial_jitter_sec)))
+    for attempt_index in range(int(attempts)):
+        try:
+            runs_volume.commit()
+            return
+        except Exception as exc:
+            is_last = attempt_index >= int(attempts) - 1
+            if is_last or not _is_transient_volume_commit_error(exc):
+                raise
+            delay_sec = min(float(max_sleep_sec), 2.0**attempt_index) + random.uniform(
+                0.0,
+                min(5.0, 1.0 + attempt_index),
+            )
+            print(
+                json.dumps(
+                    {
+                        "event": "modal_volume_commit_retry",
+                        "label": label,
+                        "attempt": attempt_index + 1,
+                        "next_delay_sec": round(delay_sec, 3),
+                        "error_type": exc.__class__.__name__,
+                        "error": str(exc),
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
+            time.sleep(delay_sec)
 
 
 def _version_or_missing(*packages: str) -> str:
@@ -188,7 +239,13 @@ def _find_state_dict(payload: Any) -> tuple[str, dict[str, Any]] | None:
                 candidates.append((key, payload[key]))
         for key, value in payload.items():
             if isinstance(value, dict):
-                for nested_key in ("model", "state_dict", "model_state_dict", "_model", "_learn_model"):
+                for nested_key in (
+                    "model",
+                    "state_dict",
+                    "model_state_dict",
+                    "_model",
+                    "_learn_model",
+                ):
                     if nested_key in value:
                         candidates.append((f"{key}.{nested_key}", value[nested_key]))
 
@@ -291,9 +348,7 @@ def _parse_eval_seeds(
             raise ValueError("eval_seed_count must be >= 1")
         sampler_seed = eval_seed_rng_seed
         if sampler_seed is None:
-            sampler_seed = random.SystemRandom().randrange(
-                0, EVAL_SEED_RNG_SEED_MAX + 1
-            )
+            sampler_seed = random.SystemRandom().randrange(0, EVAL_SEED_RNG_SEED_MAX + 1)
         rng = random.Random(sampler_seed)
         return (
             rng.sample(range(EVAL_SEED_MIN, EVAL_SEED_MAX + 1), eval_seed_count),
@@ -336,9 +391,7 @@ def _checkpoint_label(checkpoint_ref: str, *, index: int) -> str:
 
 def _checkpoint_ref_for_iteration(*, run_id: str, iteration: int) -> str:
     return (
-        runs.checkpoints_root_ref(TASK_ID, run_id)
-        / "lightzero"
-        / f"iteration_{iteration}.pth.tar"
+        runs.checkpoints_root_ref(TASK_ID, run_id) / "lightzero" / f"iteration_{iteration}.pth.tar"
     ).as_posix()
 
 
@@ -376,7 +429,10 @@ def _selected_checkpoint_refs(
         if checkpoint_ref != DEFAULT_CHECKPOINT_REF:
             template = _infer_checkpoint_template(checkpoint_ref)
             return [template.format(iteration=iteration) for iteration in iterations]
-        return [_checkpoint_ref_for_iteration(run_id=run_id, iteration=iteration) for iteration in iterations]
+        return [
+            _checkpoint_ref_for_iteration(run_id=run_id, iteration=iteration)
+            for iteration in iterations
+        ]
     if checkpoint_ref_template:
         raise ValueError("checkpoint_ref_template requires selected_iterations")
     return [checkpoint_ref]
@@ -644,6 +700,7 @@ def _make_policy_and_env(
     opponent_checkpoint: dict[str, Any] | None,
     opponent_snapshot_ref: str | None,
     opponent_checkpoint_state_key: str | None,
+    opponent_mixture: dict[str, Any] | None = None,
     opponent_use_cuda: bool = DEFAULT_OPPONENT_USE_CUDA,
     natural_bonus_spawn: bool = TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN,
     opponent_death_mode: str = DEFAULT_OPPONENT_DEATH_MODE,
@@ -683,6 +740,7 @@ def _make_policy_and_env(
         opponent_checkpoint=opponent_checkpoint,
         opponent_snapshot_ref=opponent_snapshot_ref,
         opponent_checkpoint_state_key=opponent_checkpoint_state_key,
+        opponent_mixture=opponent_mixture,
         natural_bonus_spawn=bool(natural_bonus_spawn),
         opponent_death_mode=opponent_death_mode,
         opponent_runtime_mode=opponent_runtime_mode,
@@ -702,10 +760,12 @@ def _make_policy_and_env(
             reward_variant=model_reward_variant,
             source_max_steps=source_max_steps,
         )
-        model_target_patches.extend(_target_config_patches(
-            patched["main_config"],
-            model_target_config,
-        ))
+        model_target_patches.extend(
+            _target_config_patches(
+                patched["main_config"],
+                model_target_config,
+            )
+        )
         patched["surface"]["model_env_variant"] = model_env_variant
         patched["surface"]["model_reward_variant"] = model_reward_variant
         patched["surface"]["model_lightzero_target_config"] = model_target_config
@@ -715,13 +775,13 @@ def _make_policy_and_env(
             _target_config_patches,
         )
 
-        model_target_patches.extend(_target_config_patches(
-            patched["main_config"],
-            inferred_support_config,
-        ))
-        patched["surface"]["checkpoint_inferred_model_support_config"] = (
-            inferred_support_config
+        model_target_patches.extend(
+            _target_config_patches(
+                patched["main_config"],
+                inferred_support_config,
+            )
         )
+        patched["surface"]["checkpoint_inferred_model_support_config"] = inferred_support_config
     if model_target_patches:
         patched["surface"]["model_target_config_patches"] = model_target_patches
     cfg = compile_config(
@@ -767,9 +827,7 @@ def _make_policy_and_env(
             "observation_shape": _to_plain(cfg.policy.model.observation_shape),
             "image_channel": int(cfg.policy.model.image_channel),
             "frame_stack_num": int(cfg.policy.model.frame_stack_num),
-            "self_supervised_learning_loss": bool(
-                cfg.policy.model.self_supervised_learning_loss
-            ),
+            "self_supervised_learning_loss": bool(cfg.policy.model.self_supervised_learning_loss),
             "action_space_size": int(cfg.policy.model.action_space_size),
         },
         "env": {
@@ -825,9 +883,7 @@ def _run_survival_episode(
         actions.append(action)
         last_info = _to_plain(info) if isinstance(info, dict) else {"raw_info": _to_plain(info)}
         survival_reward += float(last_info.get("dense_survival_helper_for_ego") or 0.0)
-        sparse_outcome_reward += float(
-            last_info.get("sparse_outcome_reward_for_ego") or 0.0
-        )
+        sparse_outcome_reward += float(last_info.get("sparse_outcome_reward_for_ego") or 0.0)
         bonus_pickup_count += int(last_info.get("bonus_catch_count_step_for_ego") or 0)
         bonus_reward += float(last_info.get("bonus_pickup_reward_for_ego") or 0.0)
         if step_detail_limit is None or len(steps) < step_detail_limit:
@@ -887,6 +943,11 @@ def _run_survival_episode(
         "death_cause": death["death_cause"],
         "death_cause_name": death["death_cause_name"],
         "death_hit_owner": death["death_hit_owner"],
+        "opponent_mixture_enabled": bool(last_info.get("opponent_mixture_enabled")),
+        "opponent_mixture_entry_name": last_info.get("opponent_mixture_entry_name"),
+        "opponent_mixture_entry_weight": last_info.get("opponent_mixture_entry_weight"),
+        "opponent_mixture_entry_index": last_info.get("opponent_mixture_entry_index"),
+        "opponent_mixture_age_label": last_info.get("opponent_mixture_age_label"),
         "final_action": actions[-1] if actions else None,
         "decision_ms": last_info.get("decision_ms"),
         "action_histogram": dict(sorted(Counter(str(action) for action in actions).items())),
@@ -919,10 +980,12 @@ def _eval_checkpoint(
     opponent_checkpoint: dict[str, Any] | None,
     opponent_snapshot_ref: str | None,
     opponent_checkpoint_state_key: str | None,
+    opponent_mixture: dict[str, Any] | None = None,
     opponent_use_cuda: bool = DEFAULT_OPPONENT_USE_CUDA,
     natural_bonus_spawn: bool = TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN,
     opponent_death_mode: str = DEFAULT_OPPONENT_DEATH_MODE,
     opponent_runtime_mode: str = DEFAULT_OPPONENT_RUNTIME_MODE,
+    commit: bool = True,
 ) -> dict[str, Any]:
     checkpoint = _torch_load(checkpoint_path)
     state_candidate = _find_state_dict(checkpoint)
@@ -944,6 +1007,7 @@ def _eval_checkpoint(
         opponent_checkpoint=opponent_checkpoint,
         opponent_snapshot_ref=opponent_snapshot_ref,
         opponent_checkpoint_state_key=opponent_checkpoint_state_key,
+        opponent_mixture=opponent_mixture,
         opponent_use_cuda=bool(opponent_use_cuda),
         natural_bonus_spawn=bool(natural_bonus_spawn),
         opponent_death_mode=opponent_death_mode,
@@ -990,6 +1054,11 @@ def _row_from_result(job: dict[str, Any], result: dict[str, Any]) -> dict[str, A
         "death_cause": episode.get("death_cause"),
         "death_cause_name": episode.get("death_cause_name"),
         "death_hit_owner": episode.get("death_hit_owner"),
+        "opponent_mixture_enabled": episode.get("opponent_mixture_enabled"),
+        "opponent_mixture_entry_name": episode.get("opponent_mixture_entry_name"),
+        "opponent_mixture_entry_weight": episode.get("opponent_mixture_entry_weight"),
+        "opponent_mixture_entry_index": episode.get("opponent_mixture_entry_index"),
+        "opponent_mixture_age_label": episode.get("opponent_mixture_age_label"),
         "final_action": episode.get("final_action"),
         "decision_ms": episode.get("decision_ms"),
         "ok": bool(result.get("ok")),
@@ -1142,7 +1211,9 @@ def _survival_aggregate_table(table: list[dict[str, Any]]) -> list[dict[str, Any
         by_checkpoint.setdefault(checkpoint, []).append(row)
 
     aggregate_rows = []
-    for checkpoint, rows in sorted(by_checkpoint.items(), key=lambda item: _checkpoint_sort_key(item[0])):
+    for checkpoint, rows in sorted(
+        by_checkpoint.items(), key=lambda item: _checkpoint_sort_key(item[0])
+    ):
         steps = [
             value
             for value in (_number(row.get("steps_survived")) for row in rows)
@@ -1289,9 +1360,11 @@ def _run_eval(
     opponent_checkpoint_ref: str | None,
     opponent_snapshot_ref: str | None,
     opponent_checkpoint_state_key: str | None,
+    opponent_mixture_spec: Any | None = None,
     natural_bonus_spawn: bool = TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN,
     opponent_death_mode: str = DEFAULT_OPPONENT_DEATH_MODE,
     opponent_runtime_mode: str = DEFAULT_OPPONENT_RUNTIME_MODE,
+    commit: bool = True,
 ) -> dict[str, Any]:
     if compute not in COMPUTE_CHOICES:
         raise ValueError(f"unknown compute {compute!r}; expected one of {COMPUTE_CHOICES!r}")
@@ -1304,6 +1377,19 @@ def _run_eval(
         opponent_policy_kind=opponent_policy_kind,
         opponent_checkpoint_ref=opponent_checkpoint_ref,
     )
+    opponent_mixture = _resolve_opponent_mixture_for_env(
+        opponent_mixture_spec=opponent_mixture_spec
+    )
+    if opponent_mixture is not None:
+        if env_variant != DEFAULT_ENV_VARIANT:
+            raise ValueError(
+                "opponent_mixture_spec is only supported with the source-state "
+                "fixed-opponent eval env"
+            )
+        if opponent_checkpoint_ref:
+            raise ValueError(
+                "opponent_mixture_spec cannot be combined with top-level opponent_checkpoint_ref"
+            )
     eval_reward_variant = _normalize_reward_variant_for_env(
         env_variant=env_variant,
         reward_variant=reward_variant,
@@ -1364,6 +1450,8 @@ def _run_eval(
         "modal_task_id": os.environ.get("MODAL_TASK_ID"),
         "opponent_policy_kind": opponent_policy_kind,
         "opponent_checkpoint_ref": opponent_checkpoint_ref,
+        "opponent_mixture_enabled": opponent_mixture is not None,
+        "opponent_mixture": _to_plain(opponent_mixture),
         "opponent_snapshot_ref": opponent_snapshot_ref,
         "opponent_checkpoint_state_key": opponent_checkpoint_state_key,
         "opponent_death_mode": opponent_death_mode,
@@ -1389,6 +1477,7 @@ def _run_eval(
                 opponent_checkpoint=opponent_checkpoint,
                 opponent_snapshot_ref=opponent_snapshot_ref,
                 opponent_checkpoint_state_key=opponent_checkpoint_state_key,
+                opponent_mixture=opponent_mixture,
                 natural_bonus_spawn=bool(natural_bonus_spawn),
                 opponent_death_mode=opponent_death_mode,
                 opponent_runtime_mode=opponent_runtime_mode,
@@ -1406,7 +1495,9 @@ def _run_eval(
             "packages": packages,
             "status": {
                 "checkpoint_load_ok": True,
-                "strict_policy_model_load_ok": bool(load_state.get("ok") and load_state.get("strict")),
+                "strict_policy_model_load_ok": bool(
+                    load_state.get("ok") and load_state.get("strict")
+                ),
                 "env_reset_ok": bool(episode.get("reset_observation")),
                 "policy_could_act_in_real_env": bool(episode.get("actions")),
                 "steps_survived": episode.get("steps_survived"),
@@ -1439,13 +1530,16 @@ def _run_eval(
     result["artifact"] = runs.file_summary(output_path, mount=RUNS_MOUNT)
     if telemetry_path.exists():
         result["telemetry_artifact"] = runs.file_summary(telemetry_path, mount=RUNS_MOUNT)
-    runs_volume.commit()
+    if commit:
+        _commit_runs_volume_with_backoff(label="visual_survival_eval", initial_jitter_sec=3.0)
     if emit_result_json:
         print(json.dumps(_to_plain(result), indent=2, sort_keys=True))
     return _to_plain(result)
 
 
-@app.function(image=image, volumes={str(RUNS_MOUNT): runs_volume}, timeout=EVAL_TIMEOUT_SEC, cpu=2.0)
+@app.function(
+    image=image, volumes={str(RUNS_MOUNT): runs_volume}, timeout=EVAL_TIMEOUT_SEC, cpu=2.0
+)
 def curvytron_visual_survival_eval_cpu(
     checkpoint_ref: str,
     output_ref: str,
@@ -1466,6 +1560,7 @@ def curvytron_visual_survival_eval_cpu(
     opponent_checkpoint_ref: str | None = None,
     opponent_snapshot_ref: str | None = None,
     opponent_checkpoint_state_key: str | None = None,
+    opponent_mixture_spec: Any | None = None,
     opponent_death_mode: str = DEFAULT_OPPONENT_DEATH_MODE,
     opponent_runtime_mode: str = DEFAULT_OPPONENT_RUNTIME_MODE,
 ) -> dict[str, Any]:
@@ -1490,6 +1585,7 @@ def curvytron_visual_survival_eval_cpu(
         opponent_checkpoint_ref=opponent_checkpoint_ref,
         opponent_snapshot_ref=opponent_snapshot_ref,
         opponent_checkpoint_state_key=opponent_checkpoint_state_key,
+        opponent_mixture_spec=opponent_mixture_spec,
         opponent_death_mode=opponent_death_mode,
         opponent_runtime_mode=opponent_runtime_mode,
     )
@@ -1523,6 +1619,7 @@ def curvytron_visual_survival_eval_gpu(
     opponent_checkpoint_ref: str | None = None,
     opponent_snapshot_ref: str | None = None,
     opponent_checkpoint_state_key: str | None = None,
+    opponent_mixture_spec: Any | None = None,
     opponent_death_mode: str = DEFAULT_OPPONENT_DEATH_MODE,
     opponent_runtime_mode: str = DEFAULT_OPPONENT_RUNTIME_MODE,
 ) -> dict[str, Any]:
@@ -1547,6 +1644,7 @@ def curvytron_visual_survival_eval_gpu(
         opponent_checkpoint_ref=opponent_checkpoint_ref,
         opponent_snapshot_ref=opponent_snapshot_ref,
         opponent_checkpoint_state_key=opponent_checkpoint_state_key,
+        opponent_mixture_spec=opponent_mixture_spec,
         opponent_death_mode=opponent_death_mode,
         opponent_runtime_mode=opponent_runtime_mode,
     )
@@ -1580,6 +1678,7 @@ def curvytron_visual_survival_eval_gpu_cpu40(
     opponent_checkpoint_ref: str | None = None,
     opponent_snapshot_ref: str | None = None,
     opponent_checkpoint_state_key: str | None = None,
+    opponent_mixture_spec: Any | None = None,
     opponent_death_mode: str = DEFAULT_OPPONENT_DEATH_MODE,
     opponent_runtime_mode: str = DEFAULT_OPPONENT_RUNTIME_MODE,
 ) -> dict[str, Any]:
@@ -1604,6 +1703,7 @@ def curvytron_visual_survival_eval_gpu_cpu40(
         opponent_checkpoint_ref=opponent_checkpoint_ref,
         opponent_snapshot_ref=opponent_snapshot_ref,
         opponent_checkpoint_state_key=opponent_checkpoint_state_key,
+        opponent_mixture_spec=opponent_mixture_spec,
         opponent_death_mode=opponent_death_mode,
         opponent_runtime_mode=opponent_runtime_mode,
     )
@@ -1618,7 +1718,7 @@ def curvytron_visual_survival_eval_manifest(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     runs.write_json(output_path, _to_plain(manifest))
     summary = runs.file_summary(output_path, mount=RUNS_MOUNT)
-    runs_volume.commit()
+    _commit_runs_volume_with_backoff(label="visual_survival_eval_manifest", initial_jitter_sec=3.0)
     return {"ok": True, "manifest_ref": manifest_ref, "artifact": summary}
 
 
@@ -1654,6 +1754,7 @@ def main(
     opponent_checkpoint_ref: str | None = None,
     opponent_snapshot_ref: str | None = None,
     opponent_checkpoint_state_key: str | None = None,
+    opponent_mixture_spec: Any | None = None,
 ) -> None:
     if compute == "cpu":
         eval_fn = curvytron_visual_survival_eval_cpu
@@ -1743,6 +1844,7 @@ def main(
         "opponent_checkpoint_ref": opponent_checkpoint_ref,
         "opponent_snapshot_ref": opponent_snapshot_ref,
         "opponent_checkpoint_state_key": opponent_checkpoint_state_key,
+        "opponent_mixture_spec": opponent_mixture_spec,
     }
 
     if parallel or len(jobs) > 1:
@@ -1805,6 +1907,8 @@ def main(
             "model_reward_variant_role": "checkpoint_model_reconstruction_only_not_scoring",
             "opponent_policy_kind": opponent_policy_kind,
             "opponent_checkpoint_ref": opponent_checkpoint_ref,
+            "opponent_mixture_enabled": opponent_mixture_spec is not None,
+            "opponent_mixture": _to_plain(opponent_mixture_spec),
             "opponent_snapshot_ref": opponent_snapshot_ref,
             "opponent_checkpoint_state_key": opponent_checkpoint_state_key,
             "jobs": jobs,
@@ -1835,6 +1939,8 @@ def main(
             "volume_name": VOLUME_NAME,
             "opponent_policy_kind": opponent_policy_kind,
             "opponent_checkpoint_ref": opponent_checkpoint_ref,
+            "opponent_mixture_enabled": opponent_mixture_spec is not None,
+            "opponent_mixture": _to_plain(opponent_mixture_spec),
             "opponent_snapshot_ref": opponent_snapshot_ref,
             "opponent_checkpoint_state_key": opponent_checkpoint_state_key,
         },
@@ -1899,40 +2005,44 @@ def main(
         summary["results"] = results
     else:
         print("# aggregate_by_checkpoint")
-        print(_tsv_table(
-            survival_aggregate_table,
-            [
-                "checkpoint",
-                "seeds",
-                "mean_steps",
-                "median_steps",
-                "min_steps",
-                "max_steps",
-                "ok_count",
-                "capped_count",
-                "failure_count",
-                "outcome_histogram",
-                "mean_training_reward",
-                "mean_elapsed_sec",
-            ],
-        ))
+        print(
+            _tsv_table(
+                survival_aggregate_table,
+                [
+                    "checkpoint",
+                    "seeds",
+                    "mean_steps",
+                    "median_steps",
+                    "min_steps",
+                    "max_steps",
+                    "ok_count",
+                    "capped_count",
+                    "failure_count",
+                    "outcome_histogram",
+                    "mean_training_reward",
+                    "mean_elapsed_sec",
+                ],
+            )
+        )
         print("# per_checkpoint_seed_curve")
-        print(_tsv_table(
-            survival_table,
-            [
-                "checkpoint",
-                "seed",
-                "steps",
-                "cap",
-                "terminal",
-                "outcome",
-                "actions",
-                "ok",
-                "strict",
-                "elapsed_sec",
-                "artifact_ref",
-            ],
-        ))
+        print(
+            _tsv_table(
+                survival_table,
+                [
+                    "checkpoint",
+                    "seed",
+                    "steps",
+                    "cap",
+                    "terminal",
+                    "outcome",
+                    "actions",
+                    "ok",
+                    "strict",
+                    "elapsed_sec",
+                    "artifact_ref",
+                ],
+            )
+        )
         if eval_seed_sampler_seed is not None:
             print(f"eval_seed_sampler_seed\t{eval_seed_sampler_seed}")
             print("eval_seeds\t" + ",".join(str(item) for item in eval_seed_values))

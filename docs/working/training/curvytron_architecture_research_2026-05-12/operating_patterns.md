@@ -35,9 +35,8 @@ the output changes the actual command set, such as the final manifest after a
 pass/drop decision.
 
 Hard rule: a planned expansion is not a duplicate, but unreadable names and app
-spray are launch blockers. The next clean batch is the single 300-row
-`curvy-survive-bonus-large-*` manifest. Do not launch another small drip if the
-full ready batch is available.
+spray are launch blockers. Large batches should have one clear matrix name, one
+readable run prefix, and one grouped submit artifact.
 
 Hard rule: large CurvyTron batches submit into one deployed Modal app. Do not
 run one `modal run` command per row. The grouped submitter must spawn the
@@ -152,10 +151,17 @@ Core priorities:
 - keep search/collector/learner batch sweeps small;
 - run at least 12 hours only after launch gates pass.
 
-Current correction: the ugly 50-row batch was stopped. The immediate action is
-to hold before launch, then submit the clean 300-row grouped-app batch after the
-hold. Scripted wall-avoidant, random-init, and ancestor controls stay separate
-feature/control waves until their own tiny gates pass.
+Current correction: the ugly 50-row batch and the broken 300a launch are
+historical. The fixed 300b batch is healthy background training. The first clean
+mixture batch, `curvy-mix2-clean-20260513a`, is healthy-ish and should be used
+for cadence, GIF, and early learning readout. The current new wave is
+`curvy-mix3-currentckpt-20260513a`, launched through the single app using
+recent/mid/old checkpoints from 300b.
+
+Recent-checkpoint mixture opponents are no longer only a feature-prep lane. The
+trusted stock path now has static weighted episode-level mixtures. It still does
+not have live rolling same-run self-play. Say the opponent source plainly:
+mix3 uses frozen refs from `curvy-survive-bonus-large-20260513b`.
 
 ## Do Not Forget
 
@@ -167,6 +173,13 @@ feature/control waves until their own tiny gates pass.
 - Do not let GIF/eval plumbing failures masquerade as learning failures.
 - Do not let old docs steer a new launch.
 - Do not mistake a passing dry gate for a learning claim.
+- Do not mistake a spawned Modal call or a poller file for a running trainer.
+  Verify sampled rows have trainer files such as `attempt.json`,
+  `status_heartbeat.json`, and eventually `progress_latest.json` or
+  checkpoints.
+- Do not mistake launch order for speed. If fast-render rows are submitted
+  before browser rows, early `iteration_0` counts are startup evidence, not a
+  clean render-fidelity comparison.
 - Do not launch accidental duplicates. Do launch planned independent expansion
   waves with new names and new seeds when their own checks are clear.
 - Re-read this file, `orchestration_plan.md`, `todo.md`, and

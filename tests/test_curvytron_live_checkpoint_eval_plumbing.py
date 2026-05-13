@@ -81,9 +81,69 @@ def test_checkpoint_progress_writer_updates_browser_speed_file(monkeypatch, tmp_
     progress = json.loads(progress_path.read_text(encoding="utf-8"))
     assert progress["iteration"] == 17
     assert progress["learner_train_iter"] == 17
+    assert progress["event"] == "checkpoint"
     assert progress["elapsed_sec"] >= 0.0
     assert progress["checkpoint_name"] == "iteration_17.pth.tar"
     assert progress["checkpoint_ref"].endswith("lightzero_exp/ckpt/iteration_17.pth.tar")
+
+
+def test_save_ckpt_hook_updates_browser_speed_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(train_mod, "RUNS_MOUNT", tmp_path)
+    exp_name = tmp_path / "training" / train_mod.TASK_ID / "run-b" / "attempts" / "attempt-b" / "train" / "lightzero_exp"
+    attempt_train_root = exp_name.parent
+
+    class FakeBaseLearner:
+        def call_hook(self, *args, **kwargs):
+            return None
+
+    class FakeSaveCkptHook:
+        def __call__(self, engine):
+            checkpoint_path = exp_name / "ckpt" / "iteration_15000.pth.tar"
+            checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+            checkpoint_path.write_bytes(b"fake-checkpoint")
+            return {"saved": True}
+
+    class FakeEngine:
+        train_iter = 15000
+
+    def fake_train_muzero():
+        return None
+
+    fake_hook_module = types.ModuleType("ding.worker.learner.learner_hook")
+    fake_hook_module.SaveCkptHook = FakeSaveCkptHook
+    monkeypatch.setitem(sys.modules, "ding.worker.learner.learner_hook", fake_hook_module)
+    monkeypatch.setitem(fake_train_muzero.__globals__, "BaseLearner", FakeBaseLearner)
+    monkeypatch.setattr(
+        train_mod,
+        "_save_lightzero_resume_sidecar_state",
+        lambda **kwargs: {"saved": True},
+    )
+
+    restore = train_mod._install_lightzero_full_resume_state_hooks(
+        train_muzero=fake_train_muzero,
+        run_id="run-b",
+        attempt_id="attempt-b",
+        exp_name=exp_name,
+        auto_resume={},
+        attempt_train_root=attempt_train_root,
+        started_monotonic=0.0,
+    )
+
+    try:
+        assert restore is not None
+        assert FakeSaveCkptHook()(FakeEngine()) == {"saved": True}
+    finally:
+        if restore is not None:
+            restore()
+
+    progress_path = attempt_train_root / "progress_latest.json"
+    progress = json.loads(progress_path.read_text(encoding="utf-8"))
+    assert progress["iteration"] == 15000
+    assert progress["learner_train_iter"] == 15000
+    assert progress["event"] == "checkpoint"
+    assert progress["source"] == "SaveCkptHook.__call__"
+    assert progress["checkpoint_name"] == "iteration_15000.pth.tar"
+    assert progress["checkpoint_ref"].endswith("lightzero_exp/ckpt/iteration_15000.pth.tar")
 
 
 def test_eval_episode_and_tables_preserve_reward_components(monkeypatch):
@@ -406,6 +466,64 @@ def test_stock_train_accepts_proactive_wall_avoidant_source_state_opponent(
     assert patched["surface"]["opponent_policy_kind"] == (
         train_mod.OPPONENT_POLICY_KIND_PROACTIVE_WALL_AVOIDANT
     )
+
+
+def test_source_state_opponent_mixture_uses_matching_surface_relation(
+    monkeypatch,
+    tmp_path,
+):
+    _install_fake_lightzero_atari_config(monkeypatch)
+    mixture = train_mod.parse_opponent_mixture_spec(
+        {
+            "entries": [
+                {
+                    "name": "blank",
+                    "weight": 1,
+                    "opponent_policy_kind": train_mod.OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
+                    "opponent_runtime_mode": train_mod.OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP,
+                }
+            ]
+        }
+    )
+
+    patched = train_mod._build_visual_survival_configs(
+        seed=7,
+        exp_name=tmp_path / "exp",
+        telemetry_path=tmp_path / "env_steps.jsonl",
+        cuda=False,
+        max_env_step=128,
+        source_max_steps=64,
+        decision_ms=train_mod.DEFAULT_DECISION_MS,
+        collector_env_num=1,
+        evaluator_env_num=1,
+        n_evaluator_episode=1,
+        n_episode=1,
+        num_simulations=8,
+        batch_size=16,
+        lightzero_eval_freq=0,
+        lightzero_multi_gpu=False,
+        max_train_iter=8,
+        save_ckpt_after_iter=100,
+        env_variant=train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT,
+        reward_variant=train_mod.DEFAULT_REWARD_VARIANT,
+        ego_action_straight_override_probability=0.0,
+        control_noise_profile_id=train_mod.DEFAULT_CONTROL_NOISE_PROFILE_ID,
+        disable_death_for_profile=False,
+        env_telemetry_stride=64,
+        env_manager_type="base",
+        opponent_policy_kind=train_mod.OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
+        opponent_use_cuda=False,
+        opponent_checkpoint=None,
+        opponent_snapshot_ref=None,
+        opponent_checkpoint_state_key=None,
+        opponent_mixture=mixture,
+    )
+
+    relation = train_mod.OPPONENT_TRAINING_RELATION_WEIGHTED_EPISODE_MIXTURE
+    env_cfg = patched["main_config"]["env"]
+    assert env_cfg["opponent_training_relation"] == relation
+    assert patched["surface"]["opponent_training_relation"] == relation
+    assert patched["surface"]["opponent_mixture"] == mixture
 
 
 def test_survival_plus_bonus_no_outcome_uses_capped_separate_supports(
@@ -1355,6 +1473,37 @@ def test_source_state_readiness_gate_allows_frozen_checkpoint_opponent_metadata(
     )
     assert gate["expected"]["opponent_training_relation"] == (
         train_mod.OPPONENT_TRAINING_RELATION_FROZEN_LIGHTZERO_CHECKPOINT
+    )
+
+
+def test_source_state_readiness_gate_allows_episode_opponent_mixture():
+    command = _source_state_training_command()
+    mixture = train_mod.parse_opponent_mixture_spec(
+        {
+            "entries": [
+                {
+                    "name": "blank",
+                    "weight": 1,
+                    "opponent_policy_kind": train_mod.OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
+                    "opponent_runtime_mode": train_mod.OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP,
+                }
+            ]
+        }
+    )
+    command["opponent_mixture_enabled"] = True
+    command["opponent_mixture"] = mixture
+    command["opponent_training_relation"] = (
+        train_mod.OPPONENT_TRAINING_RELATION_WEIGHTED_EPISODE_MIXTURE
+    )
+
+    gate = train_mod._source_state_fixed_opponent_training_readiness_gate(
+        command=command,
+        surface=dict(command),
+    )
+
+    assert gate["ok"] is True
+    assert gate["expected"]["opponent_training_relation"] == (
+        train_mod.OPPONENT_TRAINING_RELATION_WEIGHTED_EPISODE_MIXTURE
     )
 
 

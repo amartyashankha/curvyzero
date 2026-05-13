@@ -64,6 +64,10 @@ def _write_gif_summary(path, *, created_at):
                 "physical_steps": 12,
                 "terminal_reason": "wall",
                 "stop_reason": "environment_done",
+                "opponent_mixture_enabled": True,
+                "opponent_mixture_entry_name": "scripted",
+                "opponent_mixture_age_label": "scripted_wall_avoidant",
+                "opponent_mixture_entry_weight": 50.0,
                 "greedy_action_collapse_warning": True,
                 "greedy_action_summary": {
                     "decision_count": 12,
@@ -110,6 +114,11 @@ def test_eval_manifest_rollup_uses_latest_manifest_by_checkpoint(monkeypatch, tm
 
     assert rollup["eval_manifest_count"] == 2
     assert rollup["latest_eval_manifest_ref"].endswith("manifest_steps20_seeds_new.json")
+    assert rollup["latest_eval_checkpoint"] == "iteration_1"
+    assert rollup["latest_eval_mean_steps"] == 22.5
+    assert rollup["latest_eval_top_action"] == "0"
+    assert rollup["latest_eval_action_fraction"] == 44 / 45
+    assert rollup["latest_eval_collapsed"] is True
     assert len(rollup["eval_checkpoints"]) == 1
     checkpoint = rollup["eval_checkpoints"][0]
     assert checkpoint["checkpoint"] == "iteration_1"
@@ -257,6 +266,65 @@ def test_status_rolls_up_missing_reason_train_actions_poller_and_gifs(monkeypatc
     assert row["gif_artifact_count"] == 1
     assert row["latest_gif_checkpoint"] == "iteration_1"
     assert row["latest_gif_action_summary"]["collapsed"] is True
+    assert row["latest_gif_opponent_mixture_enabled"] is True
+    assert row["latest_gif_opponent_mixture_entry_name"] == "scripted"
+    assert row["latest_gif_opponent_mixture_age_label"] == "scripted_wall_avoidant"
+    assert row["latest_gif_opponent_mixture_entry_weight"] == 50.0
+    artifact = row["gif_artifacts"][0]
+    assert artifact["opponent_mixture_enabled"] is True
+    assert artifact["opponent_mixture_entry_name"] == "scripted"
+    assert artifact["opponent_mixture_age_label"] == "scripted_wall_avoidant"
+    assert artifact["opponent_mixture_entry_weight"] == 50.0
+
+
+def test_status_treats_partial_progress_latest_as_unreadable(monkeypatch, tmp_path):
+    monkeypatch.setattr(status_mod, "RUNS_MOUNT", tmp_path)
+    run_id = "run-partial-progress"
+    attempt_id = "attempt-partial-progress"
+    train_ref = runs.attempt_train_ref(status_mod.TASK_ID, run_id, attempt_id)
+    train_root = tmp_path / train_ref
+    train_root.mkdir(parents=True)
+    (train_root / "status_heartbeat.json").write_text(
+        json.dumps({"status": "running", "stage": "stock_train_muzero"}),
+        encoding="utf-8",
+    )
+    (train_root / "progress_latest.json").write_text("", encoding="utf-8")
+
+    row = status_mod._run_status(
+        run_id,
+        attempt_id=attempt_id,
+        collapse_threshold=0.9,
+    )
+
+    assert row["progress_exists"] is False
+    assert row["progress_missing_reason"] == "progress_latest_unreadable"
+    assert row["event"] == "unreadable"
+    assert "invalid JSON" in row["progress_error"]
+
+
+def test_checkpoint_summary_includes_checkpoint_mtimes(monkeypatch, tmp_path):
+    monkeypatch.setattr(status_mod, "RUNS_MOUNT", tmp_path)
+    run_id = "run-checkpoint-mtime"
+    attempt_id = "attempt-checkpoint-mtime"
+    ckpt_root = (
+        tmp_path
+        / runs.attempt_train_ref(status_mod.TASK_ID, run_id, attempt_id)
+        / "lightzero_exp"
+        / "ckpt"
+    )
+    ckpt_root.mkdir(parents=True)
+    iteration_0 = ckpt_root / "iteration_0.pth.tar"
+    iteration_10 = ckpt_root / "iteration_10.pth.tar"
+    iteration_0.write_text("zero", encoding="utf-8")
+    iteration_10.write_text("ten", encoding="utf-8")
+
+    summary = status_mod._checkpoint_summary(run_id, attempt_id)
+
+    assert summary["checkpoint_count"] == 2
+    assert summary["latest_checkpoint"] == "iteration_10"
+    assert summary["latest_checkpoint_mtime"] == summary["checkpoints"][1]["mtime"]
+    assert [checkpoint["iteration"] for checkpoint in summary["checkpoints"]] == [0, 10]
+    assert all(checkpoint["mtime"] is not None for checkpoint in summary["checkpoints"])
 
 
 def test_stock_high_signal_preset_includes_attempt_ids():

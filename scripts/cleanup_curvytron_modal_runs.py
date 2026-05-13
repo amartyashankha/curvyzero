@@ -272,6 +272,16 @@ def _remove_marker(marker_path: Path) -> str:
     return "deleted"
 
 
+def _remove_run_ref_volume_api(run_ref: str) -> str:
+    try:
+        runs_volume.remove_file(run_ref, recursive=True)
+    except FileNotFoundError:
+        return "missing"
+    except Exception as exc:  # noqa: BLE001
+        return f"error:{type(exc).__name__}:{exc}"
+    return "deleted"
+
+
 @app.function(image=image, volumes={str(RUNS_MOUNT): runs_volume}, timeout=60 * 60, cpu=1.0)
 def cleanup_curvytron_runs_allowlist_remote(
     *,
@@ -279,9 +289,16 @@ def cleanup_curvytron_runs_allowlist_remote(
     preserve_prefixes: list[str] | None = None,
     delete: bool = False,
     yes: bool = False,
+    markers_only: bool = False,
+    action_limit: int | None = None,
+    delete_method: str = "mounted",
 ) -> dict[str, Any]:
     if delete and not yes:
         raise ValueError("destructive cleanup requires --delete --yes")
+    if action_limit is not None and action_limit < 1:
+        raise ValueError("action_limit must be positive when set")
+    if delete_method not in {"mounted", "volume-api"}:
+        raise ValueError("delete_method must be 'mounted' or 'volume-api'")
     clean_preserve_run_ids = sorted(
         {runs.clean_id(run_id, label="preserve_run_id") for run_id in preserve_run_ids}
     )
@@ -315,12 +332,23 @@ def cleanup_curvytron_runs_allowlist_remote(
             continue
 
         run_path = _path_for_ref(RUNS_MOUNT, PurePosixPath(row["run_ref"]))
+        marker_path = run_path / RUN_PICKER_FLAG_FILENAME
+        action = "delete_marker" if markers_only else "delete_run_dir"
         status = "dry_run"
         if delete:
-            status = _remove_run_dir(run_path)
-        actions.append({**row, "action": "delete_run_dir", "status": status})
+            if markers_only:
+                status = _remove_marker(marker_path)
+            elif delete_method == "volume-api":
+                status = _remove_run_ref_volume_api(str(row["run_ref"]))
+            else:
+                status = _remove_run_dir(run_path)
+        actions.append({**row, "action": action, "status": status})
+        if status.startswith("error:"):
+            break
+        if action_limit is not None and len(actions) >= action_limit:
+            break
 
-    if delete and actions and hasattr(runs_volume, "commit"):
+    if delete and actions and delete_method == "mounted" and hasattr(runs_volume, "commit"):
         runs_volume.commit()
 
     missing_preserved_ids = sorted(preserve_run_id_set - existing_run_ids)
@@ -335,6 +363,8 @@ def cleanup_curvytron_runs_allowlist_remote(
         "base_ref": BASE_REF.as_posix(),
         "dry_run": not delete,
         "delete": delete,
+        "action_limit": action_limit,
+        "delete_method": delete_method,
         "preserve_run_id_count": len(clean_preserve_run_ids),
         "preserve_prefixes": list(clean_preserve_prefixes),
         "direct_run_dir_count": len(all_runs),
@@ -433,6 +463,18 @@ def _build_parser() -> argparse.ArgumentParser:
             "that is not matched by --preserve-manifest, --preserve-run-id, or "
             "--preserve-prefix"
         ),
+    )
+    parser.add_argument(
+        "--action-limit",
+        type=int,
+        default=None,
+        help="limit unpreserved actions for small cleanup waves",
+    )
+    parser.add_argument(
+        "--delete-method",
+        choices=("mounted", "volume-api"),
+        default="mounted",
+        help="delete run directories through the mounted path or Modal volume API",
     )
     parser.add_argument(
         "--preserve-manifest",
@@ -571,6 +613,8 @@ def _compact_result(result: dict[str, Any]) -> dict[str, Any]:
         "base_ref",
         "dry_run",
         "delete",
+        "action_limit",
+        "delete_method",
         "preserve_sources",
         "preserve_run_id_count",
         "preserve_prefixes",
@@ -605,6 +649,8 @@ def main(
     preserve_prefix: str = "",
     report_path: str = "",
     output_detail: str = "full",
+    action_limit: int | None = None,
+    delete_method: str = "mounted",
 ) -> None:
     if output_detail not in {"full", "compact"}:
         raise ValueError("output_detail must be 'full' or 'compact'")
@@ -625,6 +671,9 @@ def main(
             preserve_prefixes=preserve_prefixes,
             delete=delete,
             yes=yes,
+            markers_only=markers_only,
+            action_limit=action_limit,
+            delete_method=delete_method,
         )
         result["preserve_sources"] = preserve_sources
     else:
@@ -661,6 +710,9 @@ if __name__ == "__main__":
             preserve_prefixes=preserve_prefixes,
             delete=args.delete,
             yes=args.yes,
+            markers_only=args.markers_only,
+            action_limit=args.action_limit,
+            delete_method=args.delete_method,
         )
         result["preserve_sources"] = preserve_sources
     else:

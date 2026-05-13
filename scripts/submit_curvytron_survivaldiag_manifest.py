@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -128,9 +129,9 @@ def _launch_row(row: dict[str, Any], *, app_name: str, dry_run: bool) -> dict[st
     ]
     if missing_train_kwargs:
         raise ValueError(
-            f"row {row.get('row_id')} train_kwargs missing required keys: "
-            f"{missing_train_kwargs}"
+            f"row {row.get('row_id')} train_kwargs missing required keys: {missing_train_kwargs}"
         )
+    _validate_optional_mixture_kwargs(row, train_kwargs, poller_kwargs)
 
     record = {
         "row_id": row.get("row_id"),
@@ -157,6 +158,46 @@ def _launch_row(row: dict[str, Any], *, app_name: str, dry_run: bool) -> dict[st
         "poller_function_call_id": _call_id(poller_call),
         "train_function_call_id": _call_id(train_call),
     }
+
+
+def _validate_optional_mixture_kwargs(
+    row: dict[str, Any],
+    train_kwargs: dict[str, Any],
+    poller_kwargs: dict[str, Any],
+) -> None:
+    mixture_required = bool(row.get("opponent_mixture_enabled"))
+    train_spec = train_kwargs.get("opponent_mixture_spec")
+    poller_spec = poller_kwargs.get("opponent_mixture_spec")
+    if not mixture_required and train_spec is None and poller_spec is None:
+        return
+    if train_spec is None:
+        raise ValueError(f"row {row.get('row_id')} mixture row lacks train opponent_mixture_spec")
+    if poller_spec is None:
+        raise ValueError(f"row {row.get('row_id')} mixture row lacks poller opponent_mixture_spec")
+    if train_spec != poller_spec:
+        raise ValueError(
+            f"row {row.get('row_id')} mixture train/poller opponent_mixture_spec differ"
+        )
+
+    from curvyzero.training.opponent_mixture import parse_opponent_mixture_spec
+
+    mixture = parse_opponent_mixture_spec(train_spec)
+    if mixture is None:
+        raise ValueError(f"row {row.get('row_id')} mixture spec parsed as empty")
+    for entry in mixture["entries"]:
+        if entry["opponent_policy_kind"] != "frozen_lightzero_checkpoint":
+            continue
+        checkpoint_ref = str(entry.get("opponent_checkpoint_ref") or "")
+        if not checkpoint_ref:
+            raise ValueError(f"row {row.get('row_id')} frozen mixture entry lacks checkpoint ref")
+        if "latest" in checkpoint_ref or "ckpt_best" in checkpoint_ref:
+            raise ValueError(
+                f"row {row.get('row_id')} frozen mixture entry uses mutable checkpoint ref"
+            )
+        if not re.fullmatch(r"iteration_\d+\.pth\.tar", Path(checkpoint_ref).name):
+            raise ValueError(
+                f"row {row.get('row_id')} frozen mixture entry must use iteration_N.pth.tar"
+            )
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:

@@ -16,6 +16,10 @@ from collections import Counter
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Sequence
 
+from curvyzero.env.vector_multiplayer_env import (
+    DEFAULT_DECISION_SOURCE_FRAMES,
+    SOURCE_PHYSICS_STEP_MS,
+)
 from curvyzero.infra.modal import run_management as runs
 
 
@@ -26,9 +30,11 @@ TOURNAMENT_RUN_MARKER_FILENAME = "show_in_tournament_browser.flag"
 TOURNAMENT_SCHEMA_ID = "curvyzero_curvytron_checkpoint_tournament/v0"
 BATTLE_SCHEMA_ID = "curvyzero_curvytron_checkpoint_tournament_battle/v0"
 GAME_SCHEMA_ID = "curvyzero_curvytron_checkpoint_tournament_game/v0"
+GAME_SHARD_SCHEMA_ID = "curvyzero_curvytron_checkpoint_tournament_game_shard/v0"
 RATING_CONFIG_SCHEMA_ID = "curvyzero_curvytron_checkpoint_rating_config/v0"
 RATING_ROUND_SCHEMA_ID = "curvyzero_curvytron_checkpoint_rating_round/v0"
 RATING_SNAPSHOT_SCHEMA_ID = "curvyzero_curvytron_checkpoint_rating_snapshot/v0"
+RATING_PROGRESS_SCHEMA_ID = "curvyzero_curvytron_checkpoint_rating_progress/v0"
 RATING_FORMULA_VERSION = "batch_elo_v1"
 
 POLICY_MODE_EVAL = "eval"
@@ -36,8 +42,11 @@ POLICY_MODE_COLLECT = "collect"
 POLICY_MODE_CHOICES = (POLICY_MODE_EVAL, POLICY_MODE_COLLECT)
 
 DEFAULT_GAMES_PER_PAIR = 10
+DEFAULT_GAMES_PER_SHARD = 1
+DEFAULT_REUSE_POLICIES_PER_SHARD = True
 DEFAULT_MAX_STEPS = 512
-DEFAULT_DECISION_MS = 300.0
+DEFAULT_SOURCE_PHYSICS_STEP_MS = float(SOURCE_PHYSICS_STEP_MS)
+DEFAULT_DECISION_MS = float(DEFAULT_DECISION_SOURCE_FRAMES * DEFAULT_SOURCE_PHYSICS_STEP_MS)
 DEFAULT_NUM_SIMULATIONS = 8
 DEFAULT_POLICY_BATCH_SIZE = 8
 DEFAULT_COLLECT_TEMPERATURE = 1.0
@@ -45,7 +54,11 @@ DEFAULT_COLLECT_EPSILON = 0.25
 DEFAULT_FRAME_STRIDE = 1
 DEFAULT_GIF_FPS = 8.0
 DEFAULT_FRAME_SIZE = 704
-DEFAULT_SAVE_GIF = True
+DEFAULT_GIF_TRAIL_RENDER_MODE = "browser_lines"
+DEFAULT_SAVE_GIF = False
+DEFAULT_GIF_SAMPLE_GAMES_PER_PAIR = 1
+DEFAULT_GIF_SAMPLE_STRATEGY = "evenly_spaced"
+GIF_SAMPLE_STRATEGY_CHOICES = ("first_n", "evenly_spaced")
 DEFAULT_SAVE_FRAMES_NPZ = False
 DEFAULT_ORDERED_PAIRS = False
 DEFAULT_INCLUDE_SELF_PAIRS = False
@@ -72,11 +85,13 @@ ALLOWED_TOURNAMENT_ARTIFACT_FILENAMES = frozenset(
         "tournament.json",
         "standings.json",
         "complete.json",
+        "battle_index.json",
         "config.json",
         "input.json",
         "results.json",
         "ratings.json",
         "latest.json",
+        "progress.json",
     }
 )
 
@@ -154,6 +169,7 @@ def normalize_checkpoint_spec(raw: str | Mapping[str, Any], *, index: int = 0) -
             "checkpoint_state_key": None,
             "model_env_variant": None,
             "model_reward_variant": None,
+            "policy_trail_render_mode": None,
         }
     ref_value = raw.get("checkpoint_ref") or raw.get("ref")
     if not isinstance(ref_value, str):
@@ -161,6 +177,12 @@ def normalize_checkpoint_spec(raw: str | Mapping[str, Any], *, index: int = 0) -
     ref = runs.require_relative_ref(ref_value).as_posix()
     checkpoint_id = str(raw.get("checkpoint_id") or raw.get("id") or checkpoint_id_from_ref(ref, index=index))
     label = str(raw.get("label") or checkpoint_id)
+    observation_contract = raw.get("observation_contract")
+    contract_trail_render_mode = (
+        observation_contract.get("trail_render_mode")
+        if isinstance(observation_contract, Mapping)
+        else None
+    )
     return {
         "checkpoint_id": _safe_id(checkpoint_id, label="checkpoint_id"),
         "label": label,
@@ -168,6 +190,12 @@ def normalize_checkpoint_spec(raw: str | Mapping[str, Any], *, index: int = 0) -
         "checkpoint_state_key": raw.get("checkpoint_state_key"),
         "model_env_variant": raw.get("model_env_variant"),
         "model_reward_variant": raw.get("model_reward_variant"),
+        "policy_trail_render_mode": (
+            raw.get("policy_trail_render_mode")
+            or raw.get("observation_trail_render_mode")
+            or contract_trail_render_mode
+            or raw.get("trail_render_mode")
+        ),
     }
 
 
@@ -198,6 +226,10 @@ def tournament_complete_ref(tournament_id: str) -> PurePosixPath:
     return tournament_root_ref(tournament_id) / "complete.json"
 
 
+def tournament_battle_index_ref(tournament_id: str) -> PurePosixPath:
+    return tournament_root_ref(tournament_id) / "battle_index.json"
+
+
 def rating_root_ref(tournament_id: str, rating_run_id: str) -> PurePosixPath:
     return (
         tournament_root_ref(tournament_id)
@@ -212,6 +244,10 @@ def rating_config_ref(tournament_id: str, rating_run_id: str) -> PurePosixPath:
 
 def rating_latest_ref(tournament_id: str, rating_run_id: str) -> PurePosixPath:
     return rating_root_ref(tournament_id, rating_run_id) / "latest.json"
+
+
+def rating_progress_ref(tournament_id: str, rating_run_id: str) -> PurePosixPath:
+    return rating_root_ref(tournament_id, rating_run_id) / "progress.json"
 
 
 def rating_round_id(round_index: int) -> str:
@@ -255,6 +291,14 @@ def rating_round_ratings_ref(
     return rating_round_root_ref(tournament_id, rating_run_id, round_id) / "ratings.json"
 
 
+def rating_round_progress_ref(
+    tournament_id: str,
+    rating_run_id: str,
+    round_id: str,
+) -> PurePosixPath:
+    return rating_round_root_ref(tournament_id, rating_run_id, round_id) / "progress.json"
+
+
 def battle_root_ref(tournament_id: str, battle_id: str) -> PurePosixPath:
     return tournament_root_ref(tournament_id) / "battles" / _safe_id(battle_id, label="battle_id")
 
@@ -269,6 +313,17 @@ def game_root_ref(tournament_id: str, battle_id: str, game_id: str) -> PurePosix
 
 def game_summary_ref(tournament_id: str, battle_id: str, game_id: str) -> PurePosixPath:
     return game_root_ref(tournament_id, battle_id, game_id) / "summary.json"
+
+
+def game_shard_root_ref(tournament_id: str, battle_id: str, shard_id: str) -> PurePosixPath:
+    return battle_root_ref(tournament_id, battle_id) / "shards" / _safe_id(
+        shard_id,
+        label="shard_id",
+    )
+
+
+def game_shard_summary_ref(tournament_id: str, battle_id: str, shard_id: str) -> PurePosixPath:
+    return game_shard_root_ref(tournament_id, battle_id, shard_id) / "summary.json"
 
 
 def game_gif_ref(tournament_id: str, battle_id: str, game_id: str) -> PurePosixPath:
@@ -329,7 +384,9 @@ def build_pair_specs(
         for j, player_b in enumerate(players):
             if not include_self_pairs and i == j:
                 continue
-            if not ordered_pairs and j <= i:
+            if not ordered_pairs and (
+                j < i or (not include_self_pairs and j == i)
+            ):
                 continue
             battle_id = battle_id_for_pair(pair_index, player_a, player_b)
             pair_specs.append(
@@ -368,6 +425,30 @@ def normalize_pair_spec(raw: Mapping[str, Any]) -> dict[str, Any]:
     policy_mode = str(raw.get("policy_mode", POLICY_MODE_EVAL))
     if policy_mode not in POLICY_MODE_CHOICES:
         raise ValueError(f"policy_mode must be one of {POLICY_MODE_CHOICES!r}")
+    gif_sample_games_per_pair = int(
+        raw.get("gif_sample_games_per_pair", DEFAULT_GIF_SAMPLE_GAMES_PER_PAIR)
+    )
+    if gif_sample_games_per_pair < -1:
+        raise ValueError("gif_sample_games_per_pair must be -1, 0, or positive")
+    gif_sample_strategy = str(
+        raw.get("gif_sample_strategy", DEFAULT_GIF_SAMPLE_STRATEGY)
+    )
+    if gif_sample_strategy not in GIF_SAMPLE_STRATEGY_CHOICES:
+        raise ValueError(
+            f"gif_sample_strategy must be one of {GIF_SAMPLE_STRATEGY_CHOICES!r}"
+        )
+    games_per_shard = int(raw.get("games_per_shard", DEFAULT_GAMES_PER_SHARD))
+    if games_per_shard < 1:
+        raise ValueError("games_per_shard must be at least 1")
+    reuse_policies_per_shard = bool(
+        raw.get("reuse_policies_per_shard", DEFAULT_REUSE_POLICIES_PER_SHARD)
+    )
+    policy_trail_render_mode = (
+        raw.get("policy_trail_render_mode")
+        or raw.get("observation_trail_render_mode")
+        or raw.get("trail_render_mode")
+    )
+    gif_trail_render_mode = DEFAULT_GIF_TRAIL_RENDER_MODE
     return {
         "schema_id": BATTLE_SCHEMA_ID,
         "tournament_id": tournament_id,
@@ -375,22 +456,62 @@ def normalize_pair_spec(raw: Mapping[str, Any]) -> dict[str, Any]:
         "pair_index": int(raw.get("pair_index") or 0),
         "players": normalized_players,
         "games_per_pair": int(raw.get("games_per_pair", DEFAULT_GAMES_PER_PAIR)),
+        "games_per_shard": games_per_shard,
+        "reuse_policies_per_shard": reuse_policies_per_shard,
         "seed": int(raw.get("seed", 0)),
         "max_steps": int(raw.get("max_steps", DEFAULT_MAX_STEPS)),
         "decision_ms": float(raw.get("decision_ms", DEFAULT_DECISION_MS)),
+        "decision_source_frames": raw.get("decision_source_frames"),
+        "source_physics_step_ms": float(
+            raw.get("source_physics_step_ms", DEFAULT_SOURCE_PHYSICS_STEP_MS)
+        ),
         "num_simulations": int(raw.get("num_simulations", DEFAULT_NUM_SIMULATIONS)),
         "policy_batch_size": int(raw.get("policy_batch_size", DEFAULT_POLICY_BATCH_SIZE)),
         "policy_mode": policy_mode,
         "collect_temperature": float(raw.get("collect_temperature", DEFAULT_COLLECT_TEMPERATURE)),
         "collect_epsilon": float(raw.get("collect_epsilon", DEFAULT_COLLECT_EPSILON)),
         "natural_bonus_spawn": bool(raw.get("natural_bonus_spawn", True)),
-        "trail_render_mode": raw.get("trail_render_mode"),
+        "policy_trail_render_mode": policy_trail_render_mode,
+        "gif_trail_render_mode": gif_trail_render_mode,
+        "trail_render_mode": policy_trail_render_mode,
         "frame_stride": int(raw.get("frame_stride", DEFAULT_FRAME_STRIDE)),
-        "frame_size": int(raw.get("frame_size", DEFAULT_FRAME_SIZE)),
+        "frame_size": DEFAULT_FRAME_SIZE,
         "gif_fps": float(raw.get("gif_fps", DEFAULT_GIF_FPS)),
         "save_gif": bool(raw.get("save_gif", DEFAULT_SAVE_GIF)),
+        "gif_sample_games_per_pair": gif_sample_games_per_pair,
+        "gif_sample_strategy": gif_sample_strategy,
         "save_frames_npz": bool(raw.get("save_frames_npz", DEFAULT_SAVE_FRAMES_NPZ)),
         "action_trace_limit": int(raw.get("action_trace_limit", 128)),
+    }
+
+
+def gif_sample_count_for_pair(pair_spec: Mapping[str, Any]) -> int:
+    pair = normalize_pair_spec(pair_spec)
+    if not pair["save_gif"]:
+        return 0
+    games_per_pair = int(pair["games_per_pair"])
+    sample = int(pair["gif_sample_games_per_pair"])
+    if sample < 0:
+        return games_per_pair
+    return min(games_per_pair, sample)
+
+
+def gif_sample_indices_for_pair(pair_spec: Mapping[str, Any]) -> set[int]:
+    pair = normalize_pair_spec(pair_spec)
+    count = gif_sample_count_for_pair(pair)
+    if count <= 0:
+        return set()
+    games_per_pair = int(pair["games_per_pair"])
+    if count >= games_per_pair:
+        return set(range(games_per_pair))
+    if pair["gif_sample_strategy"] == "first_n":
+        return set(range(count))
+    if count == 1:
+        return {0}
+    last = games_per_pair - 1
+    return {
+        int(round(index * last / float(count - 1)))
+        for index in range(count)
     }
 
 
@@ -399,6 +520,7 @@ def build_game_specs_for_pair(pair_spec: Mapping[str, Any]) -> list[dict[str, An
     count = int(pair["games_per_pair"])
     if count < 1:
         raise ValueError("games_per_pair must be at least 1")
+    gif_sample_indices = gif_sample_indices_for_pair(pair)
     specs = []
     for game_index in range(count):
         game_id = f"game-{game_index:06d}"
@@ -414,22 +536,163 @@ def build_game_specs_for_pair(pair_spec: Mapping[str, Any]) -> list[dict[str, An
                 "seed": int(pair["seed"]) + game_index,
                 "max_steps": pair["max_steps"],
                 "decision_ms": pair["decision_ms"],
+                "decision_source_frames": pair["decision_source_frames"],
+                "source_physics_step_ms": pair["source_physics_step_ms"],
                 "num_simulations": pair["num_simulations"],
                 "policy_batch_size": pair["policy_batch_size"],
                 "policy_mode": pair["policy_mode"],
                 "collect_temperature": pair["collect_temperature"],
                 "collect_epsilon": pair["collect_epsilon"],
                 "natural_bonus_spawn": pair["natural_bonus_spawn"],
+                "policy_trail_render_mode": pair["policy_trail_render_mode"],
+                "gif_trail_render_mode": pair["gif_trail_render_mode"],
                 "trail_render_mode": pair["trail_render_mode"],
                 "frame_stride": pair["frame_stride"],
                 "frame_size": pair["frame_size"],
                 "gif_fps": pair["gif_fps"],
-                "save_gif": pair["save_gif"],
+                "save_gif": bool(pair["save_gif"]) and game_index in gif_sample_indices,
+                "gif_sample_games_per_pair": pair["gif_sample_games_per_pair"],
+                "gif_sample_strategy": pair["gif_sample_strategy"],
                 "save_frames_npz": pair["save_frames_npz"],
                 "action_trace_limit": pair["action_trace_limit"],
             }
         )
     return specs
+
+
+def build_game_shard_specs_for_pair(
+    pair_spec: Mapping[str, Any],
+    *,
+    games_per_shard: int | None = None,
+) -> list[dict[str, Any]]:
+    pair = normalize_pair_spec(pair_spec)
+    if games_per_shard is None:
+        shard_size = int(pair.get("games_per_shard") or DEFAULT_GAMES_PER_SHARD)
+    else:
+        shard_size = int(games_per_shard)
+    if shard_size < 1:
+        raise ValueError("games_per_shard must be at least 1")
+    games = build_game_specs_for_pair(pair)
+    shards = []
+    for shard_index, start in enumerate(range(0, len(games), shard_size)):
+        shard_games = games[start : start + shard_size]
+        shard_id = f"shard-{shard_index:06d}-games-{start:06d}-{start + len(shard_games) - 1:06d}"
+        shards.append(
+            {
+                "schema_id": GAME_SHARD_SCHEMA_ID,
+                "tournament_id": pair["tournament_id"],
+                "battle_id": pair["battle_id"],
+                "pair_index": pair["pair_index"],
+                "shard_index": shard_index,
+                "shard_id": shard_id,
+                "games_per_shard": shard_size,
+                "reuse_policies": bool(pair["reuse_policies_per_shard"]),
+                "game_count": len(shard_games),
+                "game_index_start": int(shard_games[0]["game_index"]),
+                "game_index_end": int(shard_games[-1]["game_index"]),
+                "game_specs": shard_games,
+            }
+        )
+    return shards
+
+
+def count_pair_candidates(
+    checkpoint_count: int,
+    *,
+    ordered_pairs: bool = DEFAULT_ORDERED_PAIRS,
+    include_self_pairs: bool = DEFAULT_INCLUDE_SELF_PAIRS,
+) -> int:
+    count = 0
+    for i in range(int(checkpoint_count)):
+        for j in range(int(checkpoint_count)):
+            if not include_self_pairs and i == j:
+                continue
+            if not ordered_pairs and (
+                j < i or (not include_self_pairs and j == i)
+            ):
+                continue
+            count += 1
+    return count
+
+
+def estimate_tournament_plan(
+    *,
+    checkpoint_count: int,
+    games_per_pair: int = DEFAULT_GAMES_PER_PAIR,
+    ordered_pairs: bool = DEFAULT_ORDERED_PAIRS,
+    include_self_pairs: bool = DEFAULT_INCLUDE_SELF_PAIRS,
+    pairs_per_round: int | None = None,
+    games_per_shard: int = DEFAULT_GAMES_PER_SHARD,
+    reuse_policies_per_shard: bool = DEFAULT_REUSE_POLICIES_PER_SHARD,
+    save_gif: bool = DEFAULT_SAVE_GIF,
+    gif_sample_games_per_pair: int = DEFAULT_GIF_SAMPLE_GAMES_PER_PAIR,
+    gif_sample_strategy: str = DEFAULT_GIF_SAMPLE_STRATEGY,
+    save_frames_npz: bool = DEFAULT_SAVE_FRAMES_NPZ,
+) -> dict[str, Any]:
+    checkpoint_count = int(checkpoint_count)
+    games_per_pair = int(games_per_pair)
+    games_per_shard = int(games_per_shard)
+    gif_sample_games_per_pair = int(gif_sample_games_per_pair)
+    gif_sample_strategy = str(gif_sample_strategy)
+    if checkpoint_count < 0:
+        raise ValueError("checkpoint_count must be non-negative")
+    if games_per_pair < 1:
+        raise ValueError("games_per_pair must be at least 1")
+    if games_per_shard < 1:
+        raise ValueError("games_per_shard must be at least 1")
+    if gif_sample_games_per_pair < -1:
+        raise ValueError("gif_sample_games_per_pair must be -1, 0, or positive")
+    if gif_sample_strategy not in GIF_SAMPLE_STRATEGY_CHOICES:
+        raise ValueError(
+            f"gif_sample_strategy must be one of {GIF_SAMPLE_STRATEGY_CHOICES!r}"
+        )
+    pair_candidate_count = count_pair_candidates(
+        checkpoint_count,
+        ordered_pairs=ordered_pairs,
+        include_self_pairs=include_self_pairs,
+    )
+    if pairs_per_round in (None, "", 0, "0"):
+        pair_count = pair_candidate_count
+        normalized_pairs_per_round = None
+    else:
+        normalized_pairs_per_round = int(pairs_per_round)
+        if normalized_pairs_per_round < 1:
+            raise ValueError("pairs_per_round must be positive or empty")
+        pair_count = min(pair_candidate_count, normalized_pairs_per_round)
+    game_count = pair_count * games_per_pair
+    game_call_count = pair_count * math.ceil(games_per_pair / games_per_shard)
+    gif_per_pair = 0
+    if save_gif:
+        gif_per_pair = (
+            games_per_pair
+            if gif_sample_games_per_pair < 0
+            else min(games_per_pair, gif_sample_games_per_pair)
+        )
+    gif_count = pair_count * gif_per_pair
+    frames_npz_count = game_count if save_frames_npz else 0
+    return {
+        "schema_id": "curvyzero_curvytron_checkpoint_tournament_plan_estimate/v0",
+        "checkpoint_count": checkpoint_count,
+        "ordered_pairs": bool(ordered_pairs),
+        "include_self_pairs": bool(include_self_pairs),
+        "pair_candidate_count": pair_candidate_count,
+        "pairs_per_round": normalized_pairs_per_round,
+        "pair_count": pair_count,
+        "games_per_pair": games_per_pair,
+        "games_per_shard": games_per_shard,
+        "reuse_policies_per_shard": bool(reuse_policies_per_shard),
+        "game_count": game_count,
+        "game_call_count": game_call_count,
+        "save_gif": bool(save_gif),
+        "gif_sample_games_per_pair": gif_sample_games_per_pair,
+        "gif_sample_strategy": gif_sample_strategy,
+        "gif_per_pair": gif_per_pair,
+        "gif_count": gif_count,
+        "frames_npz_count": frames_npz_count,
+        "approx_json_file_count": game_count + pair_count + 4,
+        "approx_artifact_file_count": game_count + pair_count + gif_count + frames_npz_count + 4,
+        "approx_game_worker_commit_count": game_call_count,
+    }
 
 
 def _row0(value: Any) -> Any:
@@ -592,57 +855,141 @@ def tally_game_results(game_results: Sequence[Mapping[str, Any]]) -> dict[str, A
     }
 
 
-def summarize_pair_results(pair_spec: Mapping[str, Any], game_results: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    pair = normalize_pair_spec(pair_spec)
-    tally = tally_game_results(game_results)
-    first_gif_ref = None
-    for result in game_results:
-        if result.get("gif_ref"):
-            first_gif_ref = result["gif_ref"]
-            break
+def merge_game_tallies(tallies: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    counts = Counter()
+    wins_by_seat = Counter()
+    wins_by_checkpoint = Counter()
+    game_count = 0
+    completed = 0
+    failures = 0
+    physical_step_total = 0.0
+    for tally in tallies:
+        if not isinstance(tally, Mapping):
+            continue
+        game_count += int(tally.get("game_count") or 0)
+        completed_count = int(tally.get("completed_count") or 0)
+        completed += completed_count
+        failures += int(tally.get("failure_count") or 0)
+        for key, value in (tally.get("outcomes") or {}).items():
+            counts[str(key)] += int(value or 0)
+        for key, value in (tally.get("wins_by_seat") or {}).items():
+            wins_by_seat[str(key)] += int(value or 0)
+        for key, value in (tally.get("wins_by_checkpoint") or {}).items():
+            wins_by_checkpoint[str(key)] += int(value or 0)
+        average_steps = tally.get("average_physical_steps")
+        if average_steps is not None and completed_count:
+            physical_step_total += float(average_steps) * float(completed_count)
     return {
+        "game_count": int(game_count),
+        "completed_count": int(completed),
+        "failure_count": int(failures),
+        "outcomes": dict(sorted(counts.items())),
+        "wins_by_seat": dict(sorted(wins_by_seat.items())),
+        "wins_by_checkpoint": dict(sorted(wins_by_checkpoint.items())),
+        "draw_count": int(counts.get("draw", 0)),
+        "average_physical_steps": (
+            float(physical_step_total) / float(completed) if completed else None
+        ),
+    }
+
+
+def _pair_summary_settings(pair: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        key: pair[key]
+        for key in (
+            "games_per_pair",
+            "max_steps",
+            "decision_ms",
+            "decision_source_frames",
+            "source_physics_step_ms",
+            "num_simulations",
+            "policy_mode",
+            "collect_temperature",
+            "collect_epsilon",
+            "natural_bonus_spawn",
+            "policy_trail_render_mode",
+            "gif_trail_render_mode",
+            "trail_render_mode",
+            "frame_stride",
+            "frame_size",
+            "save_gif",
+            "gif_sample_games_per_pair",
+            "gif_sample_strategy",
+        )
+    }
+
+
+def summarize_pair_from_tally(
+    pair_spec: Mapping[str, Any],
+    *,
+    tally: Mapping[str, Any],
+    first_gif_ref: str | None = None,
+    game_summary_refs: Sequence[str] | None = None,
+    games: Sequence[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    pair = normalize_pair_spec(pair_spec)
+    summary = {
         "schema_id": BATTLE_SCHEMA_ID,
-        "ok": tally["failure_count"] == 0,
+        "ok": int(tally.get("failure_count") or 0) == 0,
         "tournament_id": pair["tournament_id"],
         "battle_id": pair["battle_id"],
         "pair_index": pair["pair_index"],
         "players": pair["players"],
-        "settings": {
-            key: pair[key]
-            for key in (
-                "games_per_pair",
-                "max_steps",
-                "decision_ms",
-                "num_simulations",
-                "policy_mode",
-                "collect_temperature",
-                "collect_epsilon",
-                "natural_bonus_spawn",
-                "trail_render_mode",
-                "frame_stride",
-                "frame_size",
-                "save_gif",
-            )
-        },
-        "tally": tally,
+        "settings": _pair_summary_settings(pair),
+        "tally": _to_plain(dict(tally)),
         "first_gif_ref": first_gif_ref,
-        "game_summary_refs": [
-            result.get("summary_ref") for result in game_results if result.get("summary_ref")
-        ],
-        "games": [_compact_game_result(result) for result in game_results],
+        "game_summary_ref_count": len(game_summary_refs or []),
     }
+    if game_summary_refs is not None:
+        summary["game_summary_refs"] = list(game_summary_refs)
+    if games is not None:
+        summary["games"] = [_compact_game_result(result) for result in games]
+    return summary
+
+
+def summarize_pair_results(pair_spec: Mapping[str, Any], game_results: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    pair = normalize_pair_spec(pair_spec)
+    ordered_results = sorted(
+        game_results,
+        key=lambda result: (
+            int(result.get("game_index", 0) or 0),
+            str(result.get("game_id") or ""),
+        ),
+    )
+    tally = tally_game_results(ordered_results)
+    first_gif_ref = None
+    for result in ordered_results:
+        if result.get("gif_ref"):
+            first_gif_ref = result["gif_ref"]
+            break
+    return summarize_pair_from_tally(
+        pair,
+        tally=tally,
+        first_gif_ref=first_gif_ref,
+        game_summary_refs=[
+            str(result.get("summary_ref"))
+            for result in ordered_results
+            if result.get("summary_ref")
+        ],
+        games=ordered_results,
+    )
 
 
 def _compact_game_result(result: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "ok": bool(result.get("ok")),
+        "tournament_id": result.get("tournament_id"),
+        "battle_id": result.get("battle_id"),
+        "pair_index": result.get("pair_index"),
         "game_id": result.get("game_id"),
         "game_index": result.get("game_index"),
         "seed": result.get("seed"),
+        "players": result.get("players"),
         "score": result.get("score"),
         "physical_steps": result.get("physical_steps"),
         "gif_ref": result.get("gif_ref"),
         "summary_ref": result.get("summary_ref"),
+        "worker_timing": result.get("worker_timing"),
         "error": result.get("error"),
         "error_type": result.get("error_type"),
     }
@@ -733,6 +1080,9 @@ def normalize_rating_spec(raw: Mapping[str, Any] | None = None) -> dict[str, Any
     )
     if not 0.0 <= min_valid_fraction <= 1.0:
         raise ValueError("min_valid_fraction must be in [0, 1]")
+    policy_mode = str(spec.get("policy_mode", POLICY_MODE_EVAL))
+    if policy_mode not in POLICY_MODE_CHOICES:
+        raise ValueError(f"policy_mode must be one of {POLICY_MODE_CHOICES!r}")
     k_reference_games = float(
         spec.get("k_reference_games", DEFAULT_RATING_K_REFERENCE_GAMES)
     )
@@ -745,6 +1095,24 @@ def normalize_rating_spec(raw: Mapping[str, Any] | None = None) -> dict[str, Any
     games_per_pair = int(spec.get("games_per_pair", DEFAULT_GAMES_PER_PAIR))
     if games_per_pair < 1:
         raise ValueError("games_per_pair must be at least 1")
+    games_per_shard = int(spec.get("games_per_shard", DEFAULT_GAMES_PER_SHARD))
+    if games_per_shard < 1:
+        raise ValueError("games_per_shard must be at least 1")
+    reuse_policies_per_shard = bool(
+        spec.get("reuse_policies_per_shard", DEFAULT_REUSE_POLICIES_PER_SHARD)
+    )
+    gif_sample_games_per_pair = int(
+        spec.get("gif_sample_games_per_pair", DEFAULT_GIF_SAMPLE_GAMES_PER_PAIR)
+    )
+    if gif_sample_games_per_pair < -1:
+        raise ValueError("gif_sample_games_per_pair must be -1, 0, or positive")
+    gif_sample_strategy = str(
+        spec.get("gif_sample_strategy", DEFAULT_GIF_SAMPLE_STRATEGY)
+    )
+    if gif_sample_strategy not in GIF_SAMPLE_STRATEGY_CHOICES:
+        raise ValueError(
+            f"gif_sample_strategy must be one of {GIF_SAMPLE_STRATEGY_CHOICES!r}"
+        )
     return {
         "schema_id": RATING_CONFIG_SCHEMA_ID,
         "formula_version": RATING_FORMULA_VERSION,
@@ -765,14 +1133,20 @@ def normalize_rating_spec(raw: Mapping[str, Any] | None = None) -> dict[str, Any
         "include_self_pairs": bool(
             spec.get("include_self_pairs", DEFAULT_INCLUDE_SELF_PAIRS)
         ),
+        "games_per_shard": games_per_shard,
+        "reuse_policies_per_shard": reuse_policies_per_shard,
         "seed": int(spec.get("seed", 0)),
         "max_steps": int(spec.get("max_steps", DEFAULT_MAX_STEPS)),
         "decision_ms": float(spec.get("decision_ms", DEFAULT_DECISION_MS)),
+        "decision_source_frames": spec.get("decision_source_frames"),
+        "source_physics_step_ms": float(
+            spec.get("source_physics_step_ms", DEFAULT_SOURCE_PHYSICS_STEP_MS)
+        ),
         "num_simulations": int(spec.get("num_simulations", DEFAULT_NUM_SIMULATIONS)),
         "policy_batch_size": int(
             spec.get("policy_batch_size", DEFAULT_POLICY_BATCH_SIZE)
         ),
-        "policy_mode": str(spec.get("policy_mode", POLICY_MODE_EVAL)),
+        "policy_mode": policy_mode,
         "collect_temperature": float(
             spec.get("collect_temperature", DEFAULT_COLLECT_TEMPERATURE)
         ),
@@ -780,11 +1154,23 @@ def normalize_rating_spec(raw: Mapping[str, Any] | None = None) -> dict[str, Any
             spec.get("collect_epsilon", DEFAULT_COLLECT_EPSILON)
         ),
         "natural_bonus_spawn": bool(spec.get("natural_bonus_spawn", True)),
-        "trail_render_mode": spec.get("trail_render_mode"),
+        "policy_trail_render_mode": (
+            spec.get("policy_trail_render_mode")
+            or spec.get("observation_trail_render_mode")
+            or spec.get("trail_render_mode")
+        ),
+        "gif_trail_render_mode": DEFAULT_GIF_TRAIL_RENDER_MODE,
+        "trail_render_mode": (
+            spec.get("policy_trail_render_mode")
+            or spec.get("observation_trail_render_mode")
+            or spec.get("trail_render_mode")
+        ),
         "frame_stride": int(spec.get("frame_stride", DEFAULT_FRAME_STRIDE)),
-        "frame_size": int(spec.get("frame_size", DEFAULT_FRAME_SIZE)),
+        "frame_size": DEFAULT_FRAME_SIZE,
         "gif_fps": float(spec.get("gif_fps", DEFAULT_GIF_FPS)),
         "save_gif": bool(spec.get("save_gif", DEFAULT_SAVE_GIF)),
+        "gif_sample_games_per_pair": gif_sample_games_per_pair,
+        "gif_sample_strategy": gif_sample_strategy,
         "save_frames_npz": bool(
             spec.get("save_frames_npz", DEFAULT_SAVE_FRAMES_NPZ)
         ),
@@ -869,7 +1255,9 @@ def build_rating_round_pair_specs(
         for j, player_b in enumerate(checkpoints):
             if not spec["include_self_pairs"] and i == j:
                 continue
-            if not spec["ordered_pairs"] and j <= i:
+            if not spec["ordered_pairs"] and (
+                j < i or (not spec["include_self_pairs"] and j == i)
+            ):
                 continue
             candidates.append((i, j, player_a, player_b))
 
@@ -921,22 +1309,30 @@ def build_rating_round_pair_specs(
                         {"seat": 1, **player_b},
                     ],
                     "games_per_pair": spec["games_per_pair"],
+                    "games_per_shard": spec["games_per_shard"],
+                    "reuse_policies_per_shard": spec["reuse_policies_per_shard"],
                     "seed": int(spec["seed"])
                     + int(round_index) * 1_000_000
                     + pair_slot * 10_000,
                     "max_steps": spec["max_steps"],
                     "decision_ms": spec["decision_ms"],
+                    "decision_source_frames": spec["decision_source_frames"],
+                    "source_physics_step_ms": spec["source_physics_step_ms"],
                     "num_simulations": spec["num_simulations"],
                     "policy_batch_size": spec["policy_batch_size"],
                     "policy_mode": spec["policy_mode"],
                     "collect_temperature": spec["collect_temperature"],
                     "collect_epsilon": spec["collect_epsilon"],
                     "natural_bonus_spawn": spec["natural_bonus_spawn"],
+                    "policy_trail_render_mode": spec["policy_trail_render_mode"],
+                    "gif_trail_render_mode": spec["gif_trail_render_mode"],
                     "trail_render_mode": spec["trail_render_mode"],
                     "frame_stride": spec["frame_stride"],
                     "frame_size": spec["frame_size"],
                     "gif_fps": spec["gif_fps"],
                     "save_gif": spec["save_gif"],
+                    "gif_sample_games_per_pair": spec["gif_sample_games_per_pair"],
+                    "gif_sample_strategy": spec["gif_sample_strategy"],
                     "save_frames_npz": spec["save_frames_npz"],
                     "action_trace_limit": spec["action_trace_limit"],
                 }
@@ -1019,24 +1415,34 @@ def rating_result_from_pair_summary(
     draws = 0
     failure_count = 0
     invalid_count = 0
-    for game in games:
-        if not isinstance(game, Mapping):
-            invalid_count += 1
-            continue
-        if not game.get("ok"):
-            failure_count += 1
-            continue
-        score = game.get("score") if isinstance(game.get("score"), Mapping) else {}
-        outcome = str(score.get("outcome") or "")
-        winner = score.get("winner_seat")
-        if score.get("draw") or outcome == "draw":
-            draws += 1
-        elif winner == 0 or outcome == "seat_0_win":
-            wins_a += 1
-        elif winner == 1 or outcome == "seat_1_win":
-            wins_b += 1
-        else:
-            invalid_count += 1
+    if games:
+        for game in games:
+            if not isinstance(game, Mapping):
+                invalid_count += 1
+                continue
+            if not game.get("ok"):
+                failure_count += 1
+                continue
+            score = game.get("score") if isinstance(game.get("score"), Mapping) else {}
+            outcome = str(score.get("outcome") or "")
+            winner = score.get("winner_seat")
+            if score.get("draw") or outcome == "draw":
+                draws += 1
+            elif winner == 0 or outcome == "seat_0_win":
+                wins_a += 1
+            elif winner == 1 or outcome == "seat_1_win":
+                wins_b += 1
+            else:
+                invalid_count += 1
+    else:
+        tally = pair_summary.get("tally") if isinstance(pair_summary.get("tally"), Mapping) else {}
+        wins_by_seat = tally.get("wins_by_seat") if isinstance(tally.get("wins_by_seat"), Mapping) else {}
+        wins_a = int(wins_by_seat.get("seat_0") or 0)
+        wins_b = int(wins_by_seat.get("seat_1") or 0)
+        draws = int(tally.get("draw_count") or 0)
+        failure_count = int(tally.get("failure_count") or 0)
+        tally_game_count = int(tally.get("game_count") or requested_games)
+        invalid_count = max(0, tally_game_count - wins_a - wins_b - draws - failure_count)
     valid_games = wins_a + wins_b + draws
     min_valid_games = math.ceil(float(requested_games) * float(spec["min_valid_fraction"]))
     rated = valid_games > 0 and valid_games >= min_valid_games
@@ -1279,6 +1685,124 @@ def _lookup_state_dict_by_key(payload: Any, key: str) -> Any:
     return current
 
 
+def _checkpoint_policy_trail_render_mode_from_payload(payload: Any) -> str | None:
+    if not isinstance(payload, Mapping):
+        return None
+    candidates: list[Any] = []
+    metadata = payload.get("metadata")
+    if isinstance(metadata, Mapping):
+        candidates.extend(
+            [
+                metadata.get("policy_trail_render_mode"),
+                metadata.get("trail_render_mode"),
+                metadata.get("source_state_trail_render_mode"),
+            ]
+        )
+        observation_contract = metadata.get("observation_contract")
+        if isinstance(observation_contract, Mapping):
+            candidates.append(observation_contract.get("trail_render_mode"))
+    config = payload.get("config")
+    if isinstance(config, Mapping):
+        candidates.extend(
+            [
+                config.get("policy_trail_render_mode"),
+                config.get("source_state_trail_render_mode"),
+                config.get("trail_render_mode"),
+            ]
+        )
+    candidates.extend(
+        [
+            payload.get("policy_trail_render_mode"),
+            payload.get("source_state_trail_render_mode"),
+            payload.get("trail_render_mode"),
+        ]
+    )
+    for value in candidates:
+        if value:
+            return str(value)
+    return None
+
+
+def _checkpoint_runtime_settings_from_payload(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, Mapping):
+        return {}
+    candidates: list[Mapping[str, Any]] = []
+    for key in ("config", "metadata", "runtime_settings"):
+        value = payload.get(key)
+        if isinstance(value, Mapping):
+            candidates.append(value)
+    candidates.append(payload)
+    settings: dict[str, Any] = {}
+    for candidate in candidates:
+        for key in ("decision_source_frames", "source_physics_step_ms", "decision_ms"):
+            if key in settings:
+                continue
+            value = candidate.get(key)
+            if value is not None:
+                settings[key] = value
+    return settings
+
+
+def _checkpoint_policy_trail_render_mode_from_ref(
+    checkpoint_ref: str,
+    *,
+    mount: Path,
+) -> str | None:
+    path = runs.require_relative_ref(checkpoint_ref)
+    parts = path.parts
+    metadata_refs: list[PurePosixPath] = []
+    if len(parts) >= 3 and parts[0] == "training":
+        run_root = PurePosixPath(*parts[:3])
+        metadata_refs.append(run_root / "run.json")
+    if len(parts) >= 5 and parts[0] == "training" and parts[3] == "attempts":
+        attempt_root = PurePosixPath(*parts[:5])
+        metadata_refs.append(attempt_root / "attempt.json")
+        metadata_refs.append(attempt_root / "command.json")
+    for ref in metadata_refs:
+        metadata_path = runs.volume_path(mount, ref)
+        if not metadata_path.exists():
+            continue
+        try:
+            with metadata_path.open("r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except Exception:
+            continue
+        mode = _checkpoint_policy_trail_render_mode_from_payload(payload)
+        if mode:
+            return mode
+    return None
+
+
+def _checkpoint_runtime_settings_from_ref(
+    checkpoint_ref: str,
+    *,
+    mount: Path,
+) -> dict[str, Any]:
+    path = runs.require_relative_ref(checkpoint_ref)
+    parts = path.parts
+    metadata_refs: list[PurePosixPath] = []
+    if len(parts) >= 3 and parts[0] == "training":
+        run_root = PurePosixPath(*parts[:3])
+        metadata_refs.append(run_root / "run.json")
+    if len(parts) >= 5 and parts[0] == "training" and parts[3] == "attempts":
+        attempt_root = PurePosixPath(*parts[:5])
+        metadata_refs.append(attempt_root / "attempt.json")
+        metadata_refs.append(attempt_root / "command.json")
+    for ref in metadata_refs:
+        metadata_path = runs.volume_path(mount, ref)
+        if not metadata_path.exists():
+            continue
+        try:
+            with metadata_path.open("r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except Exception:
+            continue
+        settings = _checkpoint_runtime_settings_from_payload(payload)
+        if settings:
+            return settings
+    return {}
+
+
 def _load_policy_from_checkpoint(
     *,
     checkpoint_ref: str,
@@ -1307,6 +1831,14 @@ def _load_policy_from_checkpoint(
         remote_root=remote_root,
     )
     payload = eval_mod._torch_load(checkpoint_path)
+    policy_trail_render_mode = (
+        _checkpoint_policy_trail_render_mode_from_payload(payload)
+        or _checkpoint_policy_trail_render_mode_from_ref(checkpoint_ref, mount=mount)
+    )
+    runtime_settings = {
+        **_checkpoint_runtime_settings_from_ref(checkpoint_ref, mount=mount),
+        **_checkpoint_runtime_settings_from_payload(payload),
+    }
     if checkpoint_state_key:
         state_dict = _lookup_state_dict_by_key(payload, checkpoint_state_key)
         found_key = checkpoint_state_key
@@ -1346,8 +1878,67 @@ def _load_policy_from_checkpoint(
         "checkpoint_path": str(checkpoint_path),
         "checkpoint_resolution": resolution,
         "checkpoint_state_key": found_key,
+        "policy_trail_render_mode": policy_trail_render_mode,
+        "runtime_settings": runtime_settings,
         "surface": surface,
     }
+
+
+def load_policy_entries_for_game(
+    spec: Mapping[str, Any],
+    *,
+    checkpoint_mount: Path | None = None,
+    artifact_mount: Path | None = None,
+    mount: Path | None = None,
+    remote_root: Path | None = None,
+) -> list[dict[str, Any]]:
+    if mount is not None:
+        checkpoint_mount = checkpoint_mount or mount
+        artifact_mount = artifact_mount or mount
+    if checkpoint_mount is None or artifact_mount is None:
+        raise ValueError("load_policy_entries_for_game needs checkpoint_mount and artifact_mount")
+
+    game = dict(spec)
+    pair = normalize_pair_spec({**game, "games_per_pair": 1})
+    game_id = _safe_id(str(game.get("game_id") or "game-000000"), label="game_id")
+    seed = int(game.get("seed", pair["seed"]))
+    max_steps = int(game.get("max_steps", pair["max_steps"]))
+    root_path = runs.volume_path(
+        artifact_mount,
+        game_root_ref(pair["tournament_id"], pair["battle_id"], game_id),
+    )
+    root_path.mkdir(parents=True, exist_ok=True)
+
+    entries: list[dict[str, Any]] = []
+    for player in pair["players"]:
+        entries.append(
+            _load_policy_from_checkpoint(
+                checkpoint_ref=str(player["checkpoint_ref"]),
+                checkpoint_state_key=(
+                    str(player["checkpoint_state_key"])
+                    if player.get("checkpoint_state_key")
+                    else None
+                ),
+                seed=seed + int(player["seat"]),
+                source_max_steps=max_steps,
+                num_simulations=int(game.get("num_simulations", pair["num_simulations"])),
+                batch_size=int(game.get("policy_batch_size", pair["policy_batch_size"])),
+                telemetry_path=root_path / f"policy_seat_{player['seat']}_loader_telemetry.jsonl",
+                mount=checkpoint_mount,
+                remote_root=remote_root,
+                model_env_variant=(
+                    str(player["model_env_variant"])
+                    if player.get("model_env_variant")
+                    else None
+                ),
+                model_reward_variant=(
+                    str(player["model_reward_variant"])
+                    if player.get("model_reward_variant")
+                    else None
+                ),
+            )
+        )
+    return entries
 
 
 def _policy_action(
@@ -1402,6 +1993,98 @@ def _policy_action(
     }
 
 
+def _consistent_runtime_value(
+    policy_entries: Sequence[Mapping[str, Any]],
+    key: str,
+) -> Any | None:
+    values = []
+    for entry in policy_entries:
+        runtime_settings = entry.get("runtime_settings")
+        if not isinstance(runtime_settings, Mapping):
+            continue
+        value = runtime_settings.get(key)
+        if value is not None:
+            values.append(value)
+    if not values:
+        return None
+    first = values[0]
+    for value in values[1:]:
+        try:
+            if not math.isclose(float(value), float(first), rtol=0.0, abs_tol=1e-6):
+                raise ValueError
+        except (TypeError, ValueError):
+            if str(value) != str(first):
+                raise ValueError(
+                    f"mixed checkpoint runtime setting {key}: {values!r}"
+                ) from None
+    return first
+
+
+def _source_frame_runtime_settings(
+    game: Mapping[str, Any],
+    pair: Mapping[str, Any],
+    policy_entries: Sequence[Mapping[str, Any]],
+    *,
+    max_steps: int,
+) -> dict[str, Any]:
+    runtime_source_physics = _consistent_runtime_value(
+        policy_entries,
+        "source_physics_step_ms",
+    )
+    source_physics_step_ms = float(
+        game.get("source_physics_step_ms")
+        or pair.get("source_physics_step_ms")
+        or runtime_source_physics
+        or DEFAULT_SOURCE_PHYSICS_STEP_MS
+    )
+    if not math.isfinite(source_physics_step_ms) or source_physics_step_ms <= 0.0:
+        raise ValueError("source_physics_step_ms must be positive and finite")
+
+    runtime_frames = _consistent_runtime_value(policy_entries, "decision_source_frames")
+    raw_frames = (
+        game.get("decision_source_frames")
+        or pair.get("decision_source_frames")
+        or runtime_frames
+    )
+    if raw_frames is None:
+        runtime_decision_ms = _consistent_runtime_value(policy_entries, "decision_ms")
+        spec_decision_ms = float(game.get("decision_ms", pair["decision_ms"]))
+        decision_ms = (
+            float(runtime_decision_ms)
+            if runtime_decision_ms is not None
+            and math.isclose(
+                spec_decision_ms,
+                DEFAULT_DECISION_MS,
+                rel_tol=0.0,
+                abs_tol=1e-6,
+            )
+            else spec_decision_ms
+        )
+        ratio = decision_ms / source_physics_step_ms
+        decision_source_frames = int(round(ratio))
+        if decision_source_frames < 1 or not math.isclose(
+            ratio,
+            float(decision_source_frames),
+            rel_tol=0.0,
+            abs_tol=1e-6,
+        ):
+            raise ValueError(
+                "decision_ms must be a whole number of source physics frames; "
+                "set decision_source_frames explicitly"
+            )
+    else:
+        decision_source_frames = int(raw_frames)
+        if decision_source_frames < 1:
+            raise ValueError("decision_source_frames must be positive")
+    decision_ms = float(decision_source_frames) * source_physics_step_ms
+    return {
+        "decision_ms": decision_ms,
+        "decision_source_frames": int(decision_source_frames),
+        "source_physics_step_ms": source_physics_step_ms,
+        "source_max_ticks": int(max_steps) * int(decision_source_frames),
+    }
+
+
 def run_checkpoint_game(
     spec: Mapping[str, Any],
     *,
@@ -1409,6 +2092,7 @@ def run_checkpoint_game(
     artifact_mount: Path | None = None,
     mount: Path | None = None,
     remote_root: Path | None = None,
+    preloaded_policy_entries: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     import numpy as np
 
@@ -1416,6 +2100,7 @@ def run_checkpoint_game(
     from curvyzero.env.vector_multiplayer_env import ACTION_COUNT, VectorMultiplayerEnv
     from curvyzero.env.vector_visual_observation import (
         SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
+        TRAIL_RENDER_MODE_BROWSER_LINES,
         TRAIL_RENDER_MODE_DEFAULT,
         render_source_state_rgb_canvas_like,
     )
@@ -1427,8 +2112,10 @@ def run_checkpoint_game(
     if mount is not None:
         checkpoint_mount = checkpoint_mount or mount
         artifact_mount = artifact_mount or mount
-    if checkpoint_mount is None or artifact_mount is None:
-        raise ValueError("run_checkpoint_game needs checkpoint_mount and artifact_mount")
+    if artifact_mount is None:
+        raise ValueError("run_checkpoint_game needs artifact_mount")
+    if checkpoint_mount is None and preloaded_policy_entries is None:
+        raise ValueError("run_checkpoint_game needs checkpoint_mount when policies are not preloaded")
 
     game = dict(spec)
     pair = normalize_pair_spec({**game, "games_per_pair": 1})
@@ -1442,12 +2129,11 @@ def run_checkpoint_game(
     policy_mode = str(game.get("policy_mode", pair["policy_mode"]))
     if policy_mode not in POLICY_MODE_CHOICES:
         raise ValueError(f"policy_mode must be one of {POLICY_MODE_CHOICES!r}")
-    frame_size = int(game.get("frame_size", pair["frame_size"]) or DEFAULT_FRAME_SIZE)
-    if frame_size < 64:
-        frame_size = SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE
+    frame_size = SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE
     frame_stride = max(1, int(game.get("frame_stride", pair["frame_stride"])))
-    trail_render_mode = validate_stack_trail_render_mode(
-        str(game.get("trail_render_mode") or pair.get("trail_render_mode") or TRAIL_RENDER_MODE_DEFAULT)
+    capture_frames = bool(
+        game.get("save_gif", pair["save_gif"])
+        or game.get("save_frames_npz", pair["save_frames_npz"])
     )
     root_ref = game_root_ref(tournament_id, battle_id, game_id)
     root_path = runs.volume_path(artifact_mount, root_ref)
@@ -1456,67 +2142,95 @@ def run_checkpoint_game(
     frames_path = runs.volume_path(artifact_mount, game_frames_ref(tournament_id, battle_id, game_id))
     root_path.mkdir(parents=True, exist_ok=True)
 
+    if preloaded_policy_entries is None:
+        policy_entries = load_policy_entries_for_game(
+            game,
+            checkpoint_mount=checkpoint_mount,
+            artifact_mount=artifact_mount,
+            remote_root=remote_root,
+        )
+        preloaded = False
+    else:
+        policy_entries = [dict(entry) for entry in preloaded_policy_entries]
+        preloaded = True
+    if len(policy_entries) != 2:
+        raise ValueError("run_checkpoint_game needs exactly two policy entries")
+
     policy_loads = []
     policies = []
-    for player in pair["players"]:
-        load = _load_policy_from_checkpoint(
-            checkpoint_ref=str(player["checkpoint_ref"]),
-            checkpoint_state_key=(
-                str(player["checkpoint_state_key"])
-                if player.get("checkpoint_state_key")
-                else None
-            ),
-            seed=seed + int(player["seat"]),
-            source_max_steps=max_steps,
-            num_simulations=int(game.get("num_simulations", pair["num_simulations"])),
-            batch_size=int(game.get("policy_batch_size", pair["policy_batch_size"])),
-            telemetry_path=root_path / f"policy_seat_{player['seat']}_loader_telemetry.jsonl",
-            mount=checkpoint_mount,
-            remote_root=remote_root,
-            model_env_variant=(
-                str(player["model_env_variant"])
-                if player.get("model_env_variant")
-                else None
-            ),
-            model_reward_variant=(
-                str(player["model_reward_variant"])
-                if player.get("model_reward_variant")
-                else None
-            ),
-        )
+    for load in policy_entries:
+        if "policy" not in load:
+            raise ValueError("policy entry missing policy")
         policies.append(load["policy"])
         policy_loads.append(
             {
-                key: value
-                for key, value in load.items()
-                if key != "policy"
+                **{key: value for key, value in load.items() if key != "policy"},
+                "preloaded": preloaded,
             }
         )
+    default_policy_trail_render_mode = validate_stack_trail_render_mode(
+        str(
+            game.get("policy_trail_render_mode")
+            or game.get("observation_trail_render_mode")
+            or game.get("trail_render_mode")
+            or pair.get("policy_trail_render_mode")
+            or pair.get("trail_render_mode")
+            or TRAIL_RENDER_MODE_DEFAULT
+        )
+    )
+    policy_trail_render_modes = []
+    for player, load in zip(pair["players"], policy_entries, strict=True):
+        mode = validate_stack_trail_render_mode(
+            str(
+                player.get("policy_trail_render_mode")
+                or player.get("observation_trail_render_mode")
+                or load.get("policy_trail_render_mode")
+                or default_policy_trail_render_mode
+            )
+        )
+        policy_trail_render_modes.append(mode)
+    gif_trail_render_mode = TRAIL_RENDER_MODE_BROWSER_LINES
+    runtime_settings = _source_frame_runtime_settings(
+        game,
+        pair,
+        policy_entries,
+        max_steps=max_steps,
+    )
 
     env = VectorMultiplayerEnv(
         batch_size=1,
         player_count=2,
         seed=seed,
-        decision_ms=float(game.get("decision_ms", pair["decision_ms"])),
-        max_ticks=max_steps,
+        decision_ms=float(runtime_settings["decision_ms"]),
+        decision_source_frames=int(runtime_settings["decision_source_frames"]),
+        source_physics_step_ms=float(runtime_settings["source_physics_step_ms"]),
+        max_ticks=int(runtime_settings["source_max_ticks"]),
         death_mode=vector_runtime.DEATH_MODE_NORMAL,
         natural_bonus_spawn=bool(game.get("natural_bonus_spawn", pair["natural_bonus_spawn"])),
     )
-    visual_stack = SourceStateGray64Stack4(
-        batch_size=1,
-        player_count=2,
-        trail_render_mode=trail_render_mode,
-    )
+    visual_stacks = {
+        mode: SourceStateGray64Stack4(
+            batch_size=1,
+            player_count=2,
+            trail_render_mode=mode,
+        )
+        for mode in sorted(set(policy_trail_render_modes))
+    }
     batch = env.reset(seed=seed)
-    observation = visual_stack.update(env, copy=False)
-    frames = [
-        render_source_state_rgb_canvas_like(
-            env.state,
-            row=0,
-            frame_size=frame_size,
-            trail_render_mode=trail_render_mode,
-        ).copy()
-    ]
+    observations_by_mode = {
+        mode: stack.update(env, copy=False)
+        for mode, stack in visual_stacks.items()
+    }
+    frames = []
+    if capture_frames:
+        frames.append(
+            render_source_state_rgb_canvas_like(
+                env.state,
+                row=0,
+                frame_size=frame_size,
+                trail_render_mode=gif_trail_render_mode,
+            ).copy()
+        )
     action_trace: list[dict[str, Any]] = []
     action_counts: dict[str, Counter[int]] = {
         "seat_0": Counter(),
@@ -1533,6 +2247,7 @@ def run_checkpoint_game(
         step_policy: list[dict[str, Any]] = []
         try:
             for seat in (0, 1):
+                observation = observations_by_mode[policy_trail_render_modes[seat]]
                 obs = {
                     "observation": np.asarray(observation[0, seat], dtype=np.float32),
                     "action_mask": np.asarray(batch.action_mask[0, seat], dtype=np.float32),
@@ -1558,19 +2273,22 @@ def run_checkpoint_game(
                         "compact_output": result.get("compact_output"),
                     }
                 )
-            batch = env.step(actions, timer_advance_ms=float(game.get("decision_ms", pair["decision_ms"])))
+            batch = env.step(actions, timer_advance_ms=float(runtime_settings["decision_ms"]))
             physical_steps += 1
             done = bool(batch.done[0])
             truncated = bool(batch.truncated[0])
             last_info = _to_plain(batch.info)
-            observation = visual_stack.update(env, copy=False)
-            if physical_steps % frame_stride == 0 or done:
+            observations_by_mode = {
+                mode: stack.update(env, copy=False)
+                for mode, stack in visual_stacks.items()
+            }
+            if capture_frames and (physical_steps % frame_stride == 0 or done):
                 frames.append(
                     render_source_state_rgb_canvas_like(
                         env.state,
                         row=0,
                         frame_size=frame_size,
-                        trail_render_mode=trail_render_mode,
+                        trail_render_mode=gif_trail_render_mode,
                     ).copy()
                 )
             if len(action_trace) < int(game.get("action_trace_limit", pair["action_trace_limit"])):
@@ -1631,6 +2349,10 @@ def run_checkpoint_game(
         "policy_mode": policy_mode,
         "collect_temperature": float(game.get("collect_temperature", pair["collect_temperature"])),
         "collect_epsilon": float(game.get("collect_epsilon", pair["collect_epsilon"])),
+        "decision_ms": float(runtime_settings["decision_ms"]),
+        "decision_source_frames": int(runtime_settings["decision_source_frames"]),
+        "source_physics_step_ms": float(runtime_settings["source_physics_step_ms"]),
+        "source_max_ticks": int(runtime_settings["source_max_ticks"]),
         "score": score,
         "done": done,
         "truncated": truncated,
@@ -1645,7 +2367,29 @@ def run_checkpoint_game(
         "frame_count": len(frames),
         "frame_size": frame_size,
         "frame_stride": frame_stride,
-        "trail_render_mode": trail_render_mode,
+        "policy_trail_render_modes": {
+            f"seat_{seat}": mode for seat, mode in enumerate(policy_trail_render_modes)
+        },
+        "policy_trail_render_mode": (
+            policy_trail_render_modes[0]
+            if policy_trail_render_modes[0] == policy_trail_render_modes[1]
+            else "mixed"
+        ),
+        "gif_trail_render_mode": gif_trail_render_mode,
+        "trail_render_mode": (
+            policy_trail_render_modes[0]
+            if policy_trail_render_modes[0] == policy_trail_render_modes[1]
+            else "mixed"
+        ),
+        "render_contract": {
+            "policy_observation": (
+                "per-seat SourceStateGray64Stack4, using the checkpoint's "
+                "policy_trail_render_mode when supplied"
+            ),
+            "gif": "full_704_rgb_canvas_like_browser_lines",
+            "gif_frame_size": frame_size,
+            "gif_trail_render_mode": gif_trail_render_mode,
+        },
         "gif_ref": gif_ref,
         "frames_ref": frames_ref,
         "summary_ref": runs.file_ref(summary_path, mount=artifact_mount),

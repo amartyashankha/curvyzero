@@ -2,16 +2,50 @@
 
 Purpose: describe the next CurvyTron training batch in plain language.
 
-Status: ready for final hold, not launched. The ugly 50-row batch was stopped.
-The next launch candidate is `curvy-survive-bonus-large-20260513a`.
+Status: historical rescue plan plus current pointer. The blank-canvas rescue
+batch was launched as `curvy-survive-bonus-large-20260513b` and is now
+background evidence. The active next-lane plan is the opponent-mixture wave in
+[opponent_mixture_batch_plan_2026-05-13.md](opponent_mixture_batch_plan_2026-05-13.md).
 
-## Launch Hold
+Current live mixture batch:
 
-Do not launch yet. The current instruction is:
+- `curvy-mix2-clean-20260513a`
+- launched 2026-05-13 07:49 EDT;
+- 156 rows in one deployed Modal trainer app;
+- paired `body_circles_fast` and `browser_lines`;
+- `save_ckpt_after_iter=10000`;
+- first status sweep was startup-only evidence, not a clean render-speed read.
 
-1. Finish prep and tests.
-2. Sleep for 30 minutes at the launch boundary.
-3. Only after that hold, launch if still appropriate.
+Candidate next large matrix after the current batch has first `k10` checkpoints:
+
+| Block | Rows | Plain shape |
+| --- | ---: | --- |
+| Main mixture grid | 180 | 6 opponent mixes x 2 renders x 3 repeat levels x 5 seeds |
+| Pure controls | 60 | 5 pure opponent sources x 2 renders x 3 repeat levels x 2 seeds |
+| Compute probes | 60 | selected mixes x 2 renders x 2 repeat levels x sim16/C64/B64 probes |
+
+Alternate 300-row shape if baseline knobs remain uncertain:
+
+| Block | Rows | Plain shape |
+| --- | ---: | --- |
+| Main mixture grid | 144 | 6 opponent mixes x 2 renders x 3 repeat levels x 4 seeds |
+| Pure controls | 60 | 5 pure opponent sources x 2 renders x 3 repeat levels x 2 seeds |
+| Compute probes | 96 | 4 selected mixes x 2 renders x 2 repeat levels x 3 compute probes x 2 seeds |
+
+Do not launch this candidate until the current 156-row batch says whether
+scripted opponents are healthy, whether fast/browser rows agree, and whether
+`k10000` is close enough to the target checkpoint cadence.
+
+## Rescue Order
+
+1. Patch manifest/submission/trainer wrapper call shape.
+2. Run focused tests and ruff.
+3. Redeploy the canonical trainer app.
+4. Rebuild the 300-row manifest.
+5. Submit all 300 rows into the one deployed app.
+6. Verify sampled rows have trainer-owned files, not only poller files.
+7. Redeploy or confirm the GIF website.
+8. Monitor early trainer heartbeats, markers, checkpoints, evals, and GIFs.
 
 ## One-App Rule
 
@@ -109,9 +143,18 @@ These are not in the 300-row launch:
 - scripted wall-avoidant opponents;
 - survival-only reward ablation;
 - two-seat self-play.
+- recent-checkpoint mixture opponents.
 
 They can join later only after their own first-class wiring and tiny e2e
 canaries.
+
+## Follow-Up Mixture Batch
+
+Current trusted stock path can train against one static frozen checkpoint
+opponent per run. It does not yet support a weighted opponent pool with recent,
+somewhat recent, old, scripted, blank, passive/immortal, and hand-designed
+opponents. That is the next batch lane after the rescue launch is healthy
+enough to monitor in the background.
 
 ## Validation Done
 

@@ -7,16 +7,27 @@ claim or as a final training recommendation.
 
 ## Current Truth
 
-Canonical Coach training uses:
+Current trusted Coach training/profiling uses the stock LightZero path:
 
 ```text
-src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py --mode two-seat-selfplay
+src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py --mode train
+env_variant=source_state_fixed_opponent
 ```
 
-The two-seat visual stack calls `render_source_state_canvas_gray64(...)` through
-`SourceStateGray64Stack4.update`. Default render mode is `browser_lines`; the
-cheaper comparison mode is `body_circles_fast`. `profile_no_death` is for
-optimizer timing only.
+For this stock fixed-opponent lane, the trusted render comparison is:
+
+- `browser_lines`: richer source-state/browser-like visual surface.
+- `body_circles_fast`: faster approximation lens for profiling or explicit
+  speed/fidelity experiments.
+
+The old `fast_gray64_direct` mode below was for the superseded custom
+`two-seat-selfplay` adapter. Do not copy it into current stock-path commands.
+Use `profile_no_death` only for optimizer timing.
+
+Use `scripts/profile_curvytron_render_trajectory_lengths.py` for local
+fixed-length no-death render tables over 100/200/500/1000/2000 steps. It
+exercises the current source-state fixed-opponent env wrapper and reports
+render time versus other env work without touching live training runs.
 
 Environment Reconstruction is still changing rich rendering, so optimizer should
 pause landing renderer rewrites and focus on understanding the cost shape,
@@ -69,22 +80,13 @@ previous RGB/gray frames and recomposes only dirty 11x11 source blocks. Trail
 layer cache append now refreshes only the dirty bbox instead of rescanning the
 full 704 mask.
 
-2026-05-12 fast direct luma landing: `fast_gray64_direct` is now an explicit
-approximation mode on the same canonical two-seat stack. It does not pretend to
-be browser pixel parity. It renders directly at 64x64, uses the same BT.601
-RGB-to-gray luma rule as the full RGB path, preserves self/other contrast for
-trails and heads, and preserves bonus type as luma instead of collapsing every
-bonus to one gray value. It also falls back to `body_*` trails when
-`visual_trail_*` arrays exist but have no active slots. Focused tests include
-semantic pixel checks and a loose mask-level comparison against `browser_lines`.
-
-Current optimizer recommendation: use `fast_gray64_direct` as the main
-overnight training surface. Keep only one or two small `browser_lines`
-sentinels to catch obvious approximation damage; do not make browser-lines a
-control lane or gate. The approximation is strong semantically but not
-pixel-fidelity: isolated 64x64 trail circles instead of connected browser
-lines, bonus type luma circles instead of sprites, and no edge antialias or
-downsample coverage.
+Historical custom-adapter note, 2026-05-12: `fast_gray64_direct` was an
+explicit approximation mode on the custom two-seat stack. It did not pretend to
+be browser pixel parity. It rendered directly at 64x64, used the same BT.601
+RGB-to-gray luma rule as the full RGB path, preserved self/other contrast for
+trails and heads, and preserved bonus type as luma instead of collapsing every
+bonus to one gray value. This is not the fast render knob in the current stock
+fixed-opponent lane; use `body_circles_fast` there.
 
 Fresh no-death sentinel A/B, 2026-05-12, canonical Modal launcher, L4/T4,
 B8/sim2, 8 iterations, 64 collect steps, no learner updates, no checkpoints,
@@ -822,15 +824,15 @@ so the benchmark can isolate render cost from physics/search.
 
 ## Current Recommendation
 
-Optimizer recommendation: train mostly on `fast_gray64_direct` now. It is an
-approximation, but it is the surface that removes the old browser-lines render
-bottleneck. Use `profile_no_death` for optimizer timing, but train with normal
-death and do not use no-death runs for learning claims.
+For the current stock fixed-opponent lane, use `browser_lines` as the trusted
+visual surface and `body_circles_fast` as the explicit fast comparison. Use
+`profile_no_death` for optimizer timing, but train with normal death and do not
+use no-death runs for learning claims.
 
-Scale batch size upward as matrix rows, not as a single bet. B64 is the main
-fast-direct baseline. B128 and H100 are useful scale probes. Browser-lines is
-a mandatory small sentinel, paired with a matched fast-direct row, not a full
-control lane.
+Historical custom-adapter speed guidance used `fast_gray64_direct`, B64 as the
+main baseline, and small `browser_lines` sentinels. Do not copy that command
+surface into stock fixed-opponent runs; translate the render comparison to
+`browser_lines` versus `body_circles_fast`.
 
 For bonus visuals: product gray64 should expose bonus type with stable per-type
 grayscale circles if `bonus_type` is available. Generic bonus circles hide

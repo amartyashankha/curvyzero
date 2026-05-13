@@ -3,12 +3,14 @@
 Purpose: decide when a large overnight CurvyTron survival diagnostic batch is
 allowed to start.
 
-Current launch status: held. The ugly 50-row `survivaldiag-v1b` batch was
-stopped. Tiny stock `train_muzero` canaries cleared reward/support,
-blank-canvas, passive-immortal dirty-control, sim16, checkpoint eval/GIF, and
-live rich-status plumbing. The next candidate is
-`curvy-survive-bonus-large-20260513a`, but it must wait behind the 30-minute
-prelaunch sleep requested by the user.
+Current launch status: rescue relaunch. The ugly 50-row `survivaldiag-v1b`
+batch was stopped and kept as the only old batch worth preserving. The first
+clean 300-row `curvy-survive-bonus-large-20260513a` grouped-app launch was also
+stopped because trainer calls crashed immediately from incomplete grouped
+`train_kwargs`; only pollers wrote files. Tiny stock `train_muzero` canaries
+still clear the reward/support, blank-canvas, passive-immortal dirty-control,
+sim16, checkpoint eval/GIF, and live rich-status plumbing gates. The next action
+is to patch/test/redeploy/relaunch the same 300-row batch fresh.
 
 ## Hard Gates
 
@@ -65,8 +67,13 @@ prelaunch sleep requested by the user.
   stochasticity, compute, row number, and seed.
 - [x] Large batch uses one deployed Modal app with poller+train calls per row,
   not one `modal run` app per row.
-- [x] Checkpoint cadence is reduced to `save_ckpt_after_iter=15000`.
-- [ ] The required 30-minute prelaunch hold has completed.
+- [ ] Grouped-app train kwargs are complete and verified by manifest and
+  submitter preflight checks.
+- [x] Current 300-row checkpoint cadence uses `save_ckpt_after_iter=15000`.
+  Live mtimes show about 28-31 minutes on sampled rows that reach
+  `iteration_15000`.
+- [ ] Rescue relaunch shows real trainer artifacts on sampled rows, not only
+  `checkpoint_eval_poller.json`.
 
 ## Soft Gates
 
@@ -95,10 +102,17 @@ prelaunch sleep requested by the user.
 - Do not launch if checkpoint eval/GIF artifacts are not discoverable.
 - Do not launch if the manifest does not make axes obvious from the run name.
 - Do not launch a large batch through per-row `modal run` commands.
+- Do not launch if grouped train kwargs are missing required trainer settings.
+- Do not launch mixture rows if command metadata and env config disagree about
+  the opponent relation. The expected relation for episode-level mixtures is
+  `learner_vs_weighted_episode_opponent_mixture`.
 - Do not launch if action-collapse telemetry is missing for a large matrix.
 - Do not clear a gate from `status_heartbeat.json` or
   `checkpoint_eval_poller.json` after a forced stop; verify Modal app state and
   completed summary/eval/GIF artifacts.
+- Do not treat poller-only files as trainer startup. Verify sampled run roots
+  include trainer-owned files such as `run.json`, `latest_attempt.json`,
+  `attempt.json`, and `status_heartbeat.json`.
 - Do not launch scripted/random/checkpoint opponent rows from design notes alone;
   they need first-class wiring and canaries.
 
@@ -194,7 +208,9 @@ its artifacts as evidence, but do not continue that launch lane.
 - Duration target: at least 12 hours.
 - Episode cap: `65536`.
 - Train caps: `max_train_iter=300000`, `max_env_step=30000000`.
-- Checkpoint cadence: `save_ckpt_after_iter=15000`.
+- Checkpoint cadence: `save_ckpt_after_iter=15000` for the already-running
+  300-row batch; `save_ckpt_after_iter=10000` working default for the next
+  mixture batch.
 - Background poller lifetime: `64800` seconds. Stock train Modal functions have
   a 16-hour timeout, and the checkpoint poller function has a 20-hour timeout.
 - Attempt ID prefix: `try-...`, with human-readable row names kept below the

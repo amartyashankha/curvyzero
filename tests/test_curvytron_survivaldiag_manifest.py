@@ -120,6 +120,7 @@ def test_blank_core_has_matched_render_pairs_and_separate_seed_fields():
 
 
 def test_executable_rows_use_supported_stock_train_lane_and_high_cap():
+    module = _load_module()
     manifest = _manifest()
 
     for row in manifest["rows"]:
@@ -164,6 +165,11 @@ def test_executable_rows_use_supported_stock_train_lane_and_high_cap():
         assert row["train_kwargs"]["run_id"] == row["run_id"]
         assert row["train_kwargs"]["attempt_id"] == row["attempt_id"]
         assert row["train_kwargs"]["background_eval_launch_kind"] == "poller"
+        required_train_kwargs = set(module.TRAIN_KWARGS_REQUIRED_FOR_GROUPED_SUBMIT)
+        assert set(row["train_kwargs"]) >= required_train_kwargs
+        assert row["train_kwargs"]["decision_ms"] == 200.0
+        assert row["train_kwargs"]["env_telemetry_stride"] == 1
+        assert row["train_kwargs"]["background_eval_step_detail_limit"] == 4
         assert row["poller_kwargs"]["run_id"] == row["run_id"]
         assert row["poller_kwargs"]["attempt_id"] == row["attempt_id"]
         assert row["poller_kwargs"]["exp_name_ref"].endswith(

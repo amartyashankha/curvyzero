@@ -19,10 +19,13 @@ now has local coverage for the survivaldiag fields.
 
 ## 2026-05-13 Launch-Readiness Batch
 
-Current phase: the ugly `v1b` first wave was stopped. The active launch target
-is the clean 300-row `curvy-survive-bonus-large-20260513a` manifest, submitted
-through one deployed Modal app. Launch is paused until the required 30-minute
-prelaunch sleep completes.
+Current phase: the ugly `v1b` first wave was stopped and preserved. The first
+clean 300-row grouped launch, `curvy-survive-bonus-large-20260513a`, failed
+because the grouped submitter omitted required trainer kwargs. The fixed
+300-row launch, `curvy-survive-bonus-large-20260513b`, is now submitted through
+one deployed Modal trainer app. Rows 1, 2, and 50 have trainer heartbeats,
+progress files, iteration 0 evals, and GIF refs. Later sampled rows are still
+startup/queued until proven otherwise.
 
 | Lane | Owner | Scope | Output Needed |
 | --- | --- | --- | --- |
@@ -159,6 +162,111 @@ Returned so far:
   `curvy-survive-bonus-large-20260513a` with 300 rows, added grouped submitter,
   added `progress_latest.json` checkpoint-speed writer, and paused before
   launch per user instruction.
+- Erdos: completed Modal volume cleanup after the failed 300a launch. Preserved
+  the agreed 50-row v1b artifacts and deleted the broken 300a direct run roots.
+  Report:
+  `artifacts/local/curvytron_modal_cleanup_reports/modal_volume_cleanup_20260513_v1b_only_final.md`.
+- Main thread: patched grouped train kwargs, added submitter preflight tests,
+  redeployed the trainer app and GIF browser, launched
+  `curvy-survive-bonus-large-20260513b`, and verified early trainer/eval/GIF
+  artifacts.
+- Euler: cadence recheck corrected the working assumption. `15000` produced
+  checkpoints in about 28-31 minutes on sampled rows that reached
+  `iteration_15000`; missing later checkpoints on some rows are a liveness or
+  row-speed question, not enough evidence by themselves. Next mixture working
+  default is `save_ckpt_after_iter=10000`.
+- Leibniz: audited recent-checkpoint mixture support. Current trusted path has
+  one static frozen checkpoint opponent only; it does not have a checkpoint
+  pool, per-episode weighted mixture, live refresh, or same-run lagged opponent.
+- Linnaeus: active implementation lane for episode-level opponent mixture in
+  the trusted stock path. Must keep it separate from the running 300b batch.
+- Main thread: mixture plan critique updated after the latest canary failure.
+  The first full `curvy-mix2` launch should not use all 228 review rows by
+  default. Keep the core sim8/C32/B32 rows with paired fast/browser render and
+  rep0/repM/repH; hold sim16/C64/B64 sentinels until the corrected canary
+  reaches `train_muzero`. The canary must prove the readiness relation is
+  `learner_vs_weighted_episode_opponent_mixture`, not
+  `learner_vs_fixed_straight`.
+- Main thread: `curvy-mix2-canary-20260513a` failed before `train_muzero`
+  because command metadata still said fixed-straight while env config said
+  weighted episode opponent mixture. Patched the trainer so command and env
+  config use one helper for the relation, and patched the readiness summary to
+  allow mixture runs. Focused pytest, ruff, py_compile, and `git diff --check`
+  passed. The trainer was redeployed, and fresh canary
+  `curvy-mix2-canary-20260513b` was launched with six `curvy-mix2b-*` rows.
+  Early status shows train roots and pollers exist. A browser scripted row has
+  `iteration_0`, `progress_latest.json`, raw/collect GIFs, and selected mixture
+  fields in the GIF summary: `scripted`, weight `50`, index `1`, age label
+  `scripted_wall_avoidant`. Keep monitoring the remaining rows and first `k10`
+  checkpoint before full launch.
+- Main thread: later status for `curvy-mix2-canary-20260513b` shows five of six
+  rows have reached `iteration_0`; two rows have eval summaries; multiple rows
+  have raw and `collect_t1` GIFs. One row still had only a train root in the
+  latest sample. The 180-row `curvy-mix2-core-20260513a` grouped-submit dry-run
+  passed and targets one deployed trainer app. New follow-up lanes: Gibbs owns
+  fidelity/cadence audit; Lorentz owns mixture-batch critique. Neither should
+  launch or kill runs.
+- Gibbs: cadence/fidelity audit found no big render-only split in sampled 300b
+  rows. Browser was about 0-2 minutes slower per 15000 iterations than matched
+  fast rows; batch64/heavier rows and trainer-liveness ambiguity are larger
+  suspects. No docs edited.
+- Lorentz: mixture-batch critique recommended not launching the 180-row core as
+  is. Passive rows should remain canary/dirty-control evidence only. Main
+  thread added a recipe allow-list to the manifest builder, tested it, and
+  generated the pruned 156-row `curvy-mix2-clean-20260513a` launch candidate.
+  Grouped-submit dry-run passed; no runs launched yet.
+- Main thread: `curvy-mix2-canary-20260513b` reached `iteration_10000` on all
+  six rows. All six `iteration_10000` selfplay summaries were `ok=true`, had
+  raw and `collect_t1` GIF variants, and recorded selected mixture component
+  fields. Observed selected entries included `blank`, `mid`, and `recent`.
+  First `k10` cadence was about 31-38 minutes. Local focused tests, ruff,
+  py_compile, grouped-submit dry-run, and `git diff --check` passed for the
+  pruned launch candidate.
+- Main thread: launched `curvy-mix2-clean-20260513a` at 2026-05-13 07:49 EDT.
+  It has 156 rows, no passive recipes, no heavy sentinels, paired fast/browser
+  render, repeat levels `rep0`/`repM`/`repH`, and `k10` checkpoints. The launch
+  artifact records all 156 train call IDs and all 156 poller call IDs in the
+  single deployed trainer app.
+- Main thread: launched `curvy-mix3-currentckpt-20260513a` at about 2026-05-13
+  09:31 EDT. It has 300 rows, uses fresh recent/mid/old refs from
+  `curvy-survive-bonus-large-20260513b`, keeps passive out, pairs
+  `body_circles_fast` and `browser_lines`, and alternates render launch lead.
+  Fresh 10:13 EDT startup read: 187 train roots, 180 running pollers, 36 live
+  trainer heartbeats, 35 checkpoint rows, 3 rows at `iteration_10000`, 8 eval
+  rows, and 26 GIF rows. This is liveness/startup evidence, not a learning
+  ranking. Follow-up 10:22 EDT read: 190 train roots, 186 running pollers, 33
+  rows at `iteration_10000`, 1 row at `iteration_20000`, 28 eval rows, and 34
+  GIF rows.
+- Main thread: found a checkpoint eval/GIF Modal volume commit storm. Patched
+  the train/eval code to reduce checkpoint eval commits and to use retry/backoff
+  for trainer, eval, and GIF volume commits. Trainer and eval apps were
+  redeployed around 10:02-10:03 EDT. New workers emit labelled retry logs;
+  pre-redeploy workers can still fail at old direct commit lines until they
+  drain.
+
+## 2026-05-13 Opponent Mixture Batch
+
+Purpose: prepare the next launch lane while the 300b batch runs.
+
+Source doc:
+[opponent_mixture_batch_plan_2026-05-13.md](opponent_mixture_batch_plan_2026-05-13.md).
+
+Main rules:
+
+- compact base grid, not one fixed base;
+- first draft was 100 rows, 20 recipes x 5 seeds, but it is now stale;
+- main recipes use a recent frozen checkpoint for about 50% of episodes;
+- the remaining 50% varies older checkpoints, scripted opponent, passive
+  dirty control, and blank canvas;
+- include paired fast/browser render rows for core recipes and a few named
+  search/stochasticity probes;
+- opponent component is chosen once per reset/episode, not per step;
+- exact checkpoint refs go into the manifest; no `latest` pointer inside the
+  trainer;
+- do not launch until local tests, grouped dry-run, corrected cadence, and
+  remote canaries pass.
+- relation-mismatch failures before `train_muzero` are launch blockers, even if
+  poller artifacts exist.
 
 ## 2026-05-12/13 Exploration Batch
 
@@ -257,3 +365,150 @@ paper trail for why the current matrix direction changed.
 Subagent spawn hit the thread limit, so current work is assigned to existing
 agents rather than new threads. Close or reuse completed agents before opening
 more.
+
+## 2026-05-13 Opponent Mixture Runtime Update
+
+- Linnaeus finished local mixture eval/GIF wiring. Background checkpoint eval
+  and GIF jobs now carry `opponent_mixture_spec` and record selected component
+  fields.
+- Main thread added
+  `scripts/build_curvytron_opponent_mixture_manifest.py`.
+- Current artifacts:
+  - canary:
+    `artifacts/local/curvytron_opponent_mixture_manifests/curvy-mix-recent-canary-20260513a.json`
+  - 100-row batch:
+    `artifacts/local/curvytron_opponent_mixture_manifests/curvy-mix-recent-20260513a.json`
+- The old dense-run checkpoint refs were missing on the Modal volume. The
+  manifests now use preserved v1b immutable refs:
+  `iteration_20000.pth.tar`, `iteration_10000.pth.tar`, and
+  `iteration_0.pth.tar`.
+- Local gates passed:
+  - `uv run pytest tests/test_curvytron_opponent_mixture_manifest.py tests/test_opponent_mixture.py tests/test_curvytron_survivaldiag_submitter.py -q`
+    -> `19 passed`
+  - progress/speed writer regression test after `SaveCkptHook` patch:
+    `uv run pytest tests/test_curvytron_live_checkpoint_eval_plumbing.py -q`
+    -> `45 passed, 1 skipped`
+- Planck: speed UI root cause is stale `progress_latest.json`. The trainer now
+  writes `event="checkpoint"` and refreshes progress from the LightZero
+  `SaveCkptHook` checkpoint path. Redeploy is required before future runs pick
+  this up.
+- Galileo: fixed-base 100-row mixture draft is too narrow. Next manifest should
+  use `curvy-mix2`, `save_ckpt_after_iter=10000`, a 228-row grid, and readable
+  baseline tokens such as `rf-s8-c32-l32-repM-k10`.
+- Ptolemy: cadence/fidelity audit agrees on one global `k10`; no separate
+  browser cadence. It cautions against broad sim16/C64/B64 sentinel rows for the
+  next mixture launch, especially browser sentinels. Treat iteration-0-only rows
+  as a liveness class: queued, crashed, or slow/stalled must be distinguished.
+- Jason: implemented `curvy-mix2` manifest builder and tests. The generated
+  batch has 228 rows and the generated canary has 6 rows. Local checks and
+  grouped submitter dry-runs passed.
+- Main thread checked the first mixture canary FunctionCall IDs. All three
+  train calls failed immediately with `_run_visual_survival_train() got an
+  unexpected keyword argument 'opponent_mixture_spec'`; the pollers kept running,
+  which is why only poller roots existed. Corrective action: redeploy trainer
+  after the current local patches, then launch a corrected `curvy-mix2` canary.
+  The three stale canary poller calls were cancelled.
+  - focused mixture/env tests earlier -> `51 passed`
+  - ruff, py_compile, and `git diff --check`
+  - grouped submitter dry-run for canary and first 5 batch rows
+- Next action: monitor the fresh 6-row `curvy-mix2b` canary for trainer files,
+  `called_train_muzero=true`, checkpoint poller files, eval/GIF artifacts, and
+  selected mixture component fields.
+- Main thread critique of the 180-row core manifest was superseded by Lorentz
+  and the pruned manifest. After the canary clears, the recommended first full
+  mixture launch is now `curvy-mix2-clean-20260513a`, not the full 180-row core.
+  Keep 50%-recent non-passive main recipes, keep non-passive controls, keep
+  paired fast/browser render, and use `save_ckpt_after_iter=10000`.
+
+## 2026-05-13 Mixture Launch Recommendation Update
+
+- Current recommendation after the canary clears: launch
+  `curvy-mix2-clean-20260513a`, not the default `full` scope and not the
+  passive-containing 180-row core artifact.
+- Exact shape: 156 rows = 7 main recipes x 2 render modes x 3 repeat settings
+  x 3 seeds, plus 5 controls x 2 render modes x 3 repeat settings x 1 seed.
+- Keep paired `body_circles_fast` and `browser_lines` rows. Fast is the speed
+  lane; browser is the higher-fidelity anchor. Use one `k10`
+  `save_ckpt_after_iter=10000` cadence for both.
+- Drop passive rows from the first launch: `r50-pass50` and `pass100` remain
+  canary/dirty-control evidence only.
+- Hold sim16/C64/B64 sentinels for a second wave. The first large mixture batch
+  should keep sim8/C32/B32 fixed.
+- The manifest builder currently defaults to `full`; pass `--batch-scope core`
+  and the recipe allow-list explicitly when preparing the launch artifact.
+
+## 2026-05-13 Post-Launch Monitoring And Critique
+
+- `curvy-mix2-clean-20260513a` launched at 2026-05-13 07:49 EDT with 156 train
+  call IDs and 156 poller call IDs in the single deployed trainer app.
+- First all-row status sweep: 56 rows had `iteration_0`, 83 had trainer
+  heartbeat, 128 pollers were running, and 17 train roots were still absent.
+- Render split from that sweep: 34/78 fast rows and 22/78 browser rows had
+  `iteration_0`. This is not clean render-speed evidence because the manifest
+  orders fast rows before browser rows inside each recipe.
+- Main-thread rule for the next check: compare matched fast/browser rows at the
+  first `k10` checkpoint, not just startup status.
+- Pasteur: investigate whether checkpoint cadence is actually split by render
+  fidelity or by startup order / other knobs. Output should be facts and a
+  small doc note if useful.
+- Bacon: critique the next mixture matrix. Output should be a simple proposed
+  grid over baseline knobs, mixture distribution, render split, repeats, seeds,
+  and cadence, plus riskiest assumptions.
+- Pasteur returned: first render split is launch-order confounded. Valid read
+  must use matched fast/browser pairs at `k10`; future manifests should
+  interleave or shuffle render order.
+- Bacon returned: candidate next matrix is 300 rows: 180 main mixture rows,
+  60 pure controls, 60 narrow compute probes. Keep passive out, keep paired
+  renders, use readable names, and decide `k7500` versus `k10000` from matched
+  checkpoint cadence.
+- Main thread added `scripts/analyze_curvytron_mixture_status.py` to turn a
+  manifest plus run-status JSON into matched fast/browser cadence summaries.
+  First JSON read showed 25 rows at `iteration_10000` and 6 matched pairs at
+  `iteration_10000`; browser was not obviously slower in those six pairs.
+- Main thread corrected the analyzer: it now uses checkpoint file mtimes rather
+  than latest progress elapsed seconds. Latest true `k0 -> k10` read:
+  38 matched pairs, fast median about 1285 sec, browser median about 1395 sec,
+  browser-minus-fast median about 117 sec.
+- Main thread patched run-status JSON to expose latest eval fields, checkpoint
+  mtimes, and GIF selected mixture component fields. Focused status/analyzer/
+  manifest tests pass.
+- Turing: owns a draft next-wave manifest profile in
+  `scripts/build_curvytron_opponent_mixture_manifest.py` and
+  `tests/test_curvytron_opponent_mixture_manifest.py`. Goal is 300 rows with
+  balanced render launch order and no Modal launch.
+- Turing returned: implemented `--profile next-wave`, default
+  `curvy-mix3-nextwave-20260513a`, 300 dry-run rows, no passive rows, matched
+  fast/browser pairs with alternating launch lead. Main thread generated the
+  artifact and grouped-submit dry-run passed for all 300 rows.
+- Archimedes returned: eval/GIF artifacts are appearing. Latest JSON showed
+  39 rows with eval manifests and 100 rows with at least one GIF artifact.
+  `background_poller_completed_count=0` is expected while pollers are still
+  running because that count is written when the poller exits and joins spawned
+  jobs. Use artifact counts and latest GIF/eval checkpoint fields for live
+  health.
+
+## 2026-05-13 Current-Checkpoint Mix3 Launch
+
+- Gauss audited GIF browser plumbing. Findings: the browser lists per-row
+  `run_id`s, not matrix names; `curvy-survive-bonus-large-20260513b` and
+  `curvy-mix2-clean-20260513a` have picker flags and GIF summaries; exact API
+  checks show both `raw.gif` and `collect_t1.gif`. `speed unknown` means missing
+  or unreadable `progress_latest.json`, not a GIF failure.
+- Anscombe audited `curvy-mix3-nextwave-20260513a`. Findings: the 300-row
+  shape is good and names are readable, but the stale v1b checkpoint refs should
+  be replaced if the current survival batch has healthy checkpoints.
+- Main thread closed that gate: all 300 `curvy-survive-bonus-large-20260513b`
+  rows are running with progress, checkpoints, evals, and GIFs. The next wave
+  now uses current checkpoint refs from
+  `curvy-survive-bonus-blank-fast-light-base-r063-s1111121`:
+  `iteration_105000` as recent, `iteration_60000` as mid, and `iteration_0` as
+  old.
+- Generated `curvy-mix3-currentckpt-20260513a`: 300 rows, 180 main rows,
+  60 controls, 60 compute probes, no passive rows, paired fast/browser renders,
+  alternating render launch lead, and substantial recent-checkpoint weight in
+  every main recipe.
+- Dry-run and focused tests passed, then the grouped launch was submitted at
+  about 2026-05-13 09:31 EDT through
+  `curvyzero-lightzero-curvytron-visual-survival-train`.
+  Launch artifact:
+  `artifacts/local/curvytron_opponent_mixture_manifests/curvy-mix3-currentckpt-20260513a.grouped_submit_launch.json`.

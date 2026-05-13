@@ -15,6 +15,9 @@ Current Optimizer speed evidence for the trusted stock frozen-opponent path is
 in `docs/working/optimizer/stock_frozen_optimizer_pivot_2026-05-12.md`.
 Everything below this paragraph is historical unless it is explicitly copied
 into a newer stock-path handoff.
+Render names also changed with the lane reset: in the current stock
+fixed-opponent lane, the fast comparison is `body_circles_fast`, not
+`fast_gray64_direct`.
 
 Historical copy-paste handoff: use the canonical CurvyTron two-seat current-policy
 self-play launcher and run an aggressive approximation-heavy overnight matrix.

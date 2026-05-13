@@ -118,6 +118,8 @@ def _load_json(path: Path) -> dict[str, Any] | None:
             value = json.load(handle)
     except FileNotFoundError:
         return None
+    except json.JSONDecodeError as exc:
+        return {"error": f"invalid JSON in {path}: {exc}"}
     if not isinstance(value, dict):
         return {"error": f"expected JSON object in {path}"}
     return value
@@ -375,11 +377,7 @@ def _mean_numeric_mapping(
                 continue
             sums[str(key)] += value
             counts[str(key)] += 1
-    return {
-        key: sums[key] / counts[key]
-        for key in sorted(sums)
-        if counts[key] > 0
-    }
+    return {key: sums[key] / counts[key] for key in sorted(sums) if counts[key] > 0}
 
 
 def _eval_checkpoint_extra_fields(
@@ -571,6 +569,11 @@ def _eval_manifest_rollup(
         return {
             "eval_manifest_count": 0,
             "latest_eval_manifest_ref": None,
+            "latest_eval_checkpoint": None,
+            "latest_eval_mean_steps": None,
+            "latest_eval_top_action": None,
+            "latest_eval_action_fraction": None,
+            "latest_eval_collapsed": None,
             "eval_checkpoints": [],
         }
 
@@ -622,10 +625,21 @@ def _eval_manifest_rollup(
         )
 
     latest_path, latest_manifest = manifests[-1]
+    latest_checkpoint = checkpoint_rows[-1] if checkpoint_rows else {}
+    latest_action = (
+        latest_checkpoint.get("action_summary")
+        if isinstance(latest_checkpoint.get("action_summary"), dict)
+        else {}
+    )
     return {
         "eval_manifest_count": len(manifests),
         "latest_eval_manifest_ref": latest_path.relative_to(RUNS_MOUNT).as_posix(),
         "latest_eval_created_at": latest_manifest.get("created_at"),
+        "latest_eval_checkpoint": latest_checkpoint.get("checkpoint"),
+        "latest_eval_mean_steps": latest_checkpoint.get("mean_steps"),
+        "latest_eval_top_action": latest_action.get("top_action"),
+        "latest_eval_action_fraction": latest_action.get("top_action_fraction"),
+        "latest_eval_collapsed": latest_action.get("collapsed"),
         "eval_checkpoints": checkpoint_rows,
     }
 
@@ -717,6 +731,10 @@ def _gif_rollup(
                 "physical_steps": summary.get("physical_steps"),
                 "terminal_reason": summary.get("terminal_reason"),
                 "stop_reason": summary.get("stop_reason"),
+                "opponent_mixture_enabled": summary.get("opponent_mixture_enabled"),
+                "opponent_mixture_entry_name": summary.get("opponent_mixture_entry_name"),
+                "opponent_mixture_age_label": summary.get("opponent_mixture_age_label"),
+                "opponent_mixture_entry_weight": summary.get("opponent_mixture_entry_weight"),
                 "greedy_action_collapse_warning": summary.get("greedy_action_collapse_warning"),
                 "greedy_decision_count": greedy_summary.get("decision_count"),
                 "greedy_action_summary": greedy_summary,
@@ -738,6 +756,12 @@ def _gif_rollup(
         "latest_gif_ref": latest_summary.get("gif_ref"),
         "latest_gif_checkpoint": latest_summary.get("checkpoint_label"),
         "latest_gif_terminal_reason": latest_summary.get("terminal_reason"),
+        "latest_gif_opponent_mixture_enabled": latest_summary.get("opponent_mixture_enabled"),
+        "latest_gif_opponent_mixture_entry_name": latest_summary.get("opponent_mixture_entry_name"),
+        "latest_gif_opponent_mixture_age_label": latest_summary.get("opponent_mixture_age_label"),
+        "latest_gif_opponent_mixture_entry_weight": latest_summary.get(
+            "opponent_mixture_entry_weight"
+        ),
         "latest_gif_action_summary": _action_summary(
             latest_action_counts,
             collapse_threshold=collapse_threshold,
@@ -799,21 +823,40 @@ def _checkpoint_summary(run_id: str, attempt_id: str | None = None) -> dict[str,
     checkpoint_dir = next((path for path in checkpoint_dirs if path.is_dir()), None)
     if checkpoint_dir is None:
         return {"checkpoint_count": 0, "latest_checkpoint": None}
-    iterations: list[int] = []
+    artifacts: list[dict[str, Any]] = []
     for child in checkpoint_dir.iterdir():
         name = child.name
         if not name.startswith("iteration_") or not name.endswith(".pth.tar"):
             continue
         text = name.removeprefix("iteration_").removesuffix(".pth.tar")
         try:
-            iterations.append(int(text))
+            iteration = int(text)
         except ValueError:
-            pass
-    if not iterations:
-        return {"checkpoint_count": 0, "latest_checkpoint": None}
+            continue
+        try:
+            stat = child.stat()
+            mtime = stat.st_mtime
+            size_bytes = stat.st_size
+        except FileNotFoundError:
+            mtime = None
+            size_bytes = None
+        artifacts.append(
+            {
+                "checkpoint": f"iteration_{iteration}",
+                "iteration": iteration,
+                "mtime": mtime,
+                "size_bytes": size_bytes,
+            }
+        )
+    if not artifacts:
+        return {"checkpoint_count": 0, "latest_checkpoint": None, "checkpoints": []}
+    artifacts.sort(key=lambda item: item["iteration"])
+    latest = artifacts[-1]
     return {
-        "checkpoint_count": len(iterations),
-        "latest_checkpoint": f"iteration_{max(iterations)}",
+        "checkpoint_count": len(artifacts),
+        "latest_checkpoint": latest["checkpoint"],
+        "latest_checkpoint_mtime": latest["mtime"],
+        "checkpoints": artifacts,
     }
 
 
@@ -829,6 +872,8 @@ def _run_status(
     train_ref = runs.attempt_train_ref(TASK_ID, run_id, resolved_attempt_id)
     latest_path = runs.volume_path(RUNS_MOUNT, train_ref / "progress_latest.json")
     progress = _load_json(latest_path)
+    progress_error = progress.get("error") if isinstance(progress, dict) else None
+    progress_readable = progress is not None and progress_error is None
     checkpoints = _checkpoint_summary(run_id, resolved_attempt_id)
     eval_rollup = _eval_manifest_rollup(
         run_id,
@@ -838,23 +883,26 @@ def _run_status(
     train_artifacts = _train_artifact_rollup(
         run_id,
         resolved_attempt_id,
-        progress_exists=progress is not None,
+        progress_exists=progress_readable,
         collapse_threshold=collapse_threshold,
     )
     row: dict[str, Any] = {
         "run_id": run_id,
         "short_name": run_id.removeprefix("curvytron-two-seat-selfplay-"),
         "attempt_id": resolved_attempt_id,
-        "progress_exists": progress is not None,
+        "progress_exists": progress_readable,
         "progress_ref": (train_ref / "progress_latest.json").as_posix(),
+        "progress_error": progress_error,
         **checkpoints,
         **eval_rollup,
         **train_artifacts,
     }
-    if progress is None:
+    if progress is None or progress_error is not None:
+        if progress_error is not None:
+            row["progress_missing_reason"] = "progress_latest_unreadable"
         row.update(
             {
-                "event": "missing",
+                "event": "missing" if progress is None else "unreadable",
                 "iteration": None,
                 "mean_steps": None,
                 "max_steps": None,
@@ -966,9 +1014,7 @@ def _eval_curve_status(
         attempt_id or _latest_attempt_id_for_run(run_id) or _attempt_id_for_run(run_id)
     )
     train_ref = runs.attempt_train_ref(TASK_ID, run_id, resolved_attempt_id)
-    heartbeat = _load_json(
-        runs.volume_path(RUNS_MOUNT, train_ref / "status_heartbeat.json")
-    )
+    heartbeat = _load_json(runs.volume_path(RUNS_MOUNT, train_ref / "status_heartbeat.json"))
     return {
         "run_id": run_id,
         "short_name": run_id.removeprefix("curvytron-two-seat-selfplay-"),
@@ -1307,11 +1353,11 @@ def _print_eval_summary(rows: list[dict[str, Any]]) -> None:
     print("\t".join(fields))
     for row in rows:
         raw_checkpoints = row.get("eval_checkpoints")
-        checkpoints = [
-            checkpoint
-            for checkpoint in raw_checkpoints
-            if isinstance(checkpoint, dict)
-        ] if isinstance(raw_checkpoints, list) else []
+        checkpoints = (
+            [checkpoint for checkpoint in raw_checkpoints if isinstance(checkpoint, dict)]
+            if isinstance(raw_checkpoints, list)
+            else []
+        )
         points: list[dict[str, Any]] = []
         for checkpoint in checkpoints:
             action_summary = checkpoint.get("action_summary")

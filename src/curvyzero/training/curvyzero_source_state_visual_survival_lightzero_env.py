@@ -97,6 +97,12 @@ from curvyzero.training.curvyzero_stacked_debug_visual_survival_lightzero_smoke 
 from curvyzero.training.lightzero_checkpoint_opponent_provider import (
     snapshot_backed_lightzero_checkpoint_opponent_policy,
 )
+from curvyzero.training.opponent_mixture import (
+    OPPONENT_MIXTURE_SCHEMA_ID,
+    OPPONENT_MIXTURE_SELECTION_UNIT,
+    parse_opponent_mixture_spec,
+    select_opponent_mixture_entry,
+)
 try:  # Imported inside a LightZero/DI-engine runtime.
     import gym
     from ding.envs import BaseEnv
@@ -450,6 +456,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         self._opponent_policy_kind = str(
             _cfg_get(cfg, "opponent_policy_kind", OPPONENT_POLICY_KIND_FIXED_STRAIGHT)
         )
+        self._configured_opponent_policy_kind = self._opponent_policy_kind
         allowed_opponent_policy_kinds = tuple(
             getattr(
                 self,
@@ -465,6 +472,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             )
         self._seed = int(_cfg_get(cfg, "seed", 0))
         self._opponent_policy_seed = int(_cfg_get(cfg, "opponent_policy_seed", self._seed))
+        self._configured_opponent_policy_seed = self._opponent_policy_seed
         self._opponent_wall_avoidant_safe_margin = float(
             _cfg_get(
                 cfg,
@@ -472,11 +480,31 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
                 DEFAULT_OPPONENT_WALL_AVOIDANT_SAFE_MARGIN,
             )
         )
+        self._configured_opponent_wall_avoidant_safe_margin = (
+            self._opponent_wall_avoidant_safe_margin
+        )
         if self._opponent_wall_avoidant_safe_margin <= 0.0:
             raise ValueError("opponent_wall_avoidant_safe_margin must be positive")
         self._last_opponent_policy_sidecar: dict[str, Any] | None = None
+        self._opponent_mixture = parse_opponent_mixture_spec(
+            _cfg_get(cfg, "opponent_mixture", None)
+        )
+        if self._opponent_mixture is not None:
+            for entry in self._opponent_mixture["entries"]:
+                if entry["opponent_policy_kind"] not in allowed_opponent_policy_kinds:
+                    raise ValueError(
+                        "opponent mixture entry uses unsupported opponent_policy_kind "
+                        f"{entry['opponent_policy_kind']!r}; expected one of "
+                        f"{allowed_opponent_policy_kinds!r}"
+                    )
+        self._episode_opponent_mixture_entry: dict[str, Any] | None = None
+        self._opponent_policy_cache: dict[str, Any] = {}
         self.opponent_policy = None
-        if self._opponent_policy_kind == OPPONENT_POLICY_KIND_FROZEN_LIGHTZERO_CHECKPOINT:
+        if (
+            self._opponent_mixture is None
+            and self._opponent_policy_kind
+            == OPPONENT_POLICY_KIND_FROZEN_LIGHTZERO_CHECKPOINT
+        ):
             self.opponent_policy = _build_source_state_frozen_lightzero_opponent_policy(
                 cfg,
                 seed=self._opponent_policy_seed,
@@ -514,6 +542,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         self._opponent_death_mode = str(
             _cfg_get(cfg, "opponent_death_mode", OPPONENT_DEATH_MODE_NORMAL)
         )
+        self._configured_opponent_death_mode = self._opponent_death_mode
         if self._opponent_death_mode not in OPPONENT_DEATH_MODES:
             raise ValueError(
                 f"opponent_death_mode must be one of {OPPONENT_DEATH_MODES!r}"
@@ -521,6 +550,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         self._opponent_runtime_mode = str(
             _cfg_get(cfg, "opponent_runtime_mode", OPPONENT_RUNTIME_MODE_NORMAL)
         )
+        self._configured_opponent_runtime_mode = self._opponent_runtime_mode
         if self._opponent_runtime_mode not in OPPONENT_RUNTIME_MODES:
             raise ValueError(
                 f"opponent_runtime_mode must be one of {OPPONENT_RUNTIME_MODES!r}"
@@ -676,6 +706,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
     def reset(self, seed: int | None = None) -> dict[str, Any]:
         reset_seed = self._next_seed(seed)
         self._episode_seed = reset_seed
+        self._select_episode_opponent(reset_seed=reset_seed)
         self._override_seed = self._override_seed_for(reset_seed)
         self._override_rng = np.random.default_rng(self._override_seed)
         self._policy_action_repeat_seed = self._policy_action_repeat_seed_for(reset_seed)
@@ -694,6 +725,41 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         self._last_batch = self._env.reset(seed=reset_seed)
         self._scrub_blank_canvas_opponent()
         return self._lightzero_observation(needs_reset=False)
+
+    def _select_episode_opponent(self, *, reset_seed: int) -> None:
+        if self._opponent_mixture is None:
+            self._episode_opponent_mixture_entry = None
+            return
+        reset_index = int(max(0, self._reset_index - 1))
+        selected = select_opponent_mixture_entry(
+            self._opponent_mixture,
+            episode_seed=int(reset_seed),
+            reset_index=reset_index,
+        )
+        self._episode_opponent_mixture_entry = selected
+        self._opponent_policy_kind = str(selected["opponent_policy_kind"])
+        self._opponent_runtime_mode = str(selected["opponent_runtime_mode"])
+        self._opponent_death_mode = str(selected["opponent_death_mode"])
+        self._opponent_policy_seed = int(
+            selected.get("opponent_policy_seed", self._configured_opponent_policy_seed)
+        )
+        self._opponent_wall_avoidant_safe_margin = float(
+            selected.get(
+                "opponent_wall_avoidant_safe_margin",
+                self._configured_opponent_wall_avoidant_safe_margin,
+            )
+        )
+        self.opponent_policy = None
+        if self._opponent_policy_kind == OPPONENT_POLICY_KIND_FROZEN_LIGHTZERO_CHECKPOINT:
+            cache_key = str(selected["name"])
+            if cache_key not in self._opponent_policy_cache:
+                self._opponent_policy_cache[cache_key] = (
+                    _build_source_state_frozen_lightzero_opponent_policy(
+                        selected,
+                        seed=self._opponent_policy_seed,
+                    )
+                )
+            self.opponent_policy = self._opponent_policy_cache[cache_key]
 
     def step(self, action: Any) -> LocalDebugVisualLightZeroTimestep:
         if not self._has_reset:
@@ -1789,6 +1855,35 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             ),
             "opponent_policy_version": self._opponent_policy_version(),
             "opponent_policy_seed": self._opponent_policy_seed,
+            "opponent_mixture_enabled": self._opponent_mixture is not None,
+            "opponent_mixture_schema_id": (
+                OPPONENT_MIXTURE_SCHEMA_ID if self._opponent_mixture is not None else None
+            ),
+            "opponent_mixture_selection_unit": (
+                OPPONENT_MIXTURE_SELECTION_UNIT
+                if self._opponent_mixture is not None
+                else None
+            ),
+            "opponent_mixture_entry_name": (
+                self._episode_opponent_mixture_entry.get("name")
+                if self._episode_opponent_mixture_entry is not None
+                else None
+            ),
+            "opponent_mixture_entry_weight": (
+                self._episode_opponent_mixture_entry.get("weight")
+                if self._episode_opponent_mixture_entry is not None
+                else None
+            ),
+            "opponent_mixture_entry_index": (
+                self._episode_opponent_mixture_entry.get("selection_index")
+                if self._episode_opponent_mixture_entry is not None
+                else None
+            ),
+            "opponent_mixture_age_label": (
+                self._episode_opponent_mixture_entry.get("age_label")
+                if self._episode_opponent_mixture_entry is not None
+                else None
+            ),
             "opponent_wall_avoidant_safe_margin": (
                 float(self._opponent_wall_avoidant_safe_margin)
                 if self._opponent_policy_kind
@@ -1949,6 +2044,15 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             "opponent_policy_version": info.get("opponent_policy_version"),
             "opponent_policy_kind": info.get("opponent_policy_kind"),
             "opponent_training_relation": info.get("opponent_training_relation"),
+            "opponent_mixture_enabled": info.get("opponent_mixture_enabled"),
+            "opponent_mixture_schema_id": info.get("opponent_mixture_schema_id"),
+            "opponent_mixture_selection_unit": info.get(
+                "opponent_mixture_selection_unit"
+            ),
+            "opponent_mixture_entry_name": info.get("opponent_mixture_entry_name"),
+            "opponent_mixture_entry_weight": info.get("opponent_mixture_entry_weight"),
+            "opponent_mixture_entry_index": info.get("opponent_mixture_entry_index"),
+            "opponent_mixture_age_label": info.get("opponent_mixture_age_label"),
             "opponent_checkpoint_ref": opponent_metadata.get("checkpoint_ref"),
             "opponent_snapshot_ref": opponent_metadata.get("snapshot_ref"),
             "opponent_provider_id": opponent_metadata.get("provider_id"),

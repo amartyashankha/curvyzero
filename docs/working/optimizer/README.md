@@ -4,6 +4,19 @@ Date: 2026-05-10
 
 Status: active optimizer lane front door.
 
+2026-05-13 render profiling truth: the trusted Coach lane is stock LightZero
+`--mode train` with `env_variant=source_state_fixed_opponent`. In that lane,
+the richer render mode is `browser_lines` and the fast render comparison mode
+is `body_circles_fast`. The old `fast_gray64_direct` name belongs to the
+superseded custom `two-seat-selfplay` adapter and should not be copied into
+current stock-path commands. For fixed-length local no-death render tables, use
+`scripts/profile_curvytron_render_trajectory_lengths.py`. First fixed-length
+tables live in
+[render trajectory profile](render_trajectory_profile_2026-05-13.md): in local
+env-only no-death rollouts, `browser_lines` spends about `76-93%` of wall time
+in render across 100-2000 steps, while `body_circles_fast` spends about
+`62-83%`.
+
 2026-05-12 current optimizer pivot: the trusted CurvyTron lane is stock
 LightZero `train_muzero` with
 `env_variant=source_state_fixed_opponent`,
@@ -99,6 +112,9 @@ The cache is gated behind a minimum active-trail threshold because it is slower
 for short trails but shows parity-preserving speedups in long synthetic append
 profiles: about `1.26x` at L1024 and `3.90x` at L4096. Keep optimizing this
 cache before chasing stack-copy or local-package trivia.
+
+Historical custom-adapter notes follow. They explain the old two-seat
+`fast_gray64_direct` work, not the current stock fixed-opponent render knob.
 
 Fresh fast-direct live read, 2026-05-12: in running `fast_gray64_direct` rows,
 render is small and `policy_search_sec` is the largest named bucket. Do not
@@ -230,6 +246,9 @@ Training and policy-quality claims stay in the [training state index](../trainin
 - [CurvyTron render optimization research](render_optimization_research_2026-05-12.md) -
   current two-seat render bottleneck evidence, cost model, and optimization
   menu while Environment Reconstruction stabilizes richer visuals.
+- [CurvyTron render trajectory profile](render_trajectory_profile_2026-05-13.md) -
+  current stock fixed-opponent local no-death tables for `browser_lines` versus
+  `body_circles_fast` at 100/200/500/1000/2000 steps.
 - [Runtime verdict](runtime_verdict_2026-05-10.md) - compact CurvyTron source
   path, CPU/GPU boundary, current profile, Modal Mctx evidence, and near-term
   architecture stance.
