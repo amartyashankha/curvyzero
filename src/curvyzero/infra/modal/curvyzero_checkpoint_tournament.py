@@ -2700,6 +2700,24 @@ def _rating_spec_with_latest_roster(
                 "checkpoint_id": checkpoint_id,
                 "label": rating_row.get("label") or checkpoint_id,
                 "checkpoint_ref": checkpoint_ref,
+                "run_id": roster_row.get("run_id") or rating_row.get("run_id"),
+                "attempt_id": roster_row.get("attempt_id") or rating_row.get("attempt_id"),
+                "iteration": (
+                    roster_row.get("iteration")
+                    if roster_row.get("iteration") is not None
+                    else rating_row.get("iteration")
+                ),
+                "latest_for_run": bool(
+                    roster_row.get(
+                        "latest_for_run",
+                        rating_row.get("latest_for_run", False),
+                    )
+                ),
+                "checkpoint_mtime_ns": (
+                    roster_row.get("checkpoint_mtime_ns")
+                    if roster_row.get("checkpoint_mtime_ns") is not None
+                    else rating_row.get("checkpoint_mtime_ns")
+                ),
                 "model_env_variant": roster_row.get("model_env_variant"),
                 "model_reward_variant": roster_row.get("model_reward_variant"),
                 "policy_trail_render_mode": roster_row.get(
