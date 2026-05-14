@@ -28,8 +28,11 @@ visual surface=CPU-reference browser_lines
 input=[4,64,64] grayscale stack
 ```
 
-Do not use old `fast_gray64_direct` or `body_circles_fast` as current
-production recommendations. They are historical controls/ablations.
+Do not use old `fast_gray64_direct`; that belongs to the superseded custom
+two-seat adapter. `body_circles_fast` is different: it is the current stock-path
+fast approximation. The 212-run matched evidence did not show a meaningful
+learning gap versus `browser_lines`, so it is a legitimate speed/fidelity
+candidate, not automatically a bad surface.
 
 ## Current Speed Read
 
@@ -59,7 +62,7 @@ Other reads:
 | `sim8` | default; `sim16` not earning quality cost | sim16 may be affordable | keep sim16 sentinel only |
 | `collector32` | clean baseline | C64/C96 improve throughput | consider C64 probe separately |
 | browser render | same-checkpoint quality tied with fast | current trusted visual surface | promote if speed is now acceptable |
-| body-circles/fast render | not current fidelity target | historical speed control | do not use as production default |
+| body-circles/fast render | matched 212-run evidence roughly tied with browser | may be cheaper in some short regimes; not always faster after dirty-cache | valid approximation candidate; keep paired until Coach decides visual contract |
 
 ## Safe Speed Constraints
 
@@ -80,7 +83,8 @@ For the next static overnight manifest:
 - consider collector-width probes separately from quality probes;
 - do not scale `batch64`;
 - do not switch visual surface away from CPU-reference `browser_lines` without
-  a separate fidelity decision;
+  a separate fidelity decision, but treat that decision as open rather than
+  forbidden;
 - if browser render is now fast enough, use browser more freely but keep matched
   fast controls where needed.
 

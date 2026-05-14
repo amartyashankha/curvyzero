@@ -10,7 +10,8 @@ Build a real closed loop:
 2. A subscriber discovers new checkpoints.
 3. The tournament/adaptive Elo system rates those checkpoints.
 4. A public leaderboard snapshot exposes trusted opponent candidates.
-5. A selector turns that snapshot into a small immutable training assignment.
+5. A Coach materializer turns that snapshot into a small immutable training
+   assignment.
 6. Training runs periodically refresh their opponent assignment at safe
    boundaries.
 
@@ -28,8 +29,9 @@ Implemented:
 - Trainer env supports opponent mixtures: frozen checkpoints, blank/no-op,
   fixed-straight, proactive wall-avoidant, and immortal opponent death mode.
 - A pure assignment parser exists in `src/curvyzero/training/opponent_registry.py`.
-- Public leaderboard snapshots, live pointer payloads, and top-slot assignments
-  can be built and validated in pure code.
+- Public leaderboard snapshots, live pointer payloads, top-slot smoke
+  assignments, and `stable_slots_v1` assignments can be built and validated in
+  pure code.
 - The tournament-side publisher has been remote-smoked: it writes public
   leaderboard snapshot/latest artifacts and updates the compact Dict pointer.
 - The assignment artifact writer has been remote-smoked: it stores
@@ -40,13 +42,16 @@ Implemented:
   checkpoint discovery/intake, tiny rating, public leaderboard publish, fresh
   assignment selection, and second assignment-backed train smoke.
 
-Not yet implemented:
+Not yet proven remotely or automated:
 
-- Modal Dict pointer repair/fallback for public leaderboard snapshots.
+- Modal Dict pointer repair/fallback for public leaderboard snapshots. Local
+  repair coverage exists; remote operator smoke is still needed.
 - Periodic safe assignment refresh during long training.
 - Online Elo continuation from existing `latest.json` at production scale.
-- Queue/dedupe repair from durable scans when Dict/Queue state is stale.
-- One-frame public leaderboard validation at real scale.
+  Local continuation coverage exists.
+- Queue/dedupe repair from durable scans when Dict/Queue state is stale. Local
+  repair coverage exists.
+- One-frame public leaderboard validation at real scale. Local gating exists.
 - Automated end-to-end test from checkpoint emission to tournament promotion to
   trainer refresh.
 
@@ -65,8 +70,8 @@ flowchart TD
   tournamentVolume -->|"final/provisional ratings"| publisher["Leaderboard Publisher"]
   publisher -->|"immutable snapshot"| leaderboardSnapshot["Leaderboard Snapshot"]
   publisher -->|"current pointer cache"| leaderboardDict["Leaderboard Dict"]
-  selector["Assignment Selector"] -->|"read snapshot"| leaderboardSnapshot
-  selector -->|"write assignment + audit"| assignment["Training Assignment"]
+  materializer["Coach stable_slots_v1 Materializer"] -->|"read snapshot"| leaderboardSnapshot
+  materializer -->|"write assignment + audit"| assignment["Training Assignment"]
   assignment -->|"refresh boundary"| trainA
   assignment -->|"refresh boundary"| trainB
 ```
@@ -146,6 +151,9 @@ Plain contract:
   checkpoints from the same training runs.
 - An explicit checkpoint-ref list is a frozen seed. It does not discover future
   checkpoints.
+- Discovery must use the broad LightZero checkpoint shape:
+  `train/lightzero_exp*/ckpt/iteration_*.pth.tar`. Timestamped DI-engine
+  folders are normal.
 - The intake record is just the watch state: what to scan, what has been seen,
   and what has been queued. It is not a training manifest and it is not a
   leaderboard.
@@ -158,10 +166,55 @@ Rules:
 - `seen_checkpoint_refs` and `queued_checkpoint_refs` stay separate.
 - Queue loss must be repairable by periodic scanning.
 - Drain must claim a rating run before spawning work.
-- If rating run already exists, either reject or explicitly continue from
-  `latest.json`. No silent reset.
-- Continuation must keep the full known checkpoint pool. A latest-only scan
-  must not drop older checkpoints that were already rated.
+- If a rating run already exists, drain must reject unless continuation is
+  explicit with `continue_from_latest=True`.
+- `spawn_if_existing=True` is not enough by itself. It is only safe when paired
+  with explicit continuation.
+- Continuation must keep the full known checkpoint pool from
+  `seen_checkpoint_refs`. A latest-only scan must not drop older checkpoints
+  that were already rated.
+- The active tournament pool defaults to the top 100 mature policies. Mature
+  rows below that cutoff are marked `retired` and are not scheduled for future
+  games. They are not deleted from rating history. New or under-tested rows stay
+  `provisional` even if their temporary rank is below 100, because they still
+  need placement games.
+
+## Submit-Only Service Contract
+
+The product-facing tournament contract should be:
+
+```text
+submit checkpoint/run candidates -> tournament service schedules/rates them
+```
+
+Normal callers should not pass:
+
+- `pair_selection`;
+- `pairs_per_round`;
+- `games_per_pair`;
+- GIF sampling settings;
+- evaluator timing;
+- MCTS/search settings;
+- active-status thresholds.
+
+Those values belong to the configured intake/service manifest. The operator can
+set them when creating or replacing the service generation. Candidate submit
+only appends exact checkpoint refs or run IDs.
+
+Current shape:
+
+- `intake-seed` is the admin/configure path. It creates the active watch record
+  and captures scheduler/evaluator defaults.
+- `tournament-submit` / `intake-submit` is the narrow candidate path. It accepts
+  exact checkpoint refs, or run IDs to add to the service watch.
+- Scheduled subscriber/drain reads the service manifest and uses the manifest's
+  policy.
+
+Critical caveat:
+
+- The manifest generation is the policy unit. Changing scheduler or evaluator
+  policy should create a new generation or be recorded explicitly; it must not
+  silently change the meaning of an existing rating run.
 
 ## Tournament Semantics
 
@@ -177,6 +230,15 @@ Official rating runs must record:
 - distinct opponents;
 - status (`provisional`, `active`, `retired`);
 - failure/draw/timeout rates.
+
+Default scheduling policy:
+
+- keep full rating history in `latest.json`;
+- schedule active top-pool rows and provisional/new entrants;
+- do not schedule retired rows;
+- publish retired rows as retired, not provisional;
+- let the Coach-facing assignment materializer consume active rows only by
+  default.
 
 For the new one-frame training lane, official public leaderboard context must
 use one-frame semantics. Old 12-frame tournaments are historical/legacy unless
@@ -199,45 +261,60 @@ Modal Dict stores only:
 current:<leaderboard_id> -> snapshot pointer and compact summary
 ```
 
-The trainer never reads the Dict during learning. The selector may use Dict as a
-cache, verifies the Volume snapshot, then writes a training assignment.
+The tournament job owns writing this snapshot and pointer. Coach owns deciding
+whether the evidence is good enough, when to select a new assignment, and when
+training may consume it.
+
+The trainer never reads the Dict during learning. The Coach materializer may use
+Dict as a cache, verifies the Volume snapshot, then writes a training
+assignment.
 
 ## Selection Policy
 
-Current code implements only `top_slots_v0`.
+The production path is `stable_slots_v1`, a Coach-owned materializer.
 
-What `top_slots_v0` actually does:
+It reads one verified public leaderboard snapshot and writes one immutable
+`assignment.json` plus `audit.json`. Assignment entries are the slots. The
+trainer sees only the assignment file.
 
-- picks the top active row as `champion`;
-- picks the next eligible row as `recent_strong`;
-- tries to pick a different run for `diverse_challenger`;
-- picks a middle-ish ranked row as `anchor`;
-- optionally adds a blank/no-op sentinel;
-- does not yet enforce recipe/family diversity or evaluator-context filtering
-  beyond what the snapshot already contains.
+`slot_rules_v0` should not be the production direction. It was a useful pressure
+test, but it is too close to a small policy language. Purge it from launch
+guidance instead of adding more behavior around it.
 
-The rules below are the intended product rules. Some are not implemented yet.
+`top_slots_v0` can remain as a smoke/default helper if useful, but it is not the
+recommended production materializer.
 
 Inputs:
 
 - verified leaderboard snapshot;
-- previous assignment, if any;
-- training run lineage;
-- selector seed;
-- desired slots.
+- source snapshot ref and sha256;
+- expected leaderboard id and rating context hash;
+- materializer profile, usually 3 slots or 5 slots;
+- previous assignment, if used for safe fallback.
+
+Default slots:
+
+| Slot | Source |
+| --- | --- |
+| `champion` | top trusted active checkpoint |
+| `recent_strong` | trusted recent checkpoint, using `recency.latest_for_run` |
+| `diverse_challenger` | trusted checkpoint from a different run when possible |
+| `anchor` | optional stable older checkpoint |
+| `sentinel` | optional blank or wall-avoidant immortal entry |
 
 Rules:
 
 - prefer `active` rows;
-- allow `recent_provisional` only with explicit strategy flag;
-- avoid all slots coming from the same run/family/recipe; **partially
-  implemented as different-run preference only**
-- include at least one stable anchor; **currently middle-ranked row, not curated**
-- include sentinels only as labeled entries;
-- exclude incompatible evaluator contexts; **not yet enforced by selector**
+- allow provisional rows only with an explicit flag and audit reason;
+- dedupe checkpoint slots by checkpoint id and checkpoint ref;
+- fail clearly when a required slot cannot be filled;
+- include sentinels only as labeled assignment entries;
+- exclude incompatible evaluator contexts;
 - exclude missing or mutable checkpoint refs;
-- record every fallback in audit; **basic audit exists, richer fallback detail is
-  still TODO**
+- record every fallback in audit.
+
+If refresh selection is unsafe, keep the previous assignment instead of writing a
+surprising degraded assignment.
 
 ## Non-Neural And Invincible Opponents
 
@@ -247,7 +324,7 @@ Tournament leaderboard cannot rate them as first-class players yet.
 Near-term rule:
 
 - official leaderboard is checkpoint-first;
-- scripted/blank/passive entries can be appended by assignment selector as
+- scripted/blank/passive entries can be appended by the Coach materializer as
   training pressure;
 - invincible/death-immune variants are assignment/eval pressure tools, not
   ordinary leaderboard players.
@@ -265,13 +342,18 @@ Minimal success story:
 3. Drain starts or continues a rating run.
 4. Rating produces `latest.json`.
 5. Publisher writes public leaderboard snapshot.
-6. Selector writes assignment with 3-5 slots.
+6. Coach materializer writes assignment with 3-5 slots.
 7. Trainer launch consumes assignment.
 8. Eval/GIF/status record assignment id and source snapshot.
 9. A later checkpoint causes a new rating update and a new assignment at refresh
    boundary.
 
-This has now been demonstrated manually in a tiny smoke. It is not yet automated
+This has been demonstrated manually in tiny smokes, including the
+`stable_slots_v1` materializer path. The stable-slot smoke proved the plumbing
+but exposed a slot-quality bug: rating rows did not carry enough checkpoint
+recency metadata, so `recent_strong` could mean "best remaining" rather than
+"newest useful checkpoint." Local code/tests now preserve that metadata; repeat
+the remote smoke before trusting automatic refresh. This is not yet automated
 or production-ready.
 
 ## First Implementation Slice
@@ -281,8 +363,9 @@ Do not start with Modal end-to-end.
 Start with pure code:
 
 1. public leaderboard snapshot validator/builder from existing rating snapshot; **done**
-2. assignment selector from snapshot to `assignment.json` + `audit.json`; **done**
-3. tests for deterministic slot selection and immutable refs; **done**
+2. `stable_slots_v1` materializer from snapshot to `assignment.json` +
+   `audit.json`; **done locally**
+3. tests for deterministic materialization and immutable refs; **done locally**
 
 Then wire:
 
@@ -294,7 +377,7 @@ Then wire:
 
 Then integrate:
 
-9. subscriber/rating/publisher/selector/trainer e2e smoke; **manual tiny smoke done**
+9. subscriber/rating/publisher/materializer/trainer e2e smoke; **manual tiny smoke done with stable_slots_v1; repeat after recency metadata repair**
 
 ## Current Blocker
 

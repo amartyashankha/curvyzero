@@ -47,6 +47,9 @@ SYNTHETIC_PLAYER_LUMA_FLOAT_BY_INDEX = (76.245, 149.685, 75.945, 217.335)
 
 SCHEMA_ID = "curvyzero_source_state_gpu_render_benchmark/v0"
 RENDERER_IMPL_ID = "synthetic_source_state_jax/v1"
+COMPUTE_L4_T4 = "gpu-l4-t4"
+COMPUTE_H100 = "gpu-h100"
+COMPUTE_CHOICES = {COMPUTE_L4_T4, COMPUTE_H100}
 
 gpu_image = (
     modal.Image.debian_slim(python_version="3.11")
@@ -60,6 +63,15 @@ app = modal.App(APP_NAME)
 
 @app.function(image=gpu_image, gpu=["L4", "T4"], timeout=20 * 60, cpu=2.0)
 def run_source_state_gpu_render_benchmark(config: dict[str, Any]) -> dict[str, Any]:
+    return _run_source_state_gpu_render_benchmark_safe(config)
+
+
+@app.function(image=gpu_image, gpu="H100", timeout=20 * 60, cpu=4.0)
+def run_source_state_gpu_render_benchmark_h100(config: dict[str, Any]) -> dict[str, Any]:
+    return _run_source_state_gpu_render_benchmark_safe(config)
+
+
+def _run_source_state_gpu_render_benchmark_safe(config: dict[str, Any]) -> dict[str, Any]:
     try:
         return _run_source_state_gpu_render_benchmark_impl(config)
     except Exception as exc:  # pragma: no cover - Modal remote diagnostics.
@@ -1051,6 +1063,7 @@ def main(
     batch_size: int = 64,
     player_count: int = 2,
     trail_slots: int = 256,
+    compute: str = COMPUTE_L4_T4,
     render_mode: str = RENDER_MODE_BROWSER_LINES,
     render_surface: str = RENDER_SURFACE_DIRECT_GRAY64,
     bonus_count: int = 8,
@@ -1063,10 +1076,14 @@ def main(
     transfer_output: bool = False,
     trail_radius: float = 4.0,
 ) -> None:
+    if compute not in COMPUTE_CHOICES:
+        allowed = ", ".join(sorted(COMPUTE_CHOICES))
+        raise ValueError(f"compute must be one of {allowed}; got {compute!r}")
     config = {
         "batch_size": batch_size,
         "player_count": player_count,
         "trail_slots": trail_slots,
+        "compute": compute,
         "render_mode": render_mode,
         "render_surface": render_surface,
         "bonus_count": bonus_count,
@@ -1079,5 +1096,10 @@ def main(
         "transfer_output": transfer_output,
         "trail_radius": trail_radius,
     }
-    result = run_source_state_gpu_render_benchmark.remote(config)
+    fn = (
+        run_source_state_gpu_render_benchmark_h100
+        if compute == COMPUTE_H100
+        else run_source_state_gpu_render_benchmark
+    )
+    result = fn.remote(config)
     print(json.dumps(result, indent=2, sort_keys=True))

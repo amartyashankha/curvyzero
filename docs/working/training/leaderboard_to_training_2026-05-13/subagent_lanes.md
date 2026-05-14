@@ -9,6 +9,7 @@
 | Public leaderboard | How do rating snapshots become training-safe leaderboard snapshots? | publisher/pointer contract |
 | Assignment selector | How are champions/recent/anchors/scripted sentinels selected? | deterministic strategy and audit schema |
 | One-frame evaluator | Does tournament game execution match current train cadence? | parity tests and launch gate |
+| Scheduler/testing critique | Are tournament tests checking product behavior, not just code paths? | fairness map, missing deterministic tests, launch gates |
 | Seeded roster | How to include scripted/hand-coded policies and anchors? | roster schema options and recommendation |
 | Optimizer/speed | Which speed settings are safe to use? | semantics-preserving recommendations |
 | Docs critique | Is the current documentation useful and non-confusing? | structure fixes and missing context |
@@ -41,6 +42,19 @@ Files read:
 2. Assignment selector and audit contract.
 3. Trainer `--opponent-assignment-ref` plumbing.
 4. One-frame tournament evaluator validation.
-5. Seeded roster/scripted policy representation.
-6. Intake continuation/idempotency.
-7. Optimizer-safe settings for next manifest.
+5. Scheduler fairness and repair tests.
+6. Seeded roster/scripted policy representation.
+7. Intake continuation/idempotency.
+8. Optimizer-safe settings for next manifest.
+
+## Latest Critique Notes
+
+- Website lane: the tournament browser still does too much work in the main
+  page route. Next cleanup should make `/` a fast shell and lazy-load rankings,
+  checkpoint panels, battle panels, and GIF samples through cached JSON routes.
+- Refactor lane: safest extractions are checkpoint discovery, intake-service
+  pure logic, rating artifact I/O, and browser read-model/cache code. Avoid
+  moving Modal app/image/Volume globals until behavior is locked.
+- Active-pool lane: the top-100 rule belongs in rating/scheduling, not only in
+  the website or public leaderboard. Retired rows are unscheduled history, not
+  deleted checkpoints.

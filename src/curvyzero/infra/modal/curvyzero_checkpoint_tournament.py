@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import time
 from collections import Counter, defaultdict
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Sequence
 from urllib.parse import urlencode
@@ -22,7 +23,9 @@ from curvyzero.infra.modal import run_management as runs
 from curvyzero.training.opponent_leaderboard import (
     build_leaderboard_pointer,
     build_leaderboard_snapshot_from_rating_snapshot,
+    validate_leaderboard_snapshot,
 )
+from curvyzero.tournament import checkpoint_intake_service as intake_service
 from curvyzero.tournament import curvytron_checkpoint_tournament as arena
 
 
@@ -62,6 +65,7 @@ CHECKPOINT_INTAKE_ACTIVE_KEYS = "active_manifest_keys"
 OPPONENT_LEADERBOARD_DICT_NAME = "curvyzero-curvytron-opponent-leaderboard-live"
 DEFAULT_CHECKPOINT_INTAKE_SCAN_SECONDS = 60
 DEFAULT_CHECKPOINT_INTAKE_QUEUE_TTL_SECONDS = 24 * 60 * 60
+DEFAULT_CHECKPOINT_INTAKE_CLAIM_STALE_SECONDS = 24 * 60 * 60
 LOW_LEVEL_WORKER_RETRIES = modal.Retries(
     max_retries=2,
     initial_delay=5.0,
@@ -496,6 +500,45 @@ def _leaderboard_pointer_key(leaderboard_id: str) -> str:
     return f"current:{runs.clean_id(leaderboard_id, label='leaderboard_id')}"
 
 
+def _repaired_leaderboard_pointer_from_latest(
+    mount: Path,
+    *,
+    leaderboard_id: str,
+) -> tuple[dict[str, Any], PurePosixPath, PurePosixPath]:
+    clean_leaderboard_id = runs.clean_id(leaderboard_id, label="leaderboard_id")
+    latest_ref = _leaderboard_latest_ref(clean_leaderboard_id)
+    latest_path = runs.volume_path(mount, latest_ref)
+    if not latest_path.is_file():
+        raise ValueError(f"leaderboard latest snapshot not found: {latest_ref.as_posix()}")
+    latest = validate_leaderboard_snapshot(_read_json(latest_path))
+    if latest["leaderboard_id"] != clean_leaderboard_id:
+        raise ValueError(
+            "leaderboard latest snapshot id mismatch: "
+            f"expected {clean_leaderboard_id!r}, got {latest['leaderboard_id']!r}"
+        )
+
+    snapshot_ref = _leaderboard_snapshot_ref(clean_leaderboard_id, latest["snapshot_id"])
+    snapshot_path = runs.volume_path(mount, snapshot_ref)
+    if not snapshot_path.is_file():
+        raise ValueError(f"leaderboard immutable snapshot not found: {snapshot_ref.as_posix()}")
+    immutable = validate_leaderboard_snapshot(_read_json(snapshot_path))
+    for key in ("leaderboard_id", "snapshot_id", "snapshot_sha256"):
+        if immutable.get(key) != latest.get(key):
+            raise ValueError(f"leaderboard immutable snapshot {key} mismatch")
+
+    pointer = build_leaderboard_pointer(
+        immutable,
+        snapshot_ref=snapshot_ref.as_posix(),
+        published_at=runs.utc_timestamp(),
+        writer={
+            "kind": "curvytron_opponent_leaderboard_pointer_repair",
+            "app_name": APP_NAME,
+            "latest_ref": latest_ref.as_posix(),
+        },
+    )
+    return pointer, latest_ref, snapshot_ref
+
+
 def _clean_ref_set(refs: Any) -> set[str]:
     if isinstance(refs, str):
         values = refs.replace("\n", ",").split(",")
@@ -507,15 +550,7 @@ def _clean_ref_set(refs: Any) -> set[str]:
 
 
 def _parse_run_ids(run_ids: Any) -> list[str]:
-    if isinstance(run_ids, str):
-        return [
-            item.strip()
-            for item in run_ids.replace("\n", ",").split(",")
-            if item.strip()
-        ]
-    if isinstance(run_ids, Sequence) and not isinstance(run_ids, (str, bytes)):
-        return [str(item).strip() for item in run_ids if str(item).strip()]
-    return []
+    return intake_service.parse_run_ids_value(run_ids)
 
 
 def _parse_checkpoint_refs_value(checkpoint_refs: Any) -> list[str]:
@@ -583,6 +618,28 @@ def _discover_checkpoint_refs_from_scan_spec(
     )
 
 
+def _validate_submitted_checkpoint_refs_exist(
+    checkpoint_refs: Sequence[str],
+    *,
+    mount: Path,
+) -> list[str]:
+    clean_refs = []
+    for raw_ref in checkpoint_refs:
+        ref = runs.require_relative_ref(str(raw_ref)).as_posix()
+        if _checkpoint_iteration_from_path(Path(ref)) is None:
+            raise ValueError(
+                "submitted checkpoint refs must be immutable exact "
+                f"iteration_N.pth.tar files; got {ref!r}"
+            )
+        path = runs.volume_path(mount, ref)
+        if not path.is_file():
+            raise ValueError(f"submitted checkpoint ref does not exist: {ref}")
+        if path.stat().st_size <= 0:
+            raise ValueError(f"submitted checkpoint ref is empty: {ref}")
+        clean_refs.append(ref)
+    return clean_refs
+
+
 def _intake_rating_spec_from_manifest(
     manifest: Mapping[str, Any],
     *,
@@ -598,7 +655,7 @@ def _intake_rating_spec_from_manifest(
             rating_defaults.get("continue_from_latest", False),
         )
     )
-    checkpoint_refs = _intake_manifest_rating_checkpoint_refs(
+    checkpoints = _intake_manifest_rating_checkpoints(
         manifest,
         continue_from_latest=continue_from_latest,
     )
@@ -606,7 +663,7 @@ def _intake_rating_spec_from_manifest(
         {
             "tournament_id": manifest["tournament_id"],
             "rating_run_id": manifest["rating_run_id"],
-            "checkpoints": checkpoint_refs,
+            "checkpoints": checkpoints,
             "round_count": extra.get(
                 "round_count",
                 rating_defaults.get("round_count", arena.DEFAULT_RATING_ROUND_COUNT),
@@ -714,12 +771,58 @@ def _intake_rating_spec_from_manifest(
                     arena.DEFAULT_RATING_INITIAL_RATING,
                 ),
             ),
+            "active_pool_limit": extra.get(
+                "active_pool_limit",
+                rating_defaults.get(
+                    "active_pool_limit",
+                    arena.DEFAULT_RATING_ACTIVE_POOL_LIMIT,
+                ),
+            ),
             "stop_when_stable": extra.get(
                 "stop_when_stable",
                 rating_defaults.get("stop_when_stable", False),
             ),
         }
     )
+
+
+def _intake_manifest_rating_checkpoints(
+    manifest: Mapping[str, Any],
+    *,
+    continue_from_latest: bool,
+) -> list[str | dict[str, Any]]:
+    checkpoint_refs = _intake_manifest_rating_checkpoint_refs(
+        manifest,
+        continue_from_latest=continue_from_latest,
+    )
+    discovery = manifest.get("discovery")
+    rows = discovery.get("rows") if isinstance(discovery, Mapping) else []
+    if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
+        rows = []
+    rows_by_ref = {
+        str(row["checkpoint_ref"]): row
+        for row in rows
+        if isinstance(row, Mapping) and row.get("checkpoint_ref")
+    }
+    checkpoints: list[str | dict[str, Any]] = []
+    for ref in checkpoint_refs:
+        row = rows_by_ref.get(ref)
+        if not isinstance(row, Mapping):
+            checkpoints.append(ref)
+            continue
+        checkpoint = {"checkpoint_ref": ref}
+        for key in (
+            "run_id",
+            "attempt_id",
+            "iteration",
+            "checkpoint_mtime_ns",
+            "checkpoint_size_bytes",
+            "exp_dir_name",
+        ):
+            if row.get(key) is not None:
+                checkpoint[key] = row[key]
+        checkpoints.append(checkpoint)
+    return checkpoints
 
 
 def _intake_manifest_rating_checkpoint_refs(
@@ -911,6 +1014,50 @@ def _intake_rating_claim_key(
         length=16,
     )
     return f"rating_claim:{manifest_key}:{queued_digest}"
+
+
+def _parse_intake_timestamp(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _intake_rating_claim_is_stale(
+    claim: Any,
+    *,
+    stale_after_seconds: int = DEFAULT_CHECKPOINT_INTAKE_CLAIM_STALE_SECONDS,
+    now: datetime | None = None,
+) -> bool:
+    if not isinstance(claim, Mapping):
+        return False
+    created_at = _parse_intake_timestamp(claim.get("created_at"))
+    if created_at is None:
+        return False
+    if now is None:
+        now = datetime.now(UTC)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
+    age_seconds = (now.astimezone(UTC) - created_at).total_seconds()
+    return age_seconds >= max(0, int(stale_after_seconds))
+
+
+def _intake_queue_repair_refs(manifest: Mapping[str, Any]) -> list[str]:
+    queued_refs = _clean_ref_set(manifest.get("queued_checkpoint_refs", []))
+    if not queued_refs:
+        return []
+    rating_refs = _clean_ref_set(manifest.get("seen_checkpoint_refs", []))
+    if not rating_refs:
+        rating_refs = _clean_ref_set(manifest.get("checkpoint_refs", []))
+    return sorted(queued_refs.intersection(rating_refs)) if rating_refs else sorted(queued_refs)
 
 
 def _path_for_ref(ref: str | Path) -> Path:
@@ -6697,6 +6844,31 @@ def curvytron_opponent_leaderboard_publish(spec: Mapping[str, Any] | None = None
             "refusing to publish provisional rating snapshot without "
             "allow_live_provisional=True"
         )
+    diagnostic_only = bool(payload.get("diagnostic_only", False))
+    rating_spec = rating_snapshot.get("rating_spec")
+    raw_decision_source_frames = (
+        rating_spec.get("decision_source_frames")
+        if isinstance(rating_spec, Mapping)
+        else None
+    )
+    decision_source_frames = _safe_int_or_none(raw_decision_source_frames)
+    allow_legacy_rating_snapshot = bool(
+        payload.get("allow_legacy_rating_snapshot", False)
+    )
+    if decision_source_frames != 1:
+        if not diagnostic_only and not allow_legacy_rating_snapshot:
+            got = (
+                "missing"
+                if raw_decision_source_frames is None
+                else repr(raw_decision_source_frames)
+            )
+            raise ValueError(
+                "refusing to publish leaderboard from rating snapshot without "
+                "rating_spec.decision_source_frames=1; got "
+                f"{got}. Pass diagnostic_only=True or "
+                "allow_legacy_rating_snapshot=True for a diagnostic legacy publish."
+            )
+        diagnostic_only = True
     snapshot = build_leaderboard_snapshot_from_rating_snapshot(
         rating_snapshot,
         leaderboard_id=leaderboard_id,
@@ -6708,11 +6880,26 @@ def curvytron_opponent_leaderboard_publish(spec: Mapping[str, Any] | None = None
         ),
         active_min_valid_games=int(payload.get("active_min_valid_games") or 300),
         max_failure_rate=float(payload.get("max_failure_rate") or 0.02),
+        max_active_rank=int(
+            payload.get("max_active_rank") or arena.DEFAULT_RATING_ACTIVE_POOL_LIMIT
+        ),
     )
+    active_count = sum(1 for row in snapshot["rows"] if row.get("status") == "active")
+    if active_count < 1 and bool(payload.get("allow_no_active_rows", False)):
+        diagnostic_only = True
+    if active_count < 1 and not diagnostic_only:
+        raise ValueError(
+            "refusing to publish leaderboard with no active rows without "
+            "allow_no_active_rows=True"
+        )
     snapshot_ref = _leaderboard_snapshot_ref(leaderboard_id, snapshot_id)
     latest_ref = _leaderboard_latest_ref(leaderboard_id)
     snapshot_write = arena.write_json_artifact(TOURNAMENT_MOUNT, snapshot_ref, snapshot)
-    latest_write = arena.write_json_artifact(TOURNAMENT_MOUNT, latest_ref, snapshot)
+    latest_write = (
+        {}
+        if diagnostic_only
+        else arena.write_json_artifact(TOURNAMENT_MOUNT, latest_ref, snapshot)
+    )
     pointer = build_leaderboard_pointer(
         snapshot,
         snapshot_ref=snapshot_ref.as_posix(),
@@ -6725,7 +6912,7 @@ def curvytron_opponent_leaderboard_publish(spec: Mapping[str, Any] | None = None
     pointer_key = _leaderboard_pointer_key(leaderboard_id)
     commit_error = _commit_volume(tournament_volume)
     pointer_published = False
-    if not commit_error:
+    if not commit_error and not diagnostic_only:
         opponent_leaderboard_state.put(pointer_key, arena._to_plain(pointer))
         pointer_published = True
     return arena._to_plain(
@@ -6740,10 +6927,56 @@ def curvytron_opponent_leaderboard_publish(spec: Mapping[str, Any] | None = None
             "pointer_key": pointer_key,
             "dict_name": OPPONENT_LEADERBOARD_DICT_NAME,
             "row_count": len(snapshot["rows"]),
-            "active_count": pointer["compact_summary"]["active_count"],
+            "active_count": active_count,
             "provisional_count": pointer["compact_summary"]["provisional_count"],
+            "diagnostic_only": diagnostic_only,
             "commit_error": commit_error,
             "pointer_published": pointer_published,
+            "pointer": pointer,
+        }
+    )
+
+
+@app.function(
+    image=image,
+    volumes=_tournament_volumes(),
+    timeout=300,
+    cpu=1.0,
+    memory=1024,
+)
+def curvytron_opponent_leaderboard_pointer_repair(
+    spec: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload = dict(spec or {})
+    _reload_volume(tournament_volume)
+    leaderboard_id = runs.clean_id(str(payload["leaderboard_id"]), label="leaderboard_id")
+    pointer, latest_ref, snapshot_ref = _repaired_leaderboard_pointer_from_latest(
+        TOURNAMENT_MOUNT,
+        leaderboard_id=leaderboard_id,
+    )
+    pointer_key = _leaderboard_pointer_key(leaderboard_id)
+    existing_pointer = opponent_leaderboard_state.get(pointer_key, None)
+    previous_pointer_status = "missing"
+    if existing_pointer is not None:
+        previous_pointer_status = "current"
+        if not isinstance(existing_pointer, Mapping) or any(
+            existing_pointer.get(key) != pointer.get(key)
+            for key in ("leaderboard_id", "snapshot_id", "snapshot_ref", "snapshot_sha256")
+        ):
+            previous_pointer_status = "stale"
+    opponent_leaderboard_state.put(pointer_key, arena._to_plain(pointer))
+    return arena._to_plain(
+        {
+            "schema_id": "curvyzero_opponent_leaderboard_pointer_repair/v0",
+            "leaderboard_id": leaderboard_id,
+            "snapshot_id": pointer["snapshot_id"],
+            "snapshot_sha256": pointer["snapshot_sha256"],
+            "latest_ref": latest_ref.as_posix(),
+            "snapshot_ref": snapshot_ref.as_posix(),
+            "pointer_key": pointer_key,
+            "dict_name": OPPONENT_LEADERBOARD_DICT_NAME,
+            "previous_pointer_status": previous_pointer_status,
+            "pointer_published": True,
             "pointer": pointer,
         }
     )
@@ -6835,6 +7068,9 @@ def curvytron_checkpoint_intake_seed(spec: Mapping[str, Any] | None = None) -> d
         "initial_rating": float(
             payload.get("initial_rating") or arena.DEFAULT_RATING_INITIAL_RATING
         ),
+        "active_pool_limit": int(
+            payload.get("active_pool_limit") or arena.DEFAULT_RATING_ACTIVE_POOL_LIMIT
+        ),
         "stop_when_stable": bool(payload.get("stop_when_stable", False)),
     }
     discovery = _discover_checkpoint_refs_from_scan_spec(scan_spec, mount=RUNS_MOUNT)
@@ -6887,6 +7123,136 @@ def curvytron_checkpoint_intake_seed(spec: Mapping[str, Any] | None = None) -> d
             "rating_call_id": rating_call_id,
             "commit_error": commit_error,
             "manifest": manifest,
+        }
+    )
+
+
+@app.function(
+    image=image,
+    volumes=_game_volumes(),
+    timeout=10 * 60,
+    cpu=1.0,
+    memory=1024,
+)
+def curvytron_checkpoint_intake_submit(spec: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    payload = dict(spec or {})
+    intake_service.validate_submit_payload(payload)
+    if not intake_service.submit_has_candidate_input(payload):
+        raise ValueError("submit needs checkpoint_refs, run_ids, or run_id_prefix")
+    _reload_volume(checkpoint_volume)
+    _reload_volume(tournament_volume)
+    tournament_id = runs.clean_id(str(payload["tournament_id"]), label="tournament_id")
+    rating_run_id = runs.clean_id(
+        str(payload.get("rating_run_id") or arena.DEFAULT_RATING_RUN_ID),
+        label="rating_run_id",
+    )
+    manifest_key = _intake_manifest_key(tournament_id, rating_run_id)
+    manifest = checkpoint_intake_state.get(manifest_key, None)
+    if not isinstance(manifest, Mapping):
+        raise ValueError("intake service is not configured; run mode=intake-seed first")
+    if not bool(manifest.get("active", True)):
+        raise ValueError("intake service is inactive")
+
+    existing_scan_spec = (
+        manifest.get("scan_spec") if isinstance(manifest.get("scan_spec"), Mapping) else {}
+    )
+    scan_spec = dict(existing_scan_spec)
+    submitted_refs = _parse_checkpoint_refs_value(payload.get("checkpoint_refs"))
+    if submitted_refs:
+        submitted_refs = _validate_submitted_checkpoint_refs_exist(
+            submitted_refs,
+            mount=RUNS_MOUNT,
+        )
+        cumulative_refs = sorted(
+            _clean_ref_set(manifest.get("checkpoint_refs", [])).union(submitted_refs)
+        )
+        discovery = {
+            "schema_id": "curvyzero_curvytron_checkpoint_discovery/v0",
+            "checkpoint_volume_name": CHECKPOINT_VOLUME_NAME,
+            "checkpoint_scan_glob": arena.CHECKPOINT_SCAN_GLOB,
+            "checkpoint_selection": "submit",
+            "selection": "submit",
+            "found_count": len(cumulative_refs),
+            "missing_count": 0,
+            "checkpoint_refs": cumulative_refs,
+            "rows": [
+                {
+                    "checkpoint_ref": ref,
+                    "iteration": _checkpoint_iteration_from_path(Path(ref)),
+                    "found": True,
+                }
+                for ref in cumulative_refs
+            ],
+        }
+    else:
+        scan_spec = intake_service.merge_submit_scan_spec(
+            scan_spec,
+            payload,
+            default_checkpoint_selection=arena.CHECKPOINT_SELECTION_LATEST,
+        )
+        run_discovery = _discover_checkpoint_refs_from_scan_spec(scan_spec, mount=RUNS_MOUNT)
+        submitted_refs = [
+            str(ref)
+            for ref in run_discovery.get("checkpoint_refs", [])
+            if str(ref).strip()
+        ]
+        cumulative_refs = sorted(
+            _clean_ref_set(manifest.get("checkpoint_refs", [])).union(submitted_refs)
+        )
+        discovery = dict(run_discovery)
+        discovery["checkpoint_refs"] = cumulative_refs
+        discovery["found_count"] = len(cumulative_refs)
+    if not submitted_refs:
+        raise ValueError("submit did not resolve any checkpoint refs")
+
+    previous_seen_refs = _clean_ref_set(manifest.get("seen_checkpoint_refs", []))
+    new_refs = [ref for ref in submitted_refs if ref not in previous_seen_refs]
+    already_seen_refs = [ref for ref in submitted_refs if ref in previous_seen_refs]
+    updated_manifest = _intake_manifest_from_discovery(
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+        scan_spec=scan_spec,
+        rating_defaults=(
+            manifest.get("rating_defaults")
+            if isinstance(manifest.get("rating_defaults"), Mapping)
+            else {}
+        ),
+        discovery=discovery,
+        existing=manifest,
+        active=True,
+    )
+    queue_write = _enqueue_checkpoint_events(
+        manifest=updated_manifest,
+        checkpoint_refs=new_refs,
+        reason="submit",
+    )
+    updated_manifest = _mark_intake_manifest_queued(
+        updated_manifest,
+        [str(event["checkpoint_ref"]) for event in queue_write.get("events", [])],
+    )
+    state_write = _put_intake_manifest(updated_manifest)
+    manifest_write = _write_intake_manifest_artifact(updated_manifest)
+    commit_error = _commit_volume(tournament_volume)
+    return arena._to_plain(
+        {
+            "schema_id": "curvyzero_curvytron_checkpoint_submission_ack/v0",
+            "status": "accepted",
+            "tournament_id": tournament_id,
+            "rating_run_id": rating_run_id,
+            "manifest_key": manifest_key,
+            "queue_partition": updated_manifest["queue_partition"],
+            "submitted_checkpoint_count": len(submitted_refs),
+            "accepted_checkpoint_refs": new_refs,
+            "already_seen_checkpoint_refs": already_seen_refs,
+            "enqueued_count": int(queue_write.get("enqueued_count") or 0),
+            "event_ids": [
+                str(event.get("event_id") or "")
+                for event in queue_write.get("events", [])
+                if event.get("event_id")
+            ],
+            "manifest_ref": manifest_write.get("ref"),
+            "state_write": state_write,
+            "commit_error": commit_error,
         }
     )
 
@@ -7082,37 +7448,92 @@ def curvytron_checkpoint_intake_drain(spec: Mapping[str, Any] | None = None) -> 
         continue_from_latest=continue_from_latest,
     )
     queue_len_before = checkpoint_intake_queue.len(partition=partition)
+    queue_len_after_repair = queue_len_before
+    queue_repair = {"partition": partition, "enqueued_count": 0, "events": []}
     spawn_requested = bool(payload.get("spawn_rating", False))
     claim_key = _intake_rating_claim_key(
         manifest,
         continue_from_latest=continue_from_latest,
     )
     rating_claimed = False
+    rating_claim_stale = False
+    rating_claim_repaired = False
     spawn_skipped_reason = ""
+    raw_claim_stale_after_seconds = payload.get(
+        "claim_stale_after_seconds",
+        DEFAULT_CHECKPOINT_INTAKE_CLAIM_STALE_SECONDS,
+    )
+    claim_stale_after_seconds = max(
+        0,
+        int(
+            DEFAULT_CHECKPOINT_INTAKE_CLAIM_STALE_SECONDS
+            if raw_claim_stale_after_seconds in (None, "")
+            else raw_claim_stale_after_seconds
+        ),
+    )
     if spawn_requested:
         if len(rating_checkpoint_refs) < 2:
             spawn_skipped_reason = "needs_at_least_two_checkpoints"
         elif existing_rating_run and not allow_existing_rating:
             spawn_skipped_reason = "rating_run_already_exists"
-        elif not queue_len_before and not bool(payload.get("spawn_if_empty", False)):
-            spawn_skipped_reason = "no_queued_events"
         else:
-            rating_claimed = checkpoint_intake_state.put(
-                claim_key,
-                {
+            existing_claim = checkpoint_intake_state.get(claim_key, None)
+            repair_refs = _intake_queue_repair_refs(manifest)
+            rating_claim_stale = _intake_rating_claim_is_stale(
+                existing_claim,
+                stale_after_seconds=claim_stale_after_seconds,
+            )
+            if existing_claim is not None and not rating_claim_stale:
+                spawn_skipped_reason = "rating_run_claim_exists"
+            elif (
+                not queue_len_before
+                and not bool(payload.get("spawn_if_empty", False))
+                and not repair_refs
+            ):
+                spawn_skipped_reason = "no_queued_events"
+            else:
+                claim_payload = {
                     "schema_id": "curvyzero_curvytron_checkpoint_intake_rating_claim/v0",
                     "manifest_key": manifest_key,
                     "tournament_id": tournament_id,
                     "rating_run_id": rating_run_id,
                     "queue_len_before": queue_len_before,
+                    "stale_after_seconds": claim_stale_after_seconds,
                     "created_at": runs.utc_timestamp(),
-                },
-                skip_if_exists=True,
-            )
-            if not rating_claimed:
-                spawn_skipped_reason = "rating_run_claim_exists"
+                }
+                if rating_claim_stale and isinstance(existing_claim, Mapping):
+                    claim_payload["replaces_stale_claim_created_at"] = str(
+                        existing_claim.get("created_at") or ""
+                    )
+                if rating_claim_stale:
+                    rating_claimed = checkpoint_intake_state.put(claim_key, claim_payload)
+                    rating_claim_repaired = bool(rating_claimed)
+                else:
+                    rating_claimed = checkpoint_intake_state.put(
+                        claim_key,
+                        claim_payload,
+                        skip_if_exists=True,
+                    )
+                if not rating_claimed:
+                    spawn_skipped_reason = "rating_run_claim_exists"
     events = []
     if max_events and (not spawn_requested or rating_claimed):
+        if (
+            spawn_requested
+            and rating_claimed
+            and not queue_len_before
+            and not bool(payload.get("spawn_if_empty", False))
+        ):
+            repair_refs = _intake_queue_repair_refs(manifest)
+            if repair_refs:
+                queue_repair = _enqueue_checkpoint_events(
+                    manifest=manifest,
+                    checkpoint_refs=repair_refs,
+                    reason="repair_missing_queue_events",
+                )
+                queue_len_after_repair = queue_len_before + int(
+                    queue_repair.get("enqueued_count") or 0
+                )
         events = checkpoint_intake_queue.get_many(
             max_events,
             block=False,
@@ -7134,44 +7555,20 @@ def curvytron_checkpoint_intake_drain(spec: Mapping[str, Any] | None = None) -> 
                 "tournament_id": tournament_id,
                 "rating_run_id": rating_run_id,
                 "queue_len_before": queue_len_before,
+                "queue_len_after_repair": queue_len_after_repair,
                 "event_count": len(events),
+                "stale_after_seconds": claim_stale_after_seconds,
+                "repaired_stale_claim": rating_claim_repaired,
                 "created_at": runs.utc_timestamp(),
             },
         )
     if should_spawn:
         rating_spec = _intake_rating_spec_from_manifest(
             manifest,
-            overrides={
-                key: value
-                for key, value in payload.items()
-                if key
-                in {
-                    "round_count",
-                    "continue_from_latest",
-                    "pairs_per_round",
-                    "placement_min_games",
-                    "placement_min_opponents",
-                    "pair_selection",
-                    "games_per_pair",
-                    "games_per_shard",
-                    "reuse_policies_per_shard",
-                    "seed",
-                    "max_steps",
-                    "decision_ms",
-                    "decision_source_frames",
-                    "source_physics_step_ms",
-                    "policy_mode",
-                    "collect_temperature",
-                    "collect_epsilon",
-                    "policy_trail_render_mode",
-                    "num_simulations",
-                    "save_gif",
-                    "gif_sample_games_per_pair",
-                    "gif_sample_strategy",
-                    "initial_rating",
-                    "stop_when_stable",
-                }
-            },
+            overrides=intake_service.rating_overrides_from_payload(
+                payload,
+                allow_rating_overrides=bool(payload.get("allow_rating_overrides", False)),
+            ),
         )
         call = curvytron_rating_loop.spawn(rating_spec)
         rating_call_id = getattr(call, "object_id", None) or getattr(call, "id", None) or ""
@@ -7183,6 +7580,8 @@ def curvytron_checkpoint_intake_drain(spec: Mapping[str, Any] | None = None) -> 
             "manifest_key": manifest_key,
             "queue_partition": manifest["queue_partition"],
             "queue_len_before": queue_len_before,
+            "queue_len_after_repair": queue_len_after_repair,
+            "queue_repair": queue_repair,
             "event_count": len(events),
             "events": events,
             "checkpoint_count": len(manifest.get("checkpoint_refs") or []),
@@ -7191,6 +7590,8 @@ def curvytron_checkpoint_intake_drain(spec: Mapping[str, Any] | None = None) -> 
             "continue_from_latest": continue_from_latest,
             "rating_claim_key": claim_key,
             "rating_claimed": rating_claimed,
+            "rating_claim_stale": rating_claim_stale,
+            "rating_claim_repaired": rating_claim_repaired,
             "spawn_skipped_reason": spawn_skipped_reason,
             "rating_call_id": rating_call_id,
         }
@@ -7244,6 +7645,52 @@ def curvytron_checkpoint_intake_drain_tick() -> dict[str, Any]:
     )
 
 
+def _reject_submit_cli_scheduler_overrides(**values: Any) -> None:
+    defaults = {
+        "checkpoint_iteration": -1,
+        "checkpoint_selection": arena.CHECKPOINT_SELECTION_LATEST,
+        "games_per_pair": arena.DEFAULT_GAMES_PER_PAIR,
+        "games_per_shard": arena.DEFAULT_GAMES_PER_SHARD,
+        "reuse_policies_per_shard": arena.DEFAULT_REUSE_POLICIES_PER_SHARD,
+        "round_count": arena.DEFAULT_RATING_ROUND_COUNT,
+        "continue_from_latest": False,
+        "pairs_per_round": 0,
+        "placement_min_games": 0,
+        "placement_min_opponents": 20,
+        "pair_selection": arena.DEFAULT_RATING_PAIR_SELECTION,
+        "initial_rating": arena.DEFAULT_RATING_INITIAL_RATING,
+        "active_pool_limit": arena.DEFAULT_RATING_ACTIVE_POOL_LIMIT,
+        "stop_when_stable": False,
+        "seed": 0,
+        "max_steps": arena.DEFAULT_MAX_STEPS,
+        "decision_ms": arena.DEFAULT_DECISION_MS,
+        "decision_source_frames": 0,
+        "source_physics_step_ms": arena.DEFAULT_SOURCE_PHYSICS_STEP_MS,
+        "policy_mode": arena.POLICY_MODE_EVAL,
+        "collect_temperature": arena.DEFAULT_COLLECT_TEMPERATURE,
+        "collect_epsilon": arena.DEFAULT_COLLECT_EPSILON,
+        "policy_trail_render_mode": "",
+        "num_simulations": arena.DEFAULT_NUM_SIMULATIONS,
+        "save_gif": arena.DEFAULT_SAVE_GIF,
+        "gif_sample_games_per_pair": arena.DEFAULT_GIF_SAMPLE_GAMES_PER_PAIR,
+        "gif_sample_strategy": arena.DEFAULT_GIF_SAMPLE_STRATEGY,
+        "intake_enqueue_existing": False,
+        "intake_spawn_rating": False,
+        "intake_spawn_if_existing": False,
+        "intake_allow_rating_overrides": False,
+        "intake_max_events": 100,
+        "intake_active": True,
+        "max_runs": 0,
+    }
+    for key, default in defaults.items():
+        value = values.get(key, default)
+        if value != default:
+            raise ValueError(
+                "tournament-submit only accepts candidate refs/run ids; "
+                f"configure scheduler policy with intake-seed, not {key}"
+            )
+
+
 @app.local_entrypoint()
 def main(
     mode: str = "pair",
@@ -7267,6 +7714,7 @@ def main(
     placement_min_opponents: int = 20,
     pair_selection: str = arena.DEFAULT_RATING_PAIR_SELECTION,
     initial_rating: float = arena.DEFAULT_RATING_INITIAL_RATING,
+    active_pool_limit: int = arena.DEFAULT_RATING_ACTIVE_POOL_LIMIT,
     stop_when_stable: bool = False,
     seed: int = 0,
     max_steps: int = arena.DEFAULT_MAX_STEPS,
@@ -7291,12 +7739,17 @@ def main(
     leaderboard_id: str = "",
     leaderboard_snapshot_id: str = "",
     leaderboard_allow_live_provisional: bool = False,
+    leaderboard_diagnostic_only: bool = False,
+    leaderboard_allow_no_active_rows: bool = False,
+    leaderboard_allow_legacy_rating_snapshot: bool = False,
     leaderboard_active_min_distinct_opponents: int = 20,
     leaderboard_active_min_valid_games: int = 300,
     leaderboard_max_failure_rate: float = 0.02,
+    leaderboard_max_active_rank: int = arena.DEFAULT_RATING_ACTIVE_POOL_LIMIT,
     intake_enqueue_existing: bool = False,
     intake_spawn_rating: bool = False,
     intake_spawn_if_existing: bool = False,
+    intake_allow_rating_overrides: bool = False,
     intake_max_events: int = 100,
     intake_active: bool = True,
     wait: bool = False,
@@ -7304,7 +7757,15 @@ def main(
     mode = str(mode)
     refs = arena.parse_checkpoint_refs(checkpoint_refs)
     discovery = None
-    intake_modes = {"intake-seed", "intake-tick", "intake-drain", "intake-status"}
+    intake_modes = {
+        "intake-seed",
+        "intake-submit",
+        "tournament-submit",
+        "intake-tick",
+        "intake-drain",
+        "intake-status",
+        "leaderboard-pointer-repair",
+    }
     if not refs and mode not in intake_modes and (run_ids or run_id_prefix):
         discovery = curvytron_discover_checkpoints.remote(
             {
@@ -7330,7 +7791,10 @@ def main(
         "reduce",
         "visibility",
         "leaderboard-publish",
+        "leaderboard-pointer-repair",
         "intake-seed",
+        "intake-submit",
+        "tournament-submit",
         "intake-tick",
         "intake-drain",
         "intake-status",
@@ -7338,7 +7802,9 @@ def main(
         raise ValueError(
             "mode must be one of: discover, estimate, game, pair, tournament, rating, "
             "progress, provisional, provisional-loop, reduce, visibility, "
-            "leaderboard-publish, intake-seed, intake-tick, intake-drain, intake-status"
+            "leaderboard-publish, leaderboard-pointer-repair, intake-seed, "
+            "intake-submit, tournament-submit, intake-tick, intake-drain, "
+            "intake-status"
         )
     if mode == "leaderboard-publish":
         result = curvytron_opponent_leaderboard_publish.remote(
@@ -7348,9 +7814,23 @@ def main(
                 "leaderboard_id": leaderboard_id or f"{resolved_tournament_id}-{rating_run_id}",
                 "snapshot_id": leaderboard_snapshot_id,
                 "allow_live_provisional": bool(leaderboard_allow_live_provisional),
+                "diagnostic_only": bool(leaderboard_diagnostic_only),
+                "allow_no_active_rows": bool(leaderboard_allow_no_active_rows),
+                "allow_legacy_rating_snapshot": bool(
+                    leaderboard_allow_legacy_rating_snapshot
+                ),
                 "active_min_distinct_opponents": int(leaderboard_active_min_distinct_opponents),
                 "active_min_valid_games": int(leaderboard_active_min_valid_games),
                 "max_failure_rate": float(leaderboard_max_failure_rate),
+                "max_active_rank": int(leaderboard_max_active_rank),
+            }
+        )
+        print(json.dumps(arena._to_plain(result), indent=2, sort_keys=True))
+        return
+    if mode == "leaderboard-pointer-repair":
+        result = curvytron_opponent_leaderboard_pointer_repair.remote(
+            {
+                "leaderboard_id": leaderboard_id or f"{resolved_tournament_id}-{rating_run_id}",
             }
         )
         print(json.dumps(arena._to_plain(result), indent=2, sort_keys=True))
@@ -7379,7 +7859,61 @@ def main(
             )
         print(json.dumps(arena._to_plain(discovery), indent=2, sort_keys=True))
         return
-    if mode in {"intake-seed", "intake-tick", "intake-drain", "intake-status"}:
+    if mode in {
+        "intake-seed",
+        "intake-submit",
+        "tournament-submit",
+        "intake-tick",
+        "intake-drain",
+        "intake-status",
+    }:
+        submit_spec = {
+            "tournament_id": resolved_tournament_id,
+            "rating_run_id": rating_run_id,
+            "checkpoint_refs": refs,
+            "run_ids": run_ids,
+            "run_id_prefix": run_id_prefix,
+        }
+        if mode in {"intake-submit", "tournament-submit"}:
+            _reject_submit_cli_scheduler_overrides(
+                checkpoint_iteration=checkpoint_iteration,
+                checkpoint_selection=checkpoint_selection,
+                games_per_pair=games_per_pair,
+                games_per_shard=games_per_shard,
+                reuse_policies_per_shard=reuse_policies_per_shard,
+                round_count=round_count,
+                continue_from_latest=continue_from_latest,
+                pairs_per_round=pairs_per_round,
+                placement_min_games=placement_min_games,
+                placement_min_opponents=placement_min_opponents,
+                pair_selection=pair_selection,
+                initial_rating=initial_rating,
+                active_pool_limit=active_pool_limit,
+                stop_when_stable=stop_when_stable,
+                seed=seed,
+                max_steps=max_steps,
+                decision_ms=decision_ms,
+                decision_source_frames=decision_source_frames,
+                source_physics_step_ms=source_physics_step_ms,
+                policy_mode=policy_mode,
+                collect_temperature=collect_temperature,
+                collect_epsilon=collect_epsilon,
+                policy_trail_render_mode=policy_trail_render_mode,
+                num_simulations=num_simulations,
+                save_gif=save_gif,
+                gif_sample_games_per_pair=gif_sample_games_per_pair,
+                gif_sample_strategy=gif_sample_strategy,
+                intake_enqueue_existing=intake_enqueue_existing,
+                intake_spawn_rating=intake_spawn_rating,
+                intake_spawn_if_existing=intake_spawn_if_existing,
+                intake_allow_rating_overrides=intake_allow_rating_overrides,
+                intake_max_events=intake_max_events,
+                intake_active=intake_active,
+                max_runs=max_runs,
+            )
+            result = curvytron_checkpoint_intake_submit.remote(submit_spec)
+            print(json.dumps(arena._to_plain(result), indent=2, sort_keys=True))
+            return
         intake_spec = {
             "tournament_id": resolved_tournament_id,
             "rating_run_id": rating_run_id,
@@ -7398,6 +7932,7 @@ def main(
             "placement_min_opponents": int(placement_min_opponents),
             "pair_selection": pair_selection,
             "initial_rating": float(initial_rating),
+            "active_pool_limit": int(active_pool_limit),
             "stop_when_stable": bool(stop_when_stable),
             "games_per_pair": int(games_per_pair),
             "games_per_shard": int(games_per_shard),
@@ -7420,6 +7955,7 @@ def main(
             "enqueue_existing": bool(intake_enqueue_existing),
             "spawn_rating": bool(intake_spawn_rating),
             "spawn_if_existing": bool(intake_spawn_if_existing),
+            "allow_rating_overrides": bool(intake_allow_rating_overrides),
             "max_events": int(intake_max_events),
             "active": bool(intake_active),
         }
@@ -7580,6 +8116,7 @@ def main(
             "placement_min_opponents": int(placement_min_opponents),
             "pair_selection": pair_selection,
             "initial_rating": float(initial_rating),
+            "active_pool_limit": int(active_pool_limit),
             "stop_when_stable": bool(stop_when_stable),
             **common,
         }

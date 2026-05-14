@@ -4,6 +4,10 @@ Date: 2026-05-10
 
 Status: active optimizer lane front door.
 
+Active working memory:
+[optimizer active working memory](active_working_memory_2026-05-14.md). Read
+this first for the current optimizer plates, to-do list, and operating pattern.
+
 Current plate map:
 [current optimizer plate map](current_plate_map_2026-05-13.md). Read this
 first when old docs disagree; it pins the current stock LightZero lane,
@@ -99,10 +103,19 @@ GPU remains research until device-resident policy handoff or dirty GPU rendering
 is proven.
 Current GPU notes live in
 [GPU render exploration](gpu_render_exploration_2026-05-13.md).
+Current GPU parity-gap notes live in
+[GPU render parity gap](gpu_render_parity_gap_2026-05-13.md).
 Current dirty-cache component notes live in
 [dirty cache component profile](render_dirty_cache_component_profile_2026-05-13.md).
 Current GPU sprite research lives in
 [GPU sprite render research](gpu_sprite_render_research_2026-05-13.md).
+
+2026-05-14 bonus-symbol lane: there are exactly 12 active source-game bonus
+sprites, all roughly diamond-framed icons with one internal mark. A simplified
+symbol renderer is plausible as an opt-in training/GPU speed experiment if it
+keeps type, self/enemy/game grouping, position, footprint, and grayscale
+visibility. Keep `browser_sprites` as the CPU reference/default. Current plan:
+[bonus symbol render plan](bonus_symbol_render_plan_2026-05-14.md).
 
 2026-05-13 moving-target warning: Environment Reconstruction is still landing
 source-state and renderer fidelity changes. Optimizer profiles are comparable

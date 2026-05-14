@@ -26,7 +26,10 @@ still needs tests and wiring.
 - **Rating snapshot**: tournament result JSON, usually `latest.json`.
 - **Public leaderboard snapshot**: frozen JSON derived from ratings, meant for
   training to consume indirectly.
-- **Assignment**: small frozen opponent list that the trainer reads.
+- **Assignment**: small frozen opponent list that the trainer reads. Assignment
+  entries are the slots.
+- **stable_slots_v1**: Coach-owned materializer that turns one verified
+  leaderboard snapshot into `assignment.json` + `audit.json`.
 - **One-frame**: current trusted training cadence, one source physics frame per
   policy action.
 - **Closed loop**: training creates checkpoints; tournament ranks them; a new
@@ -38,16 +41,18 @@ still needs tests and wiring.
 2. `closed_loop_spec.md`
 3. `dataflow.md`
 4. `gaps_and_tests.md`
-5. `tournament_seeding_and_anchors.md`
-6. `non_neural_opponent_contracts.md`
-7. `seeded_roster_design.md`
-8. `optimizer_speed_axis.md`
-9. `overnight_run_decision.md`
-10. `launch_readiness_checklists.md`
-11. `implementation_log.md`
-12. `operator_runbook.md`
-13. `caveats.md`
-14. `subagent_lanes.md`
+5. `slot_architecture_feedback.md`
+6. `run_slot_control_design.md`
+7. `tournament_seeding_and_anchors.md`
+8. `non_neural_opponent_contracts.md`
+9. `seeded_roster_design.md`
+10. `optimizer_speed_axis.md`
+11. `overnight_run_decision.md`
+12. `launch_readiness_checklists.md`
+13. `implementation_log.md`
+14. `operator_runbook.md`
+15. `caveats.md`
+16. `subagent_lanes.md`
 
 ## Existing Source Docs
 
@@ -66,7 +71,15 @@ still needs tests and wiring.
 
 - Tournament rating artifacts exist on the tournament Volume.
 - Modal Dict/Queue intake exists for checkpoint candidate coordination.
+- A narrow submit surface now exists locally: configure policy with
+  `intake-seed`, then submit candidate refs/run IDs with `tournament-submit` /
+  `intake-submit`. Submit does not carry scheduler knobs.
 - Public leaderboard snapshot publishing works in a remote smoke.
+- Public leaderboard publish now fails closed unless the rating snapshot is
+  one-frame and has active rows, unless an explicit diagnostic/legacy path is
+  used.
+- Public leaderboard Dict pointer repair exists locally and rebuilds from
+  immutable Volume snapshots; it still needs a remote operator smoke.
 - Trainer consumption of a leaderboard-derived assignment works in a remote
   tiny train smoke.
 - Intake V0 is a guarded batch launcher, not a full online Elo service.
@@ -78,24 +91,35 @@ still needs tests and wiring.
   and tested.
 - Optimizer/speed recommendations are throughput constraints, not policy-quality
   conclusions.
-- A tiny manual closed-loop smoke worked:
+- A tiny manual closed-loop smoke worked, including the `stable_slots_v1`
+  materializer path:
   trainer assignment -> train checkpoints -> discovery/intake -> rating ->
   public leaderboard -> new assignment -> trainer smoke.
+- The first stable-slot smoke exposed a metadata problem: `recent_strong` can
+  only be trustworthy if tournament rating rows preserve checkpoint recency
+  metadata. Local code/tests now preserve run id, attempt id, iteration, mtime,
+  and `latest_for_run`; rerun the remote smoke before trusting automatic refresh.
+- New slot-control design direction: a Modal Dict may hold the desired slot
+  recipe for each training run id, but the trainer still consumes immutable
+  assignment files. See `run_slot_control_design.md`.
 - What is still missing is automation: online continuation, scheduled refresh,
-  pointer repair, and production runbooks.
+  remote pointer-repair proof, and production runbooks.
+- `slot_rules_v0` is not the production direction. Purge that path from launch
+  guidance instead of growing a slot language.
 - Read `caveats.md` before trusting any launch plan.
 
 ## Launch Posture
 
-There are two viable near-term launch postures:
+There are three viable near-term launch postures:
 
 1. **Static manifest now**: use current survival/leaderboard recommendations and
    manually mirror intended frozen-opponent assignments. This is still the safer
    overnight path.
 2. **Manual leaderboard-fed smoke path**: works for tiny runs and can be used for
    further testing.
-3. **Automated leaderboard-fed launch later**: first implement refresh policy,
-   intake continuation, pointer repair, and production safeguards.
+3. **Automated leaderboard-fed launch later**: first remote-smoke refresh policy,
+   intake continuation, pointer repair, recency metadata, and production
+   safeguards.
 
 The static path is faster. The leaderboard-fed path is the durable product
 direction, but it still needs automation before long overnight runs depend on it.

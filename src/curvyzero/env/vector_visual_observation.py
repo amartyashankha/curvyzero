@@ -146,12 +146,24 @@ TRAIL_RENDER_MODE_ORDER = (
 TRAIL_RENDER_MODE_DEFAULT = TRAIL_RENDER_MODE_BROWSER_LINES
 BONUS_RENDER_MODE_BROWSER_SPRITES = "browser_sprites"
 BONUS_RENDER_MODE_CIRCLES_FAST = "circles_fast"
-BONUS_RENDER_MODES = frozenset((BONUS_RENDER_MODE_BROWSER_SPRITES, BONUS_RENDER_MODE_CIRCLES_FAST))
+BONUS_RENDER_MODE_SIMPLE_SYMBOLS = "simple_symbols"
+BONUS_RENDER_MODES = frozenset(
+    (
+        BONUS_RENDER_MODE_BROWSER_SPRITES,
+        BONUS_RENDER_MODE_CIRCLES_FAST,
+        BONUS_RENDER_MODE_SIMPLE_SYMBOLS,
+    )
+)
 BONUS_RENDER_MODE_ORDER = (
     BONUS_RENDER_MODE_BROWSER_SPRITES,
     BONUS_RENDER_MODE_CIRCLES_FAST,
+    BONUS_RENDER_MODE_SIMPLE_SYMBOLS,
 )
 BONUS_RENDER_MODE_DEFAULT = BONUS_RENDER_MODE_BROWSER_SPRITES
+BONUS_SYMBOL_RENDER_MODE_DEFAULT = BONUS_RENDER_MODE_SIMPLE_SYMBOLS
+BONUS_SYMBOL_OUTER_LUMA_BY_SHAPE = (68, 148, 196)
+BONUS_SYMBOL_INNER_LUMA = 212
+BONUS_SYMBOL_BASE_SIZE = 7
 SOURCE_STATE_RGB_BROWSER_LINES_RENDERER_IMPL_ID = (
     "curvyzero_source_state_rgb_canvas_like_browser_lines_numpy/v0"
 )
@@ -408,6 +420,7 @@ def render_source_state_gray64_fast_player_perspectives(
     player_count: int | None = None,
     out: np.ndarray | None = None,
     background_rgb: Sequence[int] = SOURCE_STATE_RGB_CANVAS_LIKE_BACKGROUND_RGB,
+    bonus_render_mode: str = BONUS_SYMBOL_RENDER_MODE_DEFAULT,
 ) -> np.ndarray:
     """Render an approximate player-perspective gray64 frame directly at 64x64.
 
@@ -459,7 +472,11 @@ def render_source_state_gray64_fast_player_perspectives(
         )
 
     if "bonus_active" in arrays:
-        _draw_bonus_type_luma_circles(canvas, arrays, row_index, map_size, mask_cache=None)
+        bonus_mode = _validated_bonus_render_mode(bonus_render_mode)
+        if bonus_mode == BONUS_RENDER_MODE_SIMPLE_SYMBOLS:
+            _draw_bonus_type_simple_symbols(canvas, arrays, row_index, map_size)
+        else:
+            _draw_bonus_type_luma_circles(canvas, arrays, row_index, map_size, mask_cache=None)
 
     source_player_count = int(arrays["pos"].shape[1])
     for player in range(source_player_count):
@@ -3663,6 +3680,7 @@ def _render_source_state_rgb_body_circles_fast(
     *,
     colors: np.ndarray,
 ) -> None:
+    mask_cache: dict[int, np.ndarray] = {}
     body_limit = _body_slot_limit(arrays, row)
     active_slots = np.flatnonzero(arrays["body_active"][row, :body_limit])
     _draw_body_circles_rgb(
@@ -3672,6 +3690,7 @@ def _render_source_state_rgb_body_circles_fast(
         arrays["body_owner"][row, active_slots],
         map_size,
         colors=colors,
+        mask_cache=mask_cache,
     )
 
 
@@ -4202,6 +4221,135 @@ def _draw_bonus_type_luma_circles(
         )
 
 
+def _draw_bonus_type_simple_symbols(
+    canvas: np.ndarray,
+    arrays: Mapping[str, np.ndarray],
+    row: int,
+    map_size: float,
+) -> None:
+    bonus_slots = np.flatnonzero(arrays["bonus_active"][row])
+    bonus_types = arrays.get("bonus_type")
+    for slot in bonus_slots:
+        bonus_type = None if bonus_types is None else int(bonus_types[row, slot])
+        _draw_world_simple_bonus_symbol(
+            canvas,
+            arrays["bonus_pos"][row, slot, 0],
+            arrays["bonus_pos"][row, slot, 1],
+            arrays["bonus_radius"][row, slot],
+            map_size,
+            bonus_type=bonus_type,
+        )
+
+
+def _draw_world_simple_bonus_symbol(
+    canvas: np.ndarray,
+    x_value: Any,
+    y_value: Any,
+    radius_value: Any,
+    map_size: float,
+    *,
+    bonus_type: int | None,
+) -> None:
+    x = float(x_value)
+    y = float(y_value)
+    radius = float(radius_value)
+    if not np.isfinite(x) or not np.isfinite(y) or not np.isfinite(radius):
+        return
+    if radius <= 0.0:
+        return
+    if x + radius <= 0.0 or x - radius >= map_size:
+        return
+    if y + radius <= 0.0 or y - radius >= map_size:
+        return
+
+    size = int(canvas.shape[0])
+    radius_px = int(max(1, np.ceil((radius / map_size) * float(size))))
+    px = int(np.clip(np.rint((x / map_size) * float(size - 1)), 0, size - 1))
+    py = int(np.clip(np.rint((y / map_size) * float(size - 1)), 0, size - 1))
+    dst_size = int(radius_px * 2 + 1)
+    stamp = _simple_bonus_symbol_stamp(bonus_type, dst_size)
+
+    x0 = max(0, px - radius_px)
+    x1 = min(size, px + radius_px + 1)
+    y0 = max(0, py - radius_px)
+    y1 = min(size, py + radius_px + 1)
+    if x0 >= x1 or y0 >= y1:
+        return
+
+    stamp_x0 = x0 - (px - radius_px)
+    stamp_y0 = y0 - (py - radius_px)
+    patch = stamp[
+        stamp_y0 : stamp_y0 + (y1 - y0),
+        stamp_x0 : stamp_x0 + (x1 - x0),
+    ]
+    mask = patch > 0
+    if bool(mask.any()):
+        canvas[y0:y1, x0:x1][mask] = patch[mask]
+
+
+@lru_cache(maxsize=512)
+def _simple_bonus_symbol_stamp(bonus_type: int | None, dst_size: int) -> np.ndarray:
+    size = int(dst_size)
+    if size <= 0:
+        raise VectorVisualObservationError("simple bonus symbol stamp size must be positive")
+    base = _simple_bonus_symbol_base(bonus_type)
+    if size == BONUS_SYMBOL_BASE_SIZE:
+        return base.copy()
+    indices = np.rint(
+        np.linspace(0, BONUS_SYMBOL_BASE_SIZE - 1, size, dtype=np.float64)
+    ).astype(np.int16)
+    return base[indices][:, indices].copy()
+
+
+@lru_cache(maxsize=16)
+def _simple_bonus_symbol_base(bonus_type: int | None) -> np.ndarray:
+    code = _bonus_type_code_or_default(bonus_type)
+    symbol_index = code - 1
+    outer_index = symbol_index // 4
+    inner_index = symbol_index % 4
+
+    size = BONUS_SYMBOL_BASE_SIZE
+    center = size // 2
+    yy, xx = np.ogrid[:size, :size]
+    dx = np.abs(xx - center)
+    dy = np.abs(yy - center)
+    if outer_index == 0:
+        outer_mask = (dx * dx + dy * dy) <= center * center
+    elif outer_index == 1:
+        outer_mask = (dx + dy) <= center + 1
+    else:
+        outer_mask = np.ones((size, size), dtype=bool)
+
+    stamp = np.zeros((size, size), dtype=np.uint8)
+    stamp[outer_mask] = np.uint8(BONUS_SYMBOL_OUTER_LUMA_BY_SHAPE[outer_index])
+    inner = np.zeros((size, size), dtype=bool)
+    if inner_index == 0:
+        inner[center, 1 : size - 1] = True
+        inner[1 : size - 1, center] = True
+    elif inner_index == 1:
+        for offset in range(1, size - 1):
+            inner[offset, offset] = True
+            inner[offset, size - 1 - offset] = True
+    elif inner_index == 2:
+        inner[center - 1 : center + 2, 1 : size - 1] = True
+    else:
+        inner[1 : size - 1, center - 1 : center + 2] = True
+    stamp[outer_mask & inner] = np.uint8(BONUS_SYMBOL_INNER_LUMA)
+    return stamp
+
+
+def _bonus_type_code_or_default(bonus_type: int | None) -> int:
+    if bonus_type is None:
+        return 1
+    try:
+        code = int(bonus_type)
+    except (TypeError, ValueError):
+        return 1
+    if code < 1 or code >= len(SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_TYPE_NAME_BY_CODE):
+        return 1
+    return code
+
+
 def _draw_world_circle_rgb(
     canvas: np.ndarray,
     x_value: Any,
@@ -4210,6 +4358,7 @@ def _draw_world_circle_rgb(
     map_size: float,
     *,
     color: Sequence[int] | np.ndarray,
+    mask_cache: dict[int, np.ndarray] | None = None,
 ) -> None:
     x = float(x_value)
     y = float(y_value)
@@ -4234,7 +4383,7 @@ def _draw_world_circle_rgb(
     x1 = min(size - 1, px + radius_px)
     y0 = max(0, py - radius_px)
     y1 = min(size - 1, py + radius_px)
-    mask = _circle_mask(radius_px, mask_cache=None)
+    mask = _circle_mask(radius_px, mask_cache)
     mask_x0 = x0 - (px - radius_px)
     mask_y0 = y0 - (py - radius_px)
     mask_view = mask[
@@ -4253,6 +4402,7 @@ def _draw_body_circles_rgb(
     map_size: float,
     *,
     colors: np.ndarray,
+    mask_cache: dict[int, np.ndarray] | None = None,
 ) -> None:
     for position, radius, owner in zip(positions, radii, owners, strict=True):
         owner_index = int(owner)
@@ -4264,6 +4414,7 @@ def _draw_body_circles_rgb(
             radius,
             map_size,
             color=color,
+            mask_cache=mask_cache,
         )
 
 
@@ -4285,6 +4436,15 @@ def _draw_bonuses_rgb(
             bonus_types=bonus_types,
         )
         return
+    if bonus_render_mode == BONUS_RENDER_MODE_SIMPLE_SYMBOLS:
+        _draw_bonus_simple_symbols_rgb(
+            canvas,
+            positions,
+            radii,
+            map_size,
+            bonus_types=bonus_types,
+        )
+        return
     _draw_bonus_sprites_rgb(
         canvas,
         positions,
@@ -4292,6 +4452,36 @@ def _draw_bonuses_rgb(
         map_size,
         bonus_types=bonus_types,
     )
+
+
+def _draw_bonus_simple_symbols_rgb(
+    canvas: np.ndarray,
+    positions: np.ndarray,
+    radii: np.ndarray,
+    map_size: float,
+    *,
+    bonus_types: np.ndarray | None = None,
+) -> None:
+    if positions.size == 0:
+        return
+    if bonus_types is None:
+        bonus_types_iter = (None for _ in range(len(positions)))
+    else:
+        bonus_types_iter = (int(value) for value in bonus_types)
+    scratch = np.zeros(canvas.shape[:2], dtype=np.uint8)
+    for position, radius, bonus_type in zip(positions, radii, bonus_types_iter, strict=True):
+        scratch.fill(0)
+        _draw_world_simple_bonus_symbol(
+            scratch,
+            position[0],
+            position[1],
+            radius,
+            map_size,
+            bonus_type=bonus_type,
+        )
+        mask = scratch > 0
+        if bool(mask.any()):
+            canvas[mask] = scratch[mask][:, None]
 
 
 def _draw_bonus_sprites_rgb(
@@ -4773,6 +4963,11 @@ def _source_body_owner_index(
 __all__ = [
     "BONUS_RENDER_MODE_BROWSER_SPRITES",
     "BONUS_RENDER_MODE_CIRCLES_FAST",
+    "BONUS_RENDER_MODE_SIMPLE_SYMBOLS",
+    "BONUS_SYMBOL_BASE_SIZE",
+    "BONUS_SYMBOL_INNER_LUMA",
+    "BONUS_SYMBOL_OUTER_LUMA_BY_SHAPE",
+    "BONUS_SYMBOL_RENDER_MODE_DEFAULT",
     "BONUS_RENDER_MODE_DEFAULT",
     "BONUS_RENDER_MODE_ORDER",
     "BONUS_RENDER_MODES",

@@ -164,6 +164,67 @@ Current best optimizer conclusion:
 - If future policies survive much longer, render and observation become more
   important again. Keep no-death/long profiles as a standing guardrail.
 
+## 2026-05-13 Direct Fast Hot-Path Rerun
+
+After wiring `body_circles_fast` to the direct gray64 player-perspective helper
+inside the stock fixed-opponent wrapper, I reran matched stock LightZero
+profiles. These are real `lzero.entry.train_muzero` profiles, not env-only
+microbenchmarks.
+
+Common scope:
+
+- `compute=gpu-l4-t4-cpu40`
+- `env_variant=source_state_fixed_opponent`
+- `opponent_policy_kind=fixed_straight`
+- `opponent_use_cuda=false`
+- `reward_variant=survival_plus_bonus_no_outcome`
+- `num_simulations=8`
+- `batch_size=32`
+- `stop_after_learner_train_calls=10`
+- background eval/GIF off
+- profile final volume commit off
+
+| row | render | C | death | env steps | wall | steps/sec | collector | MCTS | policy forward | learner |
+| --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `opt0513c-brow-n-c32` | `browser_lines` | 32 | normal | 5,072 | 37.25s | 136.2 | 26.19s | 9.38s | 14.39s | 2.63s |
+| `opt0513c-fast-n-c32` | `body_circles_fast` direct gray64 | 32 | normal | 5,072 | 24.42s | 207.7 | 14.36s | 6.86s | 10.75s | 2.32s |
+| `opt0513c-brow-n-c64` | `browser_lines` | 64 | normal | 10,131 | 39.85s | 254.2 | 27.10s | 7.83s | 13.60s | 2.30s |
+| `opt0513c-fast-n-c64` | `body_circles_fast` direct gray64 | 64 | normal | 10,131 | 31.20s | 324.8 | 19.92s | 8.53s | 14.26s | 1.97s |
+| `opt0513c-brow-nd-c32` | `browser_lines` | 32 | no-death | 16,384 | 52.57s | 311.6 | 43.60s | 15.35s | 23.53s | 1.97s |
+| `opt0513c-fast-nd-c32` | `body_circles_fast` direct gray64 | 32 | no-death | 16,384 | 39.10s | 419.1 | 29.65s | 13.57s | 21.06s | 2.18s |
+
+Plain read:
+
+- The direct fast path is a real full-loop speedup: about `1.53x` at C32
+  normal, `1.28x` at C64 normal, and `1.34x` at C32 no-death.
+- This does not mean render is the only bottleneck. Even after the fast render
+  path, collector/search/policy-forward still dominate wall time.
+- The fast path is an approximation, not CPU-reference fidelity. It is now a
+  reasonable candidate for paired training rows because the 212-run matched
+  learning read did not show a browser-vs-fast gap.
+- Browser-lines remains the reference surface. Fast direct gray64 is a speed
+  candidate, not a replacement by decree.
+
+212-run knob reconciliation:
+
+- Render: same-checkpoint `browser_lines` and `body_circles_fast` rows were
+  basically tied in learning readout. This weakens the old "full fidelity at
+  all costs" stance. Approximate render paths are allowed candidates if they
+  keep heads, trails, walls, and bonus identities distinguishable and are tested
+  as matched rows.
+- Learner `batch_size`: matched 212-run contrasts were negative for `batch64`
+  versus `batch32`: median latest eval about `-17` steps and median latest
+  iteration about `-10k`. Learner time is also small in the short full-loop
+  profiles, so there is no current speed reason to pay that learning risk.
+  Keep `batch32`.
+- Collector width: matched 212-run contrasts for `collector64` were small and
+  mixed on eval (`+1.9` median latest steps) but positive on latest iteration
+  (`+10k`). Optimizer profiles also show much better throughput from wider
+  collection. This remains the cleanest speed knob to probe.
+- Search sims: `sim16` was negative in matched 212-run contrasts and slower in
+  profiles. Keep `sim8` as default; use `sim16` only as a small search-sensitivity
+  sentinel or if Coach wants to test higher-search quality.
+
 The browser-lines GPU-render prototype should stay active but separate. It has shown
 `20x-46x` renderer-side wins versus scalar CPU production render in small
 no-bonus parity-ish probes, but it has not yet beaten the current CPU dirty

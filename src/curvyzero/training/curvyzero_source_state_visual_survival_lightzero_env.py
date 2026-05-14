@@ -58,6 +58,8 @@ from curvyzero.env.vector_visual_observation import (
 from curvyzero.env.vector_visual_observation import SOURCE_STATE_RGB_CANVAS_LIKE_PLAYER_RGB
 from curvyzero.env.vector_visual_observation import SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID
 from curvyzero.env.vector_visual_observation import (
+    BONUS_RENDER_MODE_BROWSER_SPRITES,
+    BONUS_RENDER_MODE_SIMPLE_SYMBOLS,
     SOURCE_STATE_RGB_CANVAS_LIKE_TRUTH_LEVEL,
 )
 from curvyzero.env.vector_visual_observation import SourceStateBrowserLineTrailLayerCache
@@ -66,6 +68,9 @@ from curvyzero.env.vector_visual_observation import SourceStateGray64DownsampleS
 from curvyzero.env.vector_visual_observation import render_source_state_canvas_gray64
 from curvyzero.env.vector_visual_observation import (
     render_source_state_canvas_gray64_player_perspectives,
+)
+from curvyzero.env.vector_visual_observation import (
+    render_source_state_gray64_fast_player_perspectives,
 )
 from curvyzero.env.vector_visual_observation import render_source_state_rgb_canvas_like
 
@@ -639,6 +644,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             SOURCE_STATE_CANVAS_LIKE_RAW_CANVAS_SHAPE,
             dtype=np.uint8,
         )
+        self._raw_frame_dirty = True
         self._raw_frame_work = np.zeros_like(self._raw_frame)
         self._gray64_frame = np.zeros(SOURCE_STATE_CANVAS_GRAY64_SHAPE, dtype=np.uint8)
         self._gray64_perspective_frames = np.zeros(
@@ -938,6 +944,14 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         if not self._has_reset:
             return None
         _ = player_perspective
+        if self._raw_frame_dirty:
+            render_source_state_rgb_canvas_like(
+                self._render_state_view(),
+                row=0,
+                out=self._raw_frame,
+                trail_render_mode=self._source_state_trail_render_mode,
+            )
+            self._raw_frame_dirty = False
         return self._raw_frame.copy()
 
     def human_rgb_observation(
@@ -1167,6 +1181,18 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             np.copyto(self._gray64_frame, raw_frames[0])
             if self._scalar_dirty_render_cache.initialized:
                 np.copyto(self._raw_frame, self._scalar_dirty_render_cache.rgb_frames[0])
+                self._raw_frame_dirty = False
+            gray64 = self._gray64_frame
+        elif self._should_use_direct_fast_gray64_render():
+            raw_frames = render_source_state_gray64_fast_player_perspectives(
+                state_view,
+                row=0,
+                player_count=2,
+                out=self._gray64_perspective_frames,
+                bonus_render_mode=BONUS_RENDER_MODE_SIMPLE_SYMBOLS,
+            )
+            np.copyto(self._gray64_frame, raw_frames[0])
+            self._raw_frame_dirty = True
             gray64 = self._gray64_frame
         else:
             gray64 = render_source_state_canvas_gray64(
@@ -1177,6 +1203,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
                 downsample_scratch=self._downsample_scratch,
                 trail_render_mode=self._source_state_trail_render_mode,
             )
+            self._raw_frame_dirty = False
         np.multiply(
             gray64,
             np.float32(1.0 / 255.0),
@@ -1205,6 +1232,12 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             self._scalar_dirty_render_enabled
             and self._source_state_trail_render_mode
             == SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES
+        )
+
+    def _should_use_direct_fast_gray64_render(self) -> bool:
+        return (
+            self._source_state_trail_render_mode
+            == SOURCE_STATE_TRAIL_RENDER_MODE_BODY_CIRCLES_FAST
         )
 
     def _reset_scalar_render_cache(self) -> None:
@@ -1754,13 +1787,30 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
                 f"trail_render_mode={self._source_state_trail_render_mode!r})"
             ),
             "grayscale_observation_source": (
-                "render_source_state_canvas_gray64("
-                "rgb_out=raw_observation_buffer, "
-                f"trail_render_mode={self._source_state_trail_render_mode!r})"
+                "render_source_state_gray64_fast_player_perspectives(out=gray64_buffer)"
+                if self._should_use_direct_fast_gray64_render()
+                else (
+                    "render_source_state_canvas_gray64("
+                    "rgb_out=raw_observation_buffer, "
+                    f"trail_render_mode={self._source_state_trail_render_mode!r})"
+                )
             ),
             "player_perspective_schema_id": None,
             "renderer_impl_id": SOURCE_STATE_CANVAS_LIKE_GRAY64_RENDERER_IMPL_ID,
             "raw_renderer_impl_id": SOURCE_STATE_RGB_CANVAS_LIKE_RENDERER_IMPL_ID,
+            "bonus_render_mode": (
+                BONUS_RENDER_MODE_SIMPLE_SYMBOLS
+                if self._should_use_direct_fast_gray64_render()
+                else BONUS_RENDER_MODE_BROWSER_SPRITES
+            ),
+            "bonus_renderer_kind": (
+                "simple_symbol_masks"
+                if self._should_use_direct_fast_gray64_render()
+                else "source_sprite_atlas_tiles"
+            ),
+            "bonus_renderer_is_approximation": bool(
+                self._should_use_direct_fast_gray64_render()
+            ),
             "source_state_scalar_dirty_render_enabled": bool(
                 self._scalar_dirty_render_enabled
             ),
@@ -1770,6 +1820,8 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             "source_state_scalar_dirty_render_kind": (
                 "exact_browser_lines_dirty_cache"
                 if self._should_use_scalar_dirty_render_cache()
+                else "direct_gray64_fast_approximation"
+                if self._should_use_direct_fast_gray64_render()
                 else "scalar_full_render"
             ),
             "truth_level": SOURCE_STATE_CANVAS_GRAY64_TRUTH_LEVEL,

@@ -11,6 +11,9 @@ on the 704-style canvas, BT.601 luma, then 11x11 downsample to 64x64.
 `body_circles_fast` rows below are historical/control measurements, not a
 current GPU optimization lane.
 
+Current parity gap summary:
+[GPU render parity gap](gpu_render_parity_gap_2026-05-13.md).
+
 ## Plain Goal
 
 Find out whether GPU rendering can improve real exploration/training
@@ -71,6 +74,16 @@ Implemented:
 
 Both are isolated Modal apps. They do not use training volumes, checkpoints, or
 live runs.
+
+`source_state_gpu_render_benchmark.py` now accepts:
+
+```text
+--compute gpu-l4-t4
+--compute gpu-h100
+```
+
+This keeps the exact same synthetic renderer benchmark while changing only the
+Modal GPU class.
 
 The first CuPy attempt failed on Modal image plumbing: NVRTC/CUDA root discovery
 was not clean in the simple base image. I switched both probes to the repo's
@@ -147,12 +160,24 @@ that copying state to the GPU is often the larger bucket. For long trails
 | `browser_lines` | 16 | 256 | 23.123ms | 3.210ms | n/a | 26.333ms | long-trail render dominates copy |
 | `browser_lines` | 2 | 500 | 7.327ms | 5.973ms | 0.479ms | 16.453ms | near-exact no-bonus two-row oracle |
 | `browser_lines` | 16 | 500 | 46.716ms | 3.171ms | n/a | 50.021ms | naive full GPU redraw gets expensive |
+| `browser_lines` L4 | 32 | 512 | 285.041ms | 3.287ms | 0.405ms | 288.848ms | full 704-style block redraw, B32 |
+| `browser_lines` L4 | 64 | 512 | 568.735ms | 3.224ms | 0.422ms | 573.305ms | full 704-style block redraw, B64 |
+| `browser_lines` L4 | 32 | 1000 | 552.051ms | 3.757ms | 0.477ms | 556.635ms | full 704-style block redraw, longer trails |
+| `browser_lines` H100 | 64 | 512 | 57.548ms | 3.828ms | 0.482ms | 61.822ms | same B64/S512 shape, much faster device work |
+| `browser_lines` H100 | 32 | 1000 | 61.260ms | 3.371ms | 0.326ms | 64.911ms | same B32/S1000 shape, much faster device work |
 
 Plain read: a closer 704-style cost is no longer "free", but it is not
 catastrophic on L4 either. The measured cost is in milliseconds for batches,
 not seconds. The likely production answer is not a naive full batch redraw for
 every step; it is either dirty 11x11 block updates or a fused exact-ish renderer
 that avoids rechecking old unchanged trails.
+
+Fresh H100 read: the H100 changes the prototype economics. Naive full block
+redraw is roughly `9x-10x` faster than the matching L4 rows above, while
+host-to-device and readback stay in the same few-millisecond range. That makes
+GPU rendering worth continuing, but only if parity and training integration are
+solved. The current benchmark still has small production-reference mismatches
+because bonus sprites and exact draw semantics are not complete.
 
 The benchmark now has a tiny production-render comparison for
 `block_704_gray64`. It maps synthetic rows into production source-state keys and

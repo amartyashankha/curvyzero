@@ -7,6 +7,8 @@ from curvyzero.env.vector_visual_observation import SOURCE_STATE_CANVAS_GRAY64_S
 from curvyzero.env.vector_visual_observation import (
     SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
 )
+from curvyzero.env.vector_visual_observation import BONUS_SYMBOL_INNER_LUMA
+from curvyzero.env.vector_visual_observation import BONUS_SYMBOL_OUTER_LUMA_BY_SHAPE
 from curvyzero.env.vector_visual_observation import SourceStateBrowserLineTrailLayerCache
 from curvyzero.env.vector_visual_observation import SourceStateCanvasGray64DirtyRenderCache
 from curvyzero.env.vector_visual_observation import SourceStateGray64DownsampleScratch
@@ -196,7 +198,7 @@ def test_two_seat_fast_gray64_direct_uses_visual_trail_and_player_perspective():
     assert stack.render_metadata()["trail_render_mode"] == STACK_RENDER_MODE_FAST_GRAY64_DIRECT
     assert stack.render_metadata()["rgb_to_gray64"] is False
     assert stack.render_metadata()["trail_renderer_is_approximation"] is True
-    assert stack.render_metadata()["bonus_renderer_kind"] == "bonus_type_luma_circle"
+    assert stack.render_metadata()["bonus_renderer_kind"] == "simple_symbol_masks"
     assert observation.shape == (1, 2, 4, 64, 64)
     assert observation[0, 0, -1, trail_y, trail_x] == pytest.approx(96.0 / 255.0)
     assert observation[0, 1, -1, trail_y, trail_x] == pytest.approx(128.0 / 255.0)
@@ -204,10 +206,33 @@ def test_two_seat_fast_gray64_direct_uses_visual_trail_and_player_perspective():
     assert observation[0, 1, -1, self_head_y, self_head_x] == pytest.approx(128.0 / 255.0)
     assert observation[0, 0, -1, other_head_y, other_head_x] == pytest.approx(128.0 / 255.0)
     assert observation[0, 1, -1, other_head_y, other_head_x] == pytest.approx(96.0 / 255.0)
-    assert observation[0, 0, -1, bonus_a_y, bonus_a_x] == pytest.approx(106.0 / 255.0)
-    assert observation[0, 1, -1, bonus_a_y, bonus_a_x] == pytest.approx(106.0 / 255.0)
-    assert observation[0, 0, -1, bonus_b_y, bonus_b_x] == pytest.approx(218.0 / 255.0)
-    assert observation[0, 1, -1, bonus_b_y, bonus_b_x] == pytest.approx(218.0 / 255.0)
+    bonus_a_patch = np.rint(
+        observation[0, 0, -1, bonus_a_y - 1 : bonus_a_y + 2, bonus_a_x - 1 : bonus_a_x + 2]
+        * 255.0
+    ).astype(np.uint8)
+    bonus_b_patch = np.rint(
+        observation[0, 0, -1, bonus_b_y - 1 : bonus_b_y + 2, bonus_b_x - 1 : bonus_b_x + 2]
+        * 255.0
+    ).astype(np.uint8)
+    np.testing.assert_array_equal(
+        bonus_a_patch,
+        np.rint(
+            observation[0, 1, -1, bonus_a_y - 1 : bonus_a_y + 2, bonus_a_x - 1 : bonus_a_x + 2]
+            * 255.0
+        ).astype(np.uint8),
+    )
+    np.testing.assert_array_equal(
+        bonus_b_patch,
+        np.rint(
+            observation[0, 1, -1, bonus_b_y - 1 : bonus_b_y + 2, bonus_b_x - 1 : bonus_b_x + 2]
+            * 255.0
+        ).astype(np.uint8),
+    )
+    assert int(BONUS_SYMBOL_INNER_LUMA) in bonus_a_patch
+    assert int(BONUS_SYMBOL_INNER_LUMA) in bonus_b_patch
+    assert int(BONUS_SYMBOL_OUTER_LUMA_BY_SHAPE[0]) in bonus_a_patch
+    assert int(BONUS_SYMBOL_OUTER_LUMA_BY_SHAPE[2]) in bonus_b_patch
+    assert not np.array_equal(bonus_a_patch, bonus_b_patch)
     assert float(np.max(np.abs(observation[0, 0] - observation[0, 1]))) > 0.0
 
 

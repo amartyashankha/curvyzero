@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Materialize local leaderboard and assignment artifacts from rating JSON.
+"""Materialize local leaderboard and assignment artifacts.
 
 This is a local bridge tool. It does not read or write Modal directly. Use it to
-turn an exported tournament rating snapshot/API payload into:
+turn an exported public leaderboard snapshot, tournament rating snapshot, or API
+payload into:
 
 - public leaderboard snapshot JSON;
 - live pointer JSON;
@@ -19,9 +20,19 @@ from pathlib import Path
 from typing import Any
 
 from curvyzero.training.opponent_leaderboard import (
+    LEADERBOARD_SNAPSHOT_SCHEMA_ID,
+    OPPONENT_DEATH_MODE_IMMORTAL,
+    OPPONENT_DEATH_MODE_NORMAL,
+    STABLE_SENTINEL_BLANK_CANVAS,
+    STABLE_SENTINEL_NONE,
+    STABLE_SENTINEL_WALL_AVOIDANT_IMMORTAL,
+    STABLE_SLOT_PROFILE_3,
+    STABLE_SLOT_PROFILE_5,
     build_leaderboard_pointer,
     build_leaderboard_snapshot_from_rating_snapshot,
     select_opponent_assignment_from_leaderboard,
+    select_stable_slots_v1_assignment,
+    validate_leaderboard_snapshot,
 )
 
 
@@ -50,9 +61,40 @@ def _rating_snapshot_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     raise ValueError("input JSON must contain 'ratings' or API 'rows'")
 
 
+def _leaderboard_snapshot_from_payload(
+    payload: dict[str, Any],
+    *,
+    leaderboard_id: str,
+    snapshot_id: str,
+    generation: int,
+    created_at: str,
+) -> dict[str, Any]:
+    if payload.get("schema_id") == LEADERBOARD_SNAPSHOT_SCHEMA_ID:
+        snapshot = validate_leaderboard_snapshot(payload)
+        if snapshot["leaderboard_id"] != leaderboard_id:
+            raise ValueError(
+                "input leaderboard_id does not match --leaderboard-id: "
+                f"{snapshot['leaderboard_id']!r} != {leaderboard_id!r}"
+            )
+        if snapshot["snapshot_id"] != snapshot_id:
+            raise ValueError(
+                "input snapshot_id does not match --snapshot-id: "
+                f"{snapshot['snapshot_id']!r} != {snapshot_id!r}"
+            )
+        return snapshot
+    rating_payload = _rating_snapshot_from_payload(payload)
+    return build_leaderboard_snapshot_from_rating_snapshot(
+        rating_payload,
+        leaderboard_id=leaderboard_id,
+        snapshot_id=snapshot_id,
+        generation=generation,
+        created_at=created_at,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("rating_json", type=Path)
+    parser.add_argument("input_json", type=Path)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--leaderboard-id", required=True)
     parser.add_argument("--snapshot-id", required=True)
@@ -63,15 +105,41 @@ def main() -> None:
     parser.add_argument("--created-at", default="")
     parser.add_argument("--generation", type=int, default=0)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--materializer",
+        choices=["stable_slots_v1", "top_slots_v0"],
+        default="stable_slots_v1",
+    )
+    parser.add_argument(
+        "--profile",
+        choices=[STABLE_SLOT_PROFILE_3, STABLE_SLOT_PROFILE_5],
+        default=STABLE_SLOT_PROFILE_3,
+    )
+    parser.add_argument(
+        "--sentinel",
+        choices=[
+            STABLE_SENTINEL_NONE,
+            STABLE_SENTINEL_BLANK_CANVAS,
+            STABLE_SENTINEL_WALL_AVOIDANT_IMMORTAL,
+        ],
+        default=STABLE_SENTINEL_BLANK_CANVAS,
+    )
+    parser.add_argument(
+        "--checkpoint-death-mode",
+        choices=[OPPONENT_DEATH_MODE_NORMAL, OPPONENT_DEATH_MODE_IMMORTAL],
+        default=OPPONENT_DEATH_MODE_NORMAL,
+    )
+    parser.add_argument("--expected-rating-context-hash", default="")
+    parser.add_argument("--allow-recent-provisional", action="store_true")
     parser.add_argument("--max-slots", type=int, default=5)
     parser.add_argument("--no-blank-sentinel", action="store_true")
     parser.add_argument("--allow-provisional", action="store_true")
     args = parser.parse_args()
 
-    rating_payload = _rating_snapshot_from_payload(_load_json(args.rating_json))
+    input_payload = _load_json(args.input_json)
     timestamp = args.created_at or datetime.now(UTC).isoformat().replace("+00:00", "Z")
-    snapshot = build_leaderboard_snapshot_from_rating_snapshot(
-        rating_payload,
+    snapshot = _leaderboard_snapshot_from_payload(
+        input_payload,
         leaderboard_id=args.leaderboard_id,
         snapshot_id=args.snapshot_id,
         generation=args.generation,
@@ -84,15 +152,45 @@ def main() -> None:
         writer={"kind": "local_materialize_cli"},
     )
     assignment_source_ref = args.assignment_source_ref or args.snapshot_ref
-    assignment, audit = select_opponent_assignment_from_leaderboard(
-        snapshot,
-        assignment_id=args.assignment_id,
-        source_ref=assignment_source_ref,
-        seed=args.seed,
-        max_slots=args.max_slots,
-        include_blank_sentinel=not args.no_blank_sentinel,
-        allow_provisional=args.allow_provisional,
-    )
+    if args.materializer == "stable_slots_v1":
+        if args.max_slots != 5 or args.no_blank_sentinel or args.allow_provisional:
+            parser.error(
+                "--max-slots, --no-blank-sentinel, and --allow-provisional "
+                "only apply to --materializer top_slots_v0"
+            )
+        assignment, audit = select_stable_slots_v1_assignment(
+            snapshot,
+            assignment_id=args.assignment_id,
+            source_ref=assignment_source_ref,
+            seed=args.seed,
+            profile=args.profile,
+            sentinel=args.sentinel,
+            allow_recent_provisional=args.allow_recent_provisional,
+            checkpoint_death_mode=args.checkpoint_death_mode,
+            expected_rating_context_hash=args.expected_rating_context_hash or None,
+        )
+    else:
+        if (
+            args.profile != STABLE_SLOT_PROFILE_3
+            or args.sentinel != STABLE_SENTINEL_BLANK_CANVAS
+            or args.checkpoint_death_mode != OPPONENT_DEATH_MODE_NORMAL
+            or args.expected_rating_context_hash
+            or args.allow_recent_provisional
+        ):
+            parser.error(
+                "--profile, --sentinel, --checkpoint-death-mode, "
+                "--expected-rating-context-hash, and --allow-recent-provisional "
+                "only apply to --materializer stable_slots_v1"
+            )
+        assignment, audit = select_opponent_assignment_from_leaderboard(
+            snapshot,
+            assignment_id=args.assignment_id,
+            source_ref=assignment_source_ref,
+            seed=args.seed,
+            max_slots=args.max_slots,
+            include_blank_sentinel=not args.no_blank_sentinel,
+            allow_provisional=args.allow_provisional,
+        )
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     outputs = {

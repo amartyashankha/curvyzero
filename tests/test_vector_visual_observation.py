@@ -5,6 +5,9 @@ from curvyzero.env import vector_runtime
 from curvyzero.env.vector_visual_observation import (
     BONUS_RENDER_MODE_BROWSER_SPRITES,
     BONUS_RENDER_MODE_CIRCLES_FAST,
+    BONUS_RENDER_MODE_SIMPLE_SYMBOLS,
+    BONUS_SYMBOL_INNER_LUMA,
+    BONUS_SYMBOL_OUTER_LUMA_BY_SHAPE,
     SOURCE_STATE_BONUS64_STACK4_BONUS_MASK_CHANNEL,
     SOURCE_STATE_BONUS64_STACK4_BONUS_TYPE_CHANNEL,
     SOURCE_STATE_BONUS64_STACK4_GAME_BORDERLESS_CHANNEL,
@@ -44,6 +47,7 @@ from curvyzero.env.vector_visual_observation import (
     render_source_snapshot_canvas_gray64,
     render_source_snapshot_gray64,
     render_source_snapshot_rgb_canvas_like,
+    render_source_state_gray64_fast_player_perspectives,
     render_source_state_gray64,
     rgb_canvas_like_to_gray64,
     source_state_bonus64_stack4_player_perspective_v1_schema,
@@ -520,6 +524,7 @@ def test_source_state_canvas_gray64_is_downsampled_luminance_of_browser_like_rgb
     assert schema["supported_bonus_render_modes"] == [
         BONUS_RENDER_MODE_BROWSER_SPRITES,
         BONUS_RENDER_MODE_CIRCLES_FAST,
+        BONUS_RENDER_MODE_SIMPLE_SYMBOLS,
     ]
     assert schema["bonus_renderer_kind"] == "source_sprite_atlas_tiles"
     assert (
@@ -744,6 +749,89 @@ def test_source_state_canvas_gray64_uses_sprite_bonus_path_by_default():
     np.testing.assert_array_equal(sprite_gray64, rgb_canvas_like_to_gray64(sprite_rgb))
     assert not np.array_equal(sprite_gray64, rgb_canvas_like_to_gray64(direct_sprite_rgb64))
     assert not np.array_equal(sprite_gray64, circle_gray64)
+
+
+def test_direct_fast_simple_bonus_symbols_are_distinct_and_not_remapped():
+    state = _small_source_state()
+    state["present"][:, :] = False
+    state["alive"][:, :] = False
+    state["body_active"][:, :] = False
+    state["body_write_cursor"][0] = 0
+    state.update(
+        {
+            "bonus_active": np.asarray([[True]], dtype=bool),
+            "bonus_type": np.asarray([[0]], dtype=np.int16),
+            "bonus_pos": np.asarray([[[32.0, 32.0]]], dtype=np.float64),
+            "bonus_radius": np.asarray([[3.0]], dtype=np.float64),
+        }
+    )
+    background_luma = int(
+        np.rint(
+            0.299 * SOURCE_STATE_RGB_CANVAS_LIKE_BACKGROUND_RGB[0]
+            + 0.587 * SOURCE_STATE_RGB_CANVAS_LIKE_BACKGROUND_RGB[1]
+            + 0.114 * SOURCE_STATE_RGB_CANVAS_LIKE_BACKGROUND_RGB[2]
+        )
+    )
+    allowed_symbol_values = {
+        int(BONUS_SYMBOL_INNER_LUMA),
+        *(int(value) for value in BONUS_SYMBOL_OUTER_LUMA_BY_SHAPE),
+    }
+    forbidden_remap_values = {80, 96, 128, 160, 192, 208, 224, 232, 240, 248}
+    hashes = []
+    crop_hashes = []
+
+    for code in vector_runtime.SOURCE_DEFAULT_BONUS_TYPE_CODES:
+        state["bonus_type"][0, 0] = int(code)
+        frames = render_source_state_gray64_fast_player_perspectives(
+            state,
+            player_count=2,
+            bonus_render_mode=BONUS_RENDER_MODE_SIMPLE_SYMBOLS,
+        )
+        np.testing.assert_array_equal(frames[0], frames[1])
+        frame = frames[0, 0]
+        crop = frame[29:36, 29:36]
+        non_background = crop[crop != background_luma]
+
+        assert non_background.size >= 9
+        assert set(int(value) for value in np.unique(non_background)) <= allowed_symbol_values
+        assert not (
+            set(int(value) for value in np.unique(non_background))
+            & forbidden_remap_values
+        )
+        hashes.append(frame.tobytes())
+        crop_hashes.append(crop.tobytes())
+
+    assert len(set(hashes)) == len(vector_runtime.SOURCE_DEFAULT_BONUS_TYPE_CODES)
+    assert len(set(crop_hashes)) == len(vector_runtime.SOURCE_DEFAULT_BONUS_TYPE_CODES)
+
+
+def test_direct_fast_legacy_luma_circle_mode_is_still_available():
+    state = _small_source_state()
+    state["present"][:, :] = False
+    state["alive"][:, :] = False
+    state["body_active"][:, :] = False
+    state["body_write_cursor"][0] = 0
+    state.update(
+        {
+            "bonus_active": np.asarray([[True]], dtype=bool),
+            "bonus_type": np.asarray([[vector_runtime.BONUS_TYPE_SELF_FAST]], dtype=np.int16),
+            "bonus_pos": np.asarray([[[32.0, 32.0]]], dtype=np.float64),
+            "bonus_radius": np.asarray([[3.0]], dtype=np.float64),
+        }
+    )
+
+    symbol_frame = render_source_state_gray64_fast_player_perspectives(
+        state,
+        player_count=2,
+        bonus_render_mode=BONUS_RENDER_MODE_SIMPLE_SYMBOLS,
+    )
+    legacy_frame = render_source_state_gray64_fast_player_perspectives(
+        state,
+        player_count=2,
+        bonus_render_mode=BONUS_RENDER_MODE_CIRCLES_FAST,
+    )
+
+    assert not np.array_equal(symbol_frame, legacy_frame)
 
 
 def test_source_snapshot_gray64_matches_equivalent_vector_state_with_bonus_body():

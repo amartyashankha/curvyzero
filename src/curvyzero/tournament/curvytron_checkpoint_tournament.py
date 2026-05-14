@@ -1,3 +1,4 @@
+# ruff: noqa: F405
 """CurvyTron checkpoint tournament helpers.
 
 The tournament lane is intentionally separate from training. A game is one
@@ -81,6 +82,31 @@ def checkpoint_label_from_ref(ref: str) -> str:
     return f"{run_label} {iteration}"
 
 
+def checkpoint_metadata_from_ref(ref: str) -> dict[str, Any]:
+    path = PurePosixPath(runs.require_relative_ref(ref))
+    parts = path.parts
+    run_id = None
+    attempt_id = None
+    for index, part in enumerate(parts):
+        if part == "lightzero-curvytron-visual-survival" and index + 1 < len(parts):
+            run_id = parts[index + 1]
+        elif part == "attempts" and index + 1 < len(parts):
+            attempt_id = parts[index + 1]
+    iteration = None
+    filename = path.name
+    if filename.startswith("iteration_") and filename.endswith(".pth.tar"):
+        raw_iteration = filename.removeprefix("iteration_").removesuffix(".pth.tar")
+        try:
+            iteration = int(raw_iteration)
+        except ValueError:
+            iteration = None
+    return {
+        "run_id": run_id,
+        "attempt_id": attempt_id,
+        "iteration": iteration,
+    }
+
+
 def _checkpoint_label_disambiguator(ref: str) -> str:
     path = PurePosixPath(runs.require_relative_ref(ref))
     parts = path.parts
@@ -96,10 +122,16 @@ def _checkpoint_label_disambiguator(ref: str) -> str:
 def normalize_checkpoint_spec(raw: str | Mapping[str, Any], *, index: int = 0) -> dict[str, Any]:
     if isinstance(raw, str):
         ref = runs.require_relative_ref(raw).as_posix()
+        metadata = checkpoint_metadata_from_ref(ref)
         return {
             "checkpoint_id": checkpoint_id_from_ref(ref, index=index),
             "label": checkpoint_label_from_ref(ref),
             "checkpoint_ref": ref,
+            "run_id": metadata.get("run_id"),
+            "attempt_id": metadata.get("attempt_id"),
+            "iteration": metadata.get("iteration"),
+            "latest_for_run": False,
+            "checkpoint_mtime_ns": None,
             "checkpoint_state_key": None,
             "model_env_variant": None,
             "model_reward_variant": None,
@@ -117,10 +149,26 @@ def normalize_checkpoint_spec(raw: str | Mapping[str, Any], *, index: int = 0) -
         if isinstance(observation_contract, Mapping)
         else None
     )
+    metadata = checkpoint_metadata_from_ref(ref)
+    raw_iteration = raw.get("iteration")
+    iteration = metadata.get("iteration")
+    if raw_iteration is not None:
+        try:
+            iteration = int(raw_iteration)
+        except (TypeError, ValueError):
+            iteration = metadata.get("iteration")
+    raw_mtime = raw.get("checkpoint_mtime_ns")
+    if raw_mtime is None:
+        raw_mtime = raw.get("mtime_ns")
     return {
         "checkpoint_id": _safe_id(checkpoint_id, label="checkpoint_id"),
         "label": label,
         "checkpoint_ref": ref,
+        "run_id": raw.get("run_id") or metadata.get("run_id"),
+        "attempt_id": raw.get("attempt_id") or metadata.get("attempt_id"),
+        "iteration": iteration,
+        "latest_for_run": bool(raw.get("latest_for_run", False)),
+        "checkpoint_mtime_ns": _int_or_none(raw_mtime),
         "checkpoint_state_key": raw.get("checkpoint_state_key"),
         "model_env_variant": raw.get("model_env_variant"),
         "model_reward_variant": raw.get("model_reward_variant"),
@@ -146,6 +194,31 @@ def normalize_checkpoint_specs(checkpoints: Sequence[str | Mapping[str, Any]]) -
         checkpoint["label"] = (
             f"{label} ({_checkpoint_label_disambiguator(str(checkpoint['checkpoint_ref']))})"
         )
+    latest_key_by_run: dict[str, tuple[int, int, str]] = {}
+    for checkpoint in normalized:
+        run_id = checkpoint.get("run_id")
+        iteration = checkpoint.get("iteration")
+        if not run_id or iteration is None:
+            continue
+        key = (
+            int(iteration),
+            int(checkpoint.get("checkpoint_mtime_ns") or 0),
+            str(checkpoint.get("checkpoint_ref") or ""),
+        )
+        current = latest_key_by_run.get(str(run_id))
+        if current is None or key > current:
+            latest_key_by_run[str(run_id)] = key
+    for checkpoint in normalized:
+        run_id = checkpoint.get("run_id")
+        iteration = checkpoint.get("iteration")
+        if not run_id or iteration is None:
+            continue
+        key = (
+            int(iteration),
+            int(checkpoint.get("checkpoint_mtime_ns") or 0),
+            str(checkpoint.get("checkpoint_ref") or ""),
+        )
+        checkpoint["latest_for_run"] = key == latest_key_by_run.get(str(run_id))
     return normalized
 
 
@@ -990,6 +1063,11 @@ def normalize_rating_spec(raw: Mapping[str, Any] | None = None) -> dict[str, Any
     placement_min_games = int(placement_min_games)
     if placement_min_games < 0:
         raise ValueError("placement_min_games must be non-negative")
+    active_pool_limit = int(
+        spec.get("active_pool_limit", DEFAULT_RATING_ACTIVE_POOL_LIMIT)
+    )
+    if active_pool_limit < 2:
+        raise ValueError("active_pool_limit must be at least 2")
     return {
         "schema_id": RATING_CONFIG_SCHEMA_ID,
         "formula_version": RATING_FORMULA_VERSION,
@@ -1012,6 +1090,7 @@ def normalize_rating_spec(raw: Mapping[str, Any] | None = None) -> dict[str, Any
         "round_count": round_count,
         "placement_min_games": placement_min_games,
         "placement_min_opponents": placement_min_opponents,
+        "active_pool_limit": active_pool_limit,
         "pairs_per_round": pairs_per_round,
         "pair_selection": pair_selection,
         "games_per_pair": games_per_pair,
@@ -1148,6 +1227,54 @@ def _rating_row_value(
     return row.get(key, default)
 
 
+def _schedulable_rating_checkpoints(
+    checkpoints: Sequence[Mapping[str, Any]],
+    *,
+    previous_snapshot: Mapping[str, Any] | None,
+    rating_spec: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    current_rows = _rating_rows_by_checkpoint(previous_snapshot)
+    active_pool_limit = int(
+        rating_spec.get("active_pool_limit", DEFAULT_RATING_ACTIVE_POOL_LIMIT)
+    )
+    active_pool: list[dict[str, Any]] = []
+    provisional_or_new: list[dict[str, Any]] = []
+    for checkpoint in checkpoints:
+        row = current_rows.get(str(checkpoint["checkpoint_id"]), {})
+        status = str(row.get("status") or "")
+        if status == "retired":
+            continue
+        if not row or status == "provisional":
+            provisional_or_new.append(dict(checkpoint))
+            continue
+        rank = int(row.get("rank", 0) or 0)
+        if rank > 0 and rank <= active_pool_limit:
+            active_pool.append(dict(checkpoint))
+        elif rank <= 0:
+            active_pool.append(dict(checkpoint))
+    active_pool.sort(
+        key=lambda checkpoint: (
+            int(
+                current_rows.get(str(checkpoint["checkpoint_id"]), {}).get("rank", 0)
+                or 0
+            )
+            or 1_000_000,
+            str(checkpoint["checkpoint_id"]),
+        )
+    )
+    provisional_or_new.sort(key=lambda checkpoint: str(checkpoint["checkpoint_id"]))
+    combined = [*active_pool[:active_pool_limit], *provisional_or_new]
+    seen: set[str] = set()
+    result = []
+    for checkpoint in combined:
+        checkpoint_id = str(checkpoint["checkpoint_id"])
+        if checkpoint_id in seen:
+            continue
+        seen.add(checkpoint_id)
+        result.append(checkpoint)
+    return result
+
+
 def _validate_rating_state_compatibility(
     state: Mapping[str, Any] | None,
     *,
@@ -1187,7 +1314,11 @@ def select_adaptive_v0_pair_slots(
     requested_budget = int(spec["pairs_per_round"] or 0)
     if requested_budget < 1:
         raise ValueError("adaptive_v0 pair selection requires pairs_per_round")
-    checkpoints = spec["checkpoints"]
+    checkpoints = _schedulable_rating_checkpoints(
+        spec["checkpoints"],
+        previous_snapshot=previous_snapshot,
+        rating_spec=spec,
+    )
     if len(checkpoints) < 2 and not spec["include_self_pairs"]:
         raise ValueError("at least two checkpoints are needed for adaptive_v0")
 
@@ -1695,7 +1826,11 @@ def build_rating_round_pair_specs(
     round_index: int = 0,
 ) -> list[dict[str, Any]]:
     spec = normalize_rating_spec(rating_spec)
-    checkpoints = spec["checkpoints"]
+    checkpoints = _schedulable_rating_checkpoints(
+        spec["checkpoints"],
+        previous_snapshot=previous_snapshot,
+        rating_spec=spec,
+    )
     if len(checkpoints) < 2 and not spec["include_self_pairs"]:
         raise ValueError("at least two checkpoints are needed for rating")
     if spec["pair_selection"] == RATING_PAIR_SELECTION_ADAPTIVE_V0:
@@ -1853,6 +1988,21 @@ def _base_rating_rows(
             "label": checkpoint.get("label") or prior.get("label") or checkpoint_id,
             "checkpoint_ref": checkpoint.get("checkpoint_ref")
             or prior.get("checkpoint_ref"),
+            "run_id": checkpoint.get("run_id") or prior.get("run_id"),
+            "attempt_id": checkpoint.get("attempt_id") or prior.get("attempt_id"),
+            "iteration": (
+                checkpoint.get("iteration")
+                if checkpoint.get("iteration") is not None
+                else prior.get("iteration")
+            ),
+            "latest_for_run": bool(
+                checkpoint.get("latest_for_run", prior.get("latest_for_run", False))
+            ),
+            "checkpoint_mtime_ns": (
+                checkpoint.get("checkpoint_mtime_ns")
+                if checkpoint.get("checkpoint_mtime_ns") is not None
+                else prior.get("checkpoint_mtime_ns")
+            ),
             "rating": float(
                 prior.get("rating", rating_spec.get("initial_rating", DEFAULT_RATING_INITIAL_RATING))
             ),
@@ -2094,8 +2244,15 @@ def rating_snapshot_from_pair_results(
             str(row["checkpoint_id"]),
         )
     )
+    active_pool_limit = int(
+        spec.get("active_pool_limit", DEFAULT_RATING_ACTIVE_POOL_LIMIT)
+    )
     for rank, row in enumerate(standings, start=1):
         row["rank"] = rank
+        if rank > active_pool_limit and row.get("status") == "active":
+            row["status"] = "retired"
+            row["retired_reason"] = "below_active_pool_limit"
+            row["active_pool_limit"] = active_pool_limit
     round_id = rating_round_id(round_index)
     return {
         "schema_id": RATING_SNAPSHOT_SCHEMA_ID,

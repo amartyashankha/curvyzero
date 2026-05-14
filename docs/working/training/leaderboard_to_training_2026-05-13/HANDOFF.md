@@ -12,7 +12,21 @@ Start here:
 
 ## Plain Status
 
-A tiny manual closed-loop smoke works.
+A tiny manual closed-loop smoke works, including the `stable_slots_v1`
+materializer path. The first stable-slot smoke also found a real bug: checkpoint
+recency metadata was not preserved in rating rows, so `recent_strong` could pick
+an older high-ranked checkpoint. Local code/tests now preserve that metadata;
+rerun the remote smoke before trusting automatic refresh.
+
+Latest local rule:
+
+- The tournament service defaults to a top-100 active pool.
+- Mature rows below rank 100 are marked `retired`, not deleted.
+- Retired rows stay in rating history and public leaderboard snapshots, but are
+  not scheduled for future games.
+- New or under-tested rows stay `provisional` even if their temporary rank is
+  below 100, so they can still receive placement games.
+- Pointer summaries count retired rows separately from provisional rows.
 
 What was proven:
 
@@ -30,17 +44,17 @@ What was proven:
 
 This is not production automation yet.
 
-## Coach / Inspector Boundary
+## Coach / Tournament Job Boundary
 
 Coach owns training:
 
 - launch/runtime config;
 - exact checkpoint writing;
-- immutable assignment consumption;
+- immutable `assignment.json` consumption;
 - eval/GIF using the same assignment as training;
 - deciding whether leaderboard evidence is good enough to steer training.
 
-Inspector owns tournament observability:
+The long-running tournament job owns tournament observability:
 
 - checkpoint discovery from the training Volume;
 - subscriber/intake Dict and Queue coordination;
@@ -51,8 +65,8 @@ Inspector owns tournament observability:
 The clean exchange is:
 
 ```text
-Coach -> Inspector: exact checkpoint refs on the training Volume
-Inspector -> Coach: public leaderboard snapshot, then immutable assignment.json
+Coach -> tournament job: exact checkpoint refs on the training Volume
+tournament job -> Coach: public leaderboard snapshot, then immutable assignment.json
 ```
 
 The trainer must not poll live tournament state or Modal Dict while learning.
@@ -65,6 +79,27 @@ Subscriber watch rule:
 - explicit checkpoint refs are frozen seeds;
 - continuation into an existing rating run must be explicit
   (`continue_from_latest=True`) and must keep the full known checkpoint pool.
+
+Tournament service rule:
+
+- `intake-seed` is the admin/configure path for scheduler/evaluator policy.
+- `tournament-submit` / `intake-submit` is the normal candidate path.
+- Submit accepts candidate checkpoint refs or run IDs, not scheduler knobs.
+- Drain uses the manifest policy by default. Ad-hoc rating overrides are an
+  explicit internal/operator escape hatch, not the product contract.
+
+Checkpoint discovery foot gun:
+
+- discovery must scan `train/lightzero_exp*/ckpt/iteration_*.pth.tar`;
+- DI-engine can create timestamped folders like `lightzero_exp_260513_123802`;
+- scanning only `train/lightzero_exp/ckpt/...` misses real checkpoints.
+
+Publication boundary:
+
+- The tournament job owns public leaderboard snapshots and the compact live pointer;
+- Coach owns assignment selection, assignment refresh timing, and launch policy;
+- Modal Dict may point at the latest public snapshot, but the durable handoff is
+  the Volume JSON snapshot plus a selected immutable `assignment.json`.
 
 ## Important Smoke Runs
 
@@ -95,6 +130,56 @@ curvytron-closed-loop-smoke-20260513b
 ```
 
 ## Tests That Passed
+
+Latest focused local verification:
+
+```text
+uv run pytest tests/test_curvytron_checkpoint_tournament.py -q
+139 passed, 12 skipped
+
+uv run pytest \
+  tests/test_curvytron_live_checkpoint_eval_plumbing.py \
+  tests/test_opponent_leaderboard.py \
+  tests/test_lightzero_checkpoint_opponent_provider.py -q
+70 passed, 1 skipped
+
+uv run ruff check \
+  src/curvyzero/infra/modal/curvyzero_checkpoint_tournament.py \
+  src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py \
+  src/curvyzero/training/opponent_leaderboard.py \
+  src/curvyzero/training/lightzero_checkpoint_opponent_provider.py \
+  tests/test_curvytron_checkpoint_tournament.py \
+  tests/test_curvytron_live_checkpoint_eval_plumbing.py \
+  tests/test_opponent_leaderboard.py \
+  tests/test_lightzero_checkpoint_opponent_provider.py
+All checks passed
+
+git diff --check
+clean
+```
+
+Latest extra local coverage:
+
+- `tests/test_curvytron_checkpoint_intake_repair.py`
+- `tests/test_curvytron_tournament_scheduler_fairness.py`
+- `tests/test_curvytron_opponent_leaderboard_pointer_repair.py`
+- no-active-row leaderboard publish guard in
+  `tests/test_curvytron_checkpoint_tournament.py`
+- one-frame leaderboard publish guard in
+  `tests/test_curvytron_checkpoint_tournament.py`
+
+Combined focused tournament check:
+
+```text
+uv run pytest \
+  tests/test_curvytron_checkpoint_tournament.py \
+  tests/test_curvytron_checkpoint_intake_repair.py \
+  tests/test_curvytron_tournament_scheduler_fairness.py \
+  tests/test_curvytron_opponent_leaderboard_pointer_repair.py -q
+151 passed, 12 skipped
+```
+
+Earlier focused smoke regression:
 
 ```text
 uv run pytest \
@@ -127,6 +212,7 @@ py_compile: passed
 
 New:
 
+- `src/curvyzero/tournament/checkpoint_intake_service.py`
 - `src/curvyzero/training/opponent_leaderboard.py`
 - `tests/test_opponent_leaderboard.py`
 - `tests/test_lightzero_checkpoint_opponent_provider.py`
@@ -158,13 +244,15 @@ before building the MuZero model.
 
 Do next:
 
-1. Add a repair command for missing/stale leaderboard Dict pointers.
-2. Promote the assignment artifact writer/operator flow from smoke path to a
-   documented production runbook.
-3. Add safe refresh policy for long-running trainers.
-4. Harden intake continuation from existing `latest.json`.
-5. Run a larger but still bounded closed-loop smoke.
-6. Validate one-frame tournament context for the new public leaderboard.
+1. Remote-smoke the repair command for missing/stale leaderboard Dict pointers.
+2. Rerun the `stable_slots_v1` closed-loop smoke after the recency metadata
+   repair and inspect the concrete assignment entries.
+3. Promote the `stable_slots_v1` assignment writer/operator flow from local
+   helper/smoke path to a documented production runbook.
+4. Remote-smoke one-frame public publish and continuation with the active-pool
+   rule enabled.
+5. Add safe refresh policy for long-running trainers.
+6. Run a larger but still bounded closed-loop smoke.
 7. Decide whether non-neural scripted policies stay assignment-only or become
    tournament participants later.
 
@@ -178,6 +266,16 @@ Recent focused fixes after critique:
 - the trainer-facing leaderboard publisher refuses provisional ratings unless
   explicitly allowed, commits the Volume before moving the live pointer, and
   leaves the pointer unchanged if commit fails.
+- checkpoint intake now has regression coverage for live run-id watches versus
+  frozen explicit checkpoint refs.
+- checkpoint intake drain now has regression coverage that `spawn_if_existing`
+  does not touch an existing rating run unless `continue_from_latest=True`.
+- continuation specs use the full `seen_checkpoint_refs` pool, so adding a new
+  checkpoint does not silently drop older rated checkpoints.
+- `stable_slots_v1` is now the production-direction materializer. It writes
+  ordinary assignment entries, uses nested `recency.latest_for_run`, supports
+  blank or wall-avoidant immortal sentinel entries, dedupes checkpoint id/ref,
+  and records per-slot evidence in the audit.
 
 ## Do Not Overstate
 
@@ -186,6 +284,7 @@ Do not say production closed-loop training is done.
 Say this:
 
 ```text
-A tiny manual closed-loop smoke works. Production automation still needs refresh,
-continuation, repair, and scale tests.
+A tiny manual closed-loop smoke works. Local recency metadata is repaired, but
+the remote stable-slot smoke must be rerun before automatic refresh. Production
+automation still needs refresh, continuation, repair, and scale tests.
 ```

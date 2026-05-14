@@ -15,9 +15,13 @@ from curvyzero.training.lightzero_checkpoints import (
     lightzero_iteration_from_checkpoint_name,
 )
 from curvyzero.training.opponent_mixture import (
+    OPPONENT_DEATH_MODE_IMMORTAL,
+    OPPONENT_DEATH_MODE_NORMAL,
     OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
     OPPONENT_POLICY_KIND_FROZEN_LIGHTZERO_CHECKPOINT,
+    OPPONENT_POLICY_KIND_PROACTIVE_WALL_AVOIDANT,
     OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP,
+    OPPONENT_RUNTIME_MODE_NORMAL,
 )
 from curvyzero.training.opponent_registry import (
     OPPONENT_ASSIGNMENT_SCHEMA_ID,
@@ -30,9 +34,25 @@ LEADERBOARD_SNAPSHOT_SCHEMA_ID = "curvyzero_opponent_leaderboard_snapshot/v0"
 LEADERBOARD_POINTER_SCHEMA_ID = "curvyzero_opponent_leaderboard_pointer/v0"
 OPPONENT_ASSIGNMENT_AUDIT_SCHEMA_ID = "curvyzero_opponent_assignment_audit/v0"
 
+MAX_ASSIGNMENT_SLOT_COUNT = 5
+
+STABLE_SLOTS_V1_STRATEGY_ID = "stable_slots_v1"
+STABLE_SLOT_PROFILE_3 = "stable_3"
+STABLE_SLOT_PROFILE_5 = "stable_5"
+STABLE_SLOT_PROFILES = {STABLE_SLOT_PROFILE_3, STABLE_SLOT_PROFILE_5}
+STABLE_SENTINEL_NONE = "none"
+STABLE_SENTINEL_BLANK_CANVAS = "blank_canvas"
+STABLE_SENTINEL_WALL_AVOIDANT_IMMORTAL = "wall_avoidant_immortal"
+STABLE_SENTINELS = {
+    STABLE_SENTINEL_NONE,
+    STABLE_SENTINEL_BLANK_CANVAS,
+    STABLE_SENTINEL_WALL_AVOIDANT_IMMORTAL,
+}
+
 DEFAULT_ACTIVE_MIN_DISTINCT_OPPONENTS = 20
 DEFAULT_ACTIVE_MIN_VALID_GAMES = 300
 DEFAULT_MAX_FAILURE_RATE = 0.02
+DEFAULT_MAX_ACTIVE_RANK = 100
 
 DEFAULT_SLOT_WEIGHTS = {
     "champion": 20.0,
@@ -60,6 +80,7 @@ def build_leaderboard_snapshot_from_rating_snapshot(
     active_min_distinct_opponents: int = DEFAULT_ACTIVE_MIN_DISTINCT_OPPONENTS,
     active_min_valid_games: int = DEFAULT_ACTIVE_MIN_VALID_GAMES,
     max_failure_rate: float = DEFAULT_MAX_FAILURE_RATE,
+    max_active_rank: int = DEFAULT_MAX_ACTIVE_RANK,
 ) -> dict[str, Any]:
     """Build an immutable public leaderboard snapshot from a rating snapshot."""
 
@@ -76,6 +97,7 @@ def build_leaderboard_snapshot_from_rating_snapshot(
             active_min_distinct_opponents=active_min_distinct_opponents,
             active_min_valid_games=active_min_valid_games,
             max_failure_rate=max_failure_rate,
+            max_active_rank=max_active_rank,
         )
         for row in rating_rows
         if isinstance(row, Mapping)
@@ -108,6 +130,7 @@ def build_leaderboard_snapshot_from_rating_snapshot(
             "active_min_distinct_opponents": int(active_min_distinct_opponents),
             "active_min_valid_games": int(active_min_valid_games),
             "max_failure_rate": float(max_failure_rate),
+            "max_active_rank": int(max_active_rank),
         },
         "rows": rows,
     }
@@ -158,6 +181,10 @@ def build_leaderboard_pointer(
         if row.get("checkpoint_id")
     ]
     active_count = sum(1 for row in normalized["rows"] if row.get("status") == "active")
+    provisional_count = sum(
+        1 for row in normalized["rows"] if row.get("status") == "provisional"
+    )
+    retired_count = sum(1 for row in normalized["rows"] if row.get("status") == "retired")
     return {
         "schema_id": LEADERBOARD_POINTER_SCHEMA_ID,
         "leaderboard_id": normalized["leaderboard_id"],
@@ -170,7 +197,8 @@ def build_leaderboard_pointer(
         "compact_summary": {
             "row_count": len(normalized["rows"]),
             "active_count": active_count,
-            "provisional_count": len(normalized["rows"]) - active_count,
+            "provisional_count": provisional_count,
+            "retired_count": retired_count,
             "top_checkpoint_ids": top_checkpoint_ids,
         },
     }
@@ -308,6 +336,190 @@ def select_opponent_assignment_from_leaderboard(
     return assignment, audit
 
 
+def select_stable_slots_v1_assignment(
+    snapshot: Mapping[str, Any],
+    *,
+    assignment_id: str,
+    source_ref: str,
+    seed: int = 0,
+    profile: str = STABLE_SLOT_PROFILE_3,
+    sentinel: str = STABLE_SENTINEL_BLANK_CANVAS,
+    allow_recent_provisional: bool = False,
+    checkpoint_death_mode: str = OPPONENT_DEATH_MODE_NORMAL,
+    expected_rating_context_hash: str | None = None,
+    slot_weights: Mapping[str, float] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Materialize stable opponent slots into a trainer assignment.
+
+    This is deliberately not a live slot system. It reads one immutable
+    leaderboard snapshot and returns one immutable assignment plus audit. The
+    trainer only consumes the assignment JSON.
+    """
+
+    if not assignment_id:
+        raise ValueError("assignment_id is required")
+    normalized = validate_leaderboard_snapshot(snapshot)
+    profile = _validate_stable_profile(profile)
+    sentinel = _validate_stable_sentinel(sentinel)
+    checkpoint_death_mode = _validate_checkpoint_death_mode(checkpoint_death_mode)
+    _validate_expected_rating_context_hash(
+        expected_rating_context_hash,
+        snapshot=normalized,
+    )
+    weights = {**DEFAULT_SLOT_WEIGHTS, **dict(slot_weights or {})}
+    slot_names = _stable_slot_names(profile=profile, sentinel=sentinel)
+    active_rows = _eligible_assignment_rows(
+        normalized["rows"],
+        allow_provisional=False,
+    )
+    recent_rows = _eligible_assignment_rows(
+        normalized["rows"],
+        allow_provisional=allow_recent_provisional,
+    )
+    if not active_rows:
+        raise ValueError("stable_slots_v1 requires at least one active checkpoint row")
+
+    assignment_entries: list[dict[str, Any]] = []
+    selected_rows: list[dict[str, Any]] = []
+    hardcoded_slots: list[dict[str, Any]] = []
+    slot_plan: list[dict[str, Any]] = []
+    used_ids: set[str] = set()
+    used_refs: set[str] = set()
+
+    def add_checkpoint_slot(slot_name: str, row: Mapping[str, Any], *, reason: str) -> None:
+        checkpoint_id = str(row["checkpoint_id"])
+        checkpoint_ref = str(row["checkpoint_ref"])
+        if checkpoint_id in used_ids or checkpoint_ref in used_refs:
+            raise ValueError(
+                f"stable_slots_v1 selected duplicate checkpoint for {slot_name!r}"
+            )
+        used_ids.add(checkpoint_id)
+        used_refs.add(checkpoint_ref)
+        entry = _assignment_entry_from_row(
+            slot_name,
+            row,
+            weight=float(weights.get(slot_name, 1.0)),
+        )
+        if checkpoint_death_mode == OPPONENT_DEATH_MODE_IMMORTAL:
+            entry["opponent_death_mode"] = OPPONENT_DEATH_MODE_IMMORTAL
+        entry["tags"] = [
+            *entry.get("tags", []),
+            "strategy:stable_slots_v1",
+            (
+                "checkpoint_death:immortal"
+                if checkpoint_death_mode == OPPONENT_DEATH_MODE_IMMORTAL
+                else "checkpoint_death:normal"
+            ),
+        ]
+        assignment_entries.append(entry)
+        evidence = {
+            "source": "leaderboard",
+            "entry_name": entry["name"],
+            "slot": slot_name,
+            "checkpoint_id": row.get("checkpoint_id"),
+            "run_id": row.get("run_id"),
+            "leaderboard_rank": row.get("rank"),
+            "leaderboard_status": row.get("status"),
+            "opponent_checkpoint_ref": row.get("checkpoint_ref"),
+            "selection_reason": reason,
+            "checkpoint_death_mode": checkpoint_death_mode,
+            "recency": row.get("recency", {}),
+            "evidence": row.get("evidence", {}),
+        }
+        selected_rows.append(evidence)
+        slot_plan.append(evidence)
+
+    for slot_name in slot_names:
+        if slot_name == "sentinel":
+            entry, evidence = _stable_sentinel_entry(
+                sentinel,
+                weight=float(weights.get("sentinel", 1.0)),
+            )
+            assignment_entries.append(entry)
+            hardcoded_slots.append(evidence)
+            slot_plan.append(evidence)
+            continue
+
+        if slot_name == "champion":
+            row = active_rows[0]
+            reason = "top_active"
+        elif slot_name == "recent_strong":
+            row = _first_stable_row(
+                recent_rows,
+                used_ids,
+                used_refs,
+                latest_for_run=True,
+            )
+            if row is None:
+                row = _first_stable_row(active_rows, used_ids, used_refs)
+            reason = (
+                "latest_for_run"
+                if row is not None and _row_latest_for_run(row)
+                else "best_remaining"
+            )
+        elif slot_name == "diverse_challenger":
+            row = _diverse_stable_row(active_rows, used_ids, used_refs, selected_rows)
+            reason = "different_run" if row is not None else "best_remaining"
+            if row is None:
+                row = _first_stable_row(active_rows, used_ids, used_refs)
+        elif slot_name == "anchor":
+            row = _anchor_stable_row(active_rows, used_ids, used_refs)
+            reason = "middle_ranked_active"
+        else:
+            raise RuntimeError(f"unknown stable slot {slot_name!r}")
+
+        if row is None:
+            raise ValueError(
+                f"stable_slots_v1 could not fill required slot {slot_name!r}; "
+                f"profile={profile!r}, sentinel={sentinel!r}"
+            )
+        add_checkpoint_slot(slot_name, row, reason=reason)
+
+    assignment = {
+        "schema_id": OPPONENT_ASSIGNMENT_SCHEMA_ID,
+        "assignment_id": str(assignment_id),
+        "source_epoch": normalized.get("generation"),
+        "source_ref": str(source_ref),
+        "seed": int(seed),
+        "entries": assignment_entries,
+    }
+    parse_opponent_assignment_snapshot(assignment)
+    assignment_sha256 = canonical_assignment_json_sha256(assignment)
+    audit = {
+        "schema_id": OPPONENT_ASSIGNMENT_AUDIT_SCHEMA_ID,
+        "assignment_id": str(assignment_id),
+        "assignment_sha256": assignment_sha256,
+        "source_leaderboard": {
+            "leaderboard_id": normalized["leaderboard_id"],
+            "snapshot_id": normalized["snapshot_id"],
+            "generation": normalized.get("generation"),
+            "snapshot_ref": str(source_ref),
+            "snapshot_sha256": normalized["snapshot_sha256"],
+        },
+        "selection": {
+            "strategy_id": STABLE_SLOTS_V1_STRATEGY_ID,
+            "profile": profile,
+            "seed": int(seed),
+            "sentinel": sentinel,
+            "allow_recent_provisional": bool(allow_recent_provisional),
+            "checkpoint_death_mode": checkpoint_death_mode,
+            "slot_weights": weights,
+            "slot_names": slot_names,
+            "context_gate": {
+                "actual_leaderboard_id": normalized["leaderboard_id"],
+                "expected_rating_context_hash": expected_rating_context_hash,
+                "actual_rating_context_hash": normalized.get("context", {}).get(
+                    "rating_context_hash"
+                ),
+            },
+        },
+        "selected_rows": selected_rows,
+        "hardcoded_slots": hardcoded_slots,
+        "slot_plan": slot_plan,
+    }
+    return assignment, audit
+
+
 def validate_assignment_audit(value: Mapping[str, Any], *, assignment: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Validate an assignment audit payload."""
 
@@ -322,6 +534,33 @@ def validate_assignment_audit(value: Mapping[str, Any], *, assignment: Mapping[s
         expected = canonical_assignment_json_sha256(assignment)
         if str(value.get("assignment_sha256")) != expected:
             raise ValueError("assignment audit hash does not match assignment")
+        assignment_payload = dict(assignment)
+        if str(assignment_payload.get("assignment_id")) != assignment_id:
+            raise ValueError("assignment audit assignment_id does not match assignment")
+    selection = value.get("selection")
+    strategy_id = selection.get("strategy_id") if isinstance(selection, Mapping) else None
+    source_leaderboard = value.get("source_leaderboard")
+    if source_leaderboard is not None:
+        if not isinstance(source_leaderboard, Mapping):
+            raise ValueError("assignment audit source_leaderboard must be an object")
+        for key in ("leaderboard_id", "snapshot_id", "snapshot_ref", "snapshot_sha256"):
+            if not isinstance(source_leaderboard.get(key), str) or not source_leaderboard.get(key):
+                raise ValueError(f"assignment audit source_leaderboard requires {key}")
+    if strategy_id == STABLE_SLOTS_V1_STRATEGY_ID:
+        if not isinstance(source_leaderboard, Mapping):
+            raise ValueError("stable_slots_v1 audit requires source_leaderboard")
+        if not isinstance(selection, Mapping):
+            raise ValueError("stable_slots_v1 audit requires selection")
+        slot_plan = value.get("slot_plan")
+        if not isinstance(slot_plan, list) or not slot_plan:
+            raise ValueError("stable_slots_v1 audit requires non-empty slot_plan")
+        for key in ("profile", "sentinel", "checkpoint_death_mode"):
+            if not isinstance(selection.get(key), str) or not selection.get(key):
+                raise ValueError(f"stable_slots_v1 audit selection requires {key}")
+        if assignment is not None:
+            entries = assignment_payload.get("entries")
+            if isinstance(entries, list) and len(slot_plan) != len(entries):
+                raise ValueError("stable_slots_v1 audit slot_plan length does not match assignment")
     return dict(value)
 
 
@@ -331,6 +570,7 @@ def _leaderboard_row_from_rating_row(
     active_min_distinct_opponents: int,
     active_min_valid_games: int,
     max_failure_rate: float,
+    max_active_rank: int,
 ) -> dict[str, Any]:
     checkpoint_id = _required_str(row, "checkpoint_id")
     checkpoint_ref = _required_str(row, "checkpoint_ref")
@@ -339,13 +579,23 @@ def _leaderboard_row_from_rating_row(
     failure_count = int(row.get("failure_count", 0) or 0)
     failure_rate = float(failure_count) / float(games) if games else 0.0
     distinct_opponents = int(row.get("distinct_opponents", 0) or 0)
-    status = (
-        "active"
-        if games >= active_min_valid_games
+    rank = int(row.get("rank", 0) or 0)
+    source_status = str(row.get("status") or "")
+    mature_enough = (
+        games >= active_min_valid_games
         and distinct_opponents >= active_min_distinct_opponents
         and failure_rate <= max_failure_rate
-        else "provisional"
     )
+    if source_status == "retired" or (
+        mature_enough and rank > 0 and rank > int(max_active_rank)
+    ):
+        status = "retired"
+    else:
+        status = (
+            "active"
+            if mature_enough
+            else "provisional"
+        )
     source = {
         key: row.get(key)
         for key in (
@@ -373,7 +623,7 @@ def _leaderboard_row_from_rating_row(
         "attempt_id": row.get("attempt_id"),
         "iteration": _checkpoint_iteration(checkpoint_ref, row.get("iteration")),
         "label": str(row.get("label") or checkpoint_id),
-        "rank": int(row.get("rank", 0) or 0),
+        "rank": rank,
         "rating": float(row.get("rating", 0.0) or 0.0),
         "status": status,
         "eligibility": {
@@ -382,9 +632,11 @@ def _leaderboard_row_from_rating_row(
                 games=games,
                 distinct_opponents=distinct_opponents,
                 failure_rate=failure_rate,
+                rank=rank,
                 active_min_valid_games=active_min_valid_games,
                 active_min_distinct_opponents=active_min_distinct_opponents,
                 max_failure_rate=max_failure_rate,
+                max_active_rank=max_active_rank,
             ),
         },
         "evidence": {
@@ -432,6 +684,110 @@ def _assignment_entry_from_row(slot_name: str, row: Mapping[str, Any], *, weight
     }
 
 
+def _validate_stable_profile(profile: str) -> str:
+    normalized = str(profile or "").strip()
+    if normalized not in STABLE_SLOT_PROFILES:
+        raise ValueError(
+            f"stable_slots_v1 profile must be one of {sorted(STABLE_SLOT_PROFILES)!r}"
+        )
+    return normalized
+
+
+def _validate_stable_sentinel(sentinel: str) -> str:
+    normalized = str(sentinel or "").strip()
+    if normalized not in STABLE_SENTINELS:
+        raise ValueError(
+            f"stable_slots_v1 sentinel must be one of {sorted(STABLE_SENTINELS)!r}"
+        )
+    return normalized
+
+
+def _validate_checkpoint_death_mode(checkpoint_death_mode: str) -> str:
+    normalized = str(checkpoint_death_mode or OPPONENT_DEATH_MODE_NORMAL).strip()
+    if normalized not in {OPPONENT_DEATH_MODE_NORMAL, OPPONENT_DEATH_MODE_IMMORTAL}:
+        raise ValueError(
+            "stable_slots_v1 checkpoint_death_mode must be "
+            f"{OPPONENT_DEATH_MODE_NORMAL!r} or {OPPONENT_DEATH_MODE_IMMORTAL!r}"
+        )
+    return normalized
+
+
+def _validate_expected_rating_context_hash(
+    expected_rating_context_hash: str | None,
+    *,
+    snapshot: Mapping[str, Any],
+) -> None:
+    if expected_rating_context_hash is None:
+        return
+    actual_context_hash = snapshot.get("context", {}).get("rating_context_hash")
+    if str(expected_rating_context_hash) != str(actual_context_hash):
+        raise ValueError(
+            "stable_slots_v1 expected rating_context_hash "
+            f"{expected_rating_context_hash!r}; got {actual_context_hash!r}"
+        )
+
+
+def _stable_slot_names(*, profile: str, sentinel: str) -> list[str]:
+    if profile == STABLE_SLOT_PROFILE_3:
+        if sentinel == STABLE_SENTINEL_NONE:
+            return ["champion", "recent_strong", "diverse_challenger"]
+        return ["champion", "recent_strong", "sentinel"]
+    if profile == STABLE_SLOT_PROFILE_5:
+        if sentinel == STABLE_SENTINEL_NONE:
+            raise ValueError("stable_5 requires a sentinel; use stable_3 for checkpoint-only slots")
+        slots = ["champion", "recent_strong", "diverse_challenger", "anchor"]
+        slots.append("sentinel")
+        return slots
+    raise RuntimeError(f"unknown stable slot profile {profile!r}")
+
+
+def _stable_sentinel_entry(
+    sentinel: str,
+    *,
+    weight: float,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    if sentinel == STABLE_SENTINEL_BLANK_CANVAS:
+        entry = {
+            "name": "slot_sentinel_blank_canvas",
+            "weight": float(weight),
+            "tags": ["slot:sentinel", "scripted", "blank", "strategy:stable_slots_v1"],
+            "opponent_policy_kind": OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
+            "opponent_runtime_mode": OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP,
+            "opponent_death_mode": OPPONENT_DEATH_MODE_NORMAL,
+        }
+        return entry, {
+            "source": "hardcoded",
+            "entry_name": entry["name"],
+            "slot": "sentinel",
+            "slot_kind": STABLE_SENTINEL_BLANK_CANVAS,
+            "leaderboard_status": "hardcoded_blank_canvas",
+            "selection_reason": "stable_sentinel",
+        }
+    if sentinel == STABLE_SENTINEL_WALL_AVOIDANT_IMMORTAL:
+        entry = {
+            "name": "slot_sentinel_wall_avoidant_immortal",
+            "weight": float(weight),
+            "tags": [
+                "slot:sentinel",
+                "scripted",
+                "immortal",
+                "strategy:stable_slots_v1",
+            ],
+            "opponent_policy_kind": OPPONENT_POLICY_KIND_PROACTIVE_WALL_AVOIDANT,
+            "opponent_runtime_mode": OPPONENT_RUNTIME_MODE_NORMAL,
+            "opponent_death_mode": OPPONENT_DEATH_MODE_IMMORTAL,
+        }
+        return entry, {
+            "source": "hardcoded",
+            "entry_name": entry["name"],
+            "slot": "sentinel",
+            "slot_kind": STABLE_SENTINEL_WALL_AVOIDANT_IMMORTAL,
+            "leaderboard_status": "hardcoded_wall_avoidant_immortal",
+            "selection_reason": "stable_sentinel",
+        }
+    raise ValueError(f"stable_slots_v1 cannot build sentinel {sentinel!r}")
+
+
 def _eligible_assignment_rows(
     rows: Sequence[Mapping[str, Any]],
     *,
@@ -466,7 +822,7 @@ def _first_row(
     for row in rows:
         if str(row["checkpoint_id"]) in used_ids:
             continue
-        if latest_for_run is not None and bool(row.get("latest_for_run", False)) != latest_for_run:
+        if latest_for_run is not None and _row_latest_for_run(row) != latest_for_run:
             continue
         return dict(row)
     return None
@@ -491,6 +847,63 @@ def _anchor_row(rows: Sequence[Mapping[str, Any]], used_ids: set[str]) -> dict[s
     midpoint = len(rows) // 2
     ordered = list(rows[midpoint:]) + list(rows[:midpoint])
     return _first_row(ordered, used_ids)
+
+
+def _first_stable_row(
+    rows: Sequence[Mapping[str, Any]],
+    used_ids: set[str],
+    used_refs: set[str],
+    *,
+    latest_for_run: bool | None = None,
+) -> dict[str, Any] | None:
+    for row in rows:
+        if str(row["checkpoint_id"]) in used_ids:
+            continue
+        if str(row["checkpoint_ref"]) in used_refs:
+            continue
+        if latest_for_run is not None and _row_latest_for_run(row) != latest_for_run:
+            continue
+        return dict(row)
+    return None
+
+
+def _diverse_stable_row(
+    rows: Sequence[Mapping[str, Any]],
+    used_ids: set[str],
+    used_refs: set[str],
+    selected_rows: Sequence[Mapping[str, Any]],
+) -> dict[str, Any] | None:
+    selected_run_ids = {
+        str(row.get("run_id"))
+        for row in selected_rows
+        if row.get("run_id")
+    }
+    for row in rows:
+        if str(row["checkpoint_id"]) in used_ids:
+            continue
+        if str(row["checkpoint_ref"]) in used_refs:
+            continue
+        run_id = str(row.get("run_id") or "")
+        if run_id and run_id not in selected_run_ids:
+            return dict(row)
+    return None
+
+
+def _anchor_stable_row(
+    rows: Sequence[Mapping[str, Any]],
+    used_ids: set[str],
+    used_refs: set[str],
+) -> dict[str, Any] | None:
+    midpoint = len(rows) // 2
+    ordered = list(rows[midpoint:]) + list(rows[:midpoint])
+    return _first_stable_row(ordered, used_ids, used_refs)
+
+
+def _row_latest_for_run(row: Mapping[str, Any]) -> bool:
+    recency = row.get("recency")
+    if isinstance(recency, Mapping) and "latest_for_run" in recency:
+        return bool(recency.get("latest_for_run"))
+    return bool(row.get("latest_for_run", False))
 
 
 def _snapshot_sha256(snapshot: Mapping[str, Any]) -> str:
@@ -532,11 +945,15 @@ def _eligibility_reasons(
     games: int,
     distinct_opponents: int,
     failure_rate: float,
+    rank: int,
     active_min_valid_games: int,
     active_min_distinct_opponents: int,
     max_failure_rate: float,
+    max_active_rank: int,
 ) -> list[str]:
     reasons: list[str] = []
+    if rank > 0 and rank > max_active_rank:
+        reasons.append("below_active_rank_limit")
     if games < active_min_valid_games:
         reasons.append("insufficient_games")
     if distinct_opponents < active_min_distinct_opponents:

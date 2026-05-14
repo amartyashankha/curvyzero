@@ -193,10 +193,12 @@ def run_profile_grid(
         "includes_policy_search": False,
         "includes_learner": False,
         "render_timing": (
-            "render_sec is scalar_render_sec plus perspective_render_sec. These wrap "
+            "render_sec is scalar_render_sec plus perspective_render_sec plus "
+            "direct_fast_render_sec. These wrap "
             "curvyzero_source_state_visual_survival_lightzero_env."
-            "render_source_state_canvas_gray64 and "
-            "render_source_state_canvas_gray64_player_perspectives"
+            "render_source_state_canvas_gray64, "
+            "render_source_state_canvas_gray64_player_perspectives, and "
+            "render_source_state_gray64_fast_player_perspectives"
         ),
         "env_timing": "profile_env_timing_sec from the current source-state env wrapper",
         "config": {
@@ -277,6 +279,8 @@ def _run_one_rollout(
         "scalar_render_calls": int(stats.scalar_calls),
         "perspective_render_sec": float(stats.perspective_seconds),
         "perspective_render_calls": int(stats.perspective_calls),
+        "direct_fast_render_sec": float(stats.direct_fast_seconds),
+        "direct_fast_render_calls": int(stats.direct_fast_calls),
         "scalar_dirty_render_cache_stats": _cache_stats(
             getattr(env, "_scalar_dirty_render_cache", None)
         ),
@@ -376,26 +380,31 @@ class _RenderStats:
         self.scalar_calls = 0
         self.perspective_seconds = 0.0
         self.perspective_calls = 0
+        self.direct_fast_seconds = 0.0
+        self.direct_fast_calls = 0
 
     def reset(self) -> None:
         self.scalar_seconds = 0.0
         self.scalar_calls = 0
         self.perspective_seconds = 0.0
         self.perspective_calls = 0
+        self.direct_fast_seconds = 0.0
+        self.direct_fast_calls = 0
 
     @property
     def seconds(self) -> float:
-        return self.scalar_seconds + self.perspective_seconds
+        return self.scalar_seconds + self.perspective_seconds + self.direct_fast_seconds
 
     @property
     def calls(self) -> int:
-        return self.scalar_calls + self.perspective_calls
+        return self.scalar_calls + self.perspective_calls + self.direct_fast_calls
 
 
 @contextmanager
 def _timed_gray64_render(stats: _RenderStats):
     original_scalar = env_mod.render_source_state_canvas_gray64
     original_perspective = env_mod.render_source_state_canvas_gray64_player_perspectives
+    original_direct_fast = env_mod.render_source_state_gray64_fast_player_perspectives
 
     def wrapped_scalar(*args: Any, **kwargs: Any) -> Any:
         started = time.perf_counter()
@@ -413,13 +422,23 @@ def _timed_gray64_render(stats: _RenderStats):
             stats.perspective_seconds += time.perf_counter() - started
             stats.perspective_calls += 1
 
+    def wrapped_direct_fast(*args: Any, **kwargs: Any) -> Any:
+        started = time.perf_counter()
+        try:
+            return original_direct_fast(*args, **kwargs)
+        finally:
+            stats.direct_fast_seconds += time.perf_counter() - started
+            stats.direct_fast_calls += 1
+
     env_mod.render_source_state_canvas_gray64 = wrapped_scalar
     env_mod.render_source_state_canvas_gray64_player_perspectives = wrapped_perspective
+    env_mod.render_source_state_gray64_fast_player_perspectives = wrapped_direct_fast
     try:
         yield
     finally:
         env_mod.render_source_state_canvas_gray64 = original_scalar
         env_mod.render_source_state_canvas_gray64_player_perspectives = original_perspective
+        env_mod.render_source_state_gray64_fast_player_perspectives = original_direct_fast
 
 
 def _summarize_cell(
@@ -433,6 +452,9 @@ def _summarize_cell(
     scalar_renders = [float(run.get("scalar_render_sec", 0.0)) for run in runs]
     perspective_renders = [
         float(run.get("perspective_render_sec", 0.0)) for run in runs
+    ]
+    direct_fast_renders = [
+        float(run.get("direct_fast_render_sec", 0.0)) for run in runs
     ]
     observation = [
         float(run["timing_sums"].get("observation_sec", 0.0)) for run in runs
@@ -448,6 +470,7 @@ def _summarize_cell(
     render_median = statistics.median(renders)
     scalar_render_median = statistics.median(scalar_renders)
     perspective_render_median = statistics.median(perspective_renders)
+    direct_fast_render_median = statistics.median(direct_fast_renders)
     wall_median = statistics.median(walls)
     observation_median = statistics.median(observation)
     vector_median = statistics.median(vector)
@@ -463,6 +486,7 @@ def _summarize_cell(
         "render_sec_median": render_median,
         "scalar_render_sec_median": scalar_render_median,
         "perspective_render_sec_median": perspective_render_median,
+        "direct_fast_render_sec_median": direct_fast_render_median,
         "render_fraction_of_wall": render_median / wall_median if wall_median > 0 else None,
         "other_sec_median": wall_median - render_median,
         "observation_sec_median": observation_median,
@@ -481,6 +505,9 @@ def _summarize_cell(
         ),
         "perspective_render_calls_median": statistics.median(
             [int(run.get("perspective_render_calls", 0)) for run in runs]
+        ),
+        "direct_fast_render_calls_median": statistics.median(
+            [int(run.get("direct_fast_render_calls", 0)) for run in runs]
         ),
         "scalar_dirty_render_cache_stats_last": runs[-1].get(
             "scalar_dirty_render_cache_stats"
@@ -508,7 +535,7 @@ def markdown_report(report: dict[str, Any]) -> str:
             [
                 f"## {mode}",
                 "",
-                "| steps | wall s | steps/s | render s | render % | scalar s | perspective s | observation s | vector step s | other s |",
+                "| steps | wall s | steps/s | render s | render % | scalar s | perspective/direct s | observation s | vector step s | other s |",
                 "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
             ]
         )
@@ -521,7 +548,7 @@ def markdown_report(report: dict[str, Any]) -> str:
                 f"{cell['render_sec_median']:.3f} | "
                 f"{100.0 * cell['render_fraction_of_wall']:.1f}% | "
                 f"{cell['scalar_render_sec_median']:.3f} | "
-                f"{cell['perspective_render_sec_median']:.3f} | "
+                f"{cell['perspective_render_sec_median'] + cell['direct_fast_render_sec_median']:.3f} | "
                 f"{cell['observation_sec_median']:.3f} | "
                 f"{cell['vector_step_sec_median']:.3f} | "
                 f"{cell['other_sec_median']:.3f} |"

@@ -4,12 +4,14 @@
 
 | Gap | Why it matters | First test |
 | --- | --- | --- |
-| Live Dict pointer repair | Publisher writes pointer, but no explicit repair path. | Missing/stale Dict falls back to Volume snapshot and can be republished. |
+| Live Dict pointer repair | Publisher writes pointer, but Modal Dict is not durable truth. | Local repair command repopulates missing/stale Dict from validated immutable Volume snapshot; remote smoke still needed. |
 | Production assignment runbook | Assignment writer works, but the operator flow needs one documented safe path. | Runbook command stores `assignment.json` and `audit.json` under attempt path and records the returned refs. |
-| Intake continuation | Online Elo needs to add new checkpoints without resetting evidence. | Existing `latest.json` starts next round and preserves pair history. |
-| Queue/dedupe repair | Queue events are not durable enough alone. | Duplicate/lost event repaired by periodic scan. |
+| Run-scoped slot recipe control | Operators should be able to change a run's desired slots after launch without changing trainer code. | Dict recipe validator plus materializer smoke writes a new immutable assignment and audit for one run id. |
+| Intake continuation remote proof | Online Elo needs to add new checkpoints without resetting evidence. Local tests cover the contract; remote/prod proof is still needed. | Existing `latest.json` starts next round and preserves pair history in a bounded remote smoke. |
+| Queue/dedupe repair remote proof | Queue events are not durable enough alone. Local tests cover repair; remote/prod proof is still needed. | Duplicate/lost event repaired by periodic scan in a bounded remote smoke. |
 | One-frame tournament parity | New leaderboard must match current train cadence. | Rating spec with `decision_source_frames=1` is recorded, hashed, and used in game summaries. |
-| Larger bounded closed-loop smoke | Tiny manual smoke proves plumbing, not scale or repair behavior. | Run a bounded multi-checkpoint smoke and verify publish -> assignment -> train still works. |
+| Stable-slot recency smoke | `recent_strong` only means recent if rating rows carry run/attempt/iteration/latest metadata. | Rerun a bounded multi-checkpoint smoke and verify `recent_strong` selects the latest checkpoint for the watched run, not only the best remaining row. |
+| Larger bounded closed-loop smoke | Tiny manual smoke proves plumbing, not scale or repair behavior. | Run a bounded multi-checkpoint smoke and verify publish -> assignment -> train still works after metadata repair. |
 | Seeded non-checkpoint players | Scripted/hand-coded baselines need roster identity if included. | Normalize scripted player specs without fake checkpoint refs. |
 | Fractional invincibility overlay | Some percentage of episodes may need invincible opponents regardless of base policy. | Deterministic selection applies `opponent_death_mode=immortal` as an overlay and records telemetry/audit. |
 
@@ -21,21 +23,87 @@
 - `tests/test_curvyzero_source_state_visual_survival_lightzero_env.py`
 - `tests/test_curvytron_live_checkpoint_eval_plumbing.py`
 
+## Testing Strategy
+
+Keep the tests layered and honest:
+
+1. Pure contract tests for snapshot, assignment, scheduler, and intake helpers.
+2. Local Modal-function tests for publisher, intake, drain, assignment writer,
+   website readers, and trainer/poller command wiring.
+3. Tiny remote smokes for cross-Volume handoff.
+4. Bounded larger smokes only after repair and idempotency paths exist.
+
+Scheduler fairness does not mean uniform pairing. For the Elo service, fairness
+means:
+
+- new or provisional checkpoints get enough placement games and distinct
+  opponents before top-policy bias dominates;
+- higher-rated policies are sampled more often, but lower-ranked or uncertain
+  policies still appear;
+- repeated comfortable pairs are de-prioritized when fresh useful pairs exist;
+- duplicate pairs are blocked within a round;
+- some cross-band games remain so scalar Elo does not hide non-transitive
+  matchups.
+
+Do not treat local contract coverage as production-scale proof. Production gates
+still need remote queue/stale-claim proof, a one-frame public leaderboard remote
+smoke, and a larger closed-loop smoke.
+
 ## New Test Groups
+
+### Scheduler Selection
+
+- done: explicit `all_pairs` enumerates unordered non-self pairs exactly once;
+- done: `random` selection is seeded, budgeted, and duplicate-free within a
+  round;
+- done: `adaptive_v0` covers new checkpoints, undercovered checkpoints,
+  opponent-id evidence, placement-before-top-band ordering, and top-band bias
+  without starving the lower half in a synthetic round;
+- done: multi-round synthetic test proving placement floors are reached before
+  top-band repeats dominate;
+- done: pair-history freshness test proving a useful unplayed pair is preferred
+  over a repeatedly played near-rating pair;
+- done: active-pool limit defaults to top 100, mature tail rows are marked
+  `retired`, retired rows are excluded from adaptive scheduling, and unplaced
+  tail rows stay `provisional` instead of being retired early;
+- next: seat-balance policy for repeated canonical pairs;
 
 ### Public Leaderboard Contract
 
 - done for pure builder in `tests/test_opponent_leaderboard.py`;
 - done for tournament-side publisher local coverage and remote smoke;
-- next: repair/fallback command for stale or missing Dict pointer.
+- done: training-facing publish rejects snapshots with no active rows;
+- done: explicitly allowed no-active snapshots are diagnostic-only and do not
+  move `latest.json` or the live `current:` pointer;
+- done: repair/fallback command for stale or missing Dict pointer rebuilds from
+  immutable snapshot files and refuses unproven `latest.json`;
+- done: reject legacy or non-one-frame rating contexts for the public training
+  leaderboard unless explicitly labeled legacy.
+- done: pointer compact summary separates `active_count`, `provisional_count`,
+  and `retired_count` so retired rows are not misreported as provisional.
 
-### Assignment Selector
+### Assignment Materializer
 
 - done for pure top-slots v0 in `tests/test_opponent_leaderboard.py`;
 - done for writing assignment/audit artifacts under a training attempt in the
   smoke path;
-- next: improve diversity/lineage logic and document the production operator
-  flow.
+- decision: purge `slot_rules_v0` as the production direction;
+- done: implement and test `stable_slots_v1` as the Coach-owned materializer;
+- done: verify `stable_slots_v1` uses nested `recency.latest_for_run`;
+- done: tournament/intake rating rows preserve run id, attempt id, iteration,
+  mtime, and `latest_for_run` so `recent_strong` has real metadata;
+- done: dedupe checkpoint entries by checkpoint id and checkpoint ref;
+- done: test blank and wall-avoidant immortal sentinels as normal assignment
+  entries;
+- done: test context hash mismatch, provisional row gating, audit source snapshot
+  hash, per-slot evidence, and parser compatibility;
+- done: tournament rating rows preserve checkpoint `run_id`, `attempt_id`,
+  `iteration`, `checkpoint_mtime_ns`, and per-run `latest_for_run` metadata;
+- next: remote-smoke `stable_slots_v1` after this metadata repair and inspect
+  the concrete assignment entries;
+- next: document the production operator flow.
+- next: implement run-scoped slot recipe Dict control and materialize it into
+  assignment/audit artifacts.
 
 ### Trainer Wiring
 
@@ -50,11 +118,28 @@
 
 ### Intake And Online Elo
 
-- scheduled subscriber discovers new broad checkpoints;
-- duplicate checkpoint events are harmless;
-- queue loss can be repaired from manifest state;
-- drain cannot spawn into existing rating run unless continuation is explicit;
-- continuation loads previous `latest.json`, increments round index, and preserves pair history.
+- local: scheduled subscriber discovers new broad checkpoints;
+- local: duplicate checkpoint events are harmless;
+- local: submit rejects scheduler knobs and only accepts candidate refs/run IDs;
+- local: drain uses manifest policy unless overrides are explicitly allowed;
+- local: live watches are seeded with run IDs or run prefixes;
+- local: explicit checkpoint refs are frozen seeds and do not discover future
+  checkpoints;
+- local: discovery scans `train/lightzero_exp*/ckpt/iteration_*.pth.tar`, including
+  timestamped DI-engine experiment folders;
+- local: drain cannot spawn into an existing rating run unless continuation is
+  explicit with `continue_from_latest=True`;
+- local: continuation uses the full `seen_checkpoint_refs` pool, loads previous
+  `latest.json`, increments round index, and preserves pair history.
+- local: continuation preserves retired checkpoint history in the rating spec;
+  the scheduler filters retired rows at pair selection time instead of deleting
+  them from durable rating state.
+- local: queue loss can be repaired from manifest queued refs when drain finds
+  an empty queue;
+- local: stale claims expire or repair without consuming events twice;
+- next: missing Dict manifest can be rebuilt from a Volume manifest;
+- next: replaying the same rating round output is idempotent and does not
+  double-count pair history or scheduler reason counts.
 
 ### One-Frame Evaluator
 
@@ -96,24 +181,29 @@
 
 ## Blockers Before Overnight Leaderboard-Fed Training
 
-1. Modal Dict pointer repair/fallback is absent.
+1. Modal Dict pointer repair/fallback has local tests, but still needs remote
+   operator smoke.
 2. Assignment writer/operator flow needs a production runbook.
 3. Periodic safe refresh semantics are absent.
-4. Online Elo continuation and queue/dedupe repair are absent.
-5. One-frame tournament/leaderboard run is not yet validated as the current public source.
-6. A larger bounded closed-loop smoke is still needed.
+4. Online Elo continuation and queue/stale-claim repair have local contract
+   tests, but production-scale proof is still needed.
+5. One-frame tournament/leaderboard run is locally gated but not yet validated
+   as the current public source by remote smoke.
+6. A larger bounded closed-loop smoke is still needed, and it should explicitly
+   verify the `recent_strong` slot.
 
 ## Minimal End-To-End Test Plan
 
 1. Fixture rating snapshot with five eligible rows. **Done for pure path.**
 2. Build public leaderboard snapshot. **Done for pure path.**
-3. Select five assignment slots. **Done for pure path.**
-4. Parse assignment with existing trainer parser. **Done for pure path.**
+3. Materialize 3-5 `stable_slots_v1` assignment entries. **Done locally.**
+4. Parse materialized assignment with existing trainer parser. **Done locally.**
 5. Launch tiny dry/train smoke using the assignment ref. **Done manually.**
 6. Emit one checkpoint. **Done manually.**
 7. Intake discovers checkpoint. **Done manually.**
 8. Rating updates. **Done manually.**
-9. New assignment generated at explicit refresh boundary. **Done manually.**
+9. New `stable_slots_v1` assignment generated at explicit refresh boundary.
+   **Done mechanically once; rerun after checkpoint-recency metadata repair.**
 
 ## Non-Blockers For Plain Overnight Training
 

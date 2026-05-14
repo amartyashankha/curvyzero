@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from curvyzero.infra.modal import curvyzero_checkpoint_tournament as modal_arena
+from curvyzero.tournament import checkpoint_intake_service as intake_service
 from curvyzero.tournament import curvytron_checkpoint_tournament as arena
 
 
@@ -879,6 +880,75 @@ def test_checkpoint_label_from_ref_includes_run_and_iteration() -> None:
     assert checkpoint["label"] == "blank-browser-heavy-collect64-r298 i300773"
 
 
+def test_checkpoint_spec_extracts_assignment_slot_metadata_from_ref() -> None:
+    checkpoint = arena.normalize_checkpoint_spec(
+        {
+            "checkpoint_ref": (
+                "training/lightzero-curvytron-visual-survival/"
+                "slot-smoke-run-a/"
+                "attempts/assignment-consume-001/"
+                "train/lightzero_exp_260514_123802/ckpt/iteration_32.pth.tar"
+            ),
+            "checkpoint_mtime_ns": "123456",
+        }
+    )
+
+    assert checkpoint["run_id"] == "slot-smoke-run-a"
+    assert checkpoint["attempt_id"] == "assignment-consume-001"
+    assert checkpoint["iteration"] == 32
+    assert checkpoint["checkpoint_mtime_ns"] == 123456
+    assert checkpoint["latest_for_run"] is False
+
+
+def test_checkpoint_specs_mark_only_latest_iteration_per_run() -> None:
+    checkpoints = arena.normalize_checkpoint_specs(
+        [
+            {
+                "checkpoint_ref": (
+                    "training/lightzero-curvytron-visual-survival/run-a/"
+                    "attempts/a/train/lightzero_exp/ckpt/iteration_4.pth.tar"
+                ),
+                "latest_for_run": True,
+            },
+            (
+                "training/lightzero-curvytron-visual-survival/run-a/"
+                "attempts/a/train/lightzero_exp/ckpt/iteration_32.pth.tar"
+            ),
+            (
+                "training/lightzero-curvytron-visual-survival/run-b/"
+                "attempts/b/train/lightzero_exp/ckpt/iteration_7.pth.tar"
+            ),
+        ]
+    )
+
+    by_iteration = {checkpoint["iteration"]: checkpoint for checkpoint in checkpoints}
+    assert by_iteration[4]["latest_for_run"] is False
+    assert by_iteration[32]["latest_for_run"] is True
+    assert by_iteration[7]["latest_for_run"] is True
+
+
+def test_checkpoint_specs_use_mtime_to_break_same_iteration_latest_ties() -> None:
+    old_ref = (
+        "training/lightzero-curvytron-visual-survival/run-a/"
+        "attempts/a/train/lightzero_exp/ckpt/iteration_32.pth.tar"
+    )
+    newer_ref = (
+        "training/lightzero-curvytron-visual-survival/run-a/"
+        "attempts/a/train/lightzero_exp_260514_123802/ckpt/iteration_32.pth.tar"
+    )
+
+    checkpoints = arena.normalize_checkpoint_specs(
+        [
+            {"checkpoint_ref": old_ref, "checkpoint_mtime_ns": 100},
+            {"checkpoint_ref": newer_ref, "checkpoint_mtime_ns": 200},
+        ]
+    )
+    by_ref = {checkpoint["checkpoint_ref"]: checkpoint for checkpoint in checkpoints}
+
+    assert by_ref[old_ref]["latest_for_run"] is False
+    assert by_ref[newer_ref]["latest_for_run"] is True
+
+
 def test_checkpoint_labels_disambiguate_duplicate_visible_names() -> None:
     checkpoints = arena.normalize_checkpoint_specs(
         [
@@ -1268,6 +1338,43 @@ def test_rating_snapshot_uses_batch_elo_and_is_order_stable() -> None:
     assert snapshot["ratings"][0]["rating"] > arena.DEFAULT_RATING_INITIAL_RATING
 
 
+def test_rating_snapshot_carries_checkpoint_metadata_into_rows() -> None:
+    old_ref = (
+        "training/lightzero-curvytron-visual-survival/run-a/"
+        "attempts/attempt-a/train/lightzero_exp/ckpt/iteration_10.pth.tar"
+    )
+    new_ref = (
+        "training/lightzero-curvytron-visual-survival/run-a/"
+        "attempts/attempt-a/train/lightzero_exp/ckpt/iteration_20.pth.tar"
+    )
+    rating_spec = arena.normalize_rating_spec(
+        {
+            "tournament_id": "arena-a",
+            "rating_run_id": "elo-test",
+            "checkpoints": [
+                {"checkpoint_ref": old_ref, "checkpoint_mtime_ns": 100},
+                {"checkpoint_ref": new_ref, "checkpoint_mtime_ns": 200},
+            ],
+            "games_per_pair": 3,
+        }
+    )
+
+    snapshot = arena.rating_snapshot_from_pair_results(
+        pair_results=[],
+        rating_spec=rating_spec,
+        created_at="2026-05-14T00:00:00Z",
+    )
+    rows_by_ref = {row["checkpoint_ref"]: row for row in snapshot["ratings"]}
+
+    assert rows_by_ref[old_ref]["run_id"] == "run-a"
+    assert rows_by_ref[old_ref]["attempt_id"] == "attempt-a"
+    assert rows_by_ref[old_ref]["iteration"] == 10
+    assert rows_by_ref[old_ref]["latest_for_run"] is False
+    assert rows_by_ref[old_ref]["checkpoint_mtime_ns"] == 100
+    assert rows_by_ref[new_ref]["latest_for_run"] is True
+    assert rows_by_ref[new_ref]["checkpoint_mtime_ns"] == 200
+
+
 def test_rating_snapshot_status_requires_placement_evidence_target() -> None:
     refs = [_checkpoint_ref(f"run-{index:02d}", index * 10) for index in range(21)]
     rating_spec = arena.normalize_rating_spec(
@@ -1284,7 +1391,7 @@ def test_rating_snapshot_status_requires_placement_evidence_target() -> None:
     previous_snapshot = {
         "schema_id": arena.RATING_SNAPSHOT_SCHEMA_ID,
         "context_hash": arena.rating_context_hash(rating_spec),
-        "checkpoint_roster": arena.rating_roster_by_checkpoint(checkpoints),
+        "checkpoint_roster": arena.rating_roster_by_checkpoint(rating_spec["checkpoints"]),
         "ratings": [
             {
                 "checkpoint_id": checkpoint["checkpoint_id"],
@@ -1315,6 +1422,119 @@ def test_rating_snapshot_status_requires_placement_evidence_target() -> None:
     assert rows_by_id[checkpoints[1]["checkpoint_id"]]["status"] == "active"
 
 
+def test_rating_snapshot_defaults_to_top_100_active_pool_and_retains_retired_tail() -> None:
+    refs = [_checkpoint_ref(f"run-{index:03d}", index * 10) for index in range(101)]
+    rating_spec = arena.normalize_rating_spec(
+        {
+            "tournament_id": "arena-a",
+            "rating_run_id": "elo-test",
+            "checkpoints": refs,
+            "games_per_pair": 21,
+            "placement_min_games": 420,
+            "placement_min_opponents": 20,
+        }
+    )
+    checkpoints = rating_spec["checkpoints"]
+    previous_snapshot = {
+        "schema_id": arena.RATING_SNAPSHOT_SCHEMA_ID,
+        "context_hash": arena.rating_context_hash(rating_spec),
+        "checkpoint_roster": arena.rating_roster_by_checkpoint(checkpoints),
+        "ratings": [
+            {
+                "checkpoint_id": checkpoint["checkpoint_id"],
+                "rating": 2000.0 - index,
+                "games": 420,
+                "opponent_ids": [
+                    checkpoints[(index + offset) % len(checkpoints)]["checkpoint_id"]
+                    for offset in range(1, 21)
+                ],
+            }
+            for index, checkpoint in enumerate(checkpoints)
+        ],
+    }
+
+    snapshot = arena.rating_snapshot_from_pair_results(
+        pair_results=[],
+        rating_spec=rating_spec,
+        previous_snapshot=previous_snapshot,
+        round_index=1,
+        created_at="2026-05-13T00:00:00Z",
+    )
+
+    assert len(snapshot["ratings"]) == 101
+    assert [row["status"] for row in snapshot["ratings"][:100]] == ["active"] * 100
+    assert snapshot["ratings"][100]["rank"] == 101
+    assert snapshot["ratings"][100]["status"] == "retired"
+    assert snapshot["ratings"][100]["retired_reason"] == "below_active_pool_limit"
+
+
+def test_adaptive_scheduler_uses_top_pool_and_provisional_entrants_not_retired_tail() -> None:
+    checkpoints = [
+        {
+            "checkpoint_ref": _checkpoint_ref(f"run-{index:03d}", index * 10),
+            "checkpoint_id": f"ckpt-{index:03d}",
+        }
+        for index in range(102)
+    ]
+    rating_spec = arena.normalize_rating_spec(
+        {
+            "tournament_id": "arena-a",
+            "rating_run_id": "elo-test",
+            "checkpoints": checkpoints,
+            "pair_selection": arena.RATING_PAIR_SELECTION_ADAPTIVE_V0,
+            "pairs_per_round": 40,
+            "games_per_pair": 21,
+            "placement_min_games": 420,
+            "placement_min_opponents": 20,
+        }
+    )
+    previous_snapshot = {
+        "schema_id": arena.RATING_SNAPSHOT_SCHEMA_ID,
+        "context_hash": arena.rating_context_hash(rating_spec),
+        "checkpoint_roster": arena.rating_roster_by_checkpoint(checkpoints),
+        "ratings": [
+            {
+                "checkpoint_id": checkpoint["checkpoint_id"],
+                "checkpoint_ref": checkpoint["checkpoint_ref"],
+                "rank": index + 1,
+                "rating": 2000.0 - index,
+                "games": 420,
+                "opponent_ids": [
+                    checkpoints[(index + offset) % len(checkpoints)]["checkpoint_id"]
+                    for offset in range(1, 21)
+                ],
+                "status": "active" if index < 100 else "retired",
+            }
+            for index, checkpoint in enumerate(checkpoints[:101])
+        ]
+        + [
+            {
+                "checkpoint_id": checkpoints[101]["checkpoint_id"],
+                "checkpoint_ref": checkpoints[101]["checkpoint_ref"],
+                "rank": 102,
+                "rating": 1000.0,
+                "games": 0,
+                "opponent_ids": [],
+                "status": "provisional",
+            }
+        ],
+    }
+
+    pairs = arena.build_rating_round_pair_specs(
+        rating_spec,
+        previous_snapshot=previous_snapshot,
+        round_index=1,
+    )
+    paired_ids = {
+        str(player["checkpoint_id"])
+        for pair in pairs
+        for player in pair["players"]
+    }
+
+    assert "ckpt-100" not in paired_ids
+    assert "ckpt-101" in paired_ids
+
+
 def test_rating_pair_specs_carry_shard_settings() -> None:
     rating_spec = arena.normalize_rating_spec(
         {
@@ -1334,6 +1554,99 @@ def test_rating_pair_specs_carry_shard_settings() -> None:
     assert pair["reuse_policies_per_shard"] is False
     assert [shard["game_count"] for shard in shards] == [2, 2, 1]
     assert all(shard["reuse_policies"] is False for shard in shards)
+
+
+def test_all_pairs_explicitly_enumerates_unordered_non_self_pairs() -> None:
+    refs = [_checkpoint_ref(f"run-{index}", index * 10) for index in range(4)]
+    rating_spec = arena.normalize_rating_spec(
+        {
+            "tournament_id": "arena-a",
+            "rating_run_id": "elo-test",
+            "checkpoints": refs,
+            "pair_selection": arena.RATING_PAIR_SELECTION_ALL_PAIRS,
+            "games_per_pair": 3,
+        }
+    )
+
+    pairs = arena.build_rating_round_pair_specs(rating_spec)
+    pair_ids = [
+        tuple(player["checkpoint_id"] for player in pair["players"])
+        for pair in pairs
+    ]
+    canonical_pair_keys = {
+        arena.rating_pair_key(*pair_id)
+        for pair_id in pair_ids
+    }
+
+    assert len(pairs) == 6
+    assert len(canonical_pair_keys) == len(pairs)
+    assert all(left != right for left, right in pair_ids)
+    assert pair_ids == [
+        (
+            rating_spec["checkpoints"][0]["checkpoint_id"],
+            rating_spec["checkpoints"][1]["checkpoint_id"],
+        ),
+        (
+            rating_spec["checkpoints"][0]["checkpoint_id"],
+            rating_spec["checkpoints"][2]["checkpoint_id"],
+        ),
+        (
+            rating_spec["checkpoints"][0]["checkpoint_id"],
+            rating_spec["checkpoints"][3]["checkpoint_id"],
+        ),
+        (
+            rating_spec["checkpoints"][1]["checkpoint_id"],
+            rating_spec["checkpoints"][2]["checkpoint_id"],
+        ),
+        (
+            rating_spec["checkpoints"][1]["checkpoint_id"],
+            rating_spec["checkpoints"][3]["checkpoint_id"],
+        ),
+        (
+            rating_spec["checkpoints"][2]["checkpoint_id"],
+            rating_spec["checkpoints"][3]["checkpoint_id"],
+        ),
+    ]
+
+
+def test_random_pair_selection_is_seeded_budgeted_and_unique() -> None:
+    refs = [_checkpoint_ref(f"run-{index}", index * 10) for index in range(8)]
+    rating_spec = arena.normalize_rating_spec(
+        {
+            "tournament_id": "arena-a",
+            "rating_run_id": "elo-test",
+            "checkpoints": refs,
+            "pair_selection": arena.RATING_PAIR_SELECTION_RANDOM,
+            "pairs_per_round": 5,
+            "games_per_pair": 3,
+            "seed": 99,
+        }
+    )
+
+    first = arena.build_rating_round_pair_specs(rating_spec, round_index=2)
+    repeat = arena.build_rating_round_pair_specs(rating_spec, round_index=2)
+    next_round = arena.build_rating_round_pair_specs(rating_spec, round_index=3)
+
+    def canonical_keys(pairs: list[dict]) -> list[str]:
+        return [
+            arena.rating_pair_key(
+                pair["players"][0]["checkpoint_id"],
+                pair["players"][1]["checkpoint_id"],
+            )
+            for pair in pairs
+        ]
+
+    first_keys = canonical_keys(first)
+    next_round_keys = canonical_keys(next_round)
+
+    assert len(first) == 5
+    assert first_keys == canonical_keys(repeat)
+    assert first_keys != next_round_keys
+    assert len(set(first_keys)) == len(first_keys)
+    assert all(
+        pair["players"][0]["checkpoint_id"] != pair["players"][1]["checkpoint_id"]
+        for pair in first
+    )
 
 
 def test_adaptive_v0_requires_pair_budget() -> None:
@@ -2485,7 +2798,7 @@ def test_intake_manifest_tracks_queued_refs_separately_from_seen_refs() -> None:
         tournament_id="arena-a",
         rating_run_id="elo-test",
         scan_spec={"checkpoint_refs": refs},
-        rating_defaults={},
+        rating_defaults={"pairs_per_round": 1, "games_per_pair": 3},
         discovery={"checkpoint_refs": refs},
     )
 
@@ -2497,6 +2810,235 @@ def test_intake_manifest_tracks_queued_refs_separately_from_seen_refs() -> None:
     assert queued["seen_checkpoint_count"] == 2
     assert queued["queued_checkpoint_count"] == 1
     assert queued["queued_checkpoint_refs"] == [refs[0]]
+
+
+def test_intake_rating_spec_preserves_discovery_metadata() -> None:
+    refs = [
+        _checkpoint_ref("run-a", 10),
+        _checkpoint_ref("run-a", 20),
+    ]
+    manifest = modal_arena._intake_manifest_from_discovery(
+        tournament_id="arena-a",
+        rating_run_id="elo-test",
+        scan_spec={"checkpoint_refs": refs},
+        rating_defaults={"pairs_per_round": 1, "games_per_pair": 3},
+        discovery={
+            "checkpoint_refs": refs,
+            "rows": [
+                {
+                    "checkpoint_ref": refs[0],
+                    "run_id": "run-a",
+                    "attempt_id": "attempt-a",
+                    "iteration": 10,
+                    "checkpoint_mtime_ns": 100,
+                    "found": True,
+                },
+                {
+                    "checkpoint_ref": refs[1],
+                    "run_id": "run-a",
+                    "attempt_id": "attempt-a",
+                    "iteration": 20,
+                    "checkpoint_mtime_ns": 200,
+                    "found": True,
+                },
+            ],
+        },
+    )
+
+    rating_spec = modal_arena._intake_rating_spec_from_manifest(manifest)
+    checkpoints_by_ref = {
+        checkpoint["checkpoint_ref"]: checkpoint
+        for checkpoint in rating_spec["checkpoints"]
+    }
+
+    assert checkpoints_by_ref[refs[0]]["attempt_id"] == "attempt-a"
+    assert checkpoints_by_ref[refs[0]]["iteration"] == 10
+    assert checkpoints_by_ref[refs[0]]["checkpoint_mtime_ns"] == 100
+    assert checkpoints_by_ref[refs[0]]["latest_for_run"] is False
+    assert checkpoints_by_ref[refs[1]]["iteration"] == 20
+    assert checkpoints_by_ref[refs[1]]["checkpoint_mtime_ns"] == 200
+    assert checkpoints_by_ref[refs[1]]["latest_for_run"] is True
+
+
+def test_intake_submit_rejects_scheduler_knobs_in_payload() -> None:
+    intake_service.validate_submit_payload(
+        {
+            "tournament_id": "arena-a",
+            "rating_run_id": "elo-test",
+            "checkpoint_refs": [_checkpoint_ref("run-a", 10)],
+        }
+    )
+
+    with pytest.raises(ValueError, match="games_per_pair"):
+        intake_service.validate_submit_payload(
+            {
+                "tournament_id": "arena-a",
+                "rating_run_id": "elo-test",
+                "checkpoint_refs": [_checkpoint_ref("run-a", 10)],
+                "games_per_pair": 21,
+            }
+        )
+
+
+def test_tournament_submit_cli_rejects_nondefault_scheduler_knobs() -> None:
+    modal_arena._reject_submit_cli_scheduler_overrides()
+
+    with pytest.raises(ValueError, match="pairs_per_round"):
+        modal_arena._reject_submit_cli_scheduler_overrides(pairs_per_round=20)
+
+    with pytest.raises(ValueError, match="max_runs"):
+        modal_arena._reject_submit_cli_scheduler_overrides(max_runs=5)
+
+
+def test_intake_submit_merges_run_ids_without_scheduler_changes() -> None:
+    scan_spec = {
+        "run_ids": "run-a",
+        "checkpoint_selection": arena.CHECKPOINT_SELECTION_LATEST,
+    }
+
+    merged = intake_service.merge_submit_scan_spec(
+        scan_spec,
+        {"run_ids": "run-b,run-a"},
+        default_checkpoint_selection=arena.CHECKPOINT_SELECTION_LATEST,
+    )
+
+    assert merged["run_ids"] == "run-a,run-b"
+    assert merged["checkpoint_selection"] == arena.CHECKPOINT_SELECTION_LATEST
+    assert "pairs_per_round" not in merged
+    assert "games_per_pair" not in merged
+
+
+def test_intake_submit_queues_only_new_exact_refs(tmp_path, monkeypatch) -> None:
+    old_ref = _checkpoint_ref("run-a", 10)
+    new_ref = _checkpoint_ref("run-a", 20)
+    for ref in (old_ref, new_ref):
+        path = tmp_path / ref
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"checkpoint")
+    manifest = modal_arena._intake_manifest_from_discovery(
+        tournament_id="arena-a",
+        rating_run_id="elo-test",
+        scan_spec={"checkpoint_refs": [old_ref]},
+        rating_defaults={"games_per_pair": 21, "pairs_per_round": 1},
+        discovery={"checkpoint_refs": [old_ref]},
+    )
+
+    class FakeState:
+        def __init__(self):
+            self.values = {manifest["manifest_key"]: manifest}
+
+        def get(self, key, default=None):
+            return self.values.get(key, default)
+
+        def put(self, key, value):
+            self.values[key] = value
+            return True
+
+    class FakeQueue:
+        def __init__(self):
+            self.events = []
+
+        def put(self, value, **_kwargs):
+            self.events.append(value)
+            return True
+
+    fake_state = FakeState()
+    fake_queue = FakeQueue()
+    monkeypatch.setattr(modal_arena, "RUNS_MOUNT", tmp_path)
+    monkeypatch.setattr(modal_arena, "TOURNAMENT_MOUNT", tmp_path)
+    monkeypatch.setattr(modal_arena, "checkpoint_intake_state", fake_state)
+    monkeypatch.setattr(modal_arena, "checkpoint_intake_queue", fake_queue)
+    monkeypatch.setattr(modal_arena, "_reload_volume", lambda _volume: None)
+    monkeypatch.setattr(modal_arena, "_commit_volume", lambda _volume: None)
+    monkeypatch.setattr(
+        modal_arena,
+        "_write_intake_manifest_artifact",
+        lambda _manifest: {"ref": "manifest.json"},
+    )
+
+    result = modal_arena.curvytron_checkpoint_intake_submit.local(
+        {
+            "tournament_id": "arena-a",
+            "rating_run_id": "elo-test",
+            "checkpoint_refs": [old_ref, new_ref],
+        }
+    )
+
+    assert result["status"] == "accepted"
+    assert result["accepted_checkpoint_refs"] == [new_ref]
+    assert result["already_seen_checkpoint_refs"] == [old_ref]
+    assert result["enqueued_count"] == 1
+    assert [event["checkpoint_ref"] for event in fake_queue.events] == [new_ref]
+    updated_manifest = fake_state.values[manifest["manifest_key"]]
+    assert set(updated_manifest["checkpoint_refs"]) == {old_ref, new_ref}
+    assert updated_manifest["queued_checkpoint_refs"] == [new_ref]
+
+
+def test_intake_submit_run_ids_extends_service_watch(monkeypatch) -> None:
+    old_ref = _checkpoint_ref("run-a", 10)
+    new_ref = _checkpoint_ref("run-b", 20)
+    manifest = modal_arena._intake_manifest_from_discovery(
+        tournament_id="arena-a",
+        rating_run_id="elo-test",
+        scan_spec={
+            "run_ids": "run-a",
+            "checkpoint_selection": arena.CHECKPOINT_SELECTION_LATEST,
+        },
+        rating_defaults={"games_per_pair": 21, "pairs_per_round": 1},
+        discovery={"checkpoint_refs": [old_ref]},
+    )
+
+    class FakeState:
+        def __init__(self):
+            self.values = {manifest["manifest_key"]: manifest}
+
+        def get(self, key, default=None):
+            return self.values.get(key, default)
+
+        def put(self, key, value):
+            self.values[key] = value
+            return True
+
+    class FakeQueue:
+        def __init__(self):
+            self.events = []
+
+        def put(self, value, **_kwargs):
+            self.events.append(value)
+            return True
+
+    fake_state = FakeState()
+    fake_queue = FakeQueue()
+    monkeypatch.setattr(modal_arena, "checkpoint_intake_state", fake_state)
+    monkeypatch.setattr(modal_arena, "checkpoint_intake_queue", fake_queue)
+    monkeypatch.setattr(modal_arena, "_reload_volume", lambda _volume: None)
+    monkeypatch.setattr(modal_arena, "_commit_volume", lambda _volume: None)
+    monkeypatch.setattr(
+        modal_arena,
+        "_write_intake_manifest_artifact",
+        lambda _manifest: {"ref": "manifest.json"},
+    )
+
+    def fake_discover(scan_spec, *, mount):
+        assert scan_spec["run_ids"] == "run-a,run-b"
+        assert "games_per_pair" not in scan_spec
+        return {"checkpoint_refs": [old_ref, new_ref], "found_count": 2}
+
+    monkeypatch.setattr(modal_arena, "_discover_checkpoint_refs_from_scan_spec", fake_discover)
+
+    result = modal_arena.curvytron_checkpoint_intake_submit.local(
+        {
+            "tournament_id": "arena-a",
+            "rating_run_id": "elo-test",
+            "run_ids": "run-b",
+        }
+    )
+
+    assert result["accepted_checkpoint_refs"] == [new_ref]
+    assert result["already_seen_checkpoint_refs"] == [old_ref]
+    updated_manifest = fake_state.values[manifest["manifest_key"]]
+    assert updated_manifest["scan_spec"]["run_ids"] == "run-a,run-b"
+    assert set(updated_manifest["checkpoint_refs"]) == {old_ref, new_ref}
 
 
 def test_intake_tick_enqueues_only_refs_not_already_seen(monkeypatch) -> None:
@@ -2719,7 +3261,7 @@ def test_intake_drain_does_not_consume_events_when_rating_exists(
         tournament_id="arena-a",
         rating_run_id="elo-test",
         scan_spec={"checkpoint_refs": refs},
-        rating_defaults={},
+        rating_defaults={"pairs_per_round": 1, "games_per_pair": 3},
         discovery={"checkpoint_refs": refs},
     )
     events = [{"checkpoint_ref": ref} for ref in refs]
@@ -2839,7 +3381,7 @@ def test_intake_drain_claims_before_consuming_events(tmp_path, monkeypatch) -> N
         tournament_id="arena-a",
         rating_run_id="elo-test",
         scan_spec={"checkpoint_refs": refs},
-        rating_defaults={},
+        rating_defaults={"pairs_per_round": 1, "games_per_pair": 3},
         discovery={"checkpoint_refs": refs},
     )
     events = [{"checkpoint_ref": ref} for ref in refs]
@@ -2893,8 +3435,6 @@ def test_intake_drain_claims_before_consuming_events(tmp_path, monkeypatch) -> N
             "rating_run_id": "elo-test",
             "max_events": 10,
             "spawn_rating": True,
-            "pairs_per_round": 1,
-            "games_per_pair": 3,
         }
     )
 
@@ -2903,6 +3443,87 @@ def test_intake_drain_claims_before_consuming_events(tmp_path, monkeypatch) -> N
     assert call_order[0] == "claim"
     assert "consume" in call_order
     assert call_order[-1] == "spawn"
+
+
+def test_intake_drain_uses_manifest_policy_unless_overrides_allowed(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    refs = [_checkpoint_ref("run-a", 10), _checkpoint_ref("run-b", 20)]
+    manifest = modal_arena._intake_manifest_from_discovery(
+        tournament_id="arena-a",
+        rating_run_id="elo-test",
+        scan_spec={"checkpoint_refs": refs},
+        rating_defaults={
+            "pairs_per_round": 2,
+            "games_per_pair": 21,
+            "games_per_shard": 21,
+            "save_gif": True,
+            "gif_sample_games_per_pair": 5,
+        },
+        discovery={"checkpoint_refs": refs},
+    )
+    events = [{"checkpoint_ref": ref} for ref in refs]
+    captured_spec: dict[str, object] = {}
+
+    class FakeState:
+        def __init__(self):
+            self.values = {manifest["manifest_key"]: manifest}
+
+        def get(self, key, default=None):
+            return self.values.get(key, default)
+
+        def put(self, key, value, skip_if_exists=False):
+            if skip_if_exists and key in self.values:
+                return False
+            self.values[key] = value
+            return True
+
+    class FakeQueue:
+        def len(self, *, partition):
+            assert partition == manifest["queue_partition"]
+            return len(events)
+
+        def get_many(self, *_args, **_kwargs):
+            return events
+
+    class FakeCall:
+        object_id = "fc-test"
+
+    class FakeRatingLoop:
+        def spawn(self, spec):
+            captured_spec.update(spec)
+            return FakeCall()
+
+    monkeypatch.setattr(modal_arena, "TOURNAMENT_MOUNT", tmp_path)
+    monkeypatch.setattr(modal_arena, "checkpoint_intake_state", FakeState())
+    monkeypatch.setattr(modal_arena, "checkpoint_intake_queue", FakeQueue())
+    monkeypatch.setattr(modal_arena, "curvytron_rating_loop", FakeRatingLoop())
+    monkeypatch.setattr(modal_arena, "_reload_volume", lambda _volume: None)
+    monkeypatch.setattr(
+        modal_arena,
+        "_rating_run_has_existing_output",
+        lambda *_args, **_kwargs: False,
+    )
+
+    result = modal_arena.curvytron_checkpoint_intake_drain.local(
+        {
+            "tournament_id": "arena-a",
+            "rating_run_id": "elo-test",
+            "max_events": 10,
+            "spawn_rating": True,
+            "pairs_per_round": 99,
+            "games_per_pair": 3,
+            "save_gif": False,
+            "gif_sample_games_per_pair": 1,
+        }
+    )
+
+    assert result["rating_call_id"] == "fc-test"
+    assert captured_spec["pairs_per_round"] == 2
+    assert captured_spec["games_per_pair"] == 21
+    assert captured_spec["save_gif"] is True
+    assert captured_spec["gif_sample_games_per_pair"] == 5
 
 
 def test_intake_drain_continues_existing_rating_when_requested(
@@ -3027,6 +3648,9 @@ def _write_leaderboard_publish_rating_snapshot(
     tournament_id: str = "arena-a",
     rating_run_id: str = "elo-a",
     provisional: bool = False,
+    games: int = 500,
+    distinct_opponents: int = 20,
+    decision_source_frames: int | None = 1,
 ) -> None:
     latest_ref = (
         modal_arena._rating_provisional_latest_ref(tournament_id, rating_run_id)
@@ -3051,17 +3675,20 @@ def _write_leaderboard_publish_rating_snapshot(
                 "label": "run-a i100000",
                 "rank": 1,
                 "rating": 1700.0,
-                "games": 500,
+                "games": games,
                 "wins": 300,
                 "losses": 150,
                 "draws": 50,
                 "battles": 20,
                 "rated_battles": 20,
-                "distinct_opponents": 20,
+                "distinct_opponents": distinct_opponents,
                 "failure_count": 0,
             }
         ],
     }
+    payload["rating_spec"] = {}
+    if decision_source_frames is not None:
+        payload["rating_spec"]["decision_source_frames"] = decision_source_frames
     if provisional:
         payload["provisional"] = True
     latest_path.write_text(json.dumps(payload), encoding="utf-8")
@@ -3142,6 +3769,202 @@ def test_opponent_leaderboard_publish_rejects_provisional_without_opt_in(
                 "snapshot_id": "snapshot-001",
             }
         )
+
+
+def test_opponent_leaderboard_publish_rejects_non_one_frame_snapshot_before_writes(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    tournament_id = "arena-a"
+    rating_run_id = "elo-a"
+    _write_leaderboard_publish_rating_snapshot(
+        tmp_path,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+        decision_source_frames=2,
+    )
+    monkeypatch.setattr(modal_arena, "TOURNAMENT_MOUNT", tmp_path)
+    monkeypatch.setattr(modal_arena, "_reload_volume", lambda _volume: None)
+
+    def fail_commit(_volume):
+        raise AssertionError("non-one-frame publish should fail before commit")
+
+    monkeypatch.setattr(modal_arena, "_commit_volume", fail_commit)
+
+    with pytest.raises(ValueError, match="decision_source_frames=1"):
+        modal_arena.curvytron_opponent_leaderboard_publish.local(
+            {
+                "tournament_id": tournament_id,
+                "rating_run_id": rating_run_id,
+                "leaderboard_id": "main",
+                "snapshot_id": "snapshot-001",
+            }
+        )
+
+    assert not (
+        tmp_path / modal_arena._leaderboard_snapshot_ref("main", "snapshot-001")
+    ).exists()
+    assert not (tmp_path / modal_arena._leaderboard_latest_ref("main")).exists()
+
+
+def test_opponent_leaderboard_publish_rejects_missing_frame_data_before_writes(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    tournament_id = "arena-a"
+    rating_run_id = "elo-a"
+    _write_leaderboard_publish_rating_snapshot(
+        tmp_path,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+        decision_source_frames=None,
+    )
+    monkeypatch.setattr(modal_arena, "TOURNAMENT_MOUNT", tmp_path)
+    monkeypatch.setattr(modal_arena, "_reload_volume", lambda _volume: None)
+
+    def fail_commit(_volume):
+        raise AssertionError("missing-frame-data publish should fail before commit")
+
+    monkeypatch.setattr(modal_arena, "_commit_volume", fail_commit)
+
+    with pytest.raises(ValueError, match="got missing"):
+        modal_arena.curvytron_opponent_leaderboard_publish.local(
+            {
+                "tournament_id": tournament_id,
+                "rating_run_id": rating_run_id,
+                "leaderboard_id": "main",
+                "snapshot_id": "snapshot-001",
+            }
+        )
+
+    assert not (
+        tmp_path / modal_arena._leaderboard_snapshot_ref("main", "snapshot-001")
+    ).exists()
+    assert not (tmp_path / modal_arena._leaderboard_latest_ref("main")).exists()
+
+
+def test_opponent_leaderboard_publish_can_explicitly_allow_legacy_diagnostic(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    tournament_id = "arena-a"
+    rating_run_id = "elo-a"
+    _write_leaderboard_publish_rating_snapshot(
+        tmp_path,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+        decision_source_frames=2,
+    )
+
+    class FakeDict:
+        def __init__(self) -> None:
+            self.values = {}
+
+        def put(self, key, value, **_kwargs):
+            self.values[key] = value
+            return True
+
+    fake_dict = FakeDict()
+    monkeypatch.setattr(modal_arena, "TOURNAMENT_MOUNT", tmp_path)
+    monkeypatch.setattr(modal_arena, "_reload_volume", lambda _volume: None)
+    monkeypatch.setattr(modal_arena, "_commit_volume", lambda _volume: None)
+    monkeypatch.setattr(modal_arena, "opponent_leaderboard_state", fake_dict)
+
+    result = modal_arena.curvytron_opponent_leaderboard_publish.local(
+        {
+            "tournament_id": tournament_id,
+            "rating_run_id": rating_run_id,
+            "leaderboard_id": "main",
+            "snapshot_id": "snapshot-001",
+            "allow_legacy_rating_snapshot": True,
+        }
+    )
+
+    assert result["active_count"] == 1
+    assert result["diagnostic_only"] is True
+    assert result["pointer_published"] is False
+    assert (tmp_path / modal_arena._leaderboard_snapshot_ref("main", "snapshot-001")).is_file()
+    assert not (tmp_path / modal_arena._leaderboard_latest_ref("main")).exists()
+    assert fake_dict.values == {}
+
+
+def test_opponent_leaderboard_publish_rejects_no_active_rows_without_opt_in(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    tournament_id = "arena-a"
+    rating_run_id = "elo-a"
+    _write_leaderboard_publish_rating_snapshot(
+        tmp_path,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+        games=10,
+        distinct_opponents=1,
+    )
+    monkeypatch.setattr(modal_arena, "TOURNAMENT_MOUNT", tmp_path)
+    monkeypatch.setattr(modal_arena, "_reload_volume", lambda _volume: None)
+
+    def fail_commit(_volume):
+        raise AssertionError("no-active publish should fail before commit")
+
+    monkeypatch.setattr(modal_arena, "_commit_volume", fail_commit)
+
+    with pytest.raises(ValueError, match="no active rows"):
+        modal_arena.curvytron_opponent_leaderboard_publish.local(
+            {
+                "tournament_id": tournament_id,
+                "rating_run_id": rating_run_id,
+                "leaderboard_id": "main",
+                "snapshot_id": "snapshot-001",
+            }
+        )
+
+
+def test_opponent_leaderboard_publish_can_explicitly_allow_no_active_rows(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    tournament_id = "arena-a"
+    rating_run_id = "elo-a"
+    _write_leaderboard_publish_rating_snapshot(
+        tmp_path,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+        games=10,
+        distinct_opponents=1,
+    )
+
+    class FakeDict:
+        def __init__(self) -> None:
+            self.values = {}
+
+        def put(self, key, value, **_kwargs):
+            self.values[key] = value
+            return True
+
+    fake_dict = FakeDict()
+    monkeypatch.setattr(modal_arena, "TOURNAMENT_MOUNT", tmp_path)
+    monkeypatch.setattr(modal_arena, "_reload_volume", lambda _volume: None)
+    monkeypatch.setattr(modal_arena, "_commit_volume", lambda _volume: None)
+    monkeypatch.setattr(modal_arena, "opponent_leaderboard_state", fake_dict)
+
+    result = modal_arena.curvytron_opponent_leaderboard_publish.local(
+        {
+            "tournament_id": tournament_id,
+            "rating_run_id": rating_run_id,
+            "leaderboard_id": "main",
+            "snapshot_id": "snapshot-001",
+            "allow_no_active_rows": True,
+        }
+    )
+
+    assert result["active_count"] == 0
+    assert result["provisional_count"] == 1
+    assert result["diagnostic_only"] is True
+    assert result["pointer_published"] is False
+    assert (tmp_path / modal_arena._leaderboard_snapshot_ref("main", "snapshot-001")).is_file()
+    assert not (tmp_path / modal_arena._leaderboard_latest_ref("main")).exists()
+    assert fake_dict.values == {}
 
 
 def test_opponent_leaderboard_publish_commits_before_pointer_update(

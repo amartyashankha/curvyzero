@@ -25,7 +25,7 @@ flowchart TD
 | Training checkpoints | Yes | Training Volume |
 | Intake manifest artifact | Yes | Tournament Volume |
 | Rating snapshots | Yes | Tournament Volume |
-| Public leaderboard snapshot | Should be yes | Tournament publisher |
+| Public leaderboard snapshot | Yes | Tournament publisher |
 | Assignment snapshot | Yes | Training attempt |
 | Modal Dict pointer | No, cache only | Publisher/selector |
 | Modal Queue event | No, coordination only | Intake scanner/drain |
@@ -44,14 +44,16 @@ flowchart TD
 ## Current Implemented Flow
 
 ```text
-checkpoint Volume -> intake manifest/Queue -> rating loop -> latest.json -> website/API
+checkpoint Volume -> intake manifest/Queue -> rating loop -> latest.json ->
+public leaderboard snapshot -> stable_slots_v1 assignment -> trainer launch
 ```
 
-## Missing Flow
+This has been proven manually in tiny remote smokes. It is not production
+automation yet.
 
-```text
-latest.json -> public leaderboard snapshot -> assignment selector -> trainer launch
-```
+## Remaining Flow Gaps
 
-That missing flow is the core implementation target after documentation and
-contract tests.
+- rerun the smoke after the checkpoint-recency metadata fix;
+- remote-smoke pointer repair and queue/stale-claim repair;
+- prove continuation at bounded scale;
+- add safe assignment refresh policy for long-running trainers.

@@ -531,14 +531,15 @@ def source_state_gray64_stack4_render_metadata(
             "single_frame_render_api": (
                 "render_source_state_gray64_fast_player_perspectives"
             ),
-            "render_pipeline": "source_state_direct_gray64_visual_trail_circles",
+            "render_pipeline": "source_state_direct_gray64_visual_trail_circles_simple_bonus_symbols",
             "rgb_source_frame_size": None,
             "downsample_target_frame_size": 64,
             "rgb_to_gray64": False,
             "gray_conversion": "BT.601 luma values from the same RGB palette",
             "trail_renderer_kind": "circle_per_visual_trail_point",
             "trail_renderer_is_approximation": True,
-            "bonus_renderer_kind": "bonus_type_luma_circle",
+            "bonus_render_mode": "simple_symbols",
+            "bonus_renderer_kind": "simple_symbol_masks",
             "bonus_renderer_is_approximation": True,
             "player_perspective_palette": {
                 "self_rgb": [SELF_BODY_VALUE] * 3,

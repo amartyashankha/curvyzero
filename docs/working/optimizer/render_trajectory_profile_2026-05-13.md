@@ -44,6 +44,13 @@ artifacts/local/curvytron_render_profiles/render_trajectory_lengths_dirty_scalar
 artifacts/local/curvytron_render_profiles/render_trajectory_lengths_dirty_scalar_20260513.cells.jsonl
 ```
 
+Latest artifact after the direct fast gray64 hot-path landing:
+
+```text
+artifacts/local/curvytron_render_profiles/render_trajectory_lengths_directfast_20260513b.json
+artifacts/local/curvytron_render_profiles/render_trajectory_lengths_directfast_20260513b.cells.jsonl
+```
+
 Previous scalar full-redraw baseline used for the comparison table:
 
 ```text
@@ -93,6 +100,36 @@ This answers the render Amdahl question for long env rollouts. It does not by
 itself predict full training wall time when games are short or when MCTS/search
 dominates.
 
+## Latest Direct Fast Hot Path
+
+Date: 2026-05-13, after the stock wrapper started using
+`render_source_state_gray64_fast_player_perspectives` for
+`body_circles_fast` model observations.
+
+This is still local env-only, no-death, no LightZero search/learner. It answers
+only the renderer/env wrapper question.
+
+| render | steps | wall s | steps/s | render s | render % | observation s | vector step s |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `browser_lines` | 100 | 0.533 | 187.5 | 0.399 | 74.7% | 0.414 | 0.069 |
+| `body_circles_fast` direct gray64 | 100 | 0.065 | 1547.7 | 0.009 | 13.6% | 0.012 | 0.035 |
+| `browser_lines` | 500 | 1.390 | 359.8 | 1.070 | 77.0% | 1.104 | 0.190 |
+| `body_circles_fast` direct gray64 | 500 | 0.341 | 1467.8 | 0.060 | 17.6% | 0.078 | 0.177 |
+| `browser_lines` | 1000 | 2.804 | 356.7 | 2.115 | 75.5% | 2.185 | 0.410 |
+| `body_circles_fast` direct gray64 | 1000 | 0.799 | 1251.7 | 0.165 | 20.7% | 0.205 | 0.400 |
+| `browser_lines` | 2000 | 5.802 | 344.7 | 4.373 | 75.4% | 4.519 | 0.859 |
+| `body_circles_fast` direct gray64 | 2000 | 1.722 | 1161.6 | 0.451 | 26.2% | 0.527 | 0.818 |
+
+Plain read:
+
+- The direct fast approximation is now much faster than browser-lines in this
+  local no-death lens: about `8.2x` at 100 steps and `3.4x` at 2000 steps.
+- The old local result where `body_circles_fast` lost at long trajectories is
+  historical. That row rendered the fast approximation through the full RGB
+  path; the current hot path goes straight to gray64.
+- After this patch, the fast approximation is no longer render-dominated at
+  short horizons. At long horizons, vector/game stepping becomes comparable.
+
 ## Browser Lines, Dirty Cache On
 
 | steps | wall s | steps/s | render s | render % | observation s | vector step s | other s |
@@ -108,7 +145,7 @@ largest single bucket in long no-death env-only rollouts, but it is no longer an
 overwhelming 88-89% redraw problem. The remaining local Amdahl ceiling from
 render-only work is now roughly 2.1x-2.3x for 500-2000 step rows.
 
-## Body Circles Fast
+## Historical Body Circles RGB Path
 
 | steps | wall s | steps/s | render s | render % | observation s | vector step s | other s |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -118,9 +155,9 @@ render-only work is now roughly 2.1x-2.3x for 500-2000 step rows.
 | 1000 | 43.862 | 22.8 | 32.969 | 75.2% | 33.026 | 10.564 | 10.893 |
 | 2000 | 86.656 | 23.1 | 63.664 | 73.5% | 63.797 | 22.208 | 22.992 |
 
-Plain read: `body_circles_fast` still wins at 100-200 steps, but after the
-dirty-cache landing it loses to cached `browser_lines` at 500+ steps in this
-local no-death profile. It remains render dominated at long lengths.
+Plain read: this table is now historical. It measured `body_circles_fast`
+through the old RGB/downsample path before the direct gray64 hot path existed.
+Do not use it as the current speed read.
 
 ## Comparison
 
@@ -139,9 +176,10 @@ largest possible win from only attacking render in this narrow local regime.
 ## Optimizer Read
 
 For long-lived policies, render remains a high-leverage target, but the first
-big local win is now landed for the trusted rich visual path. In this env-only
-no-death lens, `body_circles_fast` only wins at very short trajectories. Once
-the trail has history, cached `browser_lines` is both richer and faster.
+big local win is now landed for the trusted rich visual path. The later direct
+gray64 hot path also makes `body_circles_fast` much faster in env-only
+no-death profiles. That speed result is real, but it is an approximation
+surface, not a CPU-reference parity claim.
 
 For current live training, do not overread this as "render is the whole training
 bottleneck." The live stock runs include MCTS/search, learner work, subprocess
@@ -151,11 +189,11 @@ closer than this env-only table, because full training has other costs.
 
 Next useful optimizer steps:
 
-1. Keep paired `browser_lines` and `body_circles_fast` rows in Coach matrices
-   until training quality decides the fidelity tradeoff.
-2. Prefer cached `browser_lines` for the next trusted rich-visual profiles.
-   Keep `body_circles_fast` as a short-trajectory and fidelity-ablation row, not
-   as the obvious speed default.
+1. Keep paired `browser_lines` and approximation rows in Coach matrices until
+   training quality decides the fidelity tradeoff.
+2. Prefer cached `browser_lines` whenever the question is CPU-reference
+   fidelity. Prefer explicit approximation modes only when the question is
+   speed/fidelity tradeoff.
 3. The next renderer work should measure dirty-cache hit/fallback/dirty-block
    counts and check whether fixed-opponent can avoid rendering two identical
    player-perspective frames.

@@ -69,6 +69,15 @@ live Coach batches while profiling or documenting optimizer work.
    is research until parity and end-to-end handoff are proven.
    Working note: [stock full-loop profile](stock_full_loop_profile_2026-05-13.md).
 
+   212-run integration note: the latest survival/leaderboard review says
+   same-checkpoint `browser_lines` vs `body_circles_fast` learning results are
+   basically tied. The direct matched table has 58 pairs with median
+   browser-minus-fast delta `0.0` and nearly even signs. The apparent
+   fast-render advantage was mostly maturity/order confounding. Plain read:
+   full visual fidelity is not sacred for learning if the approximation keeps
+   the important signals distinguishable. Treat render mode as a speed/fidelity
+   axis, not as a proven policy-quality axis.
+
 4. **GPU renderer research**
    Keep isolated. The only relevant target is exact CPU-reference
    `browser_lines`, including bonus sprites and real-state fixtures. Do not use
@@ -76,7 +85,14 @@ live Coach batches while profiling or documenting optimizer work.
    real-state feed, bonus sprite parity, exact CPU-reference parity, transfer
    timing, and device-resident policy handoff are proven.
 
-5. **Browser golden-frame side lane**
+5. **Bonus symbol approximation**
+   There are 12 active source-game bonus sprites. A simple symbol renderer is a
+   plausible opt-in speed/GPU lane, but not a replacement for the CPU reference.
+   It must preserve type separability, self/enemy/game grouping, position,
+   footprint, and grayscale visibility after 64x64 downsample. Working note:
+   [bonus symbol render plan](bonus_symbol_render_plan_2026-05-14.md).
+
+6. **Browser golden-frame side lane**
    Useful, not the optimizer oracle. Environment Reconstruction owns browser
    pixel claims. Optimizer can help define a tiny capture/proof harness, but
    training speed work should not block on it. Working note:
@@ -86,7 +102,10 @@ live Coach batches while profiling or documenting optimizer work.
 
 - `fast_gray64_direct` as a current stock-path recommendation. That name belongs
   to the old custom two-seat adapter.
-- `body_circles_fast` as the trusted visual surface. It is a control/ablation.
+- `body_circles_fast` as automatically trusted or automatically rejected. It is
+  a valid approximation candidate because the 212-run matched evidence did not
+  show a learning gap, but it still needs a clear visual-contract decision if it
+  replaces `browser_lines` for serious runs.
 - Old `--mode two-seat-selfplay` learning conclusions as evidence against
   CurvyTron or LightZero.
 - Browser-pixel claims without a browser golden-frame harness.
@@ -108,6 +127,8 @@ live Coach batches while profiling or documenting optimizer work.
   visibility.
 - Wait for the visual-RL preprocessing research and browser-capture feasibility
   side reports, then fold the useful parts into the docs.
+- Fold the 2026-05-14 bonus signature probe into the bonus-symbol plan before
+  implementing a new render mode.
 - Before changing live training, run a fresh full-loop stock profile with named
   buckets: env step, render/observation, frozen opponent, MCTS/search,
   replay/sample, learner, checkpoints, eval/GIF, and artifact I/O.
