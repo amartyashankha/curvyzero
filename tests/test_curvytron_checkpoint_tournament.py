@@ -2771,6 +2771,68 @@ def test_intake_drain_does_not_consume_events_when_rating_exists(
     assert fake_queue.get_many_calls == 0
 
 
+def test_intake_drain_requires_continue_from_latest_for_existing_rating(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    refs = [_checkpoint_ref("run-a", 10), _checkpoint_ref("run-b", 20)]
+    manifest = modal_arena._intake_manifest_from_discovery(
+        tournament_id="arena-a",
+        rating_run_id="elo-test",
+        scan_spec={"checkpoint_refs": refs},
+        rating_defaults={},
+        discovery={"checkpoint_refs": refs},
+    )
+    manifest = modal_arena._mark_intake_manifest_queued(manifest, refs)
+
+    class FakeState:
+        def get(self, key, default=None):
+            if key == manifest["manifest_key"]:
+                return manifest
+            return default
+
+        def put(self, *_args, **_kwargs):
+            raise AssertionError("spawn_if_existing must not bypass continuation")
+
+    class FakeQueue:
+        def __init__(self):
+            self.get_many_calls = 0
+
+        def len(self, *, partition):
+            assert partition == manifest["queue_partition"]
+            return len(refs)
+
+        def get_many(self, *_args, **_kwargs):
+            self.get_many_calls += 1
+            return [{"checkpoint_ref": ref} for ref in refs]
+
+    fake_queue = FakeQueue()
+    monkeypatch.setattr(modal_arena, "TOURNAMENT_MOUNT", tmp_path)
+    monkeypatch.setattr(modal_arena, "checkpoint_intake_state", FakeState())
+    monkeypatch.setattr(modal_arena, "checkpoint_intake_queue", fake_queue)
+    monkeypatch.setattr(modal_arena, "_reload_volume", lambda _volume: None)
+    monkeypatch.setattr(
+        modal_arena,
+        "_rating_run_has_existing_output",
+        lambda *_args, **_kwargs: True,
+    )
+
+    result = modal_arena.curvytron_checkpoint_intake_drain.local(
+        {
+            "tournament_id": "arena-a",
+            "rating_run_id": "elo-test",
+            "max_events": 10,
+            "spawn_rating": True,
+            "spawn_if_existing": True,
+        }
+    )
+
+    assert result["event_count"] == 0
+    assert result["continue_from_latest"] is False
+    assert result["spawn_skipped_reason"] == "rating_run_already_exists"
+    assert fake_queue.get_many_calls == 0
+
+
 def test_intake_drain_claims_before_consuming_events(tmp_path, monkeypatch) -> None:
     refs = [_checkpoint_ref("run-a", 10), _checkpoint_ref("run-b", 20)]
     manifest = modal_arena._intake_manifest_from_discovery(
