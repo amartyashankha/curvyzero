@@ -4263,7 +4263,7 @@ def _draw_world_simple_bonus_symbol(
         return
 
     size = int(canvas.shape[0])
-    radius_px = int(max(1, np.ceil((radius / map_size) * float(size))))
+    radius_px = int(max(3, np.ceil((radius / map_size) * float(size))))
     px = int(np.clip(np.rint((x / map_size) * float(size - 1)), 0, size - 1))
     py = int(np.clip(np.rint((y / map_size) * float(size - 1)), 0, size - 1))
     dst_size = int(radius_px * 2 + 1)
