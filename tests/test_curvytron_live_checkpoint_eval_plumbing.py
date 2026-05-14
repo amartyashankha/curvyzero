@@ -335,7 +335,16 @@ def test_default_env_variant_stays_fixed_opponent_while_turn_commit_is_profile_o
 
 
 def test_stock_train_mode_calls_lightzero_train_muzero_entrypoint(monkeypatch, tmp_path):
+    class FakeVolume:
+        def __init__(self) -> None:
+            self.commit_count = 0
+
+        def commit(self) -> None:
+            self.commit_count += 1
+
+    fake_volume = FakeVolume()
     monkeypatch.setattr(train_mod, "RUNS_MOUNT", tmp_path)
+    monkeypatch.setattr(train_mod, "runs_volume", fake_volume)
     monkeypatch.setattr(train_mod, "_version_or_missing", lambda *_args: train_mod.LIGHTZERO_VERSION)
     monkeypatch.setattr(train_mod.os, "chdir", lambda _path: None)
 
@@ -471,6 +480,9 @@ def test_stock_train_mode_calls_lightzero_train_muzero_entrypoint(monkeypatch, t
     assert result["ok"] is True
     assert result["called_train_muzero"] is True
     assert result["mode"] == "train"
+    assert result["final_volume_commit"]["attempted"] is True
+    assert result["final_volume_commit"]["ok"] is True
+    assert fake_volume.commit_count == 1
     summary = json.loads((tmp_path / result["summary_ref"]).read_text(encoding="utf-8"))
     assert summary["trainer_entrypoint"] == "lzero.entry.train_muzero"
     assert summary["command"]["env_variant"] == train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT
@@ -1217,9 +1229,59 @@ def test_modal_config_defaults_to_one_source_frame_per_policy_action(monkeypatch
     env_cfg = patched["main_config"]["env"]
     assert train_mod.DEFAULT_DECISION_MS == pytest.approx(SOURCE_PHYSICS_STEP_MS)
     assert env_cfg["decision_ms"] == pytest.approx(SOURCE_PHYSICS_STEP_MS)
+    assert env_cfg["decision_source_frames"] == 1
+    assert env_cfg["source_physics_step_ms"] == pytest.approx(SOURCE_PHYSICS_STEP_MS)
+    assert env_cfg["max_ticks"] == env_cfg["source_max_steps"]
+    assert env_cfg["source_max_steps_semantics"] == "source_physics_steps"
     assert env_cfg["policy_action_repeat_min"] == 1
     assert env_cfg["policy_action_repeat_max"] == 1
     assert env_cfg["policy_action_repeat_extra_probability"] == 0.0
+    assert patched["surface"]["decision_source_frames"] == 1
+    assert patched["surface"]["source_physics_step_ms"] == pytest.approx(
+        SOURCE_PHYSICS_STEP_MS
+    )
+
+
+def test_stock_source_state_train_rejects_bundled_decision_ms(monkeypatch, tmp_path):
+    _install_fake_lightzero_atari_config(monkeypatch)
+
+    with pytest.raises(ValueError, match="one CurvyTron source physics step"):
+        train_mod._build_visual_survival_configs(
+            seed=13,
+            exp_name=tmp_path / "exp",
+            telemetry_path=tmp_path / "env_steps.jsonl",
+            cuda=False,
+            max_env_step=128,
+            source_max_steps=128,
+            decision_ms=300.0,
+            collector_env_num=1,
+            evaluator_env_num=1,
+            n_evaluator_episode=1,
+            n_episode=1,
+            num_simulations=8,
+            batch_size=16,
+            lightzero_eval_freq=0,
+            lightzero_multi_gpu=False,
+            max_train_iter=8,
+            save_ckpt_after_iter=100,
+            env_variant=train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT,
+            reward_variant=train_mod.REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME,
+            ego_action_straight_override_probability=0.0,
+            control_noise_profile_id=train_mod.DEFAULT_CONTROL_NOISE_PROFILE_ID,
+            policy_action_repeat_min=train_mod.DEFAULT_POLICY_ACTION_REPEAT_MIN,
+            policy_action_repeat_max=train_mod.DEFAULT_POLICY_ACTION_REPEAT_MAX,
+            policy_action_repeat_extra_probability=(
+                train_mod.DEFAULT_POLICY_ACTION_REPEAT_EXTRA_PROBABILITY
+            ),
+            disable_death_for_profile=False,
+            env_telemetry_stride=64,
+            env_manager_type="base",
+            opponent_policy_kind=train_mod.OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
+            opponent_use_cuda=False,
+            opponent_checkpoint=None,
+            opponent_snapshot_ref=None,
+            opponent_checkpoint_state_key=None,
+        )
 
 
 def test_stock_source_state_trail_render_mode_passes_to_env_config(monkeypatch, tmp_path):
@@ -1407,8 +1469,18 @@ def test_background_eval_inspection_and_gif_can_be_explicitly_enabled():
 
     assert config["enabled"] is True
     assert config["natural_bonus_spawn"] is True
+    assert config["decision_ms"] == pytest.approx(SOURCE_PHYSICS_STEP_MS)
+    assert config["decision_source_frames"] == 1
+    assert config["source_physics_step_ms"] == pytest.approx(SOURCE_PHYSICS_STEP_MS)
+    assert config["source_max_steps_semantics"] == "source_physics_steps"
     assert config["selfplay_gif"]["enabled"] is True
     assert config["selfplay_gif"]["natural_bonus_spawn"] is True
+    assert config["selfplay_gif"]["decision_ms"] == pytest.approx(SOURCE_PHYSICS_STEP_MS)
+    assert config["selfplay_gif"]["decision_source_frames"] == 1
+    assert config["selfplay_gif"]["source_physics_step_ms"] == pytest.approx(
+        SOURCE_PHYSICS_STEP_MS
+    )
+    assert config["selfplay_gif"]["source_max_steps_semantics"] == "source_physics_steps"
     assert config["selfplay_gif"]["max_steps"] is None
     assert config["selfplay_gif"]["step_limit_kind"] == "until_environment_done"
     assert config["selfplay_gif"]["collect_temperature"] == 1.0

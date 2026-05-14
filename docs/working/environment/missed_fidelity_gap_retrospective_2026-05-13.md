@@ -70,9 +70,10 @@ Validation after the right-angle/default/dirty-render fixes: the focused
 controls/bonus/runtime/render-surface suite reported `260 passed`; the broad
 environment sweep reported `578 passed, 2 skipped`; `ruff`, the environment
 doc guard, and `git diff --check` passed. Focused SelfMaster validation later
-reported runtime `self_master or print_manager` `11 passed` and public
-`self_master` `4 passed`; `ruff` and diff checks passed. Broader validation
-after SelfMaster is still pending.
+reported runtime `self_master or print_manager` `11 passed`, public
+`self_master` `5 passed`, and broader focused environment suite `321 passed`;
+`ruff` and diff checks passed. The full environment sweep after SelfMaster
+reported `591 passed, 2 skipped`.
 
 ## Active Audit Threads
 
@@ -82,8 +83,9 @@ after SelfMaster is still pending.
   and source-frame semantics where bonuses or controls modify movement.
 - Source inventory/test proof audit: map each source inventory claim to at
   least one behavior proof when the claim affects runtime behavior.
-- SelfMaster follow-up: broad validation remains pending, but the
-  print-manager side-effect implementation gap is no longer open.
+- SelfMaster follow-up: broad validation is complete for the current
+  environment sweep; the print-manager side-effect implementation gap is no
+  longer open.
 
 ## Post-Right-Angle Audit Queue
 
@@ -100,12 +102,15 @@ Completed from this queue:
 - Fix `BonusSelfMaster` print-manager side effects and public env proof,
   including active invincibility/`printing=-1`, expiry restart, and
   death-before-expiry cleanup.
+- Add focused runtime proof for velocity and inverse active-turn behavior:
+  speed bonuses refresh an already held turn's rate, and inverse preserves the
+  active turn sign on catch/expiry until the next source input event.
+- Add focused runtime proof for radius collision/render lifecycle:
+  `BonusSelfSmall` radius changes affect normal wall checks, body collision
+  checks, raw browser-like RGB rendering, and downsampled gray64 observations.
 
 Remaining queue:
 
-1. Add behavior proofs for velocity bonus movement while a turn is active.
-2. Add behavior proofs for inverse current-turn behavior on catch and expiry.
-3. Add radius bonus collision/render lifecycle proof.
-4. Add direct borderless catch-to-wrap proof if existing proof is not enough.
-5. Add AllColor render/observation proof if visual/color observations rely on
+1. Add direct borderless catch-to-wrap proof if existing proof is not enough.
+2. Add AllColor render/observation proof if visual/color observations rely on
    it.

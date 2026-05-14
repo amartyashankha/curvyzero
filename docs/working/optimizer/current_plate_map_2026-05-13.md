@@ -59,13 +59,22 @@ live Coach batches while profiling or documenting optimizer work.
 
 3. **Full-loop Amdahl**
    Render matters in long-survival/no-death profiles, but after dirty-cache
-   fixes it may not be the whole full-loop bottleneck. Re-check stock LightZero
-   profiles before choosing the next production target.
+   fixes it is not the whole full-loop bottleneck. Fresh stock profiles show
+   C1 `10.8` env steps/sec, C32 `153.6`, C64 `408.4`, and C96 `487.3` on
+   L4/T4-style compute. The matching C64 H100/sim8 row was slower at `321.0`
+   env steps/sec. The C64 L4/T4 sim16 row was `366.7`, so doubling search sims
+   cost only about `10%` throughput in that shape. Current production profiling
+   should chase collection/search scaling before assuming bigger GPUs or
+   render-only work will dominate. The trusted renderer is still CPU; GPU render
+   is research until parity and end-to-end handoff are proven.
+   Working note: [stock full-loop profile](stock_full_loop_profile_2026-05-13.md).
 
 4. **GPU renderer research**
-   Keep isolated. Do not promote until real-state feed, bonus sprite parity,
-   exact CPU-reference parity, transfer timing, and device-resident policy
-   handoff are proven.
+   Keep isolated. The only relevant target is exact CPU-reference
+   `browser_lines`, including bonus sprites and real-state fixtures. Do not use
+   `body_circles_fast` as a proxy for the decision. Do not promote until
+   real-state feed, bonus sprite parity, exact CPU-reference parity, transfer
+   timing, and device-resident policy handoff are proven.
 
 5. **Browser golden-frame side lane**
    Useful, not the optimizer oracle. Environment Reconstruction owns browser

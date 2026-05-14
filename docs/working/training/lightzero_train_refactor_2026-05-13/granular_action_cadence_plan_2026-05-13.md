@@ -10,6 +10,20 @@ granular CurvyTron game step.
 The old pattern of one policy action covering a bundle of internal engine ticks
 is not acceptable for this lane unless a run explicitly asks for action repeat.
 
+## Current Status
+
+Implemented for the trusted `source_state_fixed_opponent` stock train lane.
+
+- The default wrapper cadence is one source physics frame.
+- The trainer config writes `decision_source_frames=1` explicitly.
+- Trusted `--mode train` and `--mode dry` reject stale multi-frame
+  `decision_ms` values.
+- The active survivaldiag and opponent-mixture manifest builders now emit the
+  one-frame timing value.
+- Regression tests cover default cadence, explicit repeat accounting,
+  `source_max_steps` cap semantics, telemetry cadence fields, background
+  eval/GIF config metadata, and manifest defaults.
+
 ## What Must Stay Simple
 
 - Trusted launcher remains

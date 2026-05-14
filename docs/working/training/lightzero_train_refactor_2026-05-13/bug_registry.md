@@ -193,3 +193,44 @@ Regression coverage:
 Behavior: sidecar save failures are logged with
 `curvyzero resume sidecar save failed` and the stock checkpoint hook result is
 returned unchanged.
+
+## Bug 8: Train Smoke Can Return Before Final Artifacts Are Visible
+
+Status: fixed locally; fresh Modal smoke still needs to be rerun after the fix.
+
+Plain description: `_run_visual_survival_train(mode="train")` wrote final
+summary, action telemetry summary, artifact manifest, checkpoint mirrors, final
+attempt state, and final heartbeat, but did not explicitly commit the Modal
+Volume at the end of train mode. A waited Modal smoke could therefore return
+`ok=true` while external `modal volume ls` still saw only earlier committed
+files.
+
+Evidence:
+
+- Fresh smoke `curvytron-cadence-e2e-smoke-20260513-202837/train-smoke-001`
+  returned `ok=true`, `called_train_muzero=true`, `problems=[]`, and telemetry
+  `row_count=128`.
+- Repeated Volume listing showed only `run.json`, `latest_attempt.json`,
+  `attempt.json`, and `train/status_heartbeat.json`.
+- Downloaded heartbeat still said `stage=before_train_muzero`; downloaded
+  latest attempt still said `status=running`.
+
+Impact:
+
+- the training call can succeed, but the website/status tools may not see the
+  final summary or mirrored checkpoints;
+- this is trainer artifact scaffolding, not evidence that LightZero training or
+  cadence stepping failed.
+
+Fix:
+
+- train mode now performs one final `_commit_runs_volume_with_backoff` after
+  final artifacts are written and after `train_muzero` has returned.
+- this is outside the hot training loop and does not add commits inside
+  checkpoint hooks, collector, learner, or background eval triggers.
+
+Regression coverage:
+
+- `tests/test_curvytron_live_checkpoint_eval_plumbing.py::test_stock_train_mode_calls_lightzero_train_muzero_entrypoint`
+  now asserts train mode attempts a final commit and that the fake volume commit
+  is called once.

@@ -238,6 +238,24 @@ validation commands and bug-reproduction notes only.
   -> passed.
 - Tightened opponent assignment snapshots so `schema_id` must exactly equal
   `curvyzero_opponent_assignment/v0`.
+- Fresh post-cadence waited CPU Modal smoke:
+  `curvytron-cadence-e2e-smoke-20260513-202837`, `train-smoke-001`, CPU,
+  `--mode train`, `max_train_iter=1`, `max_env_step=64`,
+  `source_max_steps=64`, `save_ckpt_after_iter=1`, background eval/GIF off.
+  Result returned `ok=true`, `called_train_muzero=true`, `problems=[]`, and
+  telemetry `row_count=128`.
+- Artifact visibility check for that smoke found a trainer-scaffolding bug:
+  repeated Volume listing showed only early files and downloaded
+  `status_heartbeat.json` still said `stage=before_train_muzero`, while
+  `latest_attempt.json` still said `status=running`. Root cause: train mode did
+  not explicitly commit the Volume after final summary/checkpoint artifacts were
+  written.
+- Patched train mode to perform one final `_commit_runs_volume_with_backoff`
+  after `train_muzero` has returned and after final artifacts are written. This
+  is outside the hot training loop.
+- Focused regression after final-commit patch:
+  `uv run pytest tests/test_curvytron_live_checkpoint_eval_plumbing.py::test_stock_train_mode_calls_lightzero_train_muzero_entrypoint -q`
+  -> 1 passed.
 - Added `canonical_assignment_json_sha256` for future explicit assignment
   ref/hash verification.
 - Pure opponent registry run:

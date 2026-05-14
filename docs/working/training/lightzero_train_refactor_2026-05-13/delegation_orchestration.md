@@ -27,9 +27,18 @@ Purpose: keep subagent work visible and bounded.
 | Halley | Read-only critique of remaining stock-LightZero refactor risks. | final message folded into test inventory and next-refactor plan | complete; handle already closed/gone |
 | Euler | Second critique of opponent leaderboard / assignment interface before wiring. | `opponent_leaderboard_interface_second_critique_2026-05-13.md` | complete; closed |
 | Dalton | Critique next refactor cut for side hooks and checkpoint scaffolding. | `side_hook_refactor_critique_2026-05-13.md` | complete; closed |
-| Sagan | Audit granular action cadence from launcher defaults through env stepping. | `granular_action_cadence_audit_2026-05-13.md` | active |
-| Noether | Critique action-cadence redesign architecture and semantic risks. | `granular_action_cadence_design_critique_2026-05-13.md` | active |
-| Ampere | Critique regression-test coverage and 300ms/12-frame assumptions. | `granular_action_cadence_regression_critique_2026-05-13.md` | active |
+| Sagan/Hilbert | Audit granular action cadence from launcher defaults through env stepping. | `granular_action_cadence_audit_2026-05-13.md` | complete |
+| Noether | Critique action-cadence redesign architecture and semantic risks. | `granular_action_cadence_design_critique_2026-05-13.md` | complete |
+| Ampere | Critique regression-test coverage and 300ms/12-frame assumptions. | `granular_action_cadence_regression_critique_2026-05-13.md` | complete |
+| Parfit | Critique remaining stale `decision_ms` foot-guns after the default change. | `granular_action_cadence_footgun_critique_2026-05-13.md` | complete |
+| Raman | Audit trainer-loop side effects of one-frame cadence. | `granular_action_cadence_trainer_loop_side_effects_2026-05-13.md` | complete |
+| Euclid | Audit env/reward/source-step side effects. | `granular_action_cadence_env_reward_side_effects_2026-05-13.md` | complete |
+| Dirac | Audit background eval, GIF, website, and artifact side effects. | `granular_action_cadence_eval_gif_site_side_effects_2026-05-13.md` | complete |
+| Dewey | Audit launch scripts, manifests, Modal entrypoints, and stale CLI values. | `granular_action_cadence_launch_manifest_side_effects_2026-05-13.md` | complete |
+| Lovelace | Audit downstream checkpoint consumers, tournaments, and opponent policies. | `granular_action_cadence_downstream_consumers_side_effects_2026-05-13.md` | complete |
+| Darwin | Find the smallest honest post-patch train-loop smoke. | `granular_action_cadence_e2e_smoke_plan_2026-05-13.md` | complete |
+| Russell | Audit post-smoke artifact visibility and Volume commit semantics. | `cadence_smoke_artifact_visibility_audit_2026-05-13.md` | active |
+| Nash | Plan eval/GIF cadence pass-through patch and tests. | `eval_gif_cadence_passthrough_patch_plan_2026-05-13.md` | active |
 
 ## Orchestration Notes
 
@@ -50,10 +59,20 @@ Purpose: keep subagent work visible and bounded.
   pass-through regression. Fresh runs now have local coverage proving
   `call_hook`, `eval`, and `random_collect` still return stock results when
   resume is inactive.
-- Current parallel split: Sagan is checking whether trusted training can act on
-  every granular game step and which knobs still bundle actions. Noether is
-  critiquing the redesign semantics. Ampere is checking regression coverage and
-  stale 12-frame assumptions.
+- Latest parallel split closed: Sagan/Hilbert, Noether, Ampere, and Parfit all
+  found the same core risk. The one-frame default was necessary but not
+  sufficient because stale `decision_ms` values could still hide action repeat.
+  The trainer now rejects stale multi-frame `decision_ms` values in trusted
+  train/dry mode, passes `decision_source_frames=1` explicitly, and active
+  manifest builders emit the one-frame value.
+- Current parallel split: side-effect audit after the cadence patch. The local
+  contract tests are green, and Darwin identified the smallest honest waited CPU
+  Modal `--mode train` smoke. Main thread owns running it and recording the
+  result because agents should not launch Modal jobs.
+- Fresh waited CPU smoke returned `ok=true` and `called_train_muzero=true`, but
+  Volume listing did not show final summary/checkpoint artifacts. Treat this as
+  a trainer scaffolding artifact-visibility bug until Russell's follow-up says
+  otherwise.
 - Dalton result folded in: do not start by extracting hook installers. First
   extract pure resume-sidecar selection, then auto-resume checkpoint selection,
   then progress payload construction. Only consider shared hook mechanics after

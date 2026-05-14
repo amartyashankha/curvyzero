@@ -158,9 +158,12 @@ Latest completed fixes, 2026-05-13:
   `578 passed, 2 skipped`; `ruff`, environment doc guard, and
   `git diff --check` passed.
 - [x] Focused SelfMaster validation reported runtime filter
-  `self_master or print_manager` `11 passed` and public `self_master`
-  `4 passed`; `ruff` and diff checks passed.
-- [ ] Broader validation after the SelfMaster fix is still pending.
+  `self_master or print_manager` `11 passed`, public `self_master`
+  `5 passed`, and broader focused environment suite `321 passed`; `ruff` and
+  diff checks passed.
+- [x] Full environment sweep after the SelfMaster fix reported
+  `591 passed, 2 skipped`; the environment doc guard and `git diff --check`
+  passed.
 
 Post-right-angle audit queue, 2026-05-13:
 
@@ -179,14 +182,18 @@ Completed:
   `printing=-1`, body/trail death immunity only while active, normal wall death
   still lethal unless project-only no-death/`death_immunity`/opponent-immortal
   helpers are enabled, expiry restart, and death-before-expiry cleanup.
+- [x] Velocity and inverse active-turn behavior: focused runtime proof now
+  checks that speed bonuses refresh the current held-turn rate, and inverse
+  preserves the current turn sign on catch/expiry until the next source input
+  event applies the new direction.
+- [x] Radius collision/render lifecycle: focused runtime proof now checks that
+  `BonusSelfSmall` radius changes affect wall checks, body collision checks,
+  raw browser-like RGB rendering, and the downsampled gray64 observation.
 
 Remaining:
 
-1. Add behavior proofs for velocity bonus movement while a turn is active.
-2. Add behavior proofs for inverse current-turn behavior on catch and expiry.
-3. Add radius bonus collision/render lifecycle proof.
-4. Add direct borderless catch-to-wrap proof if existing proof is not enough.
-5. Add AllColor render/observation proof if visual/color observations rely on
+1. Add direct borderless catch-to-wrap proof if existing proof is not enough.
+2. Add AllColor render/observation proof if visual/color observations rely on
    it.
 
 Wrapper/source input semantics note:

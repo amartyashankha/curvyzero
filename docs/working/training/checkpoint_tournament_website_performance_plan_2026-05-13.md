@@ -53,6 +53,22 @@ The remaining problem is that several route payloads are still built by doing to
 
 ## Simple Plan
 
+### Landed First Cut
+
+- Battle detail accepts `game_limit` and `game_offset`.
+- Battle detail payloads report total game count, returned row count, and
+  previous/next paging flags.
+- Summary-level `sample_gif_refs` are preferred before game-row GIF fallback.
+- Older battle summaries that lack `sample_gif_refs` recover GIF samples by
+  reading a bounded candidate set of `game_summary_refs`.
+- Normal checkpoint/battle click paths no longer request `limit=1_000_000`.
+- Focused tournament website tests and compile checks passed locally.
+
+Remaining issue: this is still a request-time JSON reader, not the final
+artifact-index design. It is a safer bounded path, not the end state.
+
+## Next Plan
+
 1. Make small artifacts the web source of truth.
    Keep `progress.json`, `latest.json`, `provisional_latest.json`, and checkpoint battle indexes. Add or formalize `recent_battles.json` for a fixed-size live sample, and add a compact per-battle `games_index.json` or paged game-index artifacts. Battle detail should read a header, samples, and one game page without scanning all game directories.
 

@@ -1,8 +1,40 @@
 # Granular Action Cadence Audit - 2026-05-13
 
+## Status After Patch
+
+This audit captured the pre-patch bug. It is no longer the current state.
+
+Current trusted `source_state_fixed_opponent` training behavior:
+
+- the source-state survival wrapper default is one source physics frame per
+  LightZero policy action;
+- the Modal stock-train config writes `decision_source_frames=1`,
+  `decision_ms=SOURCE_PHYSICS_STEP_MS`, and
+  `source_max_steps_semantics=source_physics_steps`;
+- trusted `--mode train` and `--mode dry` now reject stale multi-frame
+  `decision_ms` values such as 200 ms or 300 ms;
+- the active manifest builders now emit the one-source-frame default instead
+  of the old 200 ms bundled action hold;
+- telemetry rows now include the cadence fields needed to audit this later.
+
+Validation:
+
+```text
+uv run pytest tests/test_curvyzero_source_state_visual_survival_lightzero_env.py tests/test_curvytron_live_checkpoint_eval_plumbing.py tests/test_curvytron_survivaldiag_manifest.py tests/test_curvytron_opponent_mixture_manifest.py -q
+112 passed, 1 skipped
+
+uv run pytest tests/test_lightzero_timestamped_checkpoint_discovery.py tests/test_curvytron_live_checkpoint_eval_plumbing.py tests/test_curvytron_run_status.py tests/test_opponent_mixture.py tests/test_opponent_registry.py tests/test_curvyzero_source_state_visual_survival_lightzero_env.py tests/test_curvytron_survivaldiag_manifest.py tests/test_curvytron_opponent_mixture_manifest.py -q
+161 passed, 1 skipped
+
+uv run ruff check src/curvyzero/training/curvyzero_source_state_visual_survival_lightzero_env.py src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py src/curvyzero/infra/modal/lightzero_curvytron_visual_survival_eval.py scripts/build_curvytron_survivaldiag_manifest.py scripts/build_curvytron_opponent_mixture_manifest.py tests/test_curvyzero_source_state_visual_survival_lightzero_env.py tests/test_curvytron_live_checkpoint_eval_plumbing.py tests/test_curvytron_survivaldiag_manifest.py tests/test_curvytron_opponent_mixture_manifest.py
+All checks passed
+```
+
+The old text below is preserved as the historical audit that found the bug.
+
 ## Verdict
 
-The game/runtime can support one policy action per granular CurvyTron source physics step, but the trusted training lane does not currently default to that cadence.
+The game/runtime can support one policy action per granular CurvyTron source physics step, but before this patch the trusted training lane did not default to that cadence.
 
 The trusted lane is `src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py --mode train`. It imports stock `lzero.entry.train_muzero` and calls it directly in `_run_visual_survival_train` (`src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py:3454`, `src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py:3642`, `src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py:3755`).
 
@@ -36,10 +68,10 @@ So: unless `decision_ms` is explicitly set to one source physics frame, or cfg s
 ## Exact Tests To Add
 
 1. `tests/test_lightzero_granular_action_cadence.py::test_trusted_launcher_defaults_to_one_source_frame_per_policy_action`
-   Build configs through `_build_visual_survival_configs` with trusted defaults and assert the env config either contains `decision_source_frames == 1` or `decision_ms == SOURCE_PHYSICS_STEP_MS`, plus `policy_action_repeat_min == 1`, `policy_action_repeat_max == 1`, and `policy_action_repeat_extra_probability == 0.0`. This should fail today because the default resolves to 12 source frames.
+   Build configs through `_build_visual_survival_configs` with trusted defaults and assert the env config either contains `decision_source_frames == 1` or `decision_ms == SOURCE_PHYSICS_STEP_MS`, plus `policy_action_repeat_min == 1`, `policy_action_repeat_max == 1`, and `policy_action_repeat_extra_probability == 0.0`. This failed before the patch because the default resolved to 12 source frames.
 
 2. `tests/test_curvyzero_source_state_visual_survival_lightzero_env.py::test_source_state_visual_survival_default_step_advances_one_source_physics_tick`
-   Instantiate `CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv({"seed": 1, "source_max_steps": 8, "natural_bonus_spawn": False})`, reset, record `env._env.state["tick"][0]`, step once, and assert tick delta is 1, `timestep.info["decision_source_frames"] == 1`, `env._env.last_step_info["source_physics_substeps_executed"] == np.array([1], dtype=np.int32)`, and `policy_action_repeat_executed == 1`. This is the core Coach contract and should fail today.
+   Instantiate `CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv({"seed": 1, "source_max_steps": 8, "natural_bonus_spawn": False})`, reset, record `env._env.state["tick"][0]`, step once, and assert tick delta is 1, `timestep.info["decision_source_frames"] == 1`, `env._env.last_step_info["source_physics_substeps_executed"] == np.array([1], dtype=np.int32)`, and `policy_action_repeat_executed == 1`. This is the core Coach contract and failed before the patch.
 
 3. `tests/test_curvyzero_source_state_visual_survival_lightzero_env.py::test_decision_ms_multi_frame_cadence_is_rejected_without_explicit_action_repeat`
    Instantiate with `decision_ms=2 * SOURCE_PHYSICS_STEP_MS` and default `policy_action_repeat_*`; expect a `ValueError` once the refactor lands. If we choose to keep multi-frame cadence as explicit action repeat, the accepted spelling should be `decision_source_frames=1, policy_action_repeat_min=2, policy_action_repeat_max=2`, not a larger `decision_ms`.

@@ -130,6 +130,13 @@ For optimizer profiles:
 4. Can a GPU/compiled/block-local renderer beat the CPU dirty-cache path while
    preserving exact CPU-reference gray64 output?
 
+Latest profile answer, 2026-05-13: fresh stock full-loop rows say the current
+sim8 profile is mainly collection/search/process limited, not pure render and
+not GPU-bound. C1 was about `10.8` env steps/sec, C32 `153.6`, C64 `408.4`, C96
+`487.3`, and C64 H100 `321.0`. Use
+[stock full-loop profile](stock_full_loop_profile_2026-05-13.md) as the current
+optimizer speed note.
+
 ## Ownership
 
 - Coach owns learning claims, run matrices, checkpoint quality, eval curves,
@@ -137,4 +144,3 @@ For optimizer profiles:
 - Environment Reconstruction owns source fidelity and browser-pixel claims.
 - Optimizer owns timing, profiling, setup advice, renderer/search performance
   probes, and clear Amdahl reports.
-

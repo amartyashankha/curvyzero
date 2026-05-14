@@ -23,6 +23,28 @@ CurvyTron/source-fidelity behavior.
 Source CurvyTron control remains held real-time control state advanced through
 elapsed-ms source frames; `step` and `joint_action` are wrapper/API terms.
 
+## Latest Reorientation
+
+Do not let tournament, leaderboard, Coach, or Optimizer work become the center
+of this thread. Those surfaces are consumers of the reconstructed environment.
+Environment Reconstruction should only touch them long enough to state a clear
+handoff or to fix a bug that proves the environment surface is wrong.
+
+Current active Environment work is:
+
+1. Close the remaining source-fidelity proof queue for multiplayer
+   `VectorMultiplayerEnv`.
+2. Harden the remaining behavior proofs for movement-affecting bonuses:
+   borderless catch-to-wrap and AllColor visual/observation effects.
+   Velocity-while-turning, inverse-while-turning, and radius collision/render
+   lifecycle now have focused runtime proof.
+3. Preserve the no-death/profile/training helper modes while keeping them
+   explicitly separate from original CurvyTron claims.
+4. Keep default visual training observations on the source-state
+   `browser_lines` raw frame -> gray64 stack path; keep approximate render
+   modes labeled.
+5. Keep docs as working memory, not as a pass-count dashboard.
+
 ## Working Rhythm
 
 - Main thread: plan, delegate, orchestrate, synthesize, and decide. Keep the
@@ -72,6 +94,14 @@ Active reorientation threads:
 - Completed `BonusSelfMaster` print-manager side-effect fix: vector runtime
   now applies the source-like invincible/printing contract and public env proof
   exists. Remaining audit queue starts after SelfMaster.
+- Completed focused active-turn proof for speed and inverse bonuses:
+  `tests/test_vector_runtime.py` now verifies that a speed bonus refreshes the
+  turn rate for an already held turn, and that inverse preserves the current
+  turn sign on catch/expiry until the next source input event re-arms it.
+- Completed focused radius lifecycle proof: `tests/test_vector_runtime.py`
+  now verifies that `BonusSelfSmall` radius changes affect normal wall checks,
+  body collision checks, the raw browser-like RGB frame, and the downsampled
+  gray64 observation.
 
 ## Current Snapshot
 
@@ -250,8 +280,9 @@ surfaces named here.
   `578 passed, 2 skipped`; `ruff`, the environment doc guard, and
   `git diff --check` passed.
 - Focused SelfMaster validation reported runtime `self_master or print_manager`
-  `11 passed` and public `self_master` `4 passed`; `ruff` and diff checks
-  passed. Broader validation after the SelfMaster fix is still pending.
+  `11 passed`, public `self_master` `5 passed`, and the broader focused
+  environment suite `321 passed`; `ruff` and diff checks passed. The full
+  environment sweep after the SelfMaster fix reported `591 passed, 2 skipped`.
 
 Next:
 
@@ -454,9 +485,11 @@ Validation history through latest fixes:
   reported `260 passed`.
 - Pre-SelfMaster broad environment sweep reported `578 passed, 2 skipped`.
 - Focused SelfMaster validation reported runtime `self_master or print_manager`
-  `11 passed` and public `self_master` `4 passed`.
-- `ruff` and `git diff --check` passed after the focused SelfMaster fix;
-  broader validation is still pending.
+  `11 passed`, public `self_master` `5 passed`, and broader focused suite
+  `321 passed`.
+- Full environment sweep after the SelfMaster fix reported
+  `591 passed, 2 skipped`; `ruff`, the environment doc guard, and
+  `git diff --check` passed.
 
 ## Queue Discipline
 

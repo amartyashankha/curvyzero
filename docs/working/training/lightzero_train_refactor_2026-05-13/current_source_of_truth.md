@@ -155,6 +155,26 @@ or multi-tick decision hold must be explicit. The active plan is in:
 docs/working/training/lightzero_train_refactor_2026-05-13/granular_action_cadence_plan_2026-05-13.md
 ```
 
+Current action-cadence status: fixed for the trusted
+`source_state_fixed_opponent` stock train lane. The default is one source
+physics frame per policy action. Trusted `--mode train` and `--mode dry` reject
+stale multi-frame `decision_ms` values; use `policy_action_repeat_*` if a run
+intentionally wants repeated actions. The active survivaldiag and opponent
+mixture manifest builders now emit the one-frame timing value.
+
+Latest action-cadence validation:
+
+```text
+uv run pytest tests/test_curvyzero_source_state_visual_survival_lightzero_env.py tests/test_curvytron_live_checkpoint_eval_plumbing.py tests/test_curvytron_survivaldiag_manifest.py tests/test_curvytron_opponent_mixture_manifest.py -q
+112 passed, 1 skipped
+
+uv run pytest tests/test_lightzero_timestamped_checkpoint_discovery.py tests/test_curvytron_live_checkpoint_eval_plumbing.py tests/test_curvytron_run_status.py tests/test_opponent_mixture.py tests/test_opponent_registry.py tests/test_curvyzero_source_state_visual_survival_lightzero_env.py tests/test_curvytron_survivaldiag_manifest.py tests/test_curvytron_opponent_mixture_manifest.py -q
+161 passed, 1 skipped
+
+uv run ruff check src/curvyzero/training/curvyzero_source_state_visual_survival_lightzero_env.py src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py src/curvyzero/infra/modal/lightzero_curvytron_visual_survival_eval.py scripts/build_curvytron_survivaldiag_manifest.py scripts/build_curvytron_opponent_mixture_manifest.py tests/test_curvyzero_source_state_visual_survival_lightzero_env.py tests/test_curvytron_live_checkpoint_eval_plumbing.py tests/test_curvytron_survivaldiag_manifest.py tests/test_curvytron_opponent_mixture_manifest.py
+All checks passed
+```
+
 ## Current Refactor Stance
 
 - Keep the environment as an environment: reset, step, observation, reward,

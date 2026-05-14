@@ -70,7 +70,8 @@ Do not delegate:
 | Website sanity | active | verify indexed/paged read paths before larger GIF-heavy runs |
 | Modal intake/ops | V0 batch launcher | keep Dict/Queue for coordination and Volume artifacts as truth |
 | Validation | active | record exact run ids, counts, failure counts, and website checks |
-| Public leaderboard | future lane | do not expose as trusted until evidence breadth/status fields exist |
+| Top-policy reintroduction test | delegated design | prove online intake can rediscover a known strong policy |
+| Public leaderboard | future contract lane | design against frozen assignment snapshots, not live Elo |
 | Refactor | opportunistic | only small cuts that preserve the public Modal facade |
 
 ## Current Scheduler State
@@ -158,9 +159,15 @@ paging/index work before very large GIF-heavy runs.
 
 ## Public Leaderboard Future Lane
 
-The leaderboard is a future training contract, not just a scoreboard. Training
-loops may later sample frozen opponents from it, so public rows must carry enough
-evidence for safe consumption.
+The leaderboard is a future training contract, not just a scoreboard. It is also
+not the same thing as the current tournament website. The website helps humans
+inspect results; the public leaderboard should publish trusted opponent
+candidates that a selector turns into a frozen assignment snapshot for training.
+
+Current tournament runs are still evidence/plumbing runs. Some may be useless as
+opponents because of odd training settings. A new leaderboard for a new training
+line may need to start clean and may be seeded with hard-coded/scripted
+baselines, champions, or anchors.
 
 Minimum readiness shape:
 
@@ -171,10 +178,38 @@ Minimum readiness shape:
 - scheduler/evaluator context id;
 - clear warning when evidence comes from one-opponent or low-breadth placement.
 
+Coach/trainer boundary:
+
+- Volume snapshot is durable truth;
+- Modal Dict stores only the current snapshot pointer/cache;
+- trainer consumes an immutable opponent assignment snapshot;
+- trainer must not poll live Elo, Modal Dict, or tournament state during a
+  running LightZero job.
+
 Current gate: target at least 20 distinct opponents per checkpoint before
 calling a row leaderboard-active. Use bounded adaptive waves to reach breadth;
 do not fall back to full N^2 all-pairs unless explicitly requested as a stress
 test.
+
+Detailed working memory:
+`checkpoint_tournament_public_leaderboard_working_memory_2026-05-13.md`.
+
+## High-Fidelity Online Validation
+
+A useful online rating system should pass a simple sanity test:
+
+1. find the current top policy;
+2. remove it from the active tournament/rating pool without deleting the
+   checkpoint file;
+3. reintroduce it through the normal intake path;
+4. confirm it gets scheduled, plays enough useful opponents, and climbs back
+   near the top.
+
+This is more meaningful than a JSON-only smoke because it tests the whole loop:
+identity, intake, scheduler, pair history, Elo updates, website visibility, and
+the future public leaderboard contract. The first version should be designed
+carefully before running because "purge" has several layers: roster, snapshots,
+pair history, scheduler state, Queue/Dict coordination, and website visibility.
 
 ## Checkpoint Discovery Footgun
 

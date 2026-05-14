@@ -19,6 +19,8 @@ from typing import Any, Sequence
 
 import numpy as np
 
+from curvyzero.env.vector_multiplayer_env import SOURCE_PHYSICS_STEP_MS
+
 
 MODULE = "curvyzero.infra.modal.lightzero_curvyzero_stacked_debug_visual_survival_train"
 APP_NAME = "curvyzero-lightzero-curvytron-visual-survival-train"
@@ -41,7 +43,7 @@ REWARD_SURVIVAL_ONLY_GATED = "survival_only"
 RENDER_FAST = "body_circles_fast"
 RENDER_BROWSER = "browser_lines"
 SOURCE_MAX_STEPS = 65_536
-DECISION_MS = 200.0
+DECISION_MS = SOURCE_PHYSICS_STEP_MS
 ACTION_REPEAT_SEED_OFFSET = 2027
 STRAIGHT_OVERRIDE_SEED_OFFSET = 1009
 

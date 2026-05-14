@@ -34,6 +34,7 @@ CURVYTRON_BONUS_SPRITE_SHEET_RELATIVE_PATH = (
 )
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 500
+DEFAULT_BATTLE_GAME_LIMIT = 50
 GIF_CACHE_MAX_AGE_SECONDS = 86_400
 DYNAMIC_HEADERS = {
     "Cache-Control": "no-store, max-age=0",
@@ -44,6 +45,7 @@ WEB_PAGE_RELOAD_MIN_INTERVAL_SECONDS = 30.0
 WEB_PROGRESS_RELOAD_MIN_INTERVAL_SECONDS = 60.0
 WEB_PROGRESS_CACHE_TTL_SECONDS = 5.0
 WEB_BATTLE_DETAIL_CACHE_TTL_SECONDS = 30.0
+WEB_BATTLE_DETAIL_CACHE_VERSION = "games-page-v2"
 WEB_PROVISIONAL_RATING_CACHE_TTL_SECONDS = 30.0
 WEB_GIF_BYTES_CACHE_TTL_SECONDS = 300.0
 WEB_GIF_BYTES_CACHE_MAX_ITEM_BYTES = 24 * 1024 * 1024
@@ -3725,6 +3727,29 @@ def _list_battle_index(
     }
 
 
+def _read_battle_index_row(
+    mount: Path,
+    *,
+    tournament_id: str,
+    battle_id: str,
+) -> tuple[dict[str, Any], str]:
+    clean_id = runs.clean_id(tournament_id, label="tournament_id")
+    selected_battle_id = str(battle_id or "").strip()
+    if not selected_battle_id:
+        return {}, "battle_index_missing"
+    index_path = runs.volume_path(mount, arena.tournament_battle_index_ref(clean_id))
+    index = _read_json(index_path)
+    index_rows = index.get("rows")
+    if not isinstance(index_rows, list):
+        return {}, "battle_index_missing"
+    for row in index_rows:
+        if not isinstance(row, Mapping):
+            continue
+        if str(row.get("battle_id") or "") == selected_battle_id:
+            return dict(row), "battle_index"
+    return {}, "battle_index"
+
+
 def _list_battles(
     mount: Path,
     *,
@@ -4718,9 +4743,11 @@ def _review_checkpoint_payload(
     tournament_id: str = "",
     rating_run_id: str = "latest",
     checkpoint_id: str,
-    limit: int = MAX_LIMIT,
+    limit: int = DEFAULT_LIMIT,
     offset: int = 0,
 ) -> dict[str, Any]:
+    safe_limit = max(1, min(MAX_LIMIT, int(limit)))
+    safe_offset = max(0, int(offset))
     rankings = _review_rankings_payload(
         mount,
         tournament_id=tournament_id,
@@ -4745,7 +4772,7 @@ def _review_checkpoint_payload(
         _list_battle_index(
             mount,
             tournament_id=selected_tournament,
-            limit=1_000_000,
+            limit=MAX_LIMIT,
             offset=0,
             checkpoint_id=checkpoint_id,
         )
@@ -4784,12 +4811,18 @@ def _review_checkpoint_payload(
             )
     source = str(battles.get("source") or "")
     battle_rows = battles.get("rows", [])
+    try:
+        total_rows = int(battles.get("total") or 0)
+    except (TypeError, ValueError):
+        total_rows = 0
     raw_rows = _sort_checkpoint_battle_rows(
         battle_rows if isinstance(battle_rows, Sequence) else [],
         checkpoint_id=checkpoint_id,
         rank_by_checkpoint=rank_by_checkpoint,
     )
-    page_rows = raw_rows[offset : offset + limit]
+    if total_rows <= 0:
+        total_rows = len(raw_rows)
+    page_rows = raw_rows[safe_offset : safe_offset + safe_limit]
     if source in {"battle_index", "checkpoint_round_input", "live_shard_tallies"}:
         page_rows = [
             _enrich_battle_row_from_live_shards(mount, row)
@@ -4810,11 +4843,11 @@ def _review_checkpoint_payload(
         "checkpoint_id": checkpoint_id,
         "ranking": arena._to_plain(rating_row),
         "rows": arena._to_plain(page),
-        "total": len(raw_rows),
-        "limit": limit,
-        "offset": offset,
-        "has_older": offset + limit < len(raw_rows),
-        "has_newer": offset > 0,
+        "total": total_rows,
+        "limit": safe_limit,
+        "offset": safe_offset,
+        "has_older": safe_offset + safe_limit < total_rows,
+        "has_newer": safe_offset > 0,
         "source": source,
     }
 
@@ -4825,10 +4858,18 @@ def _review_battle_payload(
     tournament_id: str = "",
     battle_id: str,
     gif_sample_limit: int = 10,
+    game_limit: int = DEFAULT_BATTLE_GAME_LIMIT,
+    game_offset: int = 0,
 ) -> dict[str, Any]:
     tournaments = _list_tournaments(mount)
     selected_tournament = _default_tournament_id(tournaments, tournament_id)
-    cache_key = f"battle-detail:{mount}:{selected_tournament}:{battle_id}:{gif_sample_limit}"
+    safe_game_limit = max(1, min(MAX_LIMIT, int(game_limit)))
+    safe_game_offset = max(0, int(game_offset))
+    cache_key = (
+        f"battle-detail:{mount}:{selected_tournament}:{battle_id}:"
+        f"{WEB_BATTLE_DETAIL_CACHE_VERSION}:{gif_sample_limit}:"
+        f"{safe_game_limit}:{safe_game_offset}"
+    )
     cached = _web_cache_get(
         cache_key,
         ttl_seconds=WEB_BATTLE_DETAIL_CACHE_TTL_SECONDS,
@@ -4900,20 +4941,10 @@ def _review_battle_payload(
                     "first_gif_ref": summary.get("first_gif_ref") if summary else None,
                 }
             else:
-                page = _list_battle_index(
+                row, source = _read_battle_index_row(
                     mount,
                     tournament_id=selected_tournament,
-                    limit=1_000_000,
-                    offset=0,
-                )
-                source = str(page.get("source") or "battle_index")
-                row = next(
-                    (
-                        dict(item)
-                        for item in page.get("rows", [])
-                        if isinstance(item, Mapping) and str(item.get("battle_id") or "") == battle_id
-                    ),
-                    {},
+                    battle_id=battle_id,
                 )
                 summary = _read_battle_summary(
                     mount,
@@ -4921,21 +4952,24 @@ def _review_battle_payload(
                     battle_id=battle_id,
                     battle_index_row=row,
                 )
-    games, game_sources = (
+    games, game_sources, total_game_count = (
         _read_game_summary_refs(
             mount,
             tournament_id=selected_tournament,
             battle_id=battle_id,
             battle_summary=summary,
+            game_limit=safe_game_limit,
+            game_offset=safe_game_offset,
         )
         if selected_tournament and (summary or row)
-        else ([], [])
+        else ([], [], 0)
     )
     summary_without_games = dict(summary)
     summary_without_games.pop("games", None)
     samples = _sample_gif_refs(
         battle_summary=summary,
         games=games,
+        mount=mount,
         limit=gif_sample_limit,
     )
     payload = {
@@ -4944,7 +4978,12 @@ def _review_battle_payload(
         "battle": arena._to_plain(row),
         "summary": arena._to_plain(summary_without_games),
         "games": arena._to_plain(games),
-        "game_count": len(games),
+        "game_count": int(total_game_count),
+        "game_rows_returned": len(games),
+        "game_limit": safe_game_limit,
+        "game_offset": safe_game_offset,
+        "has_older_games": safe_game_offset + safe_game_limit < int(total_game_count),
+        "has_newer_games": safe_game_offset > 0,
         "game_sources": game_sources,
         "sample_gifs": samples,
         "sample_gif_count": len(samples),
@@ -5063,9 +5102,26 @@ def _read_game_summary_refs(
     tournament_id: str,
     battle_id: str,
     battle_summary: Mapping[str, Any],
-) -> tuple[list[dict[str, Any]], list[str]]:
+    game_limit: int = DEFAULT_BATTLE_GAME_LIMIT,
+    game_offset: int = 0,
+) -> tuple[list[dict[str, Any]], list[str], int]:
+    safe_limit = max(1, min(MAX_LIMIT, int(game_limit)))
+    safe_offset = max(0, int(game_offset))
+    end = safe_offset + safe_limit
     games_by_key: dict[tuple[str, str], dict[str, Any]] = {}
     sources: set[str] = set()
+    expected_count = int(
+        (
+            battle_summary.get("tally")
+            if isinstance(battle_summary.get("tally"), Mapping)
+            else {}
+        ).get("game_count")
+        or battle_summary.get("game_summary_ref_count")
+        or 0
+    )
+    embedded_total = 0
+    summary_ref_total = 0
+    shard_game_total = 0
 
     def add_game(raw: Mapping[str, Any], source: str) -> None:
         game = _compact_review_game(raw)
@@ -5080,13 +5136,16 @@ def _read_game_summary_refs(
 
     embedded_games = battle_summary.get("games")
     if isinstance(embedded_games, Sequence) and not isinstance(embedded_games, (str, bytes)):
-        for game in embedded_games:
+        embedded_total = len(embedded_games)
+        for game in embedded_games[safe_offset:end]:
             if isinstance(game, Mapping):
                 add_game(game, "battle_json")
 
     summary_refs = battle_summary.get("game_summary_refs")
     if isinstance(summary_refs, Sequence) and not isinstance(summary_refs, (str, bytes)):
-        for ref in summary_refs:
+        valid_refs = [ref for ref in summary_refs if isinstance(ref, str)]
+        summary_ref_total = len(valid_refs)
+        for ref in valid_refs[safe_offset:end]:
             if not isinstance(ref, str):
                 continue
             payload = _read_tournament_json_ref(mount, ref)
@@ -5095,6 +5154,7 @@ def _read_game_summary_refs(
 
     shard_refs = battle_summary.get("shard_summary_refs")
     if isinstance(shard_refs, Sequence) and not isinstance(shard_refs, (str, bytes)):
+        cursor = 0
         for ref in shard_refs:
             if not isinstance(ref, str):
                 continue
@@ -5102,20 +5162,28 @@ def _read_game_summary_refs(
             shard_games = shard.get("games") if isinstance(shard, Mapping) else None
             if not isinstance(shard_games, Sequence) or isinstance(shard_games, (str, bytes)):
                 continue
+            shard_game_total += len(shard_games)
             for game in shard_games:
-                if isinstance(game, Mapping):
+                if not isinstance(game, Mapping):
+                    cursor += 1
+                    continue
+                game_index = _safe_int_or_none(game.get("game_index"))
+                logical_index = game_index if game_index is not None else cursor
+                cursor += 1
+                if safe_offset <= logical_index < end:
                     add_game(game, "shard_summary_refs")
 
-    expected_count = int(
-        (
-            battle_summary.get("tally")
-            if isinstance(battle_summary.get("tally"), Mapping)
-            else {}
-        ).get("game_count")
-        or battle_summary.get("game_summary_ref_count")
-        or 0
+    known_total = max(
+        expected_count,
+        embedded_total,
+        summary_ref_total,
+        shard_game_total,
+        len(games_by_key),
     )
-    if games_by_key and (expected_count <= 0 or len(games_by_key) >= expected_count):
+    has_indexed_game_source = bool(
+        embedded_total or summary_ref_total or shard_game_total
+    )
+    if games_by_key or has_indexed_game_source:
         games = list(games_by_key.values())
         games.sort(
             key=lambda game: (
@@ -5123,7 +5191,8 @@ def _read_game_summary_refs(
                 str(game.get("game_id") or ""),
             )
         )
-        return games, sorted(sources)
+        total = max(known_total, len(games))
+        return games, sorted(sources), total
 
     games_root = (
         runs.volume_path(mount, arena.tournament_root_ref(tournament_id))
@@ -5131,8 +5200,11 @@ def _read_game_summary_refs(
         / runs.clean_id(battle_id, label="battle_id")
         / "games"
     )
+    scanned_total = 0
     if games_root.exists():
-        for path in sorted(games_root.glob("*/summary.json"), key=lambda item: item.as_posix()):
+        paths = sorted(games_root.glob("*/summary.json"), key=lambda item: item.as_posix())
+        scanned_total = len(paths)
+        for path in paths[safe_offset:end]:
             payload = _read_json(path)
             if not payload:
                 continue
@@ -5146,16 +5218,81 @@ def _read_game_summary_refs(
             str(game.get("game_id") or ""),
         )
     )
-    return games, sorted(sources)
+    total = max(expected_count, scanned_total, len(games))
+    return games, sorted(sources), total
 
 
 def _sample_gif_refs(
     *,
     battle_summary: Mapping[str, Any],
     games: Sequence[Mapping[str, Any]],
+    mount: Path | None = None,
     limit: int = 10,
 ) -> list[dict[str, Any]]:
     sample_limit = max(1, int(limit))
+    samples: list[dict[str, Any]] = []
+    summary_refs = battle_summary.get("sample_gif_refs")
+    if isinstance(summary_refs, Sequence) and not isinstance(summary_refs, (str, bytes)):
+        for index, ref in enumerate(summary_refs):
+            if not ref:
+                continue
+            samples.append(
+                {
+                    "game_id": None,
+                    "game_index": index,
+                    "outcome": None,
+                    "gif_ref": str(ref),
+                }
+            )
+            if len(samples) >= sample_limit:
+                break
+    if samples:
+        return _dedupe_gif_samples(samples)
+
+    game_summary_refs = battle_summary.get("game_summary_refs")
+    if (
+        mount is not None
+        and isinstance(game_summary_refs, Sequence)
+        and not isinstance(game_summary_refs, (str, bytes))
+    ):
+        valid_refs = [ref for ref in game_summary_refs if isinstance(ref, str)]
+        if valid_refs:
+            selected_indices: list[int] = []
+            if len(valid_refs) <= sample_limit:
+                selected_indices.extend(range(len(valid_refs)))
+            elif sample_limit == 1:
+                selected_indices.append(0)
+            else:
+                last = len(valid_refs) - 1
+                selected_indices.extend(
+                    round(index * last / float(sample_limit - 1))
+                    for index in range(sample_limit)
+                )
+            scan_cap = min(len(valid_refs), max(50, sample_limit * 10))
+            selected_indices.extend(range(scan_cap))
+            seen_indices: set[int] = set()
+            for ref_index in selected_indices:
+                if ref_index in seen_indices:
+                    continue
+                seen_indices.add(ref_index)
+                payload = _read_tournament_json_ref(mount, valid_refs[ref_index])
+                gif_ref = payload.get("gif_ref") if isinstance(payload, Mapping) else None
+                if not gif_ref:
+                    continue
+                compact = _compact_review_game(payload)
+                samples.append(
+                    {
+                        "game_id": compact.get("game_id"),
+                        "game_index": compact.get("game_index"),
+                        "outcome": compact.get("outcome"),
+                        "gif_ref": gif_ref,
+                    }
+                )
+                if len(samples) >= sample_limit:
+                    break
+        if samples:
+            return _dedupe_gif_samples(samples)
+
     gif_games = [
         game
         for game in games
@@ -5179,24 +5316,6 @@ def _sample_gif_refs(
         }
         for game in selected
     ]
-    if samples:
-        return arena._to_plain(samples)
-
-    summary_refs = battle_summary.get("sample_gif_refs")
-    if isinstance(summary_refs, Sequence) and not isinstance(summary_refs, (str, bytes)):
-        for index, ref in enumerate(summary_refs):
-            if not ref:
-                continue
-            samples.append(
-                {
-                    "game_id": None,
-                    "game_index": index,
-                    "outcome": None,
-                    "gif_ref": str(ref),
-                }
-            )
-            if len(samples) >= sample_limit:
-                break
     if not samples and battle_summary.get("first_gif_ref"):
         samples.append(
             {
@@ -5206,6 +5325,10 @@ def _sample_gif_refs(
                 "gif_ref": battle_summary.get("first_gif_ref"),
             }
         )
+    return _dedupe_gif_samples(samples)
+
+
+def _dedupe_gif_samples(samples: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     seen_refs: set[str] = set()
     deduped = []
     for sample in samples:
@@ -5217,7 +5340,12 @@ def _sample_gif_refs(
     return arena._to_plain(deduped)
 
 
-def _render_battle_detail_section(*, payload: Mapping[str, Any]) -> str:
+def _render_battle_detail_section(
+    *,
+    payload: Mapping[str, Any],
+    rating_run_id: str = "latest",
+    checkpoint_id: str = "",
+) -> str:
     import html
 
     def fmt(value: Any, *, digits: int = 2) -> str:
@@ -5245,6 +5373,28 @@ def _render_battle_detail_section(*, payload: Mapping[str, Any]) -> str:
     summary_link = f'<a href="/meta?ref={summary_ref}">JSON</a>' if summary_ref else ""
     samples = payload.get("sample_gifs") if isinstance(payload.get("sample_gifs"), list) else []
     games = payload.get("games") if isinstance(payload.get("games"), list) else []
+    tournament_id = str(payload.get("selected_tournament_id") or "")
+    game_count = int(payload.get("game_count") or 0)
+    game_limit = int(payload.get("game_limit") or DEFAULT_BATTLE_GAME_LIMIT)
+    game_offset = int(payload.get("game_offset") or 0)
+    first_row = game_offset + 1 if games else 0
+    last_row = game_offset + len(games)
+    prev_href = _battle_href(
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+        checkpoint_id=checkpoint_id,
+        battle_id=battle_id,
+        game_limit=game_limit,
+        game_offset=max(0, game_offset - game_limit),
+    )
+    next_href = _battle_href(
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+        checkpoint_id=checkpoint_id,
+        battle_id=battle_id,
+        game_limit=game_limit,
+        game_offset=game_offset + game_limit,
+    )
 
     sample_cards = []
     for sample in samples:
@@ -5301,11 +5451,18 @@ def _render_battle_detail_section(*, payload: Mapping[str, Any]) -> str:
     games_html = (
         f"""
         <section class="panel">
-          <div class="panel-head"><h2>Games</h2><span>{html.escape(str(payload.get("game_count", 0)))} found</span></div>
+          <div class="panel-head">
+            <h2>Games</h2>
+            <span>{first_row}-{last_row} of {html.escape(str(game_count))}</span>
+          </div>
           <table>
             <thead><tr><th>#</th><th>Game</th><th>Outcome</th><th>Seed</th><th>Steps</th><th>OK</th><th>GIF</th><th>JSON</th></tr></thead>
             <tbody>{"".join(game_rows)}</tbody>
           </table>
+          <div class="pager">
+            {'<a href="' + html.escape(prev_href) + '#battle-detail">Previous games</a>' if payload.get("has_newer_games") else '<span></span>'}
+            {'<a href="' + html.escape(next_href) + '#battle-detail">Next games</a>' if payload.get("has_older_games") else '<span></span>'}
+          </div>
         </section>
         """
         if game_rows
@@ -5631,7 +5788,11 @@ def _render_page(
             </section>
             """
     battle_detail_html = (
-        _render_battle_detail_section(payload=battle_detail or {"battle_id": selected_battle_id})
+        _render_battle_detail_section(
+            payload=battle_detail or {"battle_id": selected_battle_id},
+            rating_run_id=selected_rating_run_id,
+            checkpoint_id=selected_checkpoint_id,
+        )
         if selected_battle_id
         else ""
     )
@@ -5684,6 +5845,7 @@ def _render_page(
     .sort-button {{ all: unset; display: inline-flex; align-items: center; gap: 4px; cursor: pointer; color: inherit; font: inherit; }}
     .sort-button:focus-visible {{ outline: 2px solid #1a73e8; outline-offset: 2px; border-radius: 4px; }}
     .panel .sort-indicator {{ min-width: 28px; color: #80868b; font-size: 11px; }}
+    .pager {{ display: flex; justify-content: space-between; gap: 12px; padding: 10px 12px; border-top: 1px solid #eef0f3; font-size: 13px; }}
     .selected-row td {{ background: #eef4ff; }}
     td:nth-child(n+3) {{ white-space: nowrap; }}
     .empty {{ padding: 60px; text-align: center; background: white; border: 1px dashed #dadce0; border-radius: 8px; color: #80868b; }}
@@ -5920,7 +6082,11 @@ def _render_battle_page(
         rating_run_id=rating_run_id,
         checkpoint_id=checkpoint_id,
     )
-    detail_html = _render_battle_detail_section(payload=payload)
+    detail_html = _render_battle_detail_section(
+        payload=payload,
+        rating_run_id=rating_run_id,
+        checkpoint_id=checkpoint_id,
+    )
 
     return f"""<!doctype html>
 <html lang="en">
@@ -5940,6 +6106,7 @@ def _render_battle_page(
     .panel-head {{ display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 10px 12px; border-bottom: 1px solid #eef0f3; }}
     .panel h2 {{ margin: 0; font-size: 15px; }}
     .panel span {{ color: #5f6368; font-size: 12px; }}
+    .pager {{ display: flex; justify-content: space-between; gap: 12px; padding: 10px 12px; border-top: 1px solid #eef0f3; font-size: 13px; }}
     .progress-body {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px; background: #eef0f3; }}
     .progress-body div {{ display: grid; gap: 3px; padding: 12px; background: white; }}
     .progress-body strong {{ font-size: 18px; }}
@@ -5979,8 +6146,10 @@ def _build_fastapi_app(volume: Any):
         rating_run_id: str = "latest",
         checkpoint_id: str = "",
         battle_id: str = "",
-        limit: int = Query(MAX_LIMIT, ge=1, le=MAX_LIMIT),
+        limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
         offset: int = Query(0, ge=0),
+        game_limit: int = Query(DEFAULT_BATTLE_GAME_LIMIT, ge=1, le=MAX_LIMIT),
+        game_offset: int = Query(0, ge=0),
         fresh: bool = False,
     ) -> HTMLResponse:
         reload_error = _web_reload_volume(
@@ -6038,6 +6207,8 @@ def _build_fastapi_app(volume: Any):
                 tournament_id=selected,
                 battle_id=battle_id,
                 gif_sample_limit=10,
+                game_limit=game_limit,
+                game_offset=game_offset,
             )
             if selected and battle_id
             else {}
@@ -6065,6 +6236,8 @@ def _build_fastapi_app(volume: Any):
         tournament_id: str = "",
         rating_run_id: str = "latest",
         checkpoint_id: str = "",
+        game_limit: int = Query(DEFAULT_BATTLE_GAME_LIMIT, ge=1, le=MAX_LIMIT),
+        game_offset: int = Query(0, ge=0),
         fresh: bool = False,
     ) -> HTMLResponse:
         _web_reload_volume(
@@ -6077,6 +6250,8 @@ def _build_fastapi_app(volume: Any):
             tournament_id=tournament_id,
             battle_id=battle_id,
             gif_sample_limit=10,
+            game_limit=game_limit,
+            game_offset=game_offset,
         )
         return HTMLResponse(
             _render_battle_page(
@@ -6251,7 +6426,7 @@ def _build_fastapi_app(volume: Any):
         checkpoint_id: str,
         tournament_id: str = "",
         rating_run_id: str = "latest",
-        limit: int = Query(MAX_LIMIT, ge=1, le=MAX_LIMIT),
+        limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
         offset: int = Query(0, ge=0),
         fresh: bool = False,
     ) -> JSONResponse:
@@ -6274,6 +6449,8 @@ def _build_fastapi_app(volume: Any):
         battle_id: str,
         tournament_id: str = "",
         gif_sample_limit: int = Query(10, ge=1, le=10),
+        game_limit: int = Query(DEFAULT_BATTLE_GAME_LIMIT, ge=1, le=MAX_LIMIT),
+        game_offset: int = Query(0, ge=0),
         fresh: bool = False,
     ) -> JSONResponse:
         if fresh:
@@ -6284,6 +6461,8 @@ def _build_fastapi_app(volume: Any):
                 tournament_id=tournament_id,
                 battle_id=battle_id,
                 gif_sample_limit=gif_sample_limit,
+                game_limit=game_limit,
+                game_offset=game_offset,
             ),
             headers=DYNAMIC_HEADERS,
         )

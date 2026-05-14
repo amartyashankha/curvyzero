@@ -26,6 +26,11 @@ collector, replay, search, and learner.
 Training should be able to say: "use this frozen set of opponents, chosen from
 the public tournament leaderboard, and record exactly what I used."
 
+Current tournament runs are not automatically the public leaderboard. They are
+mostly plumbing, rating, and inspection evidence. A new training line may need a
+new clean leaderboard, and that leaderboard may be seeded with scripted or
+hard-coded anchor policies before neural checkpoints are mature enough.
+
 Tournament and scheduling code can be clever. The trainer should be boring. It
 should receive concrete opponent refs, validate that frozen checkpoints are
 exact `iteration_N.pth.tar` files, and start training with a stable opponent
@@ -557,4 +562,3 @@ Phase 5, refresh boundaries:
 - Record refresh lineage in `audit.json`.
 - Do not add in-loop polling unless there is a separate design and tests proving
   it does not break reproducibility.
-

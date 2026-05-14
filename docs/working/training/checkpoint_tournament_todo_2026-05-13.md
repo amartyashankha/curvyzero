@@ -61,9 +61,22 @@
 - Next website cleanup should follow the new performance docs: page checkpoint
   and battle lists, lazy-load GIFs, use tiny freshness tokens, and remove
   `limit=1_000_000` from normal click paths.
+- Done locally for the first website cut: battle detail has `game_limit` /
+  `game_offset`, summary GIF samples are preferred, and normal checkpoint/battle
+  click paths no longer request `limit=1_000_000`.
 - Scheduler coverage should never trust scalar-only `distinct_opponents`; use
   `opponent_ids` and pair history. Rating `active` status should require the
   configured placement evidence target.
+- Done locally for the first scheduler guardrail: placement cannot expand a
+  round to the full evidence deficit. It is capped to the effective round budget
+  with a first-touch floor for absurdly small requested budgets.
+- Public leaderboard lane: keep it separate from the website. Current
+  tournaments are not automatically the public leaderboard. Future training
+  should consume frozen opponent assignment snapshots derived from durable
+  leaderboard snapshots.
+- High-fidelity online validation lane: design and run a remove/reintroduce
+  test for the current top policy. Do not delete the checkpoint. Define exactly
+  what purge means before touching state.
 - For mixed old+new online batches, placement coverage is attached to the
   low-coverage checkpoint itself. Established checkpoints can be used as anchors,
   but they must not count as covering the new checkpoint unless the new
@@ -171,6 +184,16 @@
 - Provisional Elo exists as a website bridge from `provisional_latest.json`.
 - Add synthetic simulator tests for Elo recovery.
 - Add tests for background provisional snapshots once that writer exists.
+- Add pure public leaderboard snapshot/pointer validators and a publisher from
+  verified rating snapshots.
+- Add a selector that creates immutable opponent assignment snapshots from one
+  public leaderboard snapshot.
+- Wire the trainer to an explicit `--opponent-assignment-ref` later. Do not let
+  `train_muzero`, hooks, env reset, or env step read Modal Dict, leaderboard
+  latest pointers, or selector state.
+- Add an operator command or repair tool for safe leaderboard/tournament member
+  retirement and reintroduction. It must preserve checkpoint files and should
+  be idempotent.
 
 ## Do Not Do Yet
 

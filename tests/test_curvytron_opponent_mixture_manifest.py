@@ -88,6 +88,7 @@ def _manifest(extra_args: list[str] | None = None) -> dict:
 
 
 def test_opponent_mixture_batch_shape_and_readable_names():
+    module = _load_script(SCRIPT, "build_curvytron_opponent_mixture_manifest_for_test")
     manifest = _manifest()
 
     assert manifest["matrix_name"] == "curvy-mix2-20260513a"
@@ -128,6 +129,8 @@ def test_opponent_mixture_batch_shape_and_readable_names():
         assert row["env_variant"] == "source_state_fixed_opponent"
         assert row["reward_variant"] == "survival_plus_bonus_no_outcome"
         assert row["source_max_steps"] == 65536
+        assert row["train_kwargs"]["decision_ms"] == module.DECISION_MS
+        assert row["train_kwargs"]["decision_ms"] < 20.0
         assert row["train_kwargs"]["background_eval_enabled"] is True
         assert row["train_kwargs"]["background_gif_enabled"] is True
         assert row["train_kwargs"]["lightzero_eval_freq"] == 0

@@ -118,14 +118,21 @@ def _bonus_spawn_random_values(scenario_name: str) -> list[float]:
     return [float(entry["value"]) for entry in sequence]
 
 
-def _natural_bonus_spawn_tape(*, type_draw: float = 0.2) -> np.ndarray:
+def _natural_bonus_spawn_tape(
+    *,
+    type_draw: float = 0.2,
+    extra_values: int = 0,
+) -> np.ndarray:
     spawn_prefix = _lifecycle_random_tape(
         "source_lifecycle_spawn_rng_2p_next_round.json",
     )[0, :6]
     bonus_values = (0.0, 0.5, type_draw, 0.25, 0.75)
     print_manager_start_values = (0.5, 0.5)
+    sequence = [*spawn_prefix, *bonus_values, *print_manager_start_values]
+    if extra_values:
+        sequence = [*sequence, *([0.5] * extra_values)]
     return np.asarray(
-        [[*spawn_prefix, *bonus_values, *print_manager_start_values]],
+        [sequence],
         dtype=np.float64,
     )
 
@@ -643,8 +650,12 @@ def _direct_public_natural_bonus_env(
     *,
     bonus_type: str,
     player_count: int = 2,
+    extra_random_values: int = 0,
 ) -> VectorMultiplayerEnv:
-    tape = _natural_bonus_spawn_tape(type_draw=0.0)
+    tape = _natural_bonus_spawn_tape(
+        type_draw=0.0,
+        extra_values=extra_random_values,
+    )
     env = VectorMultiplayerEnv(
         batch_size=1,
         player_count=player_count,
@@ -2117,13 +2128,36 @@ def test_public_natural_bonus_self_master_death_before_expiry_does_not_restart_p
     env = _direct_public_natural_bonus_env(
         bonus_type="BonusSelfMaster",
         player_count=3,
+        extra_random_values=8,
     )
     actions = np.asarray([[1, 1, 1]], dtype=np.int16)
-
-    catch_batch = env.step(
-        actions,
-        timer_advance_ms=np.asarray([3000.0], dtype=np.float64),
+    env.state["pos"][0] = np.asarray(
+        [[20.0, 20.0], [70.0, 70.0], [82.0, 82.0]],
+        dtype=np.float64,
     )
+    env.state["prev_pos"][0] = env.state["pos"][0]
+    env.state["print_manager_last_pos"][0] = env.state["pos"][0]
+    if "draw_cursor_pos" in env.state:
+        env.state["draw_cursor_pos"][0] = env.state["pos"][0]
+
+    spawn_batch = env.step(
+        actions,
+        timer_advance_ms=env._natural_bonus_timer_remaining_ms.copy(),
+    )
+    natural_info = spawn_batch.info["natural_bonus_info"]
+    assert spawn_batch.info["bonus_support_mode"] == "natural_spawn"
+    np.testing.assert_array_equal(natural_info["due_rows"], np.asarray([True]))
+    assert len(natural_info["spawn_infos"]) == 1
+    spawn_info = natural_info["spawn_infos"][0]
+    np.testing.assert_array_equal(spawn_info["spawn_rows"], np.asarray([True]))
+    np.testing.assert_array_equal(env.state["bonus_active"][:, :1], np.asarray([[True]]))
+    assert int(env.state["bonus_type"][0, 0]) == vector_runtime.BONUS_TYPE_SELF_MASTER
+    spawn_pos = env.state["bonus_pos"][0, 0].copy()
+    np.testing.assert_allclose(spawn_pos, spawn_info["spawned_pos"][0])
+    env.state["pos"][0, 0] = spawn_pos
+    env.state["prev_pos"][0, 0] = spawn_pos
+
+    catch_batch = env.step(actions)
 
     assert catch_batch.info["bonus_support_mode"] == "natural_spawn"
     assert catch_batch.info["step_counters"]["bonus_self_master_catches"] == 1

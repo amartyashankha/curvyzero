@@ -1424,7 +1424,7 @@ def test_adaptive_v0_covers_new_checkpoints_when_budget_allows() -> None:
     }
 
 
-def test_adaptive_v0_covers_mixed_new_checkpoints_against_established() -> None:
+def test_adaptive_v0_covers_mixed_new_checkpoints_with_bounded_placement() -> None:
     refs = [_checkpoint_ref(f"run-{index:02d}", index * 10) for index in range(10)]
     rating_spec = arena.normalize_rating_spec(
         {
@@ -1459,7 +1459,6 @@ def test_adaptive_v0_covers_mixed_new_checkpoints_against_established() -> None:
         round_index=1,
     )
     new_ids = {checkpoint["checkpoint_id"] for checkpoint in new}
-    established_ids = {checkpoint["checkpoint_id"] for checkpoint in established}
     played = {
         player["checkpoint_id"]
         for pair in pairs
@@ -1468,14 +1467,17 @@ def test_adaptive_v0_covers_mixed_new_checkpoints_against_established() -> None:
 
     assert len(pairs) == 6
     assert new_ids <= played
-    assert {pair["schedule_reason"] for pair in pairs} == {
-        arena.SCHEDULE_REASON_PLACEMENT
-    }
-    assert all(
-        bool({player["checkpoint_id"] for player in pair["players"]} & new_ids)
-        and bool({player["checkpoint_id"] for player in pair["players"]} & established_ids)
+    placement_pairs = [
+        pair
         for pair in pairs
-    )
+        if pair["schedule_reason"] == arena.SCHEDULE_REASON_PLACEMENT
+    ]
+    assert len(placement_pairs) == 3
+    assert new_ids <= {
+        player["checkpoint_id"]
+        for pair in placement_pairs
+        for player in pair["players"]
+    }
 
 
 def test_adaptive_v0_expands_budget_to_cover_new_checkpoints() -> None:
@@ -1503,17 +1505,17 @@ def test_adaptive_v0_expands_budget_to_cover_new_checkpoints() -> None:
 
     assert rating_spec["placement_min_games"] == 12
     assert rating_spec["placement_min_opponents"] == 20
-    assert len(pairs) == 10
+    assert len(pairs) == 3
     assert played == {
         checkpoint["checkpoint_id"] for checkpoint in rating_spec["checkpoints"]
     }
-    assert all(len(opponents) == 4 for opponents in distinct.values())
+    assert all(len(opponents) >= 1 for opponents in distinct.values())
     assert {pair["schedule_reason"] for pair in pairs} == {
         arena.SCHEDULE_REASON_PLACEMENT
     }
 
 
-def test_adaptive_v0_revisits_until_twenty_distinct_opponents_when_budget_allows() -> None:
+def test_adaptive_v0_revisits_undercovered_roster_with_bounded_placement_wave() -> None:
     refs = [_checkpoint_ref(f"run-{index:02d}", index * 10) for index in range(24)]
     rating_spec = arena.normalize_rating_spec(
         {
@@ -1556,15 +1558,17 @@ def test_adaptive_v0_revisits_until_twenty_distinct_opponents_when_budget_allows
 
     assert rating_spec["placement_min_games"] == 420
     assert rating_spec["placement_min_opponents"] == 20
-    assert 228 <= len(pairs) <= 456
+    assert len(pairs) == 228
     assert {pair["schedule_reason"] for pair in pairs} == {
         arena.SCHEDULE_REASON_PLACEMENT
     }
+    opponent_counts = []
     for index, checkpoint in enumerate(checkpoints):
         checkpoint_id = checkpoint["checkpoint_id"]
         total_opponents = set(scheduled[checkpoint_id])
         total_opponents.add(checkpoints[index ^ 1]["checkpoint_id"])
-        assert len(total_opponents) >= 20
+        opponent_counts.append(len(total_opponents))
+    assert min(opponent_counts) >= 19
 
 
 def test_adaptive_v0_caps_placement_opponents_to_small_roster() -> None:
@@ -3203,6 +3207,35 @@ def test_review_checkpoint_payload_uses_checkpoint_index_without_live_shard_scan
     assert payload["rows"][0]["completed_count"] == 6
 
 
+def test_review_checkpoint_payload_does_not_request_unbounded_battle_index(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(modal_arena, "TOURNAMENT_MOUNT", tmp_path)
+    tournament_id, rating_run_id = _write_review_fixture(tmp_path)
+    original = modal_arena._list_battle_index
+    seen_limits: list[int] = []
+
+    def recording_index(*args, **kwargs):
+        seen_limits.append(int(kwargs["limit"]))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(modal_arena, "_list_battle_index", recording_index)
+
+    payload = modal_arena._review_checkpoint_payload(
+        tmp_path,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+        checkpoint_id="ckpt-a",
+        limit=1,
+    )
+
+    assert payload["limit"] == 1
+    assert payload["total"] == 2
+    assert seen_limits
+    assert max(seen_limits) <= modal_arena.MAX_LIMIT
+
+
 def test_review_battle_payload_reads_shard_game_index_before_scanning(
     tmp_path,
     monkeypatch,
@@ -4087,6 +4120,82 @@ def test_review_battle_payload_reads_game_summaries_and_samples_gifs(
     assert [game["seed"] for game in payload["games"][:2]] == [1000, 1001]
     assert payload["games"][3]["outcome"] == "seat_1_win"
     assert payload["games"][3]["physical_steps"] == 13
+    assert payload["sample_gif_count"] == 5
+    assert payload["sample_gifs"][0]["gif_ref"].endswith("game-000000/game.gif")
+    assert payload["sample_gifs"][-1]["gif_ref"].endswith("game-000004/game.gif")
+
+
+def test_review_battle_payload_pages_game_summaries(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(modal_arena, "TOURNAMENT_MOUNT", tmp_path)
+    tournament_id, _rating_run_id = _write_review_fixture(tmp_path)
+
+    payload = modal_arena._review_battle_payload(
+        tmp_path,
+        tournament_id=tournament_id,
+        battle_id="battle-ab",
+        game_limit=2,
+        game_offset=2,
+    )
+
+    assert payload["game_count"] == 6
+    assert payload["game_rows_returned"] == 2
+    assert payload["game_limit"] == 2
+    assert payload["game_offset"] == 2
+    assert payload["has_newer_games"] is True
+    assert payload["has_older_games"] is True
+    assert [game["seed"] for game in payload["games"]] == [1002, 1003]
+
+
+def test_review_battle_payload_prefers_summary_gif_samples(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(modal_arena, "TOURNAMENT_MOUNT", tmp_path)
+    tournament_id, _rating_run_id = _write_review_fixture(tmp_path)
+    battle_ref = arena.battle_summary_ref(tournament_id, "battle-ab")
+    summary = modal_arena._read_json(tmp_path / battle_ref)
+    summary["sample_gif_refs"] = [
+        "tournaments/curvytron/arena-a/battles/battle-ab/games/sample-a/game.gif",
+        "tournaments/curvytron/arena-a/battles/battle-ab/games/sample-b/game.gif",
+    ]
+    modal_arena.runs.write_json(tmp_path / battle_ref, summary)
+
+    payload = modal_arena._review_battle_payload(
+        tmp_path,
+        tournament_id=tournament_id,
+        battle_id="battle-ab",
+        game_limit=1,
+    )
+
+    assert payload["sample_gif_count"] == 2
+    assert [sample["gif_ref"] for sample in payload["sample_gifs"]] == summary["sample_gif_refs"]
+    assert payload["games"][0]["gif_ref"].endswith("game-000000/game.gif")
+
+
+def test_review_battle_payload_samples_game_summary_refs_beyond_game_page(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(modal_arena, "TOURNAMENT_MOUNT", tmp_path)
+    tournament_id, _rating_run_id = _write_review_fixture(tmp_path)
+    battle_ref = arena.battle_summary_ref(tournament_id, "battle-ab")
+    summary = modal_arena._read_json(tmp_path / battle_ref)
+    summary["game_summary_refs"] = [
+        arena.game_summary_ref(
+            tournament_id,
+            "battle-ab",
+            f"game-{index:06d}",
+        ).as_posix()
+        for index in range(5)
+    ]
+    modal_arena.runs.write_json(tmp_path / battle_ref, summary)
+
+    payload = modal_arena._review_battle_payload(
+        tmp_path,
+        tournament_id=tournament_id,
+        battle_id="battle-ab",
+        gif_sample_limit=10,
+        game_limit=1,
+    )
+
+    assert payload["game_rows_returned"] == 1
     assert payload["sample_gif_count"] == 5
     assert payload["sample_gifs"][0]["gif_ref"].endswith("game-000000/game.gif")
     assert payload["sample_gifs"][-1]["gif_ref"].endswith("game-000004/game.gif")

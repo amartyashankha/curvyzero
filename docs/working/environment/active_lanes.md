@@ -51,6 +51,11 @@ Parallel execution todo:
 ## Plain Current State
 
 - We are not at full CurvyTron environment fidelity.
+- Environment Reconstruction should not own public tournament leaderboard
+  publishing or training-run ranking analysis. Those are Coach/Training
+  consumer tasks unless they reveal that the environment contract is wrong.
+  If they need context from this thread, write a short handoff and return to
+  source-fidelity work.
 - Current top priority is Environment Reconstruction: faithful multiplayer
   CurvyTron behavior first, then speed/training integration. Keep
   source-state visual/replay/target-row/sample-batch paths honest, but treat

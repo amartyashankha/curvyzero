@@ -138,6 +138,9 @@ from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env imp
     DENSE_SURVIVAL_PLUS_OUTCOME_REWARD_SCHEMA_ID,
 )
 from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
+    DEFAULT_DECISION_SOURCE_FRAMES as SOURCE_STATE_DEFAULT_DECISION_SOURCE_FRAMES,
+)
+from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
     DEFAULT_DECISION_MS as SOURCE_STATE_DEFAULT_DECISION_MS,
 )
 from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
@@ -350,7 +353,9 @@ DEFAULT_PROFILE_SPAWN = False
 # Keep this frequent enough to observe progress but not every loop.
 DEFAULT_SAVE_CKPT_AFTER_ITER = 100
 DEFAULT_STOP_AFTER_LEARNER_TRAIN_CALLS = 0
+DEFAULT_DECISION_SOURCE_FRAMES = SOURCE_STATE_DEFAULT_DECISION_SOURCE_FRAMES
 DEFAULT_DECISION_MS = SOURCE_STATE_DEFAULT_DECISION_MS
+DEFAULT_SOURCE_PHYSICS_STEP_MS = DEFAULT_DECISION_MS / DEFAULT_DECISION_SOURCE_FRAMES
 DEFAULT_ENV_TELEMETRY_STRIDE = 1
 DEFAULT_ENV_MANAGER_TYPE = "subprocess"
 ENV_MANAGER_TYPE_CHOICES = ("base", "subprocess")
@@ -672,6 +677,30 @@ def _lightzero_target_config_for_reward(
             "model_value_support_size": int(2 * support_scale + 1),
         }
     return {}
+
+
+def _validate_trusted_source_state_action_cadence(
+    *,
+    env_variant: str,
+    decision_ms: float,
+    context: str,
+) -> None:
+    if env_variant != ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT:
+        return
+    if math.isclose(
+        float(decision_ms),
+        float(DEFAULT_DECISION_MS),
+        rel_tol=0.0,
+        abs_tol=1e-6,
+    ):
+        return
+    raise ValueError(
+        f"{context} uses the trusted source_state_fixed_opponent lane, where "
+        "one LightZero policy action must advance exactly one CurvyTron source "
+        f"physics step. decision_ms must be {DEFAULT_DECISION_MS:g}; got "
+        f"{float(decision_ms):g}. Use policy_action_repeat_* for explicit "
+        "action repeat instead of hiding repeat in decision_ms."
+    )
 
 
 CHEAP_GPU_RESOURCE = ["L4", "T4"]
@@ -3166,6 +3195,12 @@ def _run_visual_survival_train(
         raise ValueError(f"{env_variant} env_variant does not use frozen opponent checkpoints")
     if float(decision_ms) <= 0.0:
         raise ValueError("decision_ms must be positive")
+    if mode in {"train", "dry"}:
+        _validate_trusted_source_state_action_cadence(
+            env_variant=env_variant,
+            decision_ms=decision_ms,
+            context=f"mode={mode!r}",
+        )
     if not 0.0 <= float(ego_action_straight_override_probability) <= 1.0:
         raise ValueError("ego_action_straight_override_probability must be in [0, 1]")
     if int(policy_action_repeat_min) < 1:
@@ -3276,6 +3311,9 @@ def _run_visual_survival_train(
         "max_train_iter": int(max_train_iter),
         "source_max_steps": int(source_max_steps),
         "decision_ms": float(decision_ms),
+        "decision_source_frames": int(DEFAULT_DECISION_SOURCE_FRAMES),
+        "source_physics_step_ms": float(DEFAULT_SOURCE_PHYSICS_STEP_MS),
+        "source_max_steps_semantics": "source_physics_steps",
         "collector_env_num": int(collector_env_num),
         "evaluator_env_num": int(evaluator_env_num),
         "n_evaluator_episode": int(n_evaluator_episode),
@@ -3908,11 +3946,14 @@ def _run_visual_survival_train(
         exp_name_ref=exp_name_ref.as_posix(),
     )
     final_volume_commit = {"attempted": False}
-    if mode == "profile" and profile_volume_commit and hasattr(runs_volume, "commit"):
+    should_commit_final_artifacts = mode == "train" or (
+        mode == "profile" and profile_volume_commit
+    )
+    if should_commit_final_artifacts and hasattr(runs_volume, "commit"):
         final_volume_commit = {"attempted": True, "ok": False}
         commit_started = time.perf_counter()
         try:
-            _commit_runs_volume_with_backoff(label="profile_final_commit")
+            _commit_runs_volume_with_backoff(label=f"{mode}_final_commit")
             final_volume_commit["ok"] = True
         except Exception as exc:  # pragma: no cover - remote artifact durability only.
             final_volume_commit["error"] = f"{type(exc).__name__}: {exc}"
@@ -4457,6 +4498,9 @@ def _build_visual_survival_configs(
     opponent_checkpoint: dict[str, Any] | None,
     opponent_snapshot_ref: str | None,
     opponent_checkpoint_state_key: str | None,
+    decision_source_frames: int = DEFAULT_DECISION_SOURCE_FRAMES,
+    source_physics_step_ms: float = DEFAULT_SOURCE_PHYSICS_STEP_MS,
+    source_max_steps_semantics: str = "source_physics_steps",
     opponent_mixture: dict[str, Any] | None = None,
     source_state_trail_render_mode: str = DEFAULT_SOURCE_STATE_TRAIL_RENDER_MODE,
     policy_action_repeat_min: int = DEFAULT_POLICY_ACTION_REPEAT_MIN,
@@ -4485,6 +4529,12 @@ def _build_visual_survival_configs(
     source_state_trail_render_mode = _validate_source_state_trail_render_mode(
         source_state_trail_render_mode
     )
+    if not profile_env_timing_enabled:
+        _validate_trusted_source_state_action_cadence(
+            env_variant=env_variant,
+            decision_ms=decision_ms,
+            context="_build_visual_survival_configs",
+        )
     target_config = _lightzero_target_config_for_reward(
         env_variant=env_variant,
         reward_variant=reward_variant,
@@ -4556,6 +4606,9 @@ def _build_visual_survival_configs(
             "source_max_steps": int(source_max_steps),
             "max_ticks": int(source_max_steps),
             "decision_ms": float(decision_ms),
+            "decision_source_frames": int(decision_source_frames),
+            "source_physics_step_ms": float(source_physics_step_ms),
+            "source_max_steps_semantics": str(source_max_steps_semantics),
             "frame_stack_num": 1,
             "observation_shape": list(env_spec["observation_shape"]),
             "gray_scale": True,
@@ -4729,6 +4782,9 @@ def _extract_surface(
         "frame_stack_num": env.get("frame_stack_num"),
         "source_max_steps": env.get("source_max_steps"),
         "decision_ms": env.get("decision_ms"),
+        "decision_source_frames": env.get("decision_source_frames"),
+        "source_physics_step_ms": env.get("source_physics_step_ms"),
+        "source_max_steps_semantics": env.get("source_max_steps_semantics"),
         "dynamic_seed": env.get("dynamic_seed"),
         "reset_seed_strategy": env.get("reset_seed_strategy"),
         "telemetry_path": env.get("telemetry_path"),
@@ -4839,6 +4895,9 @@ def _validate_visual_survival_surface(
         "frame_stack_num": 1,
         "source_max_steps": command["source_max_steps"],
         "decision_ms": command["decision_ms"],
+        "decision_source_frames": command["decision_source_frames"],
+        "source_physics_step_ms": command["source_physics_step_ms"],
+        "source_max_steps_semantics": command["source_max_steps_semantics"],
         "dynamic_seed": True,
         "reset_seed_strategy": command.get("reset_seed_strategy"),
         "telemetry_stride": command["env_telemetry_stride"],
@@ -5631,6 +5690,16 @@ def _background_eval_config_from_command(command: dict[str, Any]) -> dict[str, A
             DEFAULT_BACKGROUND_EVAL_STEP_DETAIL_LIMIT,
         ),
         "source_max_steps": int(command.get("source_max_steps", DEFAULT_SOURCE_MAX_STEPS)),
+        "decision_ms": float(command.get("decision_ms", DEFAULT_DECISION_MS)),
+        "decision_source_frames": int(
+            command.get("decision_source_frames", DEFAULT_DECISION_SOURCE_FRAMES)
+        ),
+        "source_physics_step_ms": float(
+            command.get("source_physics_step_ms", DEFAULT_SOURCE_PHYSICS_STEP_MS)
+        ),
+        "source_max_steps_semantics": str(
+            command.get("source_max_steps_semantics", "source_physics_steps")
+        ),
         "natural_bonus_spawn": bool(
             command.get("natural_bonus_spawn", TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN)
         ),
@@ -5706,6 +5775,16 @@ def _background_gif_config_from_command(command: dict[str, Any]) -> dict[str, An
             command.get("natural_bonus_spawn", TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN)
         ),
         "source_max_steps": int(command.get("source_max_steps", DEFAULT_SOURCE_MAX_STEPS)),
+        "decision_ms": float(command.get("decision_ms", DEFAULT_DECISION_MS)),
+        "decision_source_frames": int(
+            command.get("decision_source_frames", DEFAULT_DECISION_SOURCE_FRAMES)
+        ),
+        "source_physics_step_ms": float(
+            command.get("source_physics_step_ms", DEFAULT_SOURCE_PHYSICS_STEP_MS)
+        ),
+        "source_max_steps_semantics": str(
+            command.get("source_max_steps_semantics", "source_physics_steps")
+        ),
         "num_simulations": int(
             command.get(
                 "background_eval_num_simulations",

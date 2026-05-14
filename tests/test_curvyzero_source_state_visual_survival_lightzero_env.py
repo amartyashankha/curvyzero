@@ -490,6 +490,11 @@ def test_source_state_visual_survival_step_and_terminal_telemetry(tmp_path):
     assert rows[0]["runtime_topology"] == SOURCE_STATE_FIXED_OPPONENT_RUNTIME_TOPOLOGY
     assert rows[0]["underlying_env_class"] == SOURCE_STATE_FIXED_OPPONENT_UNDERLYING_ENV_CLASS
     assert rows[0]["runtime_env_impl_id"] == NATURAL_BONUS_ENV_IMPL_ID
+    assert rows[0]["decision_ms"] == pytest.approx(SOURCE_PHYSICS_STEP_MS)
+    assert rows[0]["decision_source_frames"] == 1
+    assert rows[0]["source_physics_step_ms"] == pytest.approx(SOURCE_PHYSICS_STEP_MS)
+    assert rows[0]["max_ticks"] == 1
+    assert rows[0]["max_source_ticks"] == 1
     assert rows[0]["natural_bonus_spawn"] is True
     assert rows[0]["bonus_support_mode"] == "natural_spawn"
     assert rows[0]["death_mode"] == "normal"
@@ -500,6 +505,13 @@ def test_source_state_visual_survival_step_and_terminal_telemetry(tmp_path):
     assert rows[0]["two_seat_self_play"] is False
     assert rows[0]["two_seat_self_play_status"] == SOURCE_STATE_FIXED_OPPONENT_TWO_SEAT_STATUS
     assert rows[0]["fixed_opponent_is_two_seat_self_play"] is False
+    assert rows[0]["policy_action_repeat_min"] == 1
+    assert rows[0]["policy_action_repeat_max"] == 1
+    assert rows[0]["policy_action_repeat_extra_probability"] == 0.0
+    assert rows[0]["policy_action_repeat_requested"] == 1
+    assert rows[0]["policy_action_repeat_executed"] == 1
+    assert rows[0]["policy_action_repeat_extra_steps"] == 0
+    assert rows[0]["physical_decision_ms_total"] == pytest.approx(SOURCE_PHYSICS_STEP_MS)
     assert "terminal_reason" in rows[0]
     assert "death_count" in rows[0]
     assert "death_player" in rows[0]
@@ -1008,21 +1020,31 @@ def test_source_state_visual_survival_action_repeat_is_one_policy_transition():
     )
 
     env.reset(seed=37)
+    start_tick = int(env._env.state["tick"][0])
     timestep = env.step(1)
 
     assert timestep.done is False
     assert timestep.info["step_index"] == 0
     assert timestep.info["physical_step_index"] == 3
+    assert timestep.info["source_tick_index"] == 3
+    assert timestep.info["decision_source_frames"] == 1
+    assert timestep.info["decision_ms"] == pytest.approx(SOURCE_PHYSICS_STEP_MS)
     assert timestep.info["policy_action_repeat_min"] == 3
     assert timestep.info["policy_action_repeat_max"] == 3
     assert timestep.info["policy_action_repeat_requested"] == 3
     assert timestep.info["policy_action_repeat_executed"] == 3
     assert timestep.info["policy_action_repeat_extra_steps"] == 2
     assert timestep.info["policy_observation_after_skipped_steps"] == 2
+    assert timestep.info["physical_decision_ms_total"] == pytest.approx(
+        3.0 * SOURCE_PHYSICS_STEP_MS
+    )
     assert timestep.info["control_noise_profile_id"] == "policy_action_repeat"
     assert timestep.info["trainer_reward"] == 3.0
     assert timestep.info["dense_survival_helper_for_ego"] == 3.0
     assert timestep.info["bonus_catch_count_step_for_ego"] == 0
+    assert int(env._env.state["tick"][0]) - start_tick == 3
+    assert env._last_batch is not None
+    assert int(env._last_batch.info["source_physics_substeps_executed"][0]) == 1
 
 
 def test_source_state_visual_survival_default_is_one_source_frame_per_policy_action():
@@ -1046,6 +1068,64 @@ def test_source_state_visual_survival_default_is_one_source_frame_per_policy_act
     assert timestep.info["physical_step_index"] == 1
     assert env._last_batch is not None
     assert int(env._last_batch.info["source_physics_substeps_executed"][0]) == 1
+
+
+def test_source_state_visual_survival_source_max_steps_caps_granular_source_ticks():
+    env = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
+        {
+            "seed": 39,
+            "source_max_steps": 3,
+            "natural_bonus_spawn": False,
+            "opponent_runtime_mode": OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP,
+        }
+    )
+
+    env.reset(seed=39)
+    timestep = None
+    step_count = 0
+    while timestep is None or not timestep.done:
+        timestep = env.step(1)
+        step_count += 1
+        assert step_count <= 4
+
+    assert step_count == 3
+    assert timestep.info["terminal_reason"] == "timeout"
+    assert timestep.info["decision_source_frames"] == 1
+    assert timestep.info["max_ticks"] == 3
+    assert timestep.info["max_source_ticks"] == 3
+    assert timestep.info["physical_step_index"] == 3
+    assert timestep.info["source_tick_index"] == 3
+    assert int(env._env.state["tick"][0]) == 3
+
+
+def test_source_state_visual_survival_repeat_stops_at_source_max_steps_cap():
+    env = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
+        {
+            "seed": 40,
+            "source_max_steps": 2,
+            "natural_bonus_spawn": False,
+            "opponent_runtime_mode": OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP,
+            "policy_action_repeat_min": 3,
+            "policy_action_repeat_max": 3,
+            "policy_action_repeat_extra_probability": 0.0,
+        }
+    )
+
+    env.reset(seed=40)
+    timestep = env.step(1)
+
+    assert timestep.done is True
+    assert timestep.info["terminal_reason"] == "timeout"
+    assert timestep.info["decision_source_frames"] == 1
+    assert timestep.info["policy_action_repeat_requested"] == 3
+    assert timestep.info["policy_action_repeat_executed"] == 2
+    assert timestep.info["policy_action_repeat_extra_steps"] == 1
+    assert timestep.info["physical_decision_ms_total"] == pytest.approx(
+        2.0 * SOURCE_PHYSICS_STEP_MS
+    )
+    assert timestep.info["physical_step_index"] == 2
+    assert timestep.info["source_tick_index"] == 2
+    assert int(env._env.state["tick"][0]) == 2
 
 
 def test_source_state_visual_survival_proactive_wall_avoidant_turns_from_left_wall():

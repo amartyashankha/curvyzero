@@ -8,6 +8,8 @@ import pytest
 
 from curvyzero.env import vector_runtime
 from curvyzero.env.config import CurvyTronReferenceDefaults
+from curvyzero.env.vector_visual_observation import render_source_state_rgb_canvas_like
+from curvyzero.env.vector_visual_observation import rgb_canvas_like_to_gray64
 
 
 SCRIPT_ROOT = Path(__file__).resolve().parents[1] / "scripts"
@@ -688,15 +690,19 @@ def _step_runtime_fixture(
     state: dict[str, np.ndarray],
     *,
     step_index: int,
+    source_moves: np.ndarray | None = None,
 ) -> dict[str, int]:
     prepared_step = vector_compare.prepare_fixture_array_step(
         fixture,
         step_index=step_index,
     )
+    prepared_batch = _prepared_step_batch(prepared_step)
+    if source_moves is not None:
+        prepared_batch["source_moves"] = source_moves
     return vector_runtime.step_many(
         vector_runtime.VectorStepInput.from_mapping(
             state,
-            _prepared_step_batch(prepared_step),
+            prepared_batch,
         ),
     )
 
@@ -784,6 +790,7 @@ def _step_runtime_timer_only(
     *,
     timer_advance_ms: float,
     player_count: int = 2,
+    apply_source_moves: bool = True,
 ) -> dict[str, int]:
     return vector_runtime.step_many(
         vector_runtime.VectorStepInput(
@@ -793,6 +800,7 @@ def _step_runtime_timer_only(
             player_count=player_count,
             timer_advance_ms=np.asarray([timer_advance_ms], dtype=np.float64),
             event_mode=vector_runtime.EVENT_MODE_DEBUG,
+            apply_source_moves=apply_source_moves,
         ),
     )
 
@@ -3218,6 +3226,122 @@ def test_step_many_forced_bonus_self_small_expiry_restores_radius_like_fixture()
     )
 
 
+def test_radius_bonus_lifecycle_changes_collision_geometry():
+    scenario_name = "source_bonus_self_small_expiry_restore_step.json"
+    fixture, state = _runtime_fixture_state(f"scenarios/environment/{scenario_name}")
+    _add_forced_bonus_self_small_arrays(state, scenario_name)
+
+    catch_counters = _step_runtime_fixture(fixture, state, step_index=0)
+
+    assert catch_counters["bonus_self_small_catches"] == 1
+    assert state["radius"][0, 0] == pytest.approx(0.3)
+    state["printing"][0, 0] = False
+    state["print_manager_active"][0, 0] = False
+    state["pos"][0, 0] = np.asarray([0.4, 20.0], dtype=np.float64)
+    state["prev_pos"][0, 0] = state["pos"][0, 0]
+    small_wall_hit = vector_runtime.normal_wall_hit_mask(
+        state,
+        player=0,
+        live_mask=np.asarray([True], dtype=bool),
+    )
+    np.testing.assert_array_equal(small_wall_hit, np.asarray([False]))
+
+    state["pos"][0, 0] = np.asarray([20.0, 20.0], dtype=np.float64)
+    state["prev_pos"][0, 0] = state["pos"][0, 0]
+    state["body_active"][0] = False
+    state["body_active"][0, 0] = True
+    state["body_pos"][0, 0] = np.asarray([20.95, 20.0], dtype=np.float64)
+    state["body_radius"][0, 0] = 0.6
+    state["body_owner"][0, 0] = 1
+    state["body_num"][0, 0] = 0
+    state["body_insert_tick"][0, 0] = int(state["tick"][0])
+    state["body_insert_kind"][0, 0] = vector_runtime.BODY_KIND_NORMAL
+    state["body_write_cursor"][0] = 1
+    state["world_body_count"][0] = 1
+    small_body_counters = _step_runtime_timer_only(
+        state,
+        timer_advance_ms=0.0,
+        apply_source_moves=False,
+    )
+    assert small_body_counters["body_hits"] == 0
+    assert bool(state["alive"][0, 0])
+
+    state["pos"][0, 0] = np.asarray([40.0, 20.0], dtype=np.float64)
+    state["prev_pos"][0, 0] = state["pos"][0, 0]
+    expiry_counters = _step_runtime_timer_only(
+        state,
+        timer_advance_ms=vector_runtime.BONUS_SELF_SMALL_DURATION_MS,
+        apply_source_moves=False,
+    )
+
+    assert expiry_counters["bonus_self_small_expiries"] == 1
+    assert state["radius"][0, 0] == pytest.approx(0.6)
+    state["pos"][0, 0] = np.asarray([0.4, 20.0], dtype=np.float64)
+    state["prev_pos"][0, 0] = state["pos"][0, 0]
+    base_wall_hit = vector_runtime.normal_wall_hit_mask(
+        state,
+        player=0,
+        live_mask=np.asarray([True], dtype=bool),
+    )
+    np.testing.assert_array_equal(base_wall_hit, np.asarray([True]))
+
+    state["pos"][0, 0] = np.asarray([20.0, 20.0], dtype=np.float64)
+    state["prev_pos"][0, 0] = state["pos"][0, 0]
+    base_body_counters = _step_runtime_timer_only(
+        state,
+        timer_advance_ms=0.0,
+        apply_source_moves=False,
+    )
+
+    assert base_body_counters["body_hits"] == 1
+    assert not bool(state["alive"][0, 0])
+
+
+def test_radius_bonus_lifecycle_changes_raw_and_gray_visual_observation():
+    scenario_name = "source_bonus_self_small_expiry_restore_step.json"
+    fixture, state = _runtime_fixture_state(f"scenarios/environment/{scenario_name}")
+    _add_forced_bonus_self_small_arrays(state, scenario_name)
+
+    catch_counters = _step_runtime_fixture(fixture, state, step_index=0)
+
+    assert catch_counters["bonus_self_small_catches"] == 1
+    state["pos"][0, 0] = np.asarray([44.0, 44.0], dtype=np.float64)
+    state["prev_pos"][0, 0] = state["pos"][0, 0]
+    state["alive"][0, 1] = False
+    state["present"] = np.ones_like(state["alive"], dtype=bool)
+    state["elapsed_ms"] = np.asarray([0.0], dtype=np.float64)
+    state["body_active"][0] = False
+    if "visual_trail_active" in state:
+        state["visual_trail_active"][0] = False
+    state["bonus_active"][0] = False
+    state["bonus_count"][0] = 0
+    state["bonus_world_body_count"][0] = 0
+    small_rgb = render_source_state_rgb_canvas_like(state, row=0)
+    small_gray = rgb_canvas_like_to_gray64(small_rgb)
+
+    expiry_counters = _step_runtime_timer_only(
+        state,
+        timer_advance_ms=vector_runtime.BONUS_SELF_SMALL_DURATION_MS,
+        apply_source_moves=False,
+    )
+
+    assert expiry_counters["bonus_self_small_expiries"] == 1
+    large_rgb = render_source_state_rgb_canvas_like(state, row=0)
+    large_gray = rgb_canvas_like_to_gray64(large_rgb)
+    background_rgb = small_rgb[0, 0].copy()
+    background_gray = int(small_gray[0, 0, 0])
+    small_raw_signal = int(np.count_nonzero(np.any(small_rgb != background_rgb, axis=2)))
+    large_raw_signal = int(np.count_nonzero(np.any(large_rgb != background_rgb, axis=2)))
+    small_gray_signal = int(np.count_nonzero(small_gray[0] != background_gray))
+    large_gray_signal = int(np.count_nonzero(large_gray[0] != background_gray))
+
+    assert small_rgb.shape == large_rgb.shape
+    assert small_gray.shape == large_gray.shape
+    assert large_raw_signal > small_raw_signal
+    assert large_gray_signal >= small_gray_signal
+    assert int(np.count_nonzero(large_gray != small_gray)) > 0
+
+
 def test_step_many_catches_forced_bonus_self_slow_and_expiry_restores_speed():
     scenario_name = "source_bonus_self_small_expiry_restore_step.json"
     fixture, state = _runtime_fixture_state(f"scenarios/environment/{scenario_name}")
@@ -3349,6 +3473,100 @@ def test_step_many_catches_forced_velocity_bonus_and_expiry_restores_speed(
     )
     np.testing.assert_array_equal(state["bonus_stack_count"], np.asarray([[0, 0]]))
     assert int(state["bonus_stack_type"][0, target_player, 0]) == (vector_runtime.BONUS_TYPE_NONE)
+
+
+def test_velocity_bonus_refreshes_active_turn_before_next_movement_frame():
+    scenario_name = "source_bonus_self_small_expiry_restore_step.json"
+    fixture, state = _runtime_fixture_state(f"scenarios/environment/{scenario_name}")
+    _add_forced_bonus_self_small_arrays(
+        state,
+        scenario_name,
+        bonus_type_code=vector_runtime.BONUS_TYPE_SELF_FAST,
+    )
+    state["heading"][0, 0] = 0.0
+
+    catch_counters = _step_runtime_fixture(
+        fixture,
+        state,
+        step_index=0,
+        source_moves=np.asarray([[1, 0]], dtype=np.int8),
+    )
+
+    expected_turn_rate = _expected_source_angular_velocity_for_speed(28.0)
+    assert catch_counters["bonus_self_fast_catches"] == 1
+    assert state["speed"][0, 0] == pytest.approx(28.0)
+    assert state["angular_velocity_per_ms"][0, 0] == pytest.approx(expected_turn_rate)
+    assert state["current_angular_velocity"][0, 0] == pytest.approx(expected_turn_rate)
+    heading_after_catch = float(state["heading"][0, 0])
+
+    vector_runtime.advance_player_movement(
+        state,
+        player=0,
+        live_mask=np.asarray([True], dtype=bool),
+        step_ms=np.asarray([100.0], dtype=np.float64),
+        source_moves=np.asarray([[0, 0]], dtype=np.int8),
+    )
+
+    assert state["heading"][0, 0] == pytest.approx(
+        heading_after_catch + expected_turn_rate * 100.0
+    )
+
+
+def test_inverse_bonus_preserves_active_turn_until_next_source_input_event():
+    scenario_name = "source_bonus_self_small_expiry_restore_step.json"
+    fixture, state = _runtime_fixture_state(f"scenarios/environment/{scenario_name}")
+    _add_forced_bonus_self_small_arrays(
+        state,
+        scenario_name,
+        bonus_type_code=vector_runtime.BONUS_TYPE_ENEMY_INVERSE,
+    )
+    base_turn_rate = float(state["angular_velocity_per_ms"][0, 1])
+
+    catch_counters = _step_runtime_fixture(
+        fixture,
+        state,
+        step_index=0,
+        source_moves=np.asarray([[0, 1]], dtype=np.int8),
+    )
+
+    assert catch_counters["bonus_enemy_inverse_catches"] == 1
+    np.testing.assert_array_equal(state["inverse"], np.asarray([[False, True]]))
+    assert state["current_angular_velocity"][0, 1] == pytest.approx(base_turn_rate)
+
+    vector_runtime.apply_source_turn_inputs(
+        state,
+        source_moves=np.asarray([[0, 1]], dtype=np.int8),
+        player_count=2,
+    )
+    assert state["current_angular_velocity"][0, 1] == pytest.approx(-base_turn_rate)
+    heading_before_inverse_move = float(state["heading"][0, 1])
+    vector_runtime.advance_player_movement(
+        state,
+        player=1,
+        live_mask=np.asarray([True], dtype=bool),
+        step_ms=np.asarray([100.0], dtype=np.float64),
+        source_moves=np.asarray([[0, 1]], dtype=np.int8),
+    )
+    assert state["heading"][0, 1] == pytest.approx(
+        heading_before_inverse_move - base_turn_rate * 100.0
+    )
+
+    expiry_counters = _step_runtime_timer_only(
+        state,
+        timer_advance_ms=vector_runtime.BONUS_ENEMY_INVERSE_DURATION_MS,
+        apply_source_moves=False,
+    )
+
+    assert expiry_counters["bonus_enemy_inverse_expiries"] == 1
+    np.testing.assert_array_equal(state["inverse"], np.asarray([[False, False]]))
+    assert state["current_angular_velocity"][0, 1] == pytest.approx(-base_turn_rate)
+
+    vector_runtime.apply_source_turn_inputs(
+        state,
+        source_moves=np.asarray([[0, 1]], dtype=np.int8),
+        player_count=2,
+    )
+    assert state["current_angular_velocity"][0, 1] == pytest.approx(base_turn_rate)
 
 
 def test_step_many_bonus_stack_clears_on_wall_death_and_late_expiry_stays_inert():

@@ -16,6 +16,24 @@ This is the short source for the latest Coach refactor context, live-run
 boundaries, stock `train_muzero` ownership, artifact/GIF boundaries, and
 optimizer questions.
 
+Fresh stock full-loop speed picture:
+[stock full-loop profile](stock_full_loop_profile_2026-05-13.md). Plain read:
+the biggest measured full-loop speedup so far is wider stock LightZero
+collection, not the renderer alone. C1 did about `10.8` env steps/sec, C32 did
+about `153.6`, C64 did about `408.4`, and C96 did about `487.3` on the current
+one-frame source-state fixed-opponent profile. The C64 H100 sim8 row was slower
+than the C64 L4/T4 row, so the current sim8 shape is not worth moving to H100.
+The C64 L4/T4 sim16 row did about `366.7` env steps/sec, so doubling MCTS sims
+only cost about `10%` throughput in that shape. The paired C64 H100 sim16 row
+did about `488.4`, so H100 may be useful when search pressure is higher even
+though it was worse at sim8. Drop `body_circles_fast` as an optimizer decision
+proxy; the relevant render lane is CPU `browser_lines` versus exact
+GPU/compiled `browser_lines`.
+Render work remains important for long trajectories, but current full-loop
+Amdahl points at collection/search/process overhead first. The trusted renderer
+is still CPU; GPU-render work is a serious prototype lane, not current training
+plumbing.
+
 2026-05-13 render profiling truth: optimizer recommendations now target only
 the full source-state CPU-reference stock LightZero renderer: `browser_lines`
 source-state RGB at the 704-style canvas, browser-sprite bonuses, BT.601 luma,

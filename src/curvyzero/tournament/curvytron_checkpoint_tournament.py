@@ -1307,17 +1307,21 @@ def select_adaptive_v0_pair_slots(
         for row in rows
         if int(row["index"]) not in coverage_target_indices
     ]
-    placement_floor = 0
+    first_touch_floor = 0
     placement_max_need = 0
     if coverage_target_indices:
         total_coverage_deficit = sum(coverage_deficit_by_index.values())
-        placement_floor = math.ceil(total_coverage_deficit / 2.0)
+        first_touch_floor = math.ceil(len(coverage_target_indices) / 2.0)
         placement_max_need = int(total_coverage_deficit)
     if spec["include_self_pairs"]:
         max_pair_count = len(checkpoints) * (len(checkpoints) + 1) // 2
     else:
         max_pair_count = len(checkpoints) * (len(checkpoints) - 1) // 2
-    budget = min(max_pair_count, max(requested_budget, placement_floor))
+    effective_round_budget = min(
+        max_pair_count,
+        max(requested_budget, first_touch_floor),
+    )
+    budget = effective_round_budget
     anchor_indices = []
     if by_rating:
         for pos in {0, len(by_rating) // 4, len(by_rating) // 2, len(by_rating) - 1}:
@@ -1421,11 +1425,7 @@ def select_adaptive_v0_pair_slots(
             and opponent_id not in scheduled_opponents_by_index[i]
         )
 
-    placement_budget = min(
-        max_pair_count,
-        max(1, int(round(budget * 0.2)), placement_floor, placement_max_need),
-    )
-    budget = placement_budget
+    placement_budget = min(placement_max_need, effective_round_budget)
     low_coverage = sorted(
         [row for row in rows if int(row["index"]) in coverage_target_indices],
         key=lambda row: (
@@ -1448,6 +1448,7 @@ def select_adaptive_v0_pair_slots(
             target_rows.sort(
                 key=lambda index: (
                     bool(has_pair_history(target, index)),
+                    appearances_by_index.get(index, 0),
                     -float(rating_by_index[index]),
                     -coverage_deficit_by_index.get(index, 0),
                     str(checkpoints[index]["checkpoint_id"]),
@@ -1479,6 +1480,7 @@ def select_adaptive_v0_pair_slots(
             candidate_group.sort(
                 key=lambda index: (
                     bool(has_pair_history(target, index)),
+                    appearances_by_index.get(index, 0),
                     -float(rating_by_index[index]),
                     -coverage_deficit_by_index.get(index, 0),
                     str(checkpoints[index]["checkpoint_id"]),
@@ -1488,6 +1490,7 @@ def select_adaptive_v0_pair_slots(
             candidate_group.sort(
                 key=lambda index: (
                     bool(has_pair_history(target, index)),
+                    appearances_by_index.get(index, 0),
                     -float(rating_by_index[index]),
                     str(checkpoints[index]["checkpoint_id"]),
                 )
@@ -1502,45 +1505,54 @@ def select_adaptive_v0_pair_slots(
         and any(remaining > 0 for remaining in coverage_deficit_by_index.values())
     ):
         progress = False
-        target_order = sorted(
-            [
-                row
-                for row in low_coverage
-                if coverage_deficit_by_index.get(int(row["index"]), 0) > 0
-            ],
-            key=lambda row: (
-                -coverage_deficit_by_index.get(int(row["index"]), 0),
-                int(row["distinct_opponents"]),
-                int(row["games"]),
-                str(row["checkpoint_id"]),
-            ),
-        )
-        for row in target_order:
-            if scheduled_count(SCHEDULE_REASON_PLACEMENT) >= placement_budget:
-                break
-            target = int(row["index"])
-            for opponent in placement_candidates(target, mutual_only=False):
-                target_gets_new = is_new_opponent(target, opponent)
-                opponent_gets_new = is_new_opponent(opponent, target)
-                if add_pair(target, opponent, SCHEDULE_REASON_PLACEMENT, 1.0):
-                    scheduled_opponents_by_index[target].add(
-                        str(checkpoints[opponent]["checkpoint_id"])
-                    )
-                    scheduled_opponents_by_index[opponent].add(
-                        str(checkpoints[target]["checkpoint_id"])
-                    )
-                    if target_gets_new:
-                        coverage_deficit_by_index[target] = max(
-                            0,
-                            coverage_deficit_by_index.get(target, 0) - 1,
-                        )
-                    if opponent in coverage_deficit_by_index and opponent_gets_new:
-                        coverage_deficit_by_index[opponent] = max(
-                            0,
-                            coverage_deficit_by_index.get(opponent, 0) - 1,
-                        )
-                    progress = True
+        for mutual_only in (True, False):
+            target_order = sorted(
+                [
+                    row
+                    for row in low_coverage
+                    if coverage_deficit_by_index.get(int(row["index"]), 0) > 0
+                ],
+                key=lambda row: (
+                    -coverage_deficit_by_index.get(int(row["index"]), 0),
+                    int(row["distinct_opponents"]),
+                    int(row["games"]),
+                    str(row["checkpoint_id"]),
+                ),
+            )
+            for row in target_order:
+                if scheduled_count(SCHEDULE_REASON_PLACEMENT) >= placement_budget:
                     break
+                target = int(row["index"])
+                if appearances_by_index.get(target, 0) > 0 and any(
+                    coverage_deficit_by_index.get(index, 0) > 0
+                    and appearances_by_index.get(index, 0) == 0
+                    for index in coverage_target_indices
+                ):
+                    continue
+                for opponent in placement_candidates(target, mutual_only=mutual_only):
+                    target_gets_new = is_new_opponent(target, opponent)
+                    opponent_gets_new = is_new_opponent(opponent, target)
+                    if add_pair(target, opponent, SCHEDULE_REASON_PLACEMENT, 1.0):
+                        scheduled_opponents_by_index[target].add(
+                            str(checkpoints[opponent]["checkpoint_id"])
+                        )
+                        scheduled_opponents_by_index[opponent].add(
+                            str(checkpoints[target]["checkpoint_id"])
+                        )
+                        if target_gets_new:
+                            coverage_deficit_by_index[target] = max(
+                                0,
+                                coverage_deficit_by_index.get(target, 0) - 1,
+                            )
+                        if opponent in coverage_deficit_by_index and opponent_gets_new:
+                            coverage_deficit_by_index[opponent] = max(
+                                0,
+                                coverage_deficit_by_index.get(opponent, 0) - 1,
+                            )
+                        progress = True
+                        break
+            if progress or scheduled_count(SCHEDULE_REASON_PLACEMENT) >= placement_budget:
+                break
         if not progress:
             break
 

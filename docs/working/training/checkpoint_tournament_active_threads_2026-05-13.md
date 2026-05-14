@@ -66,6 +66,21 @@ in the goal, orchestration, scheduling, critique, and validation docs.
   `checkpoint_tournament_website_ux_redteam_2026-05-13.md`. Main lesson: use
   small indexed artifacts, paged API payloads, lazy GIFs, and light refresh
   tokens instead of request-time scans.
+- Website click-path cleanup landed locally and passed focused tests. Battle
+  detail now supports paged game rows, prefers summary-level GIF samples, and no
+  normal battle/checkpoint click path asks for `limit=1_000_000`. If a battle
+  lacks `sample_gif_refs`, the page samples a few `game_summary_refs` directly
+  with a bounded fallback instead of reading every game.
+- Scheduler guardrail landed locally in a separate lane. Placement no longer
+  expands one round to the full evidence deficit; it only expands enough for a
+  first-touch floor when the requested budget is too small.
+- Public leaderboard lane is now explicitly separated from the website lane.
+  The future trainer contract is a frozen opponent assignment built from a
+  durable leaderboard snapshot, not live Elo or a Modal Dict.
+- New validation lane delegated: remove/reintroduce the current top policy
+  without deleting its checkpoint, then measure whether online intake/scheduler
+  can make it climb back near the top. This is the strongest practical test of
+  whether the rating system works as an ongoing process.
 
 ## Next Cleanup Phase
 
@@ -110,6 +125,8 @@ process, not a one-off report.
 | Checkpoint discovery | Arendt / Pauli / main | footgun guard landed | use `checkpoint_selection=all` in adaptive runbook |
 | Modal ops | Hilbert | first pass done | add commit/reload retry only if needed; keep Volume as truth |
 | Website scale | Lorentz / main | per-checkpoint index contract tightened | later add paging for game rows and battle details |
+| Public leaderboard | main + critique | contract boundary recorded | add pure snapshot/pointer publisher later |
+| Top-policy reintroduction | James / main | delegated design | decide whether current online machinery can run the test safely |
 | Validation | main | focused tests passing | run focused tests after each patch; smoke remote only after wiring |
 | Product/coach view | main + critique agents | active | ensure rankings show status, evidence, and freshness |
 | Refactor architecture | Arendt / Mill / Hilbert / Lorentz / main | Cut 1 landed; wave 2 mostly returned | fold critiques into next small cut |
@@ -130,6 +147,23 @@ process, not a one-off report.
   per-game summary counting exists as an explicit diagnostic path, not the
   default web refresh, because scanning tens of thousands of game files is too
   slow for normal operation.
+- Battle detail now pages game rows and reads summary GIF samples first. This
+  keeps the human click path useful before the full battle/game artifact design
+  is cleaned up.
+- Deployed progress check after the fix: `/api/rating-progress?fresh=true`
+  returned in about 1.7 seconds and reported `52,779 / 84,588` games,
+  `2,486 / 4,028` completed pairs, `39` partial pairs, and no volume reload
+  error for the live `round-000002`.
+- Latest deployed website smoke after battle-detail paging: rankings returned
+  424 rows; checkpoint drilldown for the top policy returned 22 battles from
+  `checkpoint_battle_index`; battle detail returned `2 / 21` game rows plus
+  five GIF samples; the standalone battle page rendered five GIF cards; sampled
+  GIF endpoint returned HTTP 200 `image/gif`.
+- Current top row in the expanded probe is
+  `ckpt-154-train-lightzero_exp-ckpt-iteration_300009-c012acd2`
+  (`passive-fast-medium-base-r227 i300009`), rating about `1632.18`, 462 games,
+  22 distinct opponents. Treat this as a candidate for the reintroduction test,
+  not as a public-leaderboard truth.
 - Rating rounds now write `pair_history.json` and `scheduler_state.json`.
 - Discovery scans `train/lightzero_exp*/ckpt/iteration_*.pth.tar`.
 - Discovery supports `latest`, `iteration`, and `all`.
@@ -184,8 +218,8 @@ process, not a one-off report.
 ## Current Not Done
 
 - Website has per-checkpoint battle indexes for checkpoint drilldown. It still
-  needs more paging/index work for very large game/GIF detail and probably a
-  lighter battle-detail artifact for GIF samples.
+  has basic paging for battle game rows. It still needs stronger indexed
+  artifacts for very large battle/GIF detail and better light-token refresh.
 - Tiny adaptive rating smoke has run. It was a plumbing smoke only, not a policy
   strength claim.
 - Cleanup refactor Cut 1 landed locally. It names artifact filenames, rating

@@ -62,11 +62,26 @@
   `train/lightzero_exp/ckpt` refs.
 - [x] Add strict assignment schema-id and canonical-hash tests in
   `tests/test_opponent_registry.py`.
-- [ ] Audit granular action cadence from launcher config to env step.
-- [ ] Add tests proving trusted `--mode train` defaults do not bundle multiple
+- [x] Audit granular action cadence from launcher config to env step.
+- [x] Add tests proving trusted `--mode train` defaults do not bundle multiple
   game ticks behind one policy action.
-- [ ] Patch trainer/config cadence plumbing if the audit finds hidden action
+- [x] Patch trainer/config cadence plumbing if the audit finds hidden action
   repeat or multi-tick stepping.
+- [x] Stop active survivaldiag and opponent-mixture manifest builders from
+  emitting stale 200 ms bundled decisions.
+- [x] Add telemetry coverage for decision cadence fields.
+- [ ] Decide whether old product-fidelity and checkpoint-tournament lanes need
+  separate one-frame guards, or explicit legacy labels, outside this trusted
+  train cut.
+- [ ] Add cadence aggregation to the env telemetry summary if dashboard/run
+  status needs a single `cadence_ok` field.
+- [x] Run a fresh tiny post-patch training-loop smoke, or document the blocker.
+- [x] Fold the cadence side-effect audits into
+  `granular_action_cadence_side_effect_audit_2026-05-13.md`.
+- [ ] Rerun the fresh tiny Modal smoke after the train final-commit fix and
+  prove final summary/checkpoint artifacts are visible on the Volume.
+- [ ] Patch eval/GIF cadence pass-through so spawned remote workers receive
+  cadence explicitly instead of relying on imported defaults.
 - [ ] Decide whether manifest builders should read assignment snapshots or a
   registry source directly.
 - [ ] Add pure validators/builders for leaderboard snapshots, live Dict

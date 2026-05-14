@@ -167,7 +167,8 @@ def test_executable_rows_use_supported_stock_train_lane_and_high_cap():
         assert row["train_kwargs"]["background_eval_launch_kind"] == "poller"
         required_train_kwargs = set(module.TRAIN_KWARGS_REQUIRED_FOR_GROUPED_SUBMIT)
         assert set(row["train_kwargs"]) >= required_train_kwargs
-        assert row["train_kwargs"]["decision_ms"] == 200.0
+        assert row["train_kwargs"]["decision_ms"] == module.DECISION_MS
+        assert row["train_kwargs"]["decision_ms"] < 20.0
         assert row["train_kwargs"]["env_telemetry_stride"] == 1
         assert row["train_kwargs"]["background_eval_step_detail_limit"] == 4
         assert row["poller_kwargs"]["run_id"] == row["run_id"]

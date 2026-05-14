@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Sequence
 
+from curvyzero.env.vector_multiplayer_env import SOURCE_PHYSICS_STEP_MS
 from curvyzero.training.opponent_mixture import (
     OPPONENT_MIXTURE_SCHEMA_ID,
     parse_opponent_mixture_spec,
@@ -36,7 +37,7 @@ REWARD_SURVIVAL_PLUS_BONUS_NO_OUTCOME = "survival_plus_bonus_no_outcome"
 RENDER_FAST = "body_circles_fast"
 RENDER_BROWSER = "browser_lines"
 SOURCE_MAX_STEPS = 65_536
-DECISION_MS = 200.0
+DECISION_MS = SOURCE_PHYSICS_STEP_MS
 DEFAULT_MATRIX_NAME = "curvy-mix2-20260513a"
 DEFAULT_RUN_PREFIX = "curvy-mix2"
 DEFAULT_ATTEMPT_PREFIX = "try-mix2"
