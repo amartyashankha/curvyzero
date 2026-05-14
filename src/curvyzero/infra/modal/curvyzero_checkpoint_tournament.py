@@ -596,11 +596,7 @@ def _discover_checkpoint_refs_from_scan_spec(
             "missing_count": 0,
             "checkpoint_refs": explicit_refs,
             "rows": [
-                {
-                    "checkpoint_ref": ref,
-                    "iteration": _checkpoint_iteration_from_path(Path(ref)),
-                    "found": True,
-                }
+                _checkpoint_discovery_row_from_ref(ref, mount=mount, found=True)
                 for ref in explicit_refs
             ],
         }
@@ -638,6 +634,33 @@ def _validate_submitted_checkpoint_refs_exist(
             raise ValueError(f"submitted checkpoint ref is empty: {ref}")
         clean_refs.append(ref)
     return clean_refs
+
+
+def _checkpoint_discovery_row_from_ref(
+    ref: str,
+    *,
+    mount: Path,
+    found: bool = True,
+) -> dict[str, Any]:
+    clean_ref = runs.require_relative_ref(ref).as_posix()
+    metadata = arena.checkpoint_metadata_from_ref(clean_ref)
+    row: dict[str, Any] = {
+        "checkpoint_ref": clean_ref,
+        "run_id": metadata.get("run_id"),
+        "attempt_id": metadata.get("attempt_id"),
+        "iteration": (
+            metadata.get("iteration")
+            if metadata.get("iteration") is not None
+            else _checkpoint_iteration_from_path(Path(clean_ref))
+        ),
+        "found": bool(found),
+    }
+    path = runs.volume_path(mount, clean_ref)
+    if path.is_file():
+        stat = path.stat()
+        row["checkpoint_mtime_ns"] = int(stat.st_mtime_ns)
+        row["checkpoint_size_bytes"] = int(stat.st_size)
+    return row
 
 
 def _intake_rating_spec_from_manifest(
@@ -808,8 +831,11 @@ def _intake_manifest_rating_checkpoints(
     for ref in checkpoint_refs:
         row = rows_by_ref.get(ref)
         if not isinstance(row, Mapping):
-            checkpoints.append(ref)
-            continue
+            row = _checkpoint_discovery_row_from_ref(
+                ref,
+                mount=RUNS_MOUNT,
+                found=True,
+            )
         checkpoint = {"checkpoint_ref": ref}
         for key in (
             "run_id",
