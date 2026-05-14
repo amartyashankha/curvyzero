@@ -10,6 +10,8 @@ Purpose: track existing tests, planned regression tests, and deletion candidates
 | `tests/test_lightzero_timestamped_checkpoint_discovery.py` | broad `lightzero_exp*` checkpoint/resume discovery across progress, resume, poller, status, and helper parsing |
 | `tests/test_opponent_mixture.py` | opponent mixture parsing, immutable checkpoint refs, eval/GIF mixture metadata |
 | `tests/test_opponent_registry.py` | opponent assignment snapshot parsing and immutable frozen-ref guardrails |
+| `tests/test_opponent_leaderboard.py` | public leaderboard snapshot/pointer contracts and assignment slot selection |
+| `tests/test_lightzero_checkpoint_opponent_provider.py` | checkpoint opponent provider support-head inference |
 | `tests/test_curvytron_checkpoint_tournament.py` | tournament checkpoint discovery and artifact contracts |
 | `tests/test_multiplayer_source_state_trainer_surface.py` | environment/trainer surface contract, mostly out of scope |
 
@@ -37,6 +39,20 @@ Current focused file:
 - `test_opponent_assignment_snapshot_accepts_json_string`
 - `test_opponent_assignment_snapshot_rejects_mutable_or_non_iteration_refs`
 - `test_opponent_assignment_snapshot_requires_traceable_assignment_id`
+- `test_opponent_assignment_ref_resolves_to_existing_mixture_contract`
+- `test_opponent_assignment_artifact_writer_stores_assignment_and_audit`
+- `test_checkpoint_eval_poller_command_resolves_assignment_ref`
+- `test_checkpoint_eval_poller_function_accepts_assignment_ref_and_resolves_command`
+
+## Implemented Leaderboard Selector Tests
+
+- public leaderboard snapshot marks active/provisional rows;
+- public leaderboard snapshot rejects mutable checkpoint refs;
+- live pointer payload round-trips compact summary;
+- assignment selector outputs parser-compatible assignment/audit;
+- assignment selector is deterministic for the same snapshot;
+- assignment selector sorts unsorted rows before selecting champion;
+- assignment selector excludes retired rows even when provisional rows are allowed.
 
 ## Implemented Stock Boundary Tests
 
@@ -83,11 +99,13 @@ Current focused file:
 
 Still planned:
 
-- launcher-side explicit assignment-ref plumbing before train config build,
-  with no live Dict reads;
 - `test_manifest_checkpoint_selection_uses_broad_discovery`
 - manifest builder does not embed baked historical recent/mid/old checkpoint
   refs.
+- pointer repair/fallback command tests;
+- safe assignment refresh boundary tests;
+- online Elo continuation and queue/dedupe repair tests;
+- larger bounded closed-loop smoke.
 
 ## Deletion Candidates
 

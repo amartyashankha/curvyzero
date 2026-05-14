@@ -34,8 +34,8 @@ Do not add registry behavior directly to the Modal trainer.
 Best next code cut is one of these, in this order:
 
 1. Done: pure assignment schema/hash helpers are in `opponent_registry.py`.
-   Next, add trainer plumbing tests for consuming a frozen opponent assignment
-   snapshot from an explicit ref/hash.
+   Explicit trainer and poller assignment-ref plumbing now exists and is
+   covered by focused tests.
 2. Make manifest builders consume assignment data instead of baked
    recent/mid/old refs.
 3. Extract exact-iteration resume sidecar candidate lookup if resume code is
@@ -61,9 +61,9 @@ Do not move resume semantics, eval skipping, random-collect skipping, or hook
 installer behavior until resumed-run behavior has stronger tests.
 
 For assignment wiring, do not add Modal Dict reads or tournament ranking logic
-inside the trainer. The first launcher patch should accept one explicit
-assignment ref/hash, verify it, convert it into the existing static opponent
-mixture, and keep `train_muzero` receiving static config.
+inside the trainer. The implemented launcher path accepts one explicit
+assignment ref, verifies it, converts it into the existing static opponent
+mixture, and keeps `train_muzero` receiving static config.
 
 ## Why
 
@@ -81,5 +81,6 @@ Tournament ranking, Modal Dict layout, and refresh cadence should stay outside.
 ## Completed From Previous Cut
 
 `src/curvyzero/training/opponent_registry.py` now parses pure assignment
-snapshots into the existing opponent-mixture contract. It is not wired into the
-trainer yet.
+snapshots into the existing opponent-mixture contract. The trainer and poller
+now consume explicit assignment refs, but production repair/refresh/continuation
+automation is still future work.

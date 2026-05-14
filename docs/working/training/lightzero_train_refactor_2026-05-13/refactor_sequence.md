@@ -59,10 +59,12 @@ immutable exact checkpoint refs for both mixture and top-level frozen-opponent
 paths.
 
 Pure assignment parsing now exists in `opponent_registry.py`, but it is not
-wired into the trainer. Do not read Modal Dict inside the trainer.
+wired to live tournament state. Explicit assignment refs are wired into the
+trainer and checkpoint eval/GIF poller as static inputs. Do not read Modal Dict
+inside the trainer.
 
-Next small cut: add trainer-consumption tests for an assignment snapshot before
-threading that snapshot into manifest/config building.
+Next small cut: add repair/refresh/continuation contracts outside the trainer,
+or make manifest builders consume assignment snapshots instead of baked refs.
 
 ## Step 4B: Stock Boundary Gate
 

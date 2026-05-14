@@ -189,12 +189,16 @@ Completed:
 - [x] Radius collision/render lifecycle: focused runtime proof now checks that
   `BonusSelfSmall` radius changes affect wall checks, body collision checks,
   raw browser-like RGB rendering, and the downsampled gray64 observation.
+- [x] Direct borderless catch-to-wrap: focused runtime proof catches
+  `BonusGameBorderless`, crosses an arena edge while active, wraps, and avoids
+  normal wall death.
+- [x] AllColor visual/observation: focused public-env proof catches
+  `BonusAllColor`, verifies rotated `avatar_color` reaches browser-like RGB
+  and gray64, then verifies expiry restores the baseline frame.
 
 Remaining:
 
-1. Add direct borderless catch-to-wrap proof if existing proof is not enough.
-2. Add AllColor render/observation proof if visual/color observations rely on
-   it.
+- No open items from this post-right-angle proof queue.
 
 Wrapper/source input semantics note:
 

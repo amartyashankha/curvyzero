@@ -34,10 +34,10 @@ Current active Environment work is:
 
 1. Close the remaining source-fidelity proof queue for multiplayer
    `VectorMultiplayerEnv`.
-2. Harden the remaining behavior proofs for movement-affecting bonuses:
-   borderless catch-to-wrap and AllColor visual/observation effects.
-   Velocity-while-turning, inverse-while-turning, and radius collision/render
-   lifecycle now have focused runtime proof.
+2. Keep the completed movement-affecting bonus proof set green:
+   velocity-while-turning, inverse-while-turning, radius collision/render
+   lifecycle, borderless catch-to-wrap, and AllColor visual/observation now
+   have focused proof.
 3. Preserve the no-death/profile/training helper modes while keeping them
    explicitly separate from original CurvyTron claims.
 4. Keep default visual training observations on the source-state
@@ -102,6 +102,15 @@ Active reorientation threads:
   now verifies that `BonusSelfSmall` radius changes affect normal wall checks,
   body collision checks, the raw browser-like RGB frame, and the downsampled
   gray64 observation.
+- Completed direct borderless catch-to-wrap proof:
+  `test_step_many_forced_bonus_game_borderless_active_wall_crossing_wraps`
+  catches a forced `BonusGameBorderless`, crosses an arena edge while the game
+  stack is still active, wraps, and does not wall-die.
+- Completed AllColor visual/observation proof:
+  `tests/test_all_color_visual_observation_fidelity.py` verifies that
+  `BonusAllColor` changes `avatar_color`, the browser-like RGB frame uses the
+  rotated colors, RGB -> gray64 matches the direct gray64 API, and expiry
+  restores the baseline frame.
 
 ## Current Snapshot
 

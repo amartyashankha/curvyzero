@@ -15,8 +15,10 @@ This doc tracks what could break or change downstream.
 - Local focused tests passed: `161 passed, 1 skipped`.
 - Lint passed for touched cadence files.
 - `git diff --check` passed.
-- A fresh real training-loop smoke has not yet been run after the cadence guard.
-  That is an explicit validation gap, not a learning claim.
+- A fresh real training-loop smoke has now run after the cadence guard and after
+  the final train Volume commit fix. It called real stock `train_muzero`, wrote
+  final train artifacts, and mirrored checkpoints. This is a plumbing claim,
+  not a learning claim.
 
 ## Main Side-Effect Questions
 
@@ -157,6 +159,11 @@ match trusted train only because those functions rebuild envs with the same new
 default. That is fragile if we later allow explicit repeat/cadence variants or
 older checkpoints.
 
+Update: patched locally. Eval/GIF remote APIs, the poller path, and the eval env
+builder now accept and pass `decision_ms`, `decision_source_frames`,
+`source_physics_step_ms`, and `source_max_steps_semantics`. Focused regression
+tests with sentinel cadence values passed.
+
 Other display gaps:
 
 - `progress_latest.json` does not show cadence.
@@ -165,9 +172,8 @@ Other display gaps:
 - mirrored checkpoint paths do not have per-checkpoint cadence metadata.
 - tournament discovery can find checkpoint refs without reading cadence.
 
-Immediate follow-ups:
+- Remaining follow-ups:
 
-- Pass cadence fields through eval/GIF remote APIs, not just config dicts.
 - Add cadence to `progress_latest.json`, run-status rows, GIF summaries, and
   GIF browser cards.
 - Add a checkpoint metadata sidecar or index beside mirrored checkpoints.
@@ -201,7 +207,7 @@ Immediate follow-ups:
 - Label two-seat and tournament legacy cadence paths so they cannot be mistaken
   for the trusted one-frame stock train lane.
 
-### Post-Patch Smoke Result
+### First Post-Patch Smoke Result
 
 Fresh waited CPU Modal smoke:
 
@@ -231,3 +237,39 @@ Missing from the Volume listing:
 Current interpretation: the real train call ran, but train-mode final artifacts
 were not committed or did not become visible. This is now a trainer scaffolding
 bug to investigate/fix before claiming full artifact end-to-end success.
+
+### Post-Fix Smoke Result
+
+Fresh waited CPU Modal smoke after final train commit patch:
+
+`curvytron-cadence-e2e-smoke-20260513-203914 / train-smoke-001`
+
+Returned:
+
+- `ok=true`
+- `called_train_muzero=true`
+- `problems=[]`
+- telemetry `row_count=128`
+- `final_volume_commit.attempted=true`
+- `final_volume_commit.ok=true`
+
+Volume readback showed the final artifacts were visible:
+
+- `train/summary.json`
+- `train/action_observability.json`
+- `train/lightzero_artifacts_manifest.json`
+- `train/progress_latest.json`
+- `train/env_steps.jsonl`
+- mirrored `checkpoints/lightzero/iteration_*.pth.tar`
+
+Downloaded summary confirmed:
+
+- `decision_ms=16.666666666666668`
+- `decision_source_frames=1`
+- `source_physics_step_ms=16.666666666666668`
+- `source_max_steps_semantics=source_physics_steps`
+- `policy_action_repeat_min=1`
+- `policy_action_repeat_max=1`
+- `checkpoint_mirror.count=18`
+
+Downloaded heartbeat and latest-attempt files both said `completed`.

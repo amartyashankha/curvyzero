@@ -10,6 +10,8 @@ from curvyzero.infra.modal import lightzero_curvytron_visual_survival_eval as ev
 from curvyzero.infra.modal import (
     lightzero_curvyzero_stacked_debug_visual_survival_train as train_mod,
 )
+from curvyzero.training.opponent_leaderboard import OPPONENT_ASSIGNMENT_AUDIT_SCHEMA_ID
+from curvyzero.training.opponent_registry import OPPONENT_ASSIGNMENT_SCHEMA_ID
 from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
     CurvyZeroSourceStateVisualSurvivalLightZeroEnv,
     LIGHTZERO_SOURCE_STATE_VISUAL_SURVIVAL_ENV_TYPE,
@@ -456,6 +458,7 @@ def test_stock_train_mode_calls_lightzero_train_muzero_entrypoint(monkeypatch, t
         opponent_checkpoint_report_ref=None,
         opponent_checkpoint_state_key=None,
         opponent_mixture_spec=None,
+        opponent_assignment_ref=None,
         background_eval_enabled=False,
         background_eval_launch_kind=train_mod.BACKGROUND_EVAL_LAUNCH_HOOK,
         background_eval_compute="cpu",
@@ -937,6 +940,270 @@ def test_source_state_opponent_mixture_uses_matching_surface_relation(
     assert patched["surface"]["opponent_mixture"] == mixture
 
 
+def test_opponent_assignment_ref_resolves_to_existing_mixture_contract(tmp_path):
+    assignment_path = tmp_path / "assignment.json"
+    assignment_path.write_text(
+        json.dumps(
+            {
+                "schema_id": OPPONENT_ASSIGNMENT_SCHEMA_ID,
+                "assignment_id": "assignment-smoke",
+                "source_epoch": 3,
+                "source_ref": "tournaments/curvytron/leaderboards/main/snapshots/003.json",
+                "seed": 17,
+                "entries": [
+                    {
+                        "name": "blank",
+                        "weight": 1,
+                        "opponent_policy_kind": train_mod.OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
+                        "opponent_runtime_mode": train_mod.OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    resolved = train_mod._resolve_opponent_assignment_for_env(
+        opponent_assignment_ref=str(assignment_path),
+    )
+
+    assert resolved is not None
+    assert resolved["assignment_id"] == "assignment-smoke"
+    assert resolved["source_epoch"] == 3
+    assert resolved["assignment_ref"] == str(assignment_path)
+    assert resolved["assignment_sha256"]
+    mixture = resolved["opponent_mixture"]
+    assert mixture["schema_id"] == train_mod.OPPONENT_MIXTURE_SCHEMA_ID
+    assert mixture["seed"] == 17
+    assert mixture["entries"][0]["opponent_runtime_mode"] == (
+        train_mod.OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP
+    )
+
+
+def test_opponent_assignment_artifact_writer_stores_assignment_and_audit(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setattr(train_mod, "RUNS_MOUNT", tmp_path)
+    commit_labels = []
+    monkeypatch.setattr(
+        train_mod,
+        "_commit_runs_volume_with_backoff",
+        lambda *, label: commit_labels.append(label),
+    )
+    assignment = {
+        "schema_id": OPPONENT_ASSIGNMENT_SCHEMA_ID,
+        "assignment_id": "assignment-smoke",
+        "source_epoch": 3,
+        "source_ref": "tournaments/curvytron/leaderboards/main/snapshots/003.json",
+        "seed": 17,
+        "entries": [
+            {
+                "name": "blank",
+                "weight": 1,
+                "opponent_policy_kind": train_mod.OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
+                "opponent_runtime_mode": train_mod.OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP,
+            }
+        ],
+    }
+    audit = {
+        "schema_id": OPPONENT_ASSIGNMENT_AUDIT_SCHEMA_ID,
+        "assignment_id": "assignment-smoke",
+        "assignment_sha256": train_mod.canonical_assignment_json_sha256(assignment),
+    }
+
+    result = train_mod._write_opponent_assignment_artifacts(
+        run_id="assignment-run",
+        attempt_id="attempt-a",
+        assignment=assignment,
+        audit=audit,
+    )
+
+    assert result["schema_id"] == "curvyzero_opponent_assignment_artifact_write/v0"
+    assert result["assignment_id"] == "assignment-smoke"
+    assert result["assignment_ref"].endswith(
+        "assignment-run/attempts/attempt-a/opponents/assignments/"
+        "assignment-smoke/assignment.json"
+    )
+    assert result["audit_ref"].endswith(
+        "assignment-run/attempts/attempt-a/opponents/assignments/"
+        "assignment-smoke/audit.json"
+    )
+    assert commit_labels == ["opponent_assignment_artifact_commit"]
+
+    assignment_path = tmp_path / result["assignment_ref"]
+    audit_path = tmp_path / result["audit_ref"]
+    assert json.loads(assignment_path.read_text(encoding="utf-8")) == assignment
+    assert json.loads(audit_path.read_text(encoding="utf-8")) == audit
+
+
+def test_checkpoint_eval_poller_command_resolves_assignment_ref(tmp_path):
+    assignment_path = tmp_path / "assignment.json"
+    assignment_path.write_text(
+        json.dumps(
+            {
+                "schema_id": OPPONENT_ASSIGNMENT_SCHEMA_ID,
+                "assignment_id": "poller-assignment",
+                "seed": 19,
+                "entries": [
+                    {
+                        "name": "blank",
+                        "weight": 1,
+                        "opponent_policy_kind": train_mod.OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
+                        "opponent_runtime_mode": train_mod.OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    command = train_mod._checkpoint_eval_poller_command(
+        seed=1,
+        source_max_steps=32,
+        env_variant=train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT,
+        reward_variant=train_mod.DEFAULT_REWARD_VARIANT,
+        opponent_policy_kind=train_mod.OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
+        opponent_checkpoint_ref=None,
+        opponent_snapshot_ref=None,
+        opponent_checkpoint_state_key=None,
+        opponent_assignment_ref=str(assignment_path),
+        background_eval_enabled=True,
+        background_eval_compute=train_mod.DEFAULT_BACKGROUND_EVAL_COMPUTE,
+        background_eval_id_prefix=train_mod.DEFAULT_BACKGROUND_EVAL_ID_PREFIX,
+        background_eval_seed_count=1,
+        background_eval_seed_rng_seed=None,
+        background_eval_max_steps=32,
+        background_eval_step_detail_limit=None,
+        background_eval_num_simulations=1,
+        background_eval_batch_size=1,
+        background_gif_enabled=True,
+        background_gif_seed_offset=10,
+        background_gif_max_steps=32,
+        background_gif_frame_stride=1,
+        background_gif_fps=8.0,
+        background_gif_scale=1,
+    )
+
+    assert command["opponent_assignment"]["assignment_id"] == "poller-assignment"
+    assert command["opponent_mixture"]["seed"] == 19
+    assert command["opponent_mixture"]["entries"][0]["opponent_runtime_mode"] == (
+        train_mod.OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP
+    )
+
+
+def test_checkpoint_eval_poller_function_accepts_assignment_ref_and_resolves_command(
+    monkeypatch,
+    tmp_path,
+):
+    captured = {}
+    assignment_path = tmp_path / "assignment.json"
+    assignment_path.write_text(
+        json.dumps(
+            {
+                "schema_id": OPPONENT_ASSIGNMENT_SCHEMA_ID,
+                "assignment_id": "poller-local-assignment",
+                "seed": 23,
+                "entries": [
+                    {
+                        "name": "blank",
+                        "weight": 1,
+                        "opponent_policy_kind": train_mod.OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
+                        "opponent_runtime_mode": train_mod.OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_run_checkpoint_eval_poller(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "command": kwargs["command"]}
+
+    monkeypatch.setattr(
+        train_mod,
+        "_run_checkpoint_eval_poller",
+        fake_run_checkpoint_eval_poller,
+    )
+
+    result = train_mod.lightzero_curvytron_visual_survival_checkpoint_eval_poller.local(
+        run_id="poller-run",
+        attempt_id="poller-attempt",
+        exp_name_ref="training/lightzero-curvytron-visual-survival/poller-run/"
+        "attempts/poller-attempt/train/lightzero_exp",
+        seed=1,
+        source_max_steps=32,
+        env_variant=train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT,
+        opponent_policy_kind=train_mod.OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
+        opponent_checkpoint_ref=None,
+        opponent_snapshot_ref=None,
+        opponent_checkpoint_state_key=None,
+        opponent_assignment_ref=str(assignment_path),
+        background_eval_max_steps=32,
+        background_eval_num_simulations=1,
+        background_eval_batch_size=1,
+        background_gif_enabled=False,
+    )
+
+    command = result["command"]
+    assert captured["run_id"] == "poller-run"
+    assert command["opponent_assignment"]["assignment_id"] == "poller-local-assignment"
+    assert command["opponent_mixture"]["seed"] == 23
+    assert command["opponent_mixture"]["entries"][0]["opponent_runtime_mode"] == (
+        train_mod.OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP
+    )
+
+
+def test_checkpoint_eval_poller_command_rejects_assignment_and_inline_mixture(tmp_path):
+    assignment_path = tmp_path / "assignment.json"
+    assignment_path.write_text(
+        json.dumps(
+            {
+                "schema_id": OPPONENT_ASSIGNMENT_SCHEMA_ID,
+                "assignment_id": "poller-assignment",
+                "entries": [
+                    {
+                        "name": "blank",
+                        "weight": 1,
+                        "opponent_policy_kind": train_mod.OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="cannot be combined"):
+        train_mod._checkpoint_eval_poller_command(
+            seed=1,
+            source_max_steps=32,
+            env_variant=train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT,
+            reward_variant=train_mod.DEFAULT_REWARD_VARIANT,
+            opponent_policy_kind=train_mod.OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
+            opponent_checkpoint_ref=None,
+            opponent_snapshot_ref=None,
+            opponent_checkpoint_state_key=None,
+            opponent_mixture_spec={"entries": [{"name": "blank", "weight": 1, "opponent_policy_kind": "fixed_straight"}]},
+            opponent_assignment_ref=str(assignment_path),
+            background_eval_enabled=True,
+            background_eval_compute=train_mod.DEFAULT_BACKGROUND_EVAL_COMPUTE,
+            background_eval_id_prefix=train_mod.DEFAULT_BACKGROUND_EVAL_ID_PREFIX,
+            background_eval_seed_count=1,
+            background_eval_seed_rng_seed=None,
+            background_eval_max_steps=32,
+            background_eval_step_detail_limit=None,
+            background_eval_num_simulations=1,
+            background_eval_batch_size=1,
+            background_gif_enabled=False,
+            background_gif_seed_offset=10,
+            background_gif_max_steps=32,
+            background_gif_frame_stride=1,
+            background_gif_fps=8.0,
+            background_gif_scale=1,
+        )
+
+
 def test_stock_source_state_mixture_config_instantiates_registered_env_and_steps_scalar_action(
     monkeypatch,
     tmp_path,
@@ -1240,6 +1507,62 @@ def test_modal_config_defaults_to_one_source_frame_per_policy_action(monkeypatch
     assert patched["surface"]["source_physics_step_ms"] == pytest.approx(
         SOURCE_PHYSICS_STEP_MS
     )
+
+
+def test_modal_config_can_pass_explicit_cadence_to_non_trusted_eval_surface(
+    monkeypatch,
+    tmp_path,
+):
+    _install_fake_lightzero_atari_config(monkeypatch)
+
+    patched = train_mod._build_visual_survival_configs(
+        seed=13,
+        exp_name=tmp_path / "exp",
+        telemetry_path=tmp_path / "env_steps.jsonl",
+        cuda=False,
+        max_env_step=128,
+        source_max_steps=128,
+        decision_ms=10.0,
+        decision_source_frames=2,
+        source_physics_step_ms=5.0,
+        source_max_steps_semantics="source_physics_steps",
+        collector_env_num=1,
+        evaluator_env_num=1,
+        n_evaluator_episode=1,
+        n_episode=1,
+        num_simulations=8,
+        batch_size=16,
+        lightzero_eval_freq=0,
+        lightzero_multi_gpu=False,
+        max_train_iter=8,
+        save_ckpt_after_iter=100,
+        env_variant=train_mod.ENV_VARIANT_SOURCE_STATE_TURN_COMMIT,
+        reward_variant=train_mod.DEFAULT_REWARD_VARIANT,
+        ego_action_straight_override_probability=0.0,
+        control_noise_profile_id=train_mod.DEFAULT_CONTROL_NOISE_PROFILE_ID,
+        policy_action_repeat_min=train_mod.DEFAULT_POLICY_ACTION_REPEAT_MIN,
+        policy_action_repeat_max=train_mod.DEFAULT_POLICY_ACTION_REPEAT_MAX,
+        policy_action_repeat_extra_probability=(
+            train_mod.DEFAULT_POLICY_ACTION_REPEAT_EXTRA_PROBABILITY
+        ),
+        disable_death_for_profile=False,
+        env_telemetry_stride=64,
+        env_manager_type="base",
+        opponent_policy_kind=train_mod.OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
+        opponent_use_cuda=False,
+        opponent_checkpoint=None,
+        opponent_snapshot_ref=None,
+        opponent_checkpoint_state_key=None,
+    )
+
+    env_cfg = patched["main_config"]["env"]
+    assert env_cfg["decision_ms"] == 10.0
+    assert env_cfg["decision_source_frames"] == 2
+    assert env_cfg["source_physics_step_ms"] == 5.0
+    assert env_cfg["source_max_steps_semantics"] == "source_physics_steps"
+    assert patched["surface"]["decision_ms"] == 10.0
+    assert patched["surface"]["decision_source_frames"] == 2
+    assert patched["surface"]["source_physics_step_ms"] == 5.0
 
 
 def test_stock_source_state_train_rejects_bundled_decision_ms(monkeypatch, tmp_path):
@@ -2557,6 +2880,10 @@ def test_live_checkpoint_trigger_spawns_eval_and_selfplay_gif_without_volume_com
         "max_eval_steps": 32,
         "step_detail_limit": 2,
         "source_max_steps": 32,
+        "decision_ms": 10.0,
+        "decision_source_frames": 2,
+        "source_physics_step_ms": 5.0,
+        "source_max_steps_semantics": "source_physics_steps",
         "num_simulations": 4,
         "batch_size": 8,
         "env_variant": train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT,
@@ -2571,6 +2898,10 @@ def test_live_checkpoint_trigger_spawns_eval_and_selfplay_gif_without_volume_com
             "seed": 10_007,
             "max_steps": 16,
             "source_max_steps": 32,
+            "decision_ms": 10.0,
+            "decision_source_frames": 2,
+            "source_physics_step_ms": 5.0,
+            "source_max_steps_semantics": "source_physics_steps",
             "num_simulations": 4,
             "batch_size": 8,
             "frame_stride": 2,
@@ -2602,9 +2933,17 @@ def test_live_checkpoint_trigger_spawns_eval_and_selfplay_gif_without_volume_com
         == train_mod.REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME
     )
     assert eval_call["eval_seed_count"] == 2
+    assert eval_call["decision_ms"] == 10.0
+    assert eval_call["decision_source_frames"] == 2
+    assert eval_call["source_physics_step_ms"] == 5.0
+    assert eval_call["source_max_steps_semantics"] == "source_physics_steps"
     assert eval_call["natural_bonus_spawn"] is False
     assert gif_call["seed"] != 10_007
     assert gif_call["max_steps"] == 16
+    assert gif_call["decision_ms"] == 10.0
+    assert gif_call["decision_source_frames"] == 2
+    assert gif_call["source_physics_step_ms"] == 5.0
+    assert gif_call["source_max_steps_semantics"] == "source_physics_steps"
     assert gif_call["frame_stride"] == 2
     assert gif_call["fps"] == 12.0
     assert gif_call["scale"] == 3
@@ -2627,6 +2966,13 @@ def test_live_checkpoint_trigger_spawns_eval_and_selfplay_gif_without_volume_com
     assert request["selfplay_gif"]["config"]["frame_size"] == (
         train_mod.SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE
     )
+    assert request["selfplay_gif"]["config"]["decision_ms"] == 10.0
+    assert request["selfplay_gif"]["config"]["decision_source_frames"] == 2
+    assert request["selfplay_gif"]["config"]["source_physics_step_ms"] == 5.0
+    assert (
+        request["selfplay_gif"]["config"]["source_max_steps_semantics"]
+        == "source_physics_steps"
+    )
     assert request["selfplay_gif"]["config"]["base_seed"] == 10_007
     assert request["selfplay_gif"]["config"]["effective_seed"] == gif_call["seed"]
     assert request["selfplay_gif"]["config"]["checkpoint_seed_mixing_enabled"] is True
@@ -2636,6 +2982,10 @@ def test_live_checkpoint_trigger_spawns_eval_and_selfplay_gif_without_volume_com
     )
     assert request["selfplay_gif"]["config"]["natural_bonus_spawn"] is False
     assert request["config"]["env_variant"] == train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT
+    assert request["config"]["decision_ms"] == 10.0
+    assert request["config"]["decision_source_frames"] == 2
+    assert request["config"]["source_physics_step_ms"] == 5.0
+    assert request["config"]["source_max_steps_semantics"] == "source_physics_steps"
     assert request["config"]["natural_bonus_spawn"] is False
 
 
@@ -2943,6 +3293,10 @@ def test_checkpoint_eval_poller_completes_eval_inspection_and_selfplay_gif_jobs(
     command = train_mod._checkpoint_eval_poller_command(
         seed=3,
         source_max_steps=32,
+        decision_ms=10.0,
+        decision_source_frames=2,
+        source_physics_step_ms=5.0,
+        source_max_steps_semantics="source_physics_steps",
         env_variant=train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT,
         reward_variant=train_mod.REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME,
         opponent_policy_kind=train_mod.OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
@@ -3000,6 +3354,14 @@ def test_checkpoint_eval_poller_completes_eval_inspection_and_selfplay_gif_jobs(
         "training/lightzero-curvytron-visual-survival/run-c/attempts/attempt-c/train/lightzero_exp/ckpt/iteration_1.pth.tar"
     )
     assert gif_call["checkpoint_ref"] == eval_call["checkpoint_ref"]
+    assert eval_call["decision_ms"] == 10.0
+    assert eval_call["decision_source_frames"] == 2
+    assert eval_call["source_physics_step_ms"] == 5.0
+    assert eval_call["source_max_steps_semantics"] == "source_physics_steps"
+    assert gif_call["decision_ms"] == 10.0
+    assert gif_call["decision_source_frames"] == 2
+    assert gif_call["source_physics_step_ms"] == 5.0
+    assert gif_call["source_max_steps_semantics"] == "source_physics_steps"
     assert gif_call["frame_size"] == train_mod.SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE
     assert eval_call["eval_id"] == "live_checkpoint_iteration_1"
     assert (
@@ -3080,6 +3442,10 @@ def test_local_launcher_passes_gif_config_to_poller_and_prints_enabled(
         background_gif_scale=2,
         background_gif_collect_temperature=0.5,
         background_gif_collect_epsilon=0.125,
+        opponent_assignment_ref=(
+            "training/lightzero-curvytron-visual-survival/run-d/"
+            "attempts/attempt-d/opponents/assignments/a/assignment.json"
+        ),
     )
 
     assert len(fake_train.calls) == 1
@@ -3091,7 +3457,22 @@ def test_local_launcher_passes_gif_config_to_poller_and_prints_enabled(
         "attempts/attempt-d/train/lightzero_exp"
     )
     assert fake_poller.calls[0]["env_variant"] == train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT
+    assert fake_poller.calls[0]["decision_ms"] == train_mod.DEFAULT_DECISION_MS
+    assert (
+        fake_poller.calls[0]["decision_source_frames"]
+        == train_mod.DEFAULT_DECISION_SOURCE_FRAMES
+    )
+    assert fake_poller.calls[0]["source_physics_step_ms"] == pytest.approx(
+        train_mod.DEFAULT_SOURCE_PHYSICS_STEP_MS
+    )
+    assert fake_poller.calls[0]["source_max_steps_semantics"] == "source_physics_steps"
     assert fake_poller.calls[0]["opponent_policy_kind"] == train_mod.OPPONENT_POLICY_KIND_FIXED_STRAIGHT
+    assert fake_train.calls[0]["opponent_assignment_ref"].endswith(
+        "opponents/assignments/a/assignment.json"
+    )
+    assert fake_poller.calls[0]["opponent_assignment_ref"].endswith(
+        "opponents/assignments/a/assignment.json"
+    )
     assert fake_poller.calls[0]["background_eval_seed_count"] == 1
     assert fake_poller.calls[0]["background_eval_max_steps"] == 32
     assert fake_poller.calls[0]["background_gif_enabled"] is True

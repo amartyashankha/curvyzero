@@ -2499,6 +2499,75 @@ def test_intake_manifest_tracks_queued_refs_separately_from_seen_refs() -> None:
     assert queued["queued_checkpoint_refs"] == [refs[0]]
 
 
+def test_intake_tick_enqueues_only_refs_not_already_seen(monkeypatch) -> None:
+    old_ref = _checkpoint_ref("run-a", 10)
+    new_ref = _checkpoint_ref("run-a", 20)
+    manifest = modal_arena._intake_manifest_from_discovery(
+        tournament_id="arena-a",
+        rating_run_id="elo-test",
+        scan_spec={"run_ids": "run-a", "checkpoint_selection": "all"},
+        rating_defaults={},
+        discovery={"checkpoint_refs": [old_ref]},
+    )
+
+    class FakeState:
+        def __init__(self):
+            self.values = {
+                modal_arena.CHECKPOINT_INTAKE_ACTIVE_KEYS: [manifest["manifest_key"]],
+                manifest["manifest_key"]: manifest,
+            }
+
+        def get(self, key, default=None):
+            return self.values.get(key, default)
+
+        def put(self, key, value):
+            self.values[key] = value
+            return True
+
+    class FakeQueue:
+        def __init__(self):
+            self.events = []
+
+        def put(self, value, **_kwargs):
+            self.events.append(value)
+            return True
+
+    fake_state = FakeState()
+    fake_queue = FakeQueue()
+    monkeypatch.setattr(modal_arena, "checkpoint_intake_state", fake_state)
+    monkeypatch.setattr(modal_arena, "checkpoint_intake_queue", fake_queue)
+    monkeypatch.setattr(modal_arena, "_reload_volume", lambda _volume: None)
+    monkeypatch.setattr(modal_arena, "_commit_volume", lambda _volume: None)
+    monkeypatch.setattr(
+        modal_arena,
+        "_write_intake_manifest_artifact",
+        lambda _manifest: {"ref": "manifest.json"},
+    )
+    monkeypatch.setattr(
+        modal_arena,
+        "_write_intake_tick_artifact",
+        lambda _tick: {"ref": "tick.json"},
+    )
+    monkeypatch.setattr(
+        modal_arena,
+        "_discover_checkpoint_refs_from_scan_spec",
+        lambda _scan_spec, *, mount: {
+            "checkpoint_refs": [old_ref, new_ref],
+            "found_count": 2,
+            "missing_count": 0,
+            "checkpoint_selection": "all",
+        },
+    )
+
+    result = modal_arena.curvytron_checkpoint_intake_tick.local({})
+
+    assert result["new_checkpoint_count"] == 1
+    assert [event["checkpoint_ref"] for event in fake_queue.events] == [new_ref]
+    updated_manifest = fake_state.values[manifest["manifest_key"]]
+    assert updated_manifest["seen_checkpoint_count"] == 2
+    assert updated_manifest["queued_checkpoint_refs"] == [new_ref]
+
+
 def test_intake_discovery_accepts_explicit_checkpoint_refs() -> None:
     refs = [_checkpoint_ref("run-a", 10), _checkpoint_ref("run-b", 20)]
 
@@ -2511,6 +2580,80 @@ def test_intake_discovery_accepts_explicit_checkpoint_refs() -> None:
     assert discovery["found_count"] == 2
     assert discovery["checkpoint_refs"] == refs
     assert [row["iteration"] for row in discovery["rows"]] == [10, 20]
+
+
+def test_intake_scan_run_ids_are_live_but_explicit_refs_are_frozen(tmp_path) -> None:
+    run_id = "watch-run-a"
+    attempt_id = "attempt-a"
+    latest_attempt = tmp_path / modal_arena.runs.latest_attempt_ref(
+        modal_arena.TRAINING_TASK_ID,
+        run_id,
+    )
+    latest_attempt.parent.mkdir(parents=True)
+    latest_attempt.write_text(json.dumps({"attempt_id": attempt_id}), encoding="utf-8")
+    ckpt_dir = (
+        tmp_path
+        / modal_arena.runs.attempt_train_ref(
+            modal_arena.TRAINING_TASK_ID,
+            run_id,
+            attempt_id,
+        )
+        / "lightzero_exp"
+        / "ckpt"
+    )
+    ckpt_dir.mkdir(parents=True)
+    (ckpt_dir / "iteration_10.pth.tar").write_bytes(b"old")
+    explicit_ref = (
+        modal_arena.runs.attempt_train_ref(
+            modal_arena.TRAINING_TASK_ID,
+            run_id,
+            attempt_id,
+        )
+        / "lightzero_exp"
+        / "ckpt"
+        / "iteration_10.pth.tar"
+    ).as_posix()
+
+    run_before = modal_arena._discover_checkpoint_refs_from_scan_spec(
+        {"run_ids": [run_id]},
+        mount=tmp_path,
+    )
+    (ckpt_dir / "iteration_20.pth.tar").write_bytes(b"new")
+    explicit_after = modal_arena._discover_checkpoint_refs_from_scan_spec(
+        {"checkpoint_refs": [explicit_ref]},
+        mount=tmp_path,
+    )
+    run_after = modal_arena._discover_checkpoint_refs_from_scan_spec(
+        {"run_ids": [run_id]},
+        mount=tmp_path,
+    )
+
+    assert explicit_after["selection"] == "explicit_refs"
+    assert explicit_after["checkpoint_refs"] == [explicit_ref]
+    assert run_before["checkpoint_refs"][0].endswith("iteration_10.pth.tar")
+    assert run_after["checkpoint_refs"][0].endswith("iteration_20.pth.tar")
+
+
+def test_intake_rating_spec_continuation_uses_seen_checkpoint_pool() -> None:
+    old_ref = _checkpoint_ref("run-a", 10)
+    current_refs = [_checkpoint_ref("run-a", 20), _checkpoint_ref("run-b", 20)]
+    manifest = modal_arena._intake_manifest_from_discovery(
+        tournament_id="arena-a",
+        rating_run_id="elo-test",
+        scan_spec={"run_ids": "run-a,run-b", "checkpoint_selection": "latest"},
+        rating_defaults={"continue_from_latest": True, "pairs_per_round": 1},
+        discovery={"checkpoint_refs": current_refs},
+        existing={"seen_checkpoint_refs": [old_ref]},
+    )
+
+    spec = modal_arena._intake_rating_spec_from_manifest(manifest)
+
+    assert spec["continue_from_latest"] is True
+    spec_refs = {
+        str(row.get("checkpoint_ref") if isinstance(row, dict) else row)
+        for row in spec["checkpoints"]
+    }
+    assert spec_refs == {old_ref, *current_refs}
 
 
 def test_rating_run_existing_output_guard_uses_named_refs(tmp_path: Path) -> None:
@@ -2698,6 +2841,325 @@ def test_intake_drain_claims_before_consuming_events(tmp_path, monkeypatch) -> N
     assert call_order[0] == "claim"
     assert "consume" in call_order
     assert call_order[-1] == "spawn"
+
+
+def test_intake_drain_continues_existing_rating_when_requested(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    refs = [_checkpoint_ref("run-a", 10), _checkpoint_ref("run-b", 20)]
+    manifest = modal_arena._intake_manifest_from_discovery(
+        tournament_id="arena-a",
+        rating_run_id="elo-test",
+        scan_spec={"checkpoint_refs": refs},
+        rating_defaults={
+            "continue_from_latest": True,
+            "pairs_per_round": 1,
+            "games_per_pair": 3,
+        },
+        discovery={"checkpoint_refs": refs},
+    )
+    manifest = modal_arena._mark_intake_manifest_queued(manifest, refs)
+    events = [{"checkpoint_ref": ref} for ref in refs]
+    captured_spec: dict[str, object] = {}
+
+    class FakeState:
+        def __init__(self):
+            self.values = {
+                manifest["manifest_key"]: manifest,
+                f"rating_claim:{manifest['manifest_key']}": {"old": True},
+            }
+
+        def get(self, key, default=None):
+            return self.values.get(key, default)
+
+        def put(self, key, value, skip_if_exists=False):
+            if skip_if_exists and key in self.values:
+                return False
+            self.values[key] = value
+            return True
+
+    class FakeQueue:
+        def len(self, *, partition):
+            assert partition == manifest["queue_partition"]
+            return len(events)
+
+        def get_many(self, *_args, **_kwargs):
+            return events
+
+    class FakeCall:
+        object_id = "fc-continue"
+
+    class FakeRatingLoop:
+        def spawn(self, spec):
+            captured_spec.update(spec)
+            return FakeCall()
+
+    monkeypatch.setattr(modal_arena, "TOURNAMENT_MOUNT", tmp_path)
+    monkeypatch.setattr(modal_arena, "checkpoint_intake_state", FakeState())
+    monkeypatch.setattr(modal_arena, "checkpoint_intake_queue", FakeQueue())
+    monkeypatch.setattr(modal_arena, "curvytron_rating_loop", FakeRatingLoop())
+    monkeypatch.setattr(modal_arena, "_reload_volume", lambda _volume: None)
+    monkeypatch.setattr(
+        modal_arena,
+        "_rating_run_has_existing_output",
+        lambda *_args, **_kwargs: True,
+    )
+
+    result = modal_arena.curvytron_checkpoint_intake_drain.local(
+        {
+            "tournament_id": "arena-a",
+            "rating_run_id": "elo-test",
+            "max_events": 10,
+            "spawn_rating": True,
+        }
+    )
+
+    assert result["event_count"] == 2
+    assert result["rating_call_id"] == "fc-continue"
+    assert result["rating_claim_key"] != f"rating_claim:{manifest['manifest_key']}"
+    assert result["spawn_skipped_reason"] == ""
+    assert captured_spec["continue_from_latest"] is True
+
+
+def test_intake_drain_tick_uses_continuation_defaults(monkeypatch) -> None:
+    refs = [_checkpoint_ref("run-a", 10), _checkpoint_ref("run-b", 20)]
+    manifest = modal_arena._intake_manifest_from_discovery(
+        tournament_id="arena-a",
+        rating_run_id="elo-test",
+        scan_spec={"checkpoint_refs": refs},
+        rating_defaults={"continue_from_latest": True},
+        discovery={"checkpoint_refs": refs},
+    )
+    captured_specs: list[dict[str, object]] = []
+
+    class FakeState:
+        def get(self, key, default=None):
+            if key == modal_arena.CHECKPOINT_INTAKE_ACTIVE_KEYS:
+                return [manifest["manifest_key"]]
+            if key == manifest["manifest_key"]:
+                return manifest
+            return default
+
+    class FakeDrain:
+        def local(self, spec):
+            captured_specs.append(dict(spec))
+            return {
+                "event_count": 2,
+                "rating_call_id": "fc-test",
+            }
+
+    monkeypatch.setattr(modal_arena, "checkpoint_intake_state", FakeState())
+    monkeypatch.setattr(modal_arena, "curvytron_checkpoint_intake_drain", FakeDrain())
+
+    result = modal_arena.curvytron_checkpoint_intake_drain_tick.local()
+
+    assert result["drained_manifest_count"] == 1
+    assert captured_specs[0]["continue_from_latest"] is True
+    assert captured_specs[0]["spawn_if_existing"] is True
+
+
+def _write_leaderboard_publish_rating_snapshot(
+    tmp_path: Path,
+    *,
+    tournament_id: str = "arena-a",
+    rating_run_id: str = "elo-a",
+    provisional: bool = False,
+) -> None:
+    latest_ref = (
+        modal_arena._rating_provisional_latest_ref(tournament_id, rating_run_id)
+        if provisional
+        else arena.rating_latest_ref(tournament_id, rating_run_id)
+    )
+    latest_path = tmp_path / latest_ref
+    latest_path.parent.mkdir(parents=True)
+    payload = {
+        "schema_id": arena.RATING_SNAPSHOT_SCHEMA_ID,
+        "formula_version": arena.RATING_FORMULA_VERSION,
+        "tournament_id": tournament_id,
+        "rating_run_id": rating_run_id,
+        "ratings_ref": latest_ref.as_posix(),
+        "context_hash": "ctx-a",
+        "roster_hash": "roster-a",
+        "round_index": 3,
+        "ratings": [
+            {
+                "checkpoint_id": "ckpt-a",
+                "checkpoint_ref": _checkpoint_ref("run-a", 100000),
+                "label": "run-a i100000",
+                "rank": 1,
+                "rating": 1700.0,
+                "games": 500,
+                "wins": 300,
+                "losses": 150,
+                "draws": 50,
+                "battles": 20,
+                "rated_battles": 20,
+                "distinct_opponents": 20,
+                "failure_count": 0,
+            }
+        ],
+    }
+    if provisional:
+        payload["provisional"] = True
+    latest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_opponent_leaderboard_publish_writes_snapshot_latest_and_pointer(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    tournament_id = "arena-a"
+    rating_run_id = "elo-a"
+    _write_leaderboard_publish_rating_snapshot(
+        tmp_path,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+    )
+
+    class FakeDict:
+        def __init__(self) -> None:
+            self.values = {}
+
+        def put(self, key, value, **_kwargs):
+            self.values[key] = value
+            return True
+
+    fake_dict = FakeDict()
+    monkeypatch.setattr(modal_arena, "TOURNAMENT_MOUNT", tmp_path)
+    monkeypatch.setattr(modal_arena, "_reload_volume", lambda _volume: None)
+    monkeypatch.setattr(modal_arena, "_commit_volume", lambda _volume: None)
+    monkeypatch.setattr(modal_arena, "opponent_leaderboard_state", fake_dict)
+
+    result = modal_arena.curvytron_opponent_leaderboard_publish.local(
+        {
+            "tournament_id": tournament_id,
+            "rating_run_id": rating_run_id,
+            "leaderboard_id": "main",
+            "snapshot_id": "snapshot-001",
+        }
+    )
+
+    snapshot_ref = modal_arena._leaderboard_snapshot_ref("main", "snapshot-001")
+    latest_ref = modal_arena._leaderboard_latest_ref("main")
+    assert (tmp_path / snapshot_ref).is_file()
+    assert (tmp_path / latest_ref).is_file()
+    assert result["row_count"] == 1
+    assert result["active_count"] == 1
+    assert result["pointer_key"] == "current:main"
+    assert result["pointer_published"] is True
+    assert fake_dict.values["current:main"]["snapshot_id"] == "snapshot-001"
+
+
+def test_opponent_leaderboard_publish_rejects_provisional_without_opt_in(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    tournament_id = "arena-a"
+    rating_run_id = "elo-a"
+    _write_leaderboard_publish_rating_snapshot(
+        tmp_path,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+        provisional=True,
+    )
+    monkeypatch.setattr(modal_arena, "TOURNAMENT_MOUNT", tmp_path)
+    monkeypatch.setattr(modal_arena, "_reload_volume", lambda _volume: None)
+
+    def fail_commit(_volume):
+        raise AssertionError("provisional publish should fail before commit")
+
+    monkeypatch.setattr(modal_arena, "_commit_volume", fail_commit)
+
+    with pytest.raises(ValueError, match="refusing to publish provisional"):
+        modal_arena.curvytron_opponent_leaderboard_publish.local(
+            {
+                "tournament_id": tournament_id,
+                "rating_run_id": rating_run_id,
+                "leaderboard_id": "main",
+                "snapshot_id": "snapshot-001",
+            }
+        )
+
+
+def test_opponent_leaderboard_publish_commits_before_pointer_update(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    tournament_id = "arena-a"
+    rating_run_id = "elo-a"
+    _write_leaderboard_publish_rating_snapshot(
+        tmp_path,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+    )
+    call_order = []
+
+    class FakeDict:
+        def put(self, key, value, **_kwargs):
+            call_order.append(("put", key, value["snapshot_id"]))
+            return True
+
+    def fake_commit(_volume):
+        call_order.append(("commit",))
+        return None
+
+    monkeypatch.setattr(modal_arena, "TOURNAMENT_MOUNT", tmp_path)
+    monkeypatch.setattr(modal_arena, "_reload_volume", lambda _volume: None)
+    monkeypatch.setattr(modal_arena, "_commit_volume", fake_commit)
+    monkeypatch.setattr(modal_arena, "opponent_leaderboard_state", FakeDict())
+
+    result = modal_arena.curvytron_opponent_leaderboard_publish.local(
+        {
+            "tournament_id": tournament_id,
+            "rating_run_id": rating_run_id,
+            "leaderboard_id": "main",
+            "snapshot_id": "snapshot-001",
+        }
+    )
+
+    assert result["pointer_published"] is True
+    assert call_order == [("commit",), ("put", "current:main", "snapshot-001")]
+
+
+def test_opponent_leaderboard_publish_skips_pointer_update_on_commit_error(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    tournament_id = "arena-a"
+    rating_run_id = "elo-a"
+    _write_leaderboard_publish_rating_snapshot(
+        tmp_path,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+    )
+
+    class FakeDict:
+        def __init__(self) -> None:
+            self.values = {}
+
+        def put(self, key, value, **_kwargs):
+            self.values[key] = value
+            return True
+
+    fake_dict = FakeDict()
+    monkeypatch.setattr(modal_arena, "TOURNAMENT_MOUNT", tmp_path)
+    monkeypatch.setattr(modal_arena, "_reload_volume", lambda _volume: None)
+    monkeypatch.setattr(modal_arena, "_commit_volume", lambda _volume: "commit failed")
+    monkeypatch.setattr(modal_arena, "opponent_leaderboard_state", fake_dict)
+
+    result = modal_arena.curvytron_opponent_leaderboard_publish.local(
+        {
+            "tournament_id": tournament_id,
+            "rating_run_id": rating_run_id,
+            "leaderboard_id": "main",
+            "snapshot_id": "snapshot-001",
+        }
+    )
+
+    assert result["commit_error"] == "commit failed"
+    assert result["pointer_published"] is False
+    assert fake_dict.values == {}
 
 
 def test_rating_round_outputs_write_pair_history_and_scheduler_state(tmp_path) -> None:

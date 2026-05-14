@@ -93,6 +93,9 @@ live Coach batches while profiling or documenting optimizer work.
 
 ## Immediate Next Checks
 
+- Current active optimizer profile calls are recorded in
+  [stock full-loop profile](stock_full_loop_profile_2026-05-13.md). Do not
+  leave run ids or function-call ids only in chat context.
 - Keep the downsample regression tests passing.
 - Keep the refactor-focused local gate green when optimizer advice depends on
   current Coach scaffolding:

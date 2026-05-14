@@ -196,7 +196,7 @@ returned unchanged.
 
 ## Bug 8: Train Smoke Can Return Before Final Artifacts Are Visible
 
-Status: fixed locally; fresh Modal smoke still needs to be rerun after the fix.
+Status: fixed and validated with a fresh waited CPU Modal smoke.
 
 Plain description: `_run_visual_survival_train(mode="train")` wrote final
 summary, action telemetry summary, artifact manifest, checkpoint mirrors, final
@@ -234,3 +234,92 @@ Regression coverage:
 - `tests/test_curvytron_live_checkpoint_eval_plumbing.py::test_stock_train_mode_calls_lightzero_train_muzero_entrypoint`
   now asserts train mode attempts a final commit and that the fake volume commit
   is called once.
+
+Post-fix smoke:
+
+- `curvytron-cadence-e2e-smoke-20260513-203914/train-smoke-001`
+  returned `ok=true`, `called_train_muzero=true`, and `problems=[]`.
+- Volume readback showed final train artifacts and mirrored checkpoints.
+- Downloaded heartbeat/latest-attempt both said `completed`.
+
+## Bug 9: Assignment Ref Was Not Accepted By The Real Checkpoint Poller
+
+Status: fixed and covered by focused tests.
+
+Plain description: the local launcher passed `opponent_assignment_ref` when it
+spawned the checkpoint eval/GIF poller, but the real poller function did not
+accept that argument and did not forward it into the poller command.
+
+Impact:
+
+- assignment-backed training runs with background eval/GIF could fail at poller
+  launch time;
+- even if launch was bypassed, eval/GIF could inspect the wrong opponent
+  mixture rather than the assignment used by training.
+
+Fix:
+
+- `lightzero_curvytron_visual_survival_checkpoint_eval_poller` now accepts
+  `opponent_assignment_ref`;
+- it forwards the ref into `_checkpoint_eval_poller_command`, which resolves the
+  assignment through the existing opponent-mixture contract.
+
+Regression coverage:
+
+- `tests/test_curvytron_live_checkpoint_eval_plumbing.py::test_checkpoint_eval_poller_function_accepts_assignment_ref_and_resolves_command`
+- existing command and launcher plumbing tests.
+
+## Bug 10: Leaderboard Publish Could Advance An Unsafe Live Pointer
+
+Status: fixed and covered by focused tests.
+
+Plain description: the publisher could publish a trainer-facing public
+leaderboard from a provisional rating snapshot, and it updated the live Dict
+pointer before the Volume commit. If the commit failed, the pointer could name a
+snapshot that was not durable.
+
+Impact:
+
+- training assignment selection could be based on provisional ratings without
+  an explicit opt-in;
+- readers could see a live pointer to missing or uncommitted Volume artifacts.
+
+Fix:
+
+- `curvytron_opponent_leaderboard_publish` refuses provisional rating snapshots
+  unless `allow_live_provisional=True`;
+- it writes snapshot/latest artifacts, commits the Volume, and only then
+  updates the live Dict pointer;
+- if the commit fails, it returns `pointer_published=false`.
+
+Regression coverage:
+
+- `tests/test_curvytron_checkpoint_tournament.py::test_opponent_leaderboard_publish_rejects_provisional_without_opt_in`
+- `tests/test_curvytron_checkpoint_tournament.py::test_opponent_leaderboard_publish_commits_before_pointer_update`
+- `tests/test_curvytron_checkpoint_tournament.py::test_opponent_leaderboard_publish_skips_pointer_update_on_commit_error`
+
+Residual caveat: if the Dict write itself fails after a successful Volume
+commit, the snapshot is durable but the live pointer is not advanced. Pointer
+repair/fallback remains a next task.
+
+## Bug 11: Leaderboard Assignment Selector Could Pick Bad Rows
+
+Status: fixed and covered by focused tests.
+
+Plain description: `allow_provisional=True` allowed any non-active row,
+including retired rows, and champion selection assumed rows were already sorted.
+
+Impact:
+
+- a retired row could become a training opponent;
+- malformed or API-shaped input order could choose the wrong champion.
+
+Fix:
+
+- provisional selection now allows only `active` and `provisional` rows;
+- eligible rows are sorted deterministically before slot selection.
+
+Regression coverage:
+
+- `tests/test_opponent_leaderboard.py::test_select_opponent_assignment_sorts_unsorted_rows_before_selecting_champion`
+- `tests/test_opponent_leaderboard.py::test_select_opponent_assignment_allow_provisional_excludes_retired_rows`

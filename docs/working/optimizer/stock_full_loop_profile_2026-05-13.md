@@ -71,6 +71,8 @@ commit off.
 | C64 | H100 + 40 CPU | 64 | 8 | 16384 | 51.04 | 321.0 | 37.39 | 16.49 | 8.56 | 1.81 | 5% |
 | C64 | L4/T4 + 40 CPU | 64 | 16 | 16384 | 44.68 | 366.7 | 34.88 | 18.99 | 12.87 | 1.30 | sampled 0% |
 | C64 | H100 + 40 CPU | 64 | 16 | 16384 | 33.55 | 488.4 | 25.76 | 14.23 | 10.05 | 1.02 | sampled n/a |
+| C64 | L4/T4 + 40 CPU | 64 | 32 | 16384 | 64.11 | 255.6 | 52.11 | 34.29 | 27.54 | 1.74 | sampled n/a |
+| C64 | H100 + 40 CPU | 64 | 32 | 16384 | 44.25 | 370.2 | 36.25 | 23.67 | 19.09 | 1.01 | sampled n/a |
 
 Plain read:
 
@@ -88,6 +90,11 @@ Plain read:
 - H100 changes from bad at sim8 to good at sim16. C64/H100/sim16 measured
   `488.4` steps/sec versus C64/L4/sim16 at `366.7`. Plain read: bigger GPU is
   not a blanket default, but it may be useful when search pressure is high.
+- H100/sim32 measured `370.2` steps/sec. It is slower than H100/sim16, and MCTS
+  grew to `19.1s` inside `36.2s` collector wall.
+- L4/sim32 measured `255.6` steps/sec, with MCTS `27.5s` inside `52.1s`
+  collector wall. H100 is about `1.45x` faster than L4 at sim32, but H100/sim16
+  is still faster overall than H100/sim32.
 - GPU utilization samples are weak evidence because kernels are bursty and
   `nvidia-smi` samples coarsely. But the H100 row still argues against using
   H100 for the current sim8 profile shape.
@@ -142,6 +149,7 @@ lanes:
 | Hardware layout | CPU count, collector width, L4 vs H100, multi-GPU later | C64/C96 good; H100 only promising at higher sims so far | easy to test, can waste money if guessed |
 | Artifacts/observability | checkpoint, eval, GIF, volume writes, telemetry | should be sparse/off for profiles; important for real runs but amortized | easy to control |
 | Training shape | self-play batch per learner update, sims, horizon, checkpoint cadence | affects both speed and learning quality; Coach owns learning claims | high impact but must be coordinated |
+| Distributed/fanout | separate collect workers, chunked GameSegments, merge/import into replay, learner freshness | potentially large future win; not trusted for overnight | high difficulty and high learning risk |
 
 Current best optimizer conclusion:
 
@@ -174,6 +182,25 @@ rows are not enough.
 
 ## Next Work
 
+- Active profile calls:
+  - C64/H100/sim32/browser-lines:
+    `opt-amdahl-c64-h100-sim32-browser256-20260513a`,
+    `fc-01KRHYZPAB1XDF6JW7CBAGV14X`.
+  - C64/L4/sim32/browser-lines:
+    `opt-amdahl-c64-l4-sim32-browser256-20260513a`,
+    `fc-01KRHZ09QB8CPXV0SH13D1Q32K`.
+  - C64/L4/sim32/browser-lines completed:
+    `255.6` env steps/sec, MCTS `27.5s`, collector `52.1s`.
+  - C64/H100/sim32/browser-lines completed:
+    `370.2` env steps/sec, MCTS `19.1s`, collector `36.2s`.
+  - C32/L4/browser-lines long `source_max_steps=1024` rerun for at least one
+    learner call:
+    `opt-bl-l4-c32-long1024-loop1-20260514a`,
+    `fc-01KRJ7KQTVQZ55ZHFRVFR08675`.
+  - Long C64/L4/sim8/browser-lines at `source_max_steps=1024` collected
+    `65,536` env steps but failed before learner with
+    `ValueError: 'a' and 'p' must have same size`. Treat its collection timing
+    as partial evidence only, not a full-loop training profile.
 - Run paired C64/L4 and C64/H100 rows at sim16/sim32 to check whether H100
   becomes useful when search pressure is higher.
 - Diagnose why the C64/L4 1024-step `browser_lines` row collected episodes but

@@ -12,13 +12,17 @@ from __future__ import annotations
 import json
 import time
 from collections import Counter, defaultdict
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Sequence
 from urllib.parse import urlencode
 
 import modal
 
 from curvyzero.infra.modal import run_management as runs
+from curvyzero.training.opponent_leaderboard import (
+    build_leaderboard_pointer,
+    build_leaderboard_snapshot_from_rating_snapshot,
+)
 from curvyzero.tournament import curvytron_checkpoint_tournament as arena
 
 
@@ -55,6 +59,7 @@ TRAINING_TASK_ID = "lightzero-curvytron-visual-survival"
 CHECKPOINT_INTAKE_DICT_NAME = "curvyzero-curvytron-checkpoint-intake-v0"
 CHECKPOINT_INTAKE_QUEUE_NAME = "curvyzero-curvytron-checkpoint-events-v0"
 CHECKPOINT_INTAKE_ACTIVE_KEYS = "active_manifest_keys"
+OPPONENT_LEADERBOARD_DICT_NAME = "curvyzero-curvytron-opponent-leaderboard-live"
 DEFAULT_CHECKPOINT_INTAKE_SCAN_SECONDS = 60
 DEFAULT_CHECKPOINT_INTAKE_QUEUE_TTL_SECONDS = 24 * 60 * 60
 LOW_LEVEL_WORKER_RETRIES = modal.Retries(
@@ -96,6 +101,10 @@ checkpoint_intake_state = modal.Dict.from_name(
 )
 checkpoint_intake_queue = modal.Queue.from_name(
     CHECKPOINT_INTAKE_QUEUE_NAME,
+    create_if_missing=True,
+)
+opponent_leaderboard_state = modal.Dict.from_name(
+    OPPONENT_LEADERBOARD_DICT_NAME,
     create_if_missing=True,
 )
 app = modal.App(APP_NAME)
@@ -466,6 +475,27 @@ def _intake_queue_partition(tournament_id: str, rating_run_id: str) -> str:
     )
 
 
+def _leaderboard_root_ref(leaderboard_id: str) -> PurePosixPath:
+    return (
+        arena.TOURNAMENT_BASE_REF
+        / "leaderboards"
+        / runs.clean_id(leaderboard_id, label="leaderboard_id")
+    )
+
+
+def _leaderboard_snapshot_ref(leaderboard_id: str, snapshot_id: str) -> PurePosixPath:
+    clean_snapshot_id = runs.clean_id(snapshot_id, label="snapshot_id")
+    return _leaderboard_root_ref(leaderboard_id) / "snapshots" / f"{clean_snapshot_id}.json"
+
+
+def _leaderboard_latest_ref(leaderboard_id: str) -> PurePosixPath:
+    return _leaderboard_root_ref(leaderboard_id) / arena.ARTIFACT_LATEST_FILENAME
+
+
+def _leaderboard_pointer_key(leaderboard_id: str) -> str:
+    return f"current:{runs.clean_id(leaderboard_id, label='leaderboard_id')}"
+
+
 def _clean_ref_set(refs: Any) -> set[str]:
     if isinstance(refs, str):
         values = refs.replace("\n", ",").split(",")
@@ -562,11 +592,16 @@ def _intake_rating_spec_from_manifest(
     if not isinstance(rating_defaults, Mapping):
         rating_defaults = {}
     extra = dict(overrides or {})
-    checkpoint_refs = [
-        str(ref)
-        for ref in manifest.get("checkpoint_refs", [])
-        if str(ref).strip()
-    ]
+    continue_from_latest = bool(
+        extra.get(
+            "continue_from_latest",
+            rating_defaults.get("continue_from_latest", False),
+        )
+    )
+    checkpoint_refs = _intake_manifest_rating_checkpoint_refs(
+        manifest,
+        continue_from_latest=continue_from_latest,
+    )
     return arena.normalize_rating_spec(
         {
             "tournament_id": manifest["tournament_id"],
@@ -576,10 +611,7 @@ def _intake_rating_spec_from_manifest(
                 "round_count",
                 rating_defaults.get("round_count", arena.DEFAULT_RATING_ROUND_COUNT),
             ),
-            "continue_from_latest": extra.get(
-                "continue_from_latest",
-                rating_defaults.get("continue_from_latest", False),
-            ),
+            "continue_from_latest": continue_from_latest,
             "pairs_per_round": extra.get(
                 "pairs_per_round",
                 rating_defaults.get("pairs_per_round"),
@@ -688,6 +720,30 @@ def _intake_rating_spec_from_manifest(
             ),
         }
     )
+
+
+def _intake_manifest_rating_checkpoint_refs(
+    manifest: Mapping[str, Any],
+    *,
+    continue_from_latest: bool,
+) -> list[str]:
+    checkpoint_source = (
+        manifest.get("seen_checkpoint_refs", [])
+        if continue_from_latest
+        else manifest.get("checkpoint_refs", [])
+    )
+    checkpoint_refs = [
+        str(ref)
+        for ref in checkpoint_source
+        if str(ref).strip()
+    ]
+    if continue_from_latest and not checkpoint_refs:
+        checkpoint_refs = [
+            str(ref)
+            for ref in manifest.get("checkpoint_refs", [])
+            if str(ref).strip()
+        ]
+    return checkpoint_refs
 
 
 def _intake_manifest_from_discovery(
@@ -839,6 +895,22 @@ def _enqueue_checkpoint_events(
         )
         enqueued.append(event)
     return {"partition": partition, "enqueued_count": len(enqueued), "events": enqueued}
+
+
+def _intake_rating_claim_key(
+    manifest: Mapping[str, Any],
+    *,
+    continue_from_latest: bool = False,
+) -> str:
+    manifest_key = str(manifest["manifest_key"])
+    if not continue_from_latest:
+        return f"rating_claim:{manifest_key}"
+    queued_refs = sorted(_clean_ref_set(manifest.get("queued_checkpoint_refs", [])))
+    queued_digest = arena._short_hash(
+        json.dumps(queued_refs, separators=(",", ":"), sort_keys=True),
+        length=16,
+    )
+    return f"rating_claim:{manifest_key}:{queued_digest}"
 
 
 def _path_for_ref(ref: str | Path) -> Path:
@@ -6589,6 +6661,96 @@ def curvytron_tournament_visibility(spec: Mapping[str, Any] | None = None) -> di
 
 @app.function(
     image=image,
+    volumes=_tournament_volumes(),
+    timeout=10 * 60,
+    cpu=1.0,
+    memory=1024,
+)
+def curvytron_opponent_leaderboard_publish(spec: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    payload = dict(spec or {})
+    _reload_volume(tournament_volume)
+    tournament_id = runs.clean_id(str(payload["tournament_id"]), label="tournament_id")
+    rating_run_id = runs.clean_id(
+        str(payload.get("rating_run_id") or arena.DEFAULT_RATING_RUN_ID),
+        label="rating_run_id",
+    )
+    leaderboard_id = runs.clean_id(
+        str(payload.get("leaderboard_id") or f"{tournament_id}-{rating_run_id}"),
+        label="leaderboard_id",
+    )
+    default_snapshot_id = f"snapshot-{arena._short_hash(runs.utc_timestamp(), length=12)}"
+    snapshot_id = runs.clean_id(
+        str(payload.get("snapshot_id") or default_snapshot_id),
+        label="snapshot_id",
+    )
+    allow_live_provisional = bool(payload.get("allow_live_provisional", False))
+    rating_snapshot = _read_best_rating_snapshot_for_run(
+        TOURNAMENT_MOUNT,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+        allow_live_provisional=allow_live_provisional,
+    )
+    if not rating_snapshot:
+        raise ValueError("rating snapshot not found")
+    if rating_snapshot.get("provisional") and not allow_live_provisional:
+        raise ValueError(
+            "refusing to publish provisional rating snapshot without "
+            "allow_live_provisional=True"
+        )
+    snapshot = build_leaderboard_snapshot_from_rating_snapshot(
+        rating_snapshot,
+        leaderboard_id=leaderboard_id,
+        snapshot_id=snapshot_id,
+        generation=int(payload.get("generation") or int(rating_snapshot.get("round_index", 0) or 0)),
+        created_at=runs.utc_timestamp(),
+        active_min_distinct_opponents=int(
+            payload.get("active_min_distinct_opponents") or 20
+        ),
+        active_min_valid_games=int(payload.get("active_min_valid_games") or 300),
+        max_failure_rate=float(payload.get("max_failure_rate") or 0.02),
+    )
+    snapshot_ref = _leaderboard_snapshot_ref(leaderboard_id, snapshot_id)
+    latest_ref = _leaderboard_latest_ref(leaderboard_id)
+    snapshot_write = arena.write_json_artifact(TOURNAMENT_MOUNT, snapshot_ref, snapshot)
+    latest_write = arena.write_json_artifact(TOURNAMENT_MOUNT, latest_ref, snapshot)
+    pointer = build_leaderboard_pointer(
+        snapshot,
+        snapshot_ref=snapshot_ref.as_posix(),
+        published_at=runs.utc_timestamp(),
+        writer={
+            "kind": "curvytron_opponent_leaderboard_publish",
+            "app_name": APP_NAME,
+        },
+    )
+    pointer_key = _leaderboard_pointer_key(leaderboard_id)
+    commit_error = _commit_volume(tournament_volume)
+    pointer_published = False
+    if not commit_error:
+        opponent_leaderboard_state.put(pointer_key, arena._to_plain(pointer))
+        pointer_published = True
+    return arena._to_plain(
+        {
+            "schema_id": "curvyzero_opponent_leaderboard_publish/v0",
+            "leaderboard_id": leaderboard_id,
+            "snapshot_id": snapshot_id,
+            "tournament_id": tournament_id,
+            "rating_run_id": rating_run_id,
+            "snapshot_ref": snapshot_write.get("ref"),
+            "latest_ref": latest_write.get("ref"),
+            "pointer_key": pointer_key,
+            "dict_name": OPPONENT_LEADERBOARD_DICT_NAME,
+            "row_count": len(snapshot["rows"]),
+            "active_count": pointer["compact_summary"]["active_count"],
+            "provisional_count": pointer["compact_summary"]["provisional_count"],
+            "commit_error": commit_error,
+            "pointer_published": pointer_published,
+            "pointer": pointer,
+        }
+    )
+
+
+@app.function(
+    image=image,
     volumes=_game_volumes(),
     timeout=10 * 60,
     cpu=1.0,
@@ -6766,8 +6928,8 @@ def curvytron_checkpoint_intake_tick(spec: Mapping[str, Any] | None = None) -> d
             for ref in discovery.get("checkpoint_refs", [])
             if str(ref).strip()
         ]
-        queued_refs = _clean_ref_set(manifest.get("queued_checkpoint_refs", []))
-        new_refs = [ref for ref in current_refs if ref not in queued_refs]
+        previous_seen_refs = _clean_ref_set(manifest.get("seen_checkpoint_refs", []))
+        new_refs = [ref for ref in current_refs if ref not in previous_seen_refs]
         updated_manifest = _intake_manifest_from_discovery(
             tournament_id=str(manifest["tournament_id"]),
             rating_run_id=str(manifest["rating_run_id"]),
@@ -6905,14 +7067,30 @@ def curvytron_checkpoint_intake_drain(spec: Mapping[str, Any] | None = None) -> 
         tournament_id=tournament_id,
         rating_run_id=rating_run_id,
     )
-    allow_existing_rating = bool(payload.get("spawn_if_existing", False))
+    rating_defaults = manifest.get("rating_defaults")
+    if not isinstance(rating_defaults, Mapping):
+        rating_defaults = {}
+    continue_from_latest = bool(
+        payload.get(
+            "continue_from_latest",
+            rating_defaults.get("continue_from_latest", False),
+        )
+    )
+    allow_existing_rating = continue_from_latest
+    rating_checkpoint_refs = _intake_manifest_rating_checkpoint_refs(
+        manifest,
+        continue_from_latest=continue_from_latest,
+    )
     queue_len_before = checkpoint_intake_queue.len(partition=partition)
     spawn_requested = bool(payload.get("spawn_rating", False))
-    claim_key = f"rating_claim:{manifest_key}"
+    claim_key = _intake_rating_claim_key(
+        manifest,
+        continue_from_latest=continue_from_latest,
+    )
     rating_claimed = False
     spawn_skipped_reason = ""
     if spawn_requested:
-        if len(manifest.get("checkpoint_refs") or []) < 2:
+        if len(rating_checkpoint_refs) < 2:
             spawn_skipped_reason = "needs_at_least_two_checkpoints"
         elif existing_rating_run and not allow_existing_rating:
             spawn_skipped_reason = "rating_run_already_exists"
@@ -6969,6 +7147,7 @@ def curvytron_checkpoint_intake_drain(spec: Mapping[str, Any] | None = None) -> 
                 if key
                 in {
                     "round_count",
+                    "continue_from_latest",
                     "pairs_per_round",
                     "placement_min_games",
                     "placement_min_opponents",
@@ -7007,7 +7186,9 @@ def curvytron_checkpoint_intake_drain(spec: Mapping[str, Any] | None = None) -> 
             "event_count": len(events),
             "events": events,
             "checkpoint_count": len(manifest.get("checkpoint_refs") or []),
+            "rating_checkpoint_count": len(rating_checkpoint_refs),
             "existing_rating_run": existing_rating_run,
+            "continue_from_latest": continue_from_latest,
             "rating_claim_key": claim_key,
             "rating_claimed": rating_claimed,
             "spawn_skipped_reason": spawn_skipped_reason,
@@ -7033,12 +7214,18 @@ def curvytron_checkpoint_intake_drain_tick() -> dict[str, Any]:
         manifest = checkpoint_intake_state.get(str(key), None)
         if not isinstance(manifest, Mapping) or not bool(manifest.get("active", True)):
             continue
+        rating_defaults = manifest.get("rating_defaults")
+        if not isinstance(rating_defaults, Mapping):
+            rating_defaults = {}
+        continue_from_latest = bool(rating_defaults.get("continue_from_latest", False))
         result = curvytron_checkpoint_intake_drain.local(
             {
                 "tournament_id": str(manifest["tournament_id"]),
                 "rating_run_id": str(manifest["rating_run_id"]),
                 "max_events": max(100, len(manifest.get("checkpoint_refs") or [])),
                 "spawn_rating": True,
+                "continue_from_latest": continue_from_latest,
+                "spawn_if_existing": continue_from_latest,
             }
         )
         if int(result.get("event_count") or 0) or result.get("rating_call_id"):
@@ -7101,8 +7288,15 @@ def main(
     visibility_tournament_ids: str = "",
     visibility_keep_tournament_ids: str = "",
     visibility_dry_run: bool = True,
+    leaderboard_id: str = "",
+    leaderboard_snapshot_id: str = "",
+    leaderboard_allow_live_provisional: bool = False,
+    leaderboard_active_min_distinct_opponents: int = 20,
+    leaderboard_active_min_valid_games: int = 300,
+    leaderboard_max_failure_rate: float = 0.02,
     intake_enqueue_existing: bool = False,
     intake_spawn_rating: bool = False,
+    intake_spawn_if_existing: bool = False,
     intake_max_events: int = 100,
     intake_active: bool = True,
     wait: bool = False,
@@ -7135,6 +7329,7 @@ def main(
         "provisional-loop",
         "reduce",
         "visibility",
+        "leaderboard-publish",
         "intake-seed",
         "intake-tick",
         "intake-drain",
@@ -7143,8 +7338,23 @@ def main(
         raise ValueError(
             "mode must be one of: discover, estimate, game, pair, tournament, rating, "
             "progress, provisional, provisional-loop, reduce, visibility, "
-            "intake-seed, intake-tick, intake-drain, intake-status"
+            "leaderboard-publish, intake-seed, intake-tick, intake-drain, intake-status"
         )
+    if mode == "leaderboard-publish":
+        result = curvytron_opponent_leaderboard_publish.remote(
+            {
+                "tournament_id": resolved_tournament_id,
+                "rating_run_id": rating_run_id,
+                "leaderboard_id": leaderboard_id or f"{resolved_tournament_id}-{rating_run_id}",
+                "snapshot_id": leaderboard_snapshot_id,
+                "allow_live_provisional": bool(leaderboard_allow_live_provisional),
+                "active_min_distinct_opponents": int(leaderboard_active_min_distinct_opponents),
+                "active_min_valid_games": int(leaderboard_active_min_valid_games),
+                "max_failure_rate": float(leaderboard_max_failure_rate),
+            }
+        )
+        print(json.dumps(arena._to_plain(result), indent=2, sort_keys=True))
+        return
     if mode == "visibility":
         result = curvytron_tournament_visibility.remote(
             {
@@ -7209,6 +7419,7 @@ def main(
             "gif_sample_strategy": str(gif_sample_strategy),
             "enqueue_existing": bool(intake_enqueue_existing),
             "spawn_rating": bool(intake_spawn_rating),
+            "spawn_if_existing": bool(intake_spawn_if_existing),
             "max_events": int(intake_max_events),
             "active": bool(intake_active),
         }

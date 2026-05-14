@@ -78,16 +78,28 @@
 - [x] Run a fresh tiny post-patch training-loop smoke, or document the blocker.
 - [x] Fold the cadence side-effect audits into
   `granular_action_cadence_side_effect_audit_2026-05-13.md`.
-- [ ] Rerun the fresh tiny Modal smoke after the train final-commit fix and
+- [x] Rerun the fresh tiny Modal smoke after the train final-commit fix and
   prove final summary/checkpoint artifacts are visible on the Volume.
-- [ ] Patch eval/GIF cadence pass-through so spawned remote workers receive
+- [x] Patch eval/GIF cadence pass-through so spawned remote workers receive
   cadence explicitly instead of relying on imported defaults.
+- [ ] Add cadence to `progress_latest.json`, run-status rows, GIF summaries,
+  and GIF browser cards.
+- [ ] Add submitter-side stale-`decision_ms` validation before grouped manifest
+  jobs spawn pollers/train functions.
 - [ ] Decide whether manifest builders should read assignment snapshots or a
   registry source directly.
-- [ ] Add pure validators/builders for leaderboard snapshots, live Dict
+- [x] Add pure validators/builders for leaderboard snapshots, live Dict
   pointers, and assignment audit records before wiring Modal.
-- [ ] Wire assignment snapshots into the trainer only after adding trainer
-  plumbing tests.
+- [x] Wire explicit assignment refs into the trainer and background poller
+  after adding trainer plumbing tests.
+- [x] Add direct regression coverage for the assignment artifact writer.
+- [x] Fix pure leaderboard selector to sort rows deterministically and exclude
+  retired rows from provisional selection.
+- [ ] Add leaderboard Dict pointer repair/fallback command.
+- [ ] Write the production operator runbook for assignment artifact generation.
+- [ ] Add safe assignment refresh policy for long-running trainers.
+- [ ] Harden online Elo continuation and queue/dedupe repair.
+- [ ] Run a larger bounded closed-loop smoke.
 
 ## Later
 

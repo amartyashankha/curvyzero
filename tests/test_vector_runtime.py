@@ -4277,6 +4277,51 @@ def test_step_many_catches_forced_bonus_game_borderless_like_js_fixture():
     assert vector_runtime.EVENT_BONUS_STACK not in set(event_types)
 
 
+def test_step_many_forced_bonus_game_borderless_active_wall_crossing_wraps():
+    scenario_name = "source_bonus_game_borderless_catch_step.json"
+    fixture, state = _runtime_fixture_state(
+        f"scenarios/environment/{scenario_name}",
+        body_capacity=4,
+    )
+    _add_forced_bonus_game_borderless_arrays(state, scenario_name)
+
+    catch_counters = _step_runtime_fixture(fixture, state, step_index=0)
+
+    assert catch_counters["bonus_game_borderless_catches"] == 1
+    np.testing.assert_array_equal(state["borderless"], np.asarray([True], dtype=bool))
+    np.testing.assert_array_equal(state["bonus_game_stack_count"], np.asarray([1]))
+
+    state["printing"][0] = False
+    state["print_manager_active"][0] = False
+    state["pos"][0, 0] = np.asarray([87.35, 44.0], dtype=np.float64)
+    state["prev_pos"][0, 0] = state["pos"][0, 0]
+    state["heading"][0, 0] = 0.0
+    state["pos"][0, 1] = np.asarray([44.0, 44.0], dtype=np.float64)
+    state["prev_pos"][0, 1] = state["pos"][0, 1]
+    state["heading"][0, 1] = math.pi
+
+    wrap_counters = vector_runtime.step_many(
+        vector_runtime.VectorStepInput(
+            state=state,
+            step_ms=np.asarray([100.0], dtype=np.float64),
+            source_moves=np.zeros((1, 2), dtype=np.int8),
+            player_count=2,
+            timer_advance_ms=np.asarray([0.0], dtype=np.float64),
+        ),
+    )
+
+    assert wrap_counters["borderless_wraps"] == 1
+    assert wrap_counters["normal_wall_deaths"] == 0
+    assert wrap_counters["bonus_game_borderless_expiries"] == 0
+    np.testing.assert_array_equal(state["alive"], np.asarray([[True, True]], dtype=bool))
+    np.testing.assert_array_equal(state["borderless"], np.asarray([True], dtype=bool))
+    np.testing.assert_array_equal(state["bonus_game_stack_count"], np.asarray([1]))
+    assert int(state["bonus_game_stack_duration_ms"][0, 0]) == (
+        vector_runtime.BONUS_GAME_BORDERLESS_DURATION_MS
+    )
+    np.testing.assert_allclose(state["pos"][0, 0], np.asarray([0.0, 44.0]))
+
+
 def test_step_many_forced_bonus_game_borderless_source_read_expiry_restores_false():
     scenario_name = "source_bonus_game_borderless_catch_step.json"
     fixture, state = _runtime_fixture_state(

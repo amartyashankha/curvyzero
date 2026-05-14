@@ -218,6 +218,10 @@ def load_lightzero_curvytron_visual_survival_policy(
     if not path.is_file():
         raise FileNotFoundError(f"LightZero checkpoint does not exist: {path}")
 
+    payload = _torch_load(torch, path)
+    found_key, state_dict = _state_dict_from_payload(payload, state_key=state_key)
+    inferred_support_config = _infer_model_support_config_from_state_dict(state_dict)
+
     main_config, create_config = _lightzero_policy_configs(
         seed=seed,
         num_simulations=num_simulations,
@@ -225,6 +229,7 @@ def load_lightzero_curvytron_visual_survival_policy(
         use_cuda=use_cuda,
         EasyDict=EasyDict,
     )
+    _apply_inferred_model_support_config(main_config, inferred_support_config)
     cfg = compile_config(
         copy.deepcopy(main_config),
         seed=int(seed),
@@ -240,8 +245,6 @@ def load_lightzero_curvytron_visual_survival_policy(
     if model is None:
         raise AttributeError("MuZeroPolicy has no _model attribute")
 
-    payload = _torch_load(torch, path)
-    found_key, state_dict = _state_dict_from_payload(payload, state_key=state_key)
     load_summary = _load_state_dict_strict(model, state_dict)
     if not load_summary.get("ok"):
         raise RuntimeError(f"strict LightZero checkpoint load failed: {load_summary}")
@@ -258,9 +261,61 @@ def load_lightzero_curvytron_visual_survival_policy(
             "batch_size": int(batch_size),
             "use_cuda": bool(use_cuda),
             "device": str(device),
+            "checkpoint_inferred_model_support_config": inferred_support_config,
         }
     )
     return policy, device, load_summary
+
+
+def _infer_model_support_config_from_state_dict(
+    state_dict: dict[str, Any],
+) -> dict[str, Any]:
+    def first_output_size(suffixes: tuple[str, ...]) -> int | None:
+        for key, value in state_dict.items():
+            key_text = str(key)
+            if not any(key_text.endswith(suffix) for suffix in suffixes):
+                continue
+            shape = getattr(value, "shape", None)
+            if shape is None or len(shape) < 1:
+                continue
+            return int(shape[0])
+        return None
+
+    reward_size = first_output_size(
+        (
+            "dynamics_network.fc_reward_head.3.weight",
+            "dynamics_network.reward_head.3.weight",
+            "reward_head.3.weight",
+        )
+    )
+    value_size = first_output_size(
+        (
+            "prediction_network.fc_value.3.weight",
+            "prediction_network.value_head.3.weight",
+            "value_head.3.weight",
+        )
+    )
+    config: dict[str, Any] = {}
+    if reward_size is not None:
+        config["reward_support_size"] = reward_size
+    if value_size is not None:
+        config["value_support_size"] = value_size
+    sizes = [size for size in (reward_size, value_size) if size is not None]
+    if sizes and all(size == sizes[0] for size in sizes) and sizes[0] % 2 == 1:
+        config["support_scale"] = (sizes[0] - 1) // 2
+    return config
+
+
+def _apply_inferred_model_support_config(
+    main_config: Any,
+    support_config: dict[str, Any],
+) -> None:
+    if not support_config:
+        return
+    model_config = main_config["policy"]["model"]
+    for key in ("support_scale", "reward_support_size", "value_support_size"):
+        if key in support_config:
+            model_config[key] = int(support_config[key])
 
 
 def _lightzero_policy_configs(

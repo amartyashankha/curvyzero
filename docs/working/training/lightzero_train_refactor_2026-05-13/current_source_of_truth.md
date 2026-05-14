@@ -89,7 +89,8 @@ src/curvyzero/training/opponent_registry.py
 
 It parses a frozen assignment snapshot into the existing opponent-mixture
 contract. It is intentionally pure: no Modal Dict, no volume reload, no
-tournament ranking, no checkpoint loading. It is not wired into the trainer yet.
+tournament ranking, no checkpoint loading. Explicit assignment refs are now
+wired into the trainer and background poller as static launch inputs.
 
 End-to-end smoke status: a tiny Modal CPU `--mode train` smoke has now run
 successfully after the refactor. It called stock `train_muzero`, wrote
@@ -144,8 +145,27 @@ path first, then write CurvyZero observability state.
 
 Opponent assignment snapshots now require exact
 `curvyzero_opponent_assignment/v0` schema ids and have a canonical SHA-256
-helper for future explicit assignment-ref wiring. This is still pure data code:
-no Modal Dict reads, no tournament ranking, no trainer polling.
+helper. Explicit assignment-ref wiring now exists in the trainer and background
+checkpoint eval/GIF poller: an immutable `assignment.json` is resolved into the
+existing opponent-mixture contract before LightZero starts. This is still a
+static trainer input, not live tournament control: no Modal Dict reads, no
+tournament ranking, and no trainer polling inside `train_muzero`.
+
+Leaderboard-to-training current truth lives in:
+
+```text
+docs/working/training/leaderboard_to_training_2026-05-13/HANDOFF.md
+```
+
+Recent focused fixes after critique:
+
+- the real checkpoint eval poller function now accepts and forwards
+  `opponent_assignment_ref`;
+- the assignment artifact writer has direct regression coverage for writing
+  assignment/audit files under an attempt and committing the Volume;
+- the pure leaderboard selector sorts eligible rows deterministically before
+  choosing the champion and excludes retired rows even when provisional rows
+  are allowed.
 
 New immediate requirement from Coach: the trusted stock LightZero lane should
 support one policy action per granular CurvyTron game step. Any action repeat
@@ -161,6 +181,19 @@ physics frame per policy action. Trusted `--mode train` and `--mode dry` reject
 stale multi-frame `decision_ms` values; use `policy_action_repeat_*` if a run
 intentionally wants repeated actions. The active survivaldiag and opponent
 mixture manifest builders now emit the one-frame timing value.
+
+Fresh post-cadence smoke status: after adding a final train-mode Volume commit,
+the waited CPU smoke
+`curvytron-cadence-e2e-smoke-20260513-203914/train-smoke-001` completed with
+`ok=true`, called stock `train_muzero`, wrote telemetry, wrote final summary
+artifacts, and mirrored 18 LightZero checkpoints. The downloaded summary showed
+`decision_source_frames=1`, `decision_ms=16.666666666666668`, and
+`policy_action_repeat_min=max=1`.
+
+Background eval/GIF cadence pass-through is also patched locally: the remote
+eval/GIF APIs, poller path, and eval env builder now receive cadence fields
+explicitly instead of relying on imported defaults. Focused tests with sentinel
+cadence values passed.
 
 Latest action-cadence validation:
 

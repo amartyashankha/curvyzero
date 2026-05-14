@@ -29,6 +29,9 @@ did about `488.4`, so H100 may be useful when search pressure is higher even
 though it was worse at sim8. Drop `body_circles_fast` as an optimizer decision
 proxy; the relevant render lane is CPU `browser_lines` versus exact
 GPU/compiled `browser_lines`.
+The paired sim32 rows were L4/T4 `255.6` steps/sec and H100 `370.2`, so H100
+helps once search is heavy, but sim32 is slower overall than sim16 in the rows
+we have.
 Render work remains important for long trajectories, but current full-loop
 Amdahl points at collection/search/process overhead first. The trusted renderer
 is still CPU; GPU-render work is a serious prototype lane, not current training

@@ -43,7 +43,7 @@ from collections import Counter
 from functools import lru_cache
 from importlib import metadata
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import modal
 
@@ -212,6 +212,11 @@ from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env imp
 from curvyzero.training.opponent_mixture import (
     OPPONENT_MIXTURE_SCHEMA_ID,
     parse_opponent_mixture_spec,
+)
+from curvyzero.training.opponent_leaderboard import validate_assignment_audit
+from curvyzero.training.opponent_registry import (
+    canonical_assignment_json_sha256,
+    parse_opponent_assignment_snapshot,
 )
 from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
     SOURCE_STATE_JOINT_ACTION_ADAPTER_IMPL_ID,
@@ -683,23 +688,39 @@ def _validate_trusted_source_state_action_cadence(
     *,
     env_variant: str,
     decision_ms: float,
+    decision_source_frames: int = DEFAULT_DECISION_SOURCE_FRAMES,
+    source_physics_step_ms: float = DEFAULT_SOURCE_PHYSICS_STEP_MS,
+    source_max_steps_semantics: str = "source_physics_steps",
     context: str,
 ) -> None:
     if env_variant != ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT:
         return
-    if math.isclose(
-        float(decision_ms),
-        float(DEFAULT_DECISION_MS),
-        rel_tol=0.0,
-        abs_tol=1e-6,
+    if (
+        int(decision_source_frames) == int(DEFAULT_DECISION_SOURCE_FRAMES)
+        and math.isclose(
+            float(source_physics_step_ms),
+            float(DEFAULT_SOURCE_PHYSICS_STEP_MS),
+            rel_tol=0.0,
+            abs_tol=1e-6,
+        )
+        and str(source_max_steps_semantics) == "source_physics_steps"
+        and math.isclose(
+            float(decision_ms),
+            float(DEFAULT_DECISION_MS),
+            rel_tol=0.0,
+            abs_tol=1e-6,
+        )
     ):
         return
     raise ValueError(
         f"{context} uses the trusted source_state_fixed_opponent lane, where "
         "one LightZero policy action must advance exactly one CurvyTron source "
         f"physics step. decision_ms must be {DEFAULT_DECISION_MS:g}; got "
-        f"{float(decision_ms):g}. Use policy_action_repeat_* for explicit "
-        "action repeat instead of hiding repeat in decision_ms."
+        f"{float(decision_ms):g}; decision_source_frames must be "
+        f"{DEFAULT_DECISION_SOURCE_FRAMES}; got {int(decision_source_frames)}; "
+        f"source_physics_step_ms must be {DEFAULT_SOURCE_PHYSICS_STEP_MS:g}; got "
+        f"{float(source_physics_step_ms):g}. Use policy_action_repeat_* for "
+        "explicit action repeat instead of hiding repeat in cadence fields."
     )
 
 
@@ -3091,6 +3112,7 @@ def _run_visual_survival_train(
     opponent_checkpoint_report_ref: str | None,
     opponent_checkpoint_state_key: str | None,
     opponent_mixture_spec: str | None,
+    opponent_assignment_ref: str | None,
     background_eval_enabled: bool,
     background_eval_launch_kind: str,
     background_eval_compute: str,
@@ -3278,8 +3300,15 @@ def _run_visual_survival_train(
         opponent_checkpoint_ref=opponent_checkpoint_ref,
         opponent_checkpoint_report_ref=opponent_checkpoint_report_ref,
     )
-    opponent_mixture = _resolve_opponent_mixture_for_env(
-        opponent_mixture_spec=opponent_mixture_spec
+    opponent_assignment = _resolve_opponent_assignment_for_env(
+        opponent_assignment_ref=opponent_assignment_ref
+    )
+    if opponent_assignment is not None and opponent_mixture_spec is not None:
+        raise ValueError("opponent_assignment_ref cannot be combined with opponent_mixture_spec")
+    opponent_mixture = (
+        opponent_assignment["opponent_mixture"]
+        if opponent_assignment is not None
+        else _resolve_opponent_mixture_for_env(opponent_mixture_spec=opponent_mixture_spec)
     )
     if opponent_mixture is not None:
         if env_variant != ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT:
@@ -3420,6 +3449,22 @@ def _run_visual_survival_train(
         "opponent_mixture_enabled": opponent_mixture is not None,
         "opponent_mixture_spec": opponent_mixture_spec,
         "opponent_mixture": opponent_mixture,
+        "opponent_assignment_ref": opponent_assignment_ref,
+        "opponent_assignment": (
+            {
+                key: opponent_assignment.get(key)
+                for key in (
+                    "assignment_id",
+                    "source_epoch",
+                    "source_ref",
+                    "assignment_ref",
+                    "assignment_sha256",
+                    "assignment_file",
+                )
+            }
+            if opponent_assignment is not None
+            else None
+        ),
         "background_eval_enabled": bool(background_eval_enabled),
         "background_eval_launch_kind": background_eval_launch_kind,
         "background_eval_compute": background_eval_compute,
@@ -4209,6 +4254,104 @@ def _resolve_opponent_mixture_for_env(
     }
 
 
+def _resolve_opponent_assignment_for_env(
+    *,
+    opponent_assignment_ref: str | None,
+) -> dict[str, Any] | None:
+    """Read one immutable assignment and resolve its opponent mixture for the env."""
+
+    if not opponent_assignment_ref:
+        return None
+    path, resolution = runs.resolve_mounted_ref_or_path(
+        str(opponent_assignment_ref),
+        mount=RUNS_MOUNT,
+        remote_root=REMOTE_ROOT,
+    )
+    if not path.is_file():
+        raise FileNotFoundError(f"opponent assignment file not found: {path}")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    parsed = parse_opponent_assignment_snapshot(payload)
+    if parsed is None:
+        return None
+    assignment_hash = canonical_assignment_json_sha256(payload)
+    opponent_mixture = _resolve_opponent_mixture_for_env(
+        opponent_mixture_spec=parsed["opponent_mixture"]
+    )
+    return {
+        "assignment_id": parsed["assignment_id"],
+        "source_epoch": parsed.get("source_epoch"),
+        "source_ref": parsed.get("source_ref"),
+        "assignment_ref": (
+            str(resolution.get("source_ref"))
+            if resolution.get("source_ref")
+            else str(opponent_assignment_ref)
+        ),
+        "assignment_path": str(path),
+        "assignment_sha256": assignment_hash,
+        "assignment_resolution": resolution,
+        "assignment_file": runs.file_summary_any_mount(path, mount=RUNS_MOUNT),
+        "opponent_mixture": opponent_mixture,
+    }
+
+
+def _opponent_assignment_artifact_refs(
+    *,
+    run_id: str,
+    attempt_id: str,
+    assignment_id: str,
+) -> dict[str, Any]:
+    root = (
+        runs.attempt_root_ref(TASK_ID, run_id, attempt_id)
+        / "opponents"
+        / "assignments"
+        / runs.clean_id(assignment_id, label="assignment_id")
+    )
+    return {
+        "root": root,
+        "assignment": root / "assignment.json",
+        "audit": root / "audit.json",
+    }
+
+
+def _write_opponent_assignment_artifacts(
+    *,
+    run_id: str,
+    attempt_id: str,
+    assignment: Mapping[str, Any],
+    audit: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    parsed = parse_opponent_assignment_snapshot(assignment)
+    if parsed is None:
+        raise ValueError("opponent assignment is required")
+    assignment_id = str(parsed["assignment_id"])
+    refs = _opponent_assignment_artifact_refs(
+        run_id=run_id,
+        attempt_id=attempt_id,
+        assignment_id=assignment_id,
+    )
+    assignment_path = runs.volume_path(RUNS_MOUNT, refs["assignment"])
+    assignment_sha256 = canonical_assignment_json_sha256(assignment)
+    runs.write_json(assignment_path, _to_plain(dict(assignment)))
+    audit_summary = None
+    if audit is not None:
+        validate_assignment_audit(audit, assignment=assignment)
+        audit_path = runs.volume_path(RUNS_MOUNT, refs["audit"])
+        runs.write_json(audit_path, _to_plain(dict(audit)))
+        audit_summary = runs.file_summary_any_mount(audit_path, mount=RUNS_MOUNT)
+    _commit_runs_volume_with_backoff(label="opponent_assignment_artifact_commit")
+    return {
+        "schema_id": "curvyzero_opponent_assignment_artifact_write/v0",
+        "run_id": run_id,
+        "attempt_id": attempt_id,
+        "assignment_id": assignment_id,
+        "assignment_ref": refs["assignment"].as_posix(),
+        "assignment_sha256": assignment_sha256,
+        "assignment_file": runs.file_summary_any_mount(assignment_path, mount=RUNS_MOUNT),
+        "audit_ref": refs["audit"].as_posix() if audit is not None else None,
+        "audit_file": audit_summary,
+    }
+
+
 @lru_cache(maxsize=1)
 def _source_state_fixed_opponent_wrapper_env_spec_fields() -> dict[str, Any]:
     """Mirror the fixed-opponent wrapper's visual contract in Modal metadata."""
@@ -4533,6 +4676,9 @@ def _build_visual_survival_configs(
         _validate_trusted_source_state_action_cadence(
             env_variant=env_variant,
             decision_ms=decision_ms,
+            decision_source_frames=decision_source_frames,
+            source_physics_step_ms=source_physics_step_ms,
+            source_max_steps_semantics=source_max_steps_semantics,
             context="_build_visual_survival_configs",
         )
     target_config = _lightzero_target_config_for_reward(
@@ -6293,6 +6439,7 @@ def _checkpoint_eval_poller_command(
     opponent_snapshot_ref: str | None,
     opponent_checkpoint_state_key: str | None,
     opponent_mixture_spec: Any | None = None,
+    opponent_assignment_ref: str | None = None,
     opponent_death_mode: str = DEFAULT_OPPONENT_DEATH_MODE,
     opponent_runtime_mode: str = DEFAULT_OPPONENT_RUNTIME_MODE,
     background_eval_enabled: bool,
@@ -6318,6 +6465,16 @@ def _checkpoint_eval_poller_command(
     ),
     natural_bonus_spawn: bool = TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN,
 ) -> dict[str, Any]:
+    opponent_assignment = _resolve_opponent_assignment_for_env(
+        opponent_assignment_ref=opponent_assignment_ref
+    )
+    if opponent_assignment is not None and opponent_mixture_spec is not None:
+        raise ValueError("opponent_assignment_ref cannot be combined with opponent_mixture_spec")
+    effective_opponent_mixture = (
+        opponent_assignment["opponent_mixture"]
+        if opponent_assignment is not None
+        else opponent_mixture_spec
+    )
     return {
         "seed": seed,
         "source_max_steps": source_max_steps,
@@ -6334,7 +6491,23 @@ def _checkpoint_eval_poller_command(
         "opponent_checkpoint_ref": opponent_checkpoint_ref,
         "opponent_snapshot_ref": opponent_snapshot_ref,
         "opponent_checkpoint_state_key": opponent_checkpoint_state_key,
-        "opponent_mixture": _to_plain(opponent_mixture_spec),
+        "opponent_mixture": _to_plain(effective_opponent_mixture),
+        "opponent_assignment_ref": opponent_assignment_ref,
+        "opponent_assignment": (
+            {
+                key: opponent_assignment.get(key)
+                for key in (
+                    "assignment_id",
+                    "source_epoch",
+                    "source_ref",
+                    "assignment_ref",
+                    "assignment_sha256",
+                    "assignment_file",
+                )
+            }
+            if opponent_assignment is not None
+            else None
+        ),
         "opponent_death_mode": opponent_death_mode,
         "opponent_runtime_mode": opponent_runtime_mode,
         "natural_bonus_spawn": bool(natural_bonus_spawn),
@@ -8990,6 +9163,7 @@ def lightzero_curvytron_visual_survival_checkpoint_eval_and_inspect(
     opponent_snapshot_ref: str | None = None,
     opponent_checkpoint_state_key: str | None = None,
     opponent_mixture_spec: Any | None = None,
+    opponent_assignment_ref: str | None = None,
     opponent_death_mode: str = DEFAULT_OPPONENT_DEATH_MODE,
     opponent_runtime_mode: str = DEFAULT_OPPONENT_RUNTIME_MODE,
     natural_bonus_spawn: bool = TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN,
@@ -9021,6 +9195,7 @@ def lightzero_curvytron_visual_survival_checkpoint_eval_and_inspect(
         opponent_snapshot_ref=opponent_snapshot_ref,
         opponent_checkpoint_state_key=opponent_checkpoint_state_key,
         opponent_mixture_spec=opponent_mixture_spec,
+        opponent_assignment_ref=opponent_assignment_ref,
         opponent_death_mode=opponent_death_mode,
         opponent_runtime_mode=opponent_runtime_mode,
         natural_bonus_spawn=bool(natural_bonus_spawn),
@@ -9109,6 +9284,7 @@ def lightzero_curvytron_visual_survival_checkpoint_eval_poller(
     opponent_snapshot_ref: str | None = None,
     opponent_checkpoint_state_key: str | None = None,
     opponent_mixture_spec: Any | None = None,
+    opponent_assignment_ref: str | None = None,
     opponent_death_mode: str = DEFAULT_OPPONENT_DEATH_MODE,
     opponent_runtime_mode: str = DEFAULT_OPPONENT_RUNTIME_MODE,
     background_eval_compute: str = DEFAULT_BACKGROUND_EVAL_COMPUTE,
@@ -9152,6 +9328,7 @@ def lightzero_curvytron_visual_survival_checkpoint_eval_poller(
         opponent_snapshot_ref=opponent_snapshot_ref,
         opponent_checkpoint_state_key=opponent_checkpoint_state_key,
         opponent_mixture_spec=opponent_mixture_spec,
+        opponent_assignment_ref=opponent_assignment_ref,
         opponent_death_mode=opponent_death_mode,
         opponent_runtime_mode=opponent_runtime_mode,
         background_eval_enabled=True,
@@ -9183,6 +9360,16 @@ def lightzero_curvytron_visual_survival_checkpoint_eval_poller(
         max_runtime_sec=max_runtime_sec,
         idle_after_train_done_sec=idle_after_train_done_sec,
         command=command,
+    )
+
+
+@app.function(image=image, volumes={str(RUNS_MOUNT): runs_volume}, timeout=20 * 60, cpu=2.0)
+def lightzero_curvytron_write_opponent_assignment_artifacts(payload: dict[str, Any]) -> dict[str, Any]:
+    return _write_opponent_assignment_artifacts(
+        run_id=str(payload["run_id"]),
+        attempt_id=str(payload["attempt_id"]),
+        assignment=payload["assignment"],
+        audit=payload.get("audit"),
     )
 
 
@@ -9234,6 +9421,7 @@ def lightzero_curvytron_visual_survival_cpu(
     opponent_checkpoint_report_ref: str | None = None,
     opponent_checkpoint_state_key: str | None = None,
     opponent_mixture_spec: str | None = None,
+    opponent_assignment_ref: str | None = None,
     background_eval_enabled: bool = DEFAULT_BACKGROUND_EVAL_ENABLED,
     background_eval_launch_kind: str = BACKGROUND_EVAL_LAUNCH_HOOK,
     background_eval_compute: str = DEFAULT_BACKGROUND_EVAL_COMPUTE,
@@ -9298,6 +9486,7 @@ def lightzero_curvytron_visual_survival_cpu(
         opponent_checkpoint_report_ref=opponent_checkpoint_report_ref,
         opponent_checkpoint_state_key=opponent_checkpoint_state_key,
         opponent_mixture_spec=opponent_mixture_spec,
+        opponent_assignment_ref=opponent_assignment_ref,
         background_eval_enabled=background_eval_enabled,
         background_eval_launch_kind=background_eval_launch_kind,
         background_eval_compute=background_eval_compute,
@@ -9366,6 +9555,7 @@ def _apply_visual_survival_train_default_kwargs(kwargs: dict[str, Any]) -> None:
         "opponent_checkpoint_report_ref": None,
         "opponent_checkpoint_state_key": None,
         "opponent_mixture_spec": None,
+        "opponent_assignment_ref": None,
         "background_eval_enabled": DEFAULT_BACKGROUND_EVAL_ENABLED,
         "background_eval_launch_kind": DEFAULT_BACKGROUND_EVAL_LAUNCH_KIND,
         "background_eval_compute": DEFAULT_BACKGROUND_EVAL_COMPUTE,
@@ -9457,6 +9647,7 @@ def lightzero_curvytron_visual_survival_gpu(
     opponent_checkpoint_report_ref: str | None = None,
     opponent_checkpoint_state_key: str | None = None,
     opponent_mixture_spec: str | None = None,
+    opponent_assignment_ref: str | None = None,
     background_eval_enabled: bool = DEFAULT_BACKGROUND_EVAL_ENABLED,
     background_eval_launch_kind: str = BACKGROUND_EVAL_LAUNCH_HOOK,
     background_eval_compute: str = DEFAULT_BACKGROUND_EVAL_COMPUTE,
@@ -9521,6 +9712,7 @@ def lightzero_curvytron_visual_survival_gpu(
         opponent_checkpoint_report_ref=opponent_checkpoint_report_ref,
         opponent_checkpoint_state_key=opponent_checkpoint_state_key,
         opponent_mixture_spec=opponent_mixture_spec,
+        opponent_assignment_ref=opponent_assignment_ref,
         background_eval_enabled=background_eval_enabled,
         background_eval_launch_kind=background_eval_launch_kind,
         background_eval_compute=background_eval_compute,
@@ -9788,6 +9980,9 @@ def main(
     opponent_use_cuda: bool = DEFAULT_OPPONENT_USE_CUDA,
     opponent_checkpoint_ref: str | None = None,
     opponent_mixture_spec: str | None = None,
+    opponent_assignment_ref: str | None = None,
+    opponent_assignment_json_path: str = "",
+    opponent_assignment_audit_json_path: str = "",
     snapshot_ref: str = "curvytron_visual_survival_snapshot_opponent_smoke",
     checkpoint_ref: str | None = None,
     state_key: str | None = None,
@@ -9887,6 +10082,25 @@ def main(
     )
     if profile_spawn and mode != "profile":
         raise ValueError("profile_spawn is only valid with mode='profile'")
+    if mode == "write-assignment":
+        if not opponent_assignment_json_path:
+            raise ValueError("mode='write-assignment' requires opponent_assignment_json_path")
+        assignment = json.loads(Path(opponent_assignment_json_path).read_text(encoding="utf-8"))
+        audit = (
+            json.loads(Path(opponent_assignment_audit_json_path).read_text(encoding="utf-8"))
+            if opponent_assignment_audit_json_path
+            else None
+        )
+        result = lightzero_curvytron_write_opponent_assignment_artifacts.remote(
+            {
+                "run_id": run_id,
+                "attempt_id": attempt_id,
+                "assignment": assignment,
+                "audit": audit,
+            }
+        )
+        print(json.dumps(_to_plain(result), indent=2, sort_keys=True))
+        return
     if mode == OPPONENT_SMOKE_MODE:
         result = lightzero_curvytron_visual_survival_opponent_smoke.remote(
             run_id=run_id,
@@ -10150,6 +10364,7 @@ def main(
         "opponent_use_cuda": opponent_use_cuda,
         "opponent_checkpoint_ref": opponent_checkpoint_ref,
         "opponent_mixture_spec": opponent_mixture_spec,
+        "opponent_assignment_ref": opponent_assignment_ref,
         "opponent_snapshot_ref": snapshot_ref,
         "opponent_checkpoint_report_ref": checkpoint_ref,
         "opponent_checkpoint_state_key": state_key,
@@ -10201,6 +10416,7 @@ def main(
             opponent_checkpoint_ref=opponent_checkpoint_ref,
             opponent_snapshot_ref=snapshot_ref,
             opponent_checkpoint_state_key=state_key,
+            opponent_assignment_ref=opponent_assignment_ref,
             opponent_death_mode=opponent_death_mode,
             opponent_runtime_mode=opponent_runtime_mode,
             background_eval_compute=background_eval_compute,
