@@ -2703,11 +2703,13 @@ def test_rating_spec_with_latest_roster_restores_checkpoint_ids(tmp_path) -> Non
                     "checkpoint_id": "ckpt-left",
                     "label": "left",
                     "checkpoint_ref": _checkpoint_ref("run-a", 10),
+                    "checkpoint_mtime_ns": 100,
                 },
                 {
                     "checkpoint_id": "ckpt-right",
                     "label": "right",
                     "checkpoint_ref": _checkpoint_ref("run-b", 20),
+                    "checkpoint_mtime_ns": 200,
                 },
             ],
             "pair_selection": "adaptive_v0",
@@ -2742,6 +2744,10 @@ def test_rating_spec_with_latest_roster_restores_checkpoint_ids(tmp_path) -> Non
         "ckpt-left",
         "ckpt-right",
     ]
+    assert [row["run_id"] for row in restored["checkpoints"]] == ["run-a", "run-b"]
+    assert [row["iteration"] for row in restored["checkpoints"]] == [10, 20]
+    assert [row["checkpoint_mtime_ns"] for row in restored["checkpoints"]] == [100, 200]
+    assert [row["latest_for_run"] for row in restored["checkpoints"]] == [True, True]
     assert arena.rating_pool_hash(restored["checkpoints"]) == arena.rating_pool_hash(
         base_spec["checkpoints"]
     )
