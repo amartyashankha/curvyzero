@@ -1,7 +1,7 @@
 """Profile CurvyTron source-state rendering over fixed trajectory lengths.
 
 This is a local Optimizer tool. It uses the current source-state LightZero env
-wrapper, forces no-death rollouts, and times the actual gray64 render call so
+wrapper, forces no-death rollouts, and times the gray64 render entry points so
 we can separate render time from the rest of env stepping.
 """
 
@@ -184,11 +184,19 @@ def run_profile_grid(
             "current Coach batches use stock --mode train source_state_fixed_opponent; "
             "this profiler exercises that env wrapper locally, not live Modal training"
         ),
+        "surface_caveat": (
+            "fixed-opponent LightZero wrapper only; includes scalar full render and, "
+            "when enabled by that wrapper, the dirty/player-perspective render cache. "
+            "Does not measure the newer multiplayer trainer surface, MCTS/search, "
+            "learner, replay, subprocess collection, checkpoints, eval, or GIFs"
+        ),
         "includes_policy_search": False,
         "includes_learner": False,
         "render_timing": (
-            "render_sec wraps curvyzero_source_state_visual_survival_lightzero_env."
-            "render_source_state_canvas_gray64"
+            "render_sec is scalar_render_sec plus perspective_render_sec. These wrap "
+            "curvyzero_source_state_visual_survival_lightzero_env."
+            "render_source_state_canvas_gray64 and "
+            "render_source_state_canvas_gray64_player_perspectives"
         ),
         "env_timing": "profile_env_timing_sec from the current source-state env wrapper",
         "config": {
@@ -265,6 +273,16 @@ def _run_one_rollout(
         "reset_wall_sec_excluded": float(reset_wall_sec),
         "render_sec": float(stats.seconds),
         "render_calls": int(stats.calls),
+        "scalar_render_sec": float(stats.scalar_seconds),
+        "scalar_render_calls": int(stats.scalar_calls),
+        "perspective_render_sec": float(stats.perspective_seconds),
+        "perspective_render_calls": int(stats.perspective_calls),
+        "scalar_dirty_render_cache_stats": _cache_stats(
+            getattr(env, "_scalar_dirty_render_cache", None)
+        ),
+        "scalar_trail_layer_cache_stats": _cache_stats(
+            getattr(env, "_scalar_trail_layer_cache", None)
+        ),
         "timing_sums": dict(sorted(timing_sums.items())),
         "terminal_count": int(terminal_count),
     }
@@ -332,33 +350,76 @@ def _wall_avoidant_action(env: CurvyZeroSourceStateVisualSurvivalLightZeroLocalE
     return int(max(range(3), key=lambda action_id: scores[action_id]))
 
 
+def _cache_stats(cache: Any) -> dict[str, Any] | None:
+    stats = getattr(cache, "stats", None)
+    as_dict = getattr(stats, "as_dict", None)
+    if callable(as_dict):
+        return _json_safe(as_dict())
+    return None
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, int | float | str | bool) or value is None:
+        return value
+    return str(value)
+
+
 class _RenderStats:
     def __init__(self) -> None:
-        self.seconds = 0.0
-        self.calls = 0
+        self.scalar_seconds = 0.0
+        self.scalar_calls = 0
+        self.perspective_seconds = 0.0
+        self.perspective_calls = 0
 
     def reset(self) -> None:
-        self.seconds = 0.0
-        self.calls = 0
+        self.scalar_seconds = 0.0
+        self.scalar_calls = 0
+        self.perspective_seconds = 0.0
+        self.perspective_calls = 0
+
+    @property
+    def seconds(self) -> float:
+        return self.scalar_seconds + self.perspective_seconds
+
+    @property
+    def calls(self) -> int:
+        return self.scalar_calls + self.perspective_calls
 
 
 @contextmanager
 def _timed_gray64_render(stats: _RenderStats):
-    original = env_mod.render_source_state_canvas_gray64
+    original_scalar = env_mod.render_source_state_canvas_gray64
+    original_perspective = env_mod.render_source_state_canvas_gray64_player_perspectives
 
-    def wrapped(*args: Any, **kwargs: Any) -> Any:
+    def wrapped_scalar(*args: Any, **kwargs: Any) -> Any:
         started = time.perf_counter()
         try:
-            return original(*args, **kwargs)
+            return original_scalar(*args, **kwargs)
         finally:
-            stats.seconds += time.perf_counter() - started
-            stats.calls += 1
+            stats.scalar_seconds += time.perf_counter() - started
+            stats.scalar_calls += 1
 
-    env_mod.render_source_state_canvas_gray64 = wrapped
+    def wrapped_perspective(*args: Any, **kwargs: Any) -> Any:
+        started = time.perf_counter()
+        try:
+            return original_perspective(*args, **kwargs)
+        finally:
+            stats.perspective_seconds += time.perf_counter() - started
+            stats.perspective_calls += 1
+
+    env_mod.render_source_state_canvas_gray64 = wrapped_scalar
+    env_mod.render_source_state_canvas_gray64_player_perspectives = wrapped_perspective
     try:
         yield
     finally:
-        env_mod.render_source_state_canvas_gray64 = original
+        env_mod.render_source_state_canvas_gray64 = original_scalar
+        env_mod.render_source_state_canvas_gray64_player_perspectives = original_perspective
 
 
 def _summarize_cell(
@@ -369,6 +430,10 @@ def _summarize_cell(
 ) -> dict[str, Any]:
     walls = [float(run["wall_sec"]) for run in runs]
     renders = [float(run["render_sec"]) for run in runs]
+    scalar_renders = [float(run.get("scalar_render_sec", 0.0)) for run in runs]
+    perspective_renders = [
+        float(run.get("perspective_render_sec", 0.0)) for run in runs
+    ]
     observation = [
         float(run["timing_sums"].get("observation_sec", 0.0)) for run in runs
     ]
@@ -381,6 +446,8 @@ def _summarize_cell(
         float(run["timing_sums"].get("physical_loop_sec", 0.0)) for run in runs
     ]
     render_median = statistics.median(renders)
+    scalar_render_median = statistics.median(scalar_renders)
+    perspective_render_median = statistics.median(perspective_renders)
     wall_median = statistics.median(walls)
     observation_median = statistics.median(observation)
     vector_median = statistics.median(vector)
@@ -394,6 +461,8 @@ def _summarize_cell(
         "wall_sec_median": wall_median,
         "steps_per_sec_median": float(length) / wall_median if wall_median > 0 else None,
         "render_sec_median": render_median,
+        "scalar_render_sec_median": scalar_render_median,
+        "perspective_render_sec_median": perspective_render_median,
         "render_fraction_of_wall": render_median / wall_median if wall_median > 0 else None,
         "other_sec_median": wall_median - render_median,
         "observation_sec_median": observation_median,
@@ -406,6 +475,18 @@ def _summarize_cell(
         "reward_sec_median": reward_median,
         "render_calls_median": statistics.median(
             [int(run["render_calls"]) for run in runs]
+        ),
+        "scalar_render_calls_median": statistics.median(
+            [int(run.get("scalar_render_calls", 0)) for run in runs]
+        ),
+        "perspective_render_calls_median": statistics.median(
+            [int(run.get("perspective_render_calls", 0)) for run in runs]
+        ),
+        "scalar_dirty_render_cache_stats_last": runs[-1].get(
+            "scalar_dirty_render_cache_stats"
+        ),
+        "scalar_trail_layer_cache_stats_last": runs[-1].get(
+            "scalar_trail_layer_cache_stats"
         ),
         "terminal_count_total": int(sum(int(run["terminal_count"]) for run in runs)),
         "runs": runs,
@@ -427,8 +508,8 @@ def markdown_report(report: dict[str, Any]) -> str:
             [
                 f"## {mode}",
                 "",
-                "| steps | wall s | steps/s | render s | render % | observation s | vector step s | other s |",
-                "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+                "| steps | wall s | steps/s | render s | render % | scalar s | perspective s | observation s | vector step s | other s |",
+                "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
             ]
         )
         for cell in sorted(cells, key=lambda item: int(item["steps"])):
@@ -439,6 +520,8 @@ def markdown_report(report: dict[str, Any]) -> str:
                 f"{cell['steps_per_sec_median']:.1f} | "
                 f"{cell['render_sec_median']:.3f} | "
                 f"{100.0 * cell['render_fraction_of_wall']:.1f}% | "
+                f"{cell['scalar_render_sec_median']:.3f} | "
+                f"{cell['perspective_render_sec_median']:.3f} | "
                 f"{cell['observation_sec_median']:.3f} | "
                 f"{cell['vector_step_sec_median']:.3f} | "
                 f"{cell['other_sec_median']:.3f} |"

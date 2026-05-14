@@ -11,8 +11,6 @@ import numpy as np
 
 from curvyzero.env import vector_runtime
 from curvyzero.env.vector_multiplayer_env import ACTION_COUNT
-from curvyzero.env.vector_multiplayer_env import DEFAULT_DECISION_SOURCE_FRAMES
-from curvyzero.env.vector_multiplayer_env import DEFAULT_SOURCE_FRAME_DECISION_MS
 from curvyzero.env.vector_multiplayer_env import JOINT_ACTION_SCHEMA_ID
 from curvyzero.env.vector_multiplayer_env import NATURAL_BONUS_ENV_IMPL_ID
 from curvyzero.env.vector_multiplayer_env import NATURAL_BONUS_RULESET_ID
@@ -57,11 +55,18 @@ from curvyzero.env.vector_visual_observation import (
 from curvyzero.env.vector_visual_observation import (
     SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
 )
+from curvyzero.env.vector_visual_observation import SOURCE_STATE_RGB_CANVAS_LIKE_PLAYER_RGB
 from curvyzero.env.vector_visual_observation import SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID
 from curvyzero.env.vector_visual_observation import (
     SOURCE_STATE_RGB_CANVAS_LIKE_TRUTH_LEVEL,
 )
+from curvyzero.env.vector_visual_observation import SourceStateBrowserLineTrailLayerCache
+from curvyzero.env.vector_visual_observation import SourceStateCanvasGray64DirtyRenderCache
+from curvyzero.env.vector_visual_observation import SourceStateGray64DownsampleScratch
 from curvyzero.env.vector_visual_observation import render_source_state_canvas_gray64
+from curvyzero.env.vector_visual_observation import (
+    render_source_state_canvas_gray64_player_perspectives,
+)
 from curvyzero.env.vector_visual_observation import render_source_state_rgb_canvas_like
 
 try:
@@ -226,7 +231,8 @@ SOURCE_BODY_VALUE_BASE = 96
 SOURCE_BODY_VALUE_STEP = 32
 SOURCE_HEAD_VALUE_BASE = 224
 SOURCE_HEAD_VALUE_STEP = 8
-DEFAULT_DECISION_MS = DEFAULT_SOURCE_FRAME_DECISION_MS
+DEFAULT_DECISION_SOURCE_FRAMES = 1
+DEFAULT_DECISION_MS = SOURCE_PHYSICS_STEP_MS * DEFAULT_DECISION_SOURCE_FRAMES
 DEFAULT_MAX_TICKS = 2_000
 OPPONENT_DEATH_MODE_NORMAL = "normal"
 OPPONENT_DEATH_MODE_IMMORTAL = "immortal"
@@ -429,6 +435,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         "control_stochasticity_schema_id": CONTROL_STOCHASTICITY_SCHEMA_ID,
         "reward_variant": REWARD_VARIANT_SPARSE_OUTCOME,
         "source_state_trail_render_mode": SOURCE_STATE_DEFAULT_TRAIL_RENDER_MODE,
+        "source_state_scalar_dirty_render_enabled": True,
         "default_trail_render_mode": SOURCE_STATE_DEFAULT_TRAIL_RENDER_MODE,
         "supported_trail_render_modes": SOURCE_STATE_SUPPORTED_TRAIL_RENDER_MODES,
         "policy_action_repeat_min": DEFAULT_POLICY_ACTION_REPEAT_MIN,
@@ -632,7 +639,12 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             SOURCE_STATE_CANVAS_LIKE_RAW_CANVAS_SHAPE,
             dtype=np.uint8,
         )
+        self._raw_frame_work = np.zeros_like(self._raw_frame)
         self._gray64_frame = np.zeros(SOURCE_STATE_CANVAS_GRAY64_SHAPE, dtype=np.uint8)
+        self._gray64_perspective_frames = np.zeros(
+            (2, *SOURCE_STATE_CANVAS_GRAY64_SHAPE),
+            dtype=np.uint8,
+        )
         self._opponent_gray64_frame = np.zeros(
             SOURCE_STATE_CANVAS_GRAY64_SHAPE,
             dtype=np.uint8,
@@ -641,6 +653,23 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         self._opponent_normalized_frame = np.zeros(
             SOURCE_STATE_CANVAS_GRAY64_SHAPE,
             dtype=np.float32,
+        )
+        self._downsample_scratch = SourceStateGray64DownsampleScratch(
+            SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
+        )
+        self._scalar_dirty_render_enabled = bool(
+            _cfg_get(cfg, "source_state_scalar_dirty_render_enabled", True)
+        )
+        self._scalar_trail_layer_cache = SourceStateBrowserLineTrailLayerCache(
+            min_active_slots=1,
+        )
+        self._scalar_dirty_render_cache = SourceStateCanvasGray64DirtyRenderCache(
+            player_count=2,
+            profile_timing=self._profile_env_timing_enabled,
+        )
+        self._scalar_global_player_rgbs = (
+            SOURCE_STATE_RGB_CANVAS_LIKE_PLAYER_RGB,
+            SOURCE_STATE_RGB_CANVAS_LIKE_PLAYER_RGB,
         )
         self._stack = np.zeros(STACKED_SOURCE_STATE_GRAY64_SHAPE, dtype=np.float32)
         self._opponent_stack = np.zeros(STACKED_SOURCE_STATE_GRAY64_SHAPE, dtype=np.float32)
@@ -716,6 +745,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         self._env = self._new_env(reset_seed)
         self._stack.fill(0.0)
         self._opponent_stack.fill(0.0)
+        self._reset_scalar_render_cache()
         self._last_opponent_policy_sidecar = None
         self._needs_reset = False
         self._has_reset = True
@@ -1120,13 +1150,33 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         }
 
     def _update_stack(self) -> np.ndarray:
-        gray64 = render_source_state_canvas_gray64(
-            self._render_state_view(),
-            row=0,
-            out=self._gray64_frame,
-            rgb_out=self._raw_frame,
-            trail_render_mode=self._source_state_trail_render_mode,
-        )
+        state_view = self._render_state_view()
+        if self._should_use_scalar_dirty_render_cache():
+            raw_frames = render_source_state_canvas_gray64_player_perspectives(
+                state_view,
+                row=0,
+                out=self._gray64_perspective_frames,
+                rgb_base_out=self._raw_frame,
+                rgb_work_out=self._raw_frame_work,
+                trail_cache=self._scalar_trail_layer_cache,
+                dirty_render_cache=self._scalar_dirty_render_cache,
+                downsample_scratch=self._downsample_scratch,
+                player_rgbs=self._scalar_global_player_rgbs,
+                trail_render_mode=self._source_state_trail_render_mode,
+            )
+            np.copyto(self._gray64_frame, raw_frames[0])
+            if self._scalar_dirty_render_cache.initialized:
+                np.copyto(self._raw_frame, self._scalar_dirty_render_cache.rgb_frames[0])
+            gray64 = self._gray64_frame
+        else:
+            gray64 = render_source_state_canvas_gray64(
+                state_view,
+                row=0,
+                out=self._gray64_frame,
+                rgb_out=self._raw_frame,
+                downsample_scratch=self._downsample_scratch,
+                trail_render_mode=self._source_state_trail_render_mode,
+            )
         np.multiply(
             gray64,
             np.float32(1.0 / 255.0),
@@ -1149,6 +1199,17 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         self._opponent_stack[:-1] = self._opponent_stack[1:]
         self._opponent_stack[-1] = self._opponent_normalized_frame[0]
         return self._stack
+
+    def _should_use_scalar_dirty_render_cache(self) -> bool:
+        return (
+            self._scalar_dirty_render_enabled
+            and self._source_state_trail_render_mode
+            == SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES
+        )
+
+    def _reset_scalar_render_cache(self) -> None:
+        self._scalar_trail_layer_cache.reset()
+        self._scalar_dirty_render_cache.reset()
 
     def _action_mask(self, *, active: bool) -> np.ndarray:
         if not active:
@@ -1638,6 +1699,9 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             info["profile_env_timing_sec"] = {
                 key: float(value) for key, value in profile_env_timing_sec.items()
             }
+            info["source_state_scalar_dirty_render_cache_stats"] = (
+                self._scalar_dirty_render_cache.stats.as_dict()
+            )
         if self._last_opponent_policy_sidecar is not None:
             info["opponent_policy_sidecar"] = self._last_opponent_policy_sidecar
         return info
@@ -1697,6 +1761,17 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             "player_perspective_schema_id": None,
             "renderer_impl_id": SOURCE_STATE_CANVAS_LIKE_GRAY64_RENDERER_IMPL_ID,
             "raw_renderer_impl_id": SOURCE_STATE_RGB_CANVAS_LIKE_RENDERER_IMPL_ID,
+            "source_state_scalar_dirty_render_enabled": bool(
+                self._scalar_dirty_render_enabled
+            ),
+            "source_state_scalar_dirty_render_active": (
+                self._should_use_scalar_dirty_render_cache()
+            ),
+            "source_state_scalar_dirty_render_kind": (
+                "exact_browser_lines_dirty_cache"
+                if self._should_use_scalar_dirty_render_cache()
+                else "scalar_full_render"
+            ),
             "truth_level": SOURCE_STATE_CANVAS_GRAY64_TRUTH_LEVEL,
             "source_fidelity_level": SOURCE_STATE_CANVAS_GRAY64_SOURCE_FIDELITY_LEVEL,
             "source_fidelity_claim": "source_state_backed_non_browser_pixel",
@@ -2136,6 +2211,9 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
                 for key, value in profile_env_timing_sec.items()
                 if isinstance(value, (int, float))
             }
+        dirty_render_stats = info.get("source_state_scalar_dirty_render_cache_stats")
+        if isinstance(dirty_render_stats, dict):
+            row["source_state_scalar_dirty_render_cache_stats"] = dirty_render_stats
         self._telemetry_path.parent.mkdir(parents=True, exist_ok=True)
         with self._telemetry_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n")

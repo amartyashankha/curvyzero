@@ -234,6 +234,63 @@ compatibility checks before large adaptive reuse.
 Test: pair history from a different rating context is rejected or clearly
 treated as a new ladder.
 
+Refined from the scheduler/data-contract critiques:
+
+- `pool_hash` should become roster identity, not the only compatibility guard.
+- Add `rating_context_hash` for evaluator semantics.
+- Roster expansion should be allowed to carry forward old pair evidence for
+  unchanged checkpoint pairs.
+- Context changes such as policy mode, max steps, source-frame timing, env/reward
+  semantics, or scoring formula should start a new ladder or require explicit
+  bridging.
+
+Current status:
+
+- `rating_context_hash` guards evaluator-context drift;
+- `checkpoint_roster` guards checkpoint-id replacement while still allowing
+  roster expansion;
+- legacy artifacts without `checkpoint_roster` still fall back to the older
+  pool-hash behavior.
+
+### Website Falls Back To Expensive Scans
+
+Risk: high.
+
+Why it matters: a click should not scan every battle, shard, or game summary.
+That will feel broken once every checkpoint enters the rating pool.
+
+Simple mitigation: normal website APIs read `progress.json`, `latest.json`,
+`provisional_latest.json`, `battle_index.json`, and future per-checkpoint battle
+indexes. Live shard/game scans are labeled recovery/debug paths.
+
+Test: a large fake artifact tree loads rankings and checkpoint detail through
+small indexes only.
+
+Current status:
+
+- per-checkpoint battle indexes now exist;
+- checkpoint detail reads the per-checkpoint index first;
+- stale rows are filtered defensively;
+- the normal checkpoint-index path no longer scans live shard summaries.
+
+Remaining risk: battle detail and GIF sample drilldown can still become heavy at
+large scale. The next website cleanup should add or publish smaller battle/game
+detail artifacts instead of reading many shard/game files during a click.
+
+### One Long Lineage Dominates Evidence
+
+Risk: high.
+
+Why it matters: including every checkpoint means one long training run can add
+many related players. If they mostly play each other, Elo may look confident
+while only measuring one family.
+
+Simple mitigation: track lineage/run ids, cap same-lineage scheduling share, and
+require outside-lineage opponents before rows look fully active.
+
+Test: synthetic pool with one very long run cannot spend most adaptive budget
+inside that run.
+
 ## Modal Notes
 
 From Modal docs checked on 2026-05-13:
@@ -261,10 +318,10 @@ Do not build the giant all-checkpoint system in one jump.
 
 Next safe implementation step:
 
-1. Name implicit contract strings and artifact paths.
-2. Rerun focused tests and compile checks.
-3. Run a tiny adaptive remote smoke with GIFs off.
-4. Add website/index changes before any large adaptive run.
-5. Add rating-context compatibility before serious adaptive reuse.
+1. Add the remaining semantic tests around context hash fields and roster
+   replacement.
+2. Add the next website detail index or battle-detail artifact.
+3. Run a slightly less tiny adaptive remote smoke with GIFs off.
+4. Only then consider a larger all-checkpoint adaptive run.
 
 Keep every lane small enough that failures are easy to explain.

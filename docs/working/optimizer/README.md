@@ -4,18 +4,121 @@ Date: 2026-05-10
 
 Status: active optimizer lane front door.
 
-2026-05-13 render profiling truth: the trusted Coach lane is stock LightZero
-`--mode train` with `env_variant=source_state_fixed_opponent`. In that lane,
-the richer render mode is `browser_lines` and the fast render comparison mode
-is `body_circles_fast`. The old `fast_gray64_direct` name belongs to the
-superseded custom `two-seat-selfplay` adapter and should not be copied into
-current stock-path commands. For fixed-length local no-death render tables, use
+Current plate map:
+[current optimizer plate map](current_plate_map_2026-05-13.md). Read this
+first when old docs disagree; it pins the current stock LightZero lane,
+CPU-reference visual target, downsample questions, GPU side lane, and browser
+golden-frame side lane.
+
+Current system map:
+[optimizer system architecture map](system_architecture_map_2026-05-13.md).
+This is the short source for the latest Coach refactor context, live-run
+boundaries, stock `train_muzero` ownership, artifact/GIF boundaries, and
+optimizer questions.
+
+2026-05-13 render profiling truth: optimizer recommendations now target only
+the full source-state CPU-reference stock LightZero renderer: `browser_lines`
+source-state RGB at the 704-style canvas, browser-sprite bonuses, BT.601 luma,
+then 11x11 downsample to 64x64. This is not a browser-canvas pixel claim. The
+optimizer parity oracle is the CPU reference render; dirty-cache/GPU paths must
+match it exactly before they can replace it. The trusted Coach lane is stock
+LightZero `--mode train` with
+`env_variant=source_state_fixed_opponent`. `body_circles_fast` is historical
+control/ablation evidence only, not a current optimization lane. The old
+`fast_gray64_direct` name belongs to the superseded custom `two-seat-selfplay`
+adapter and should not be copied into current stock-path commands. For
+fixed-length local no-death render tables, use
 `scripts/profile_curvytron_render_trajectory_lengths.py`. First fixed-length
 tables live in
-[render trajectory profile](render_trajectory_profile_2026-05-13.md): in local
-env-only no-death rollouts, `browser_lines` spends about `76-93%` of wall time
-in render across 100-2000 steps, while `body_circles_fast` spends about
-`62-83%`.
+[render trajectory profile](render_trajectory_profile_2026-05-13.md). The exact
+dirty/incremental cache is now wired into the stock fixed-opponent
+`browser_lines` path. In local no-death env-only rollouts, cached
+`browser_lines` improved from `39.1s -> 10.5s` at 500 steps and
+`175.9s -> 46.9s` at 2000 steps. Keep `body_circles_fast` numbers only to
+explain old comparisons or controls; do not recommend new body-circles work
+unless the target explicitly changes away from full fidelity.
+Current downsample and parity contract:
+[downsample/reference fidelity](downsample_reference_fidelity_2026-05-13.md).
+Plain read: the 704 RGB -> BT.601 luma -> 11x11 area average is a sane
+anti-aliased path, but one grayscale channel cannot preserve arbitrary color
+identity. Current 2P self/other colors are separated; future 3P/4P needs a
+palette/channel decision because red and blue collapse to nearly the same luma.
+
+2026-05-13 Amdahl guardrail: after the dirty-cache and bonus dirty-block fixes,
+do not assume render is the whole bottleneck. Render remains important for
+long-survival/no-death env profiles, but full stock LightZero profiles must be
+used before assigning the next production bottleneck. Every optimizer profile
+must name whether it includes env step, observation/render, frozen opponent,
+MCTS/search, replay/sample, learner, checkpoint/eval/GIF, and artifact I/O.
+
+2026-05-13 GPU render exploration: two isolated Modal GPU probes now exist:
+`src/curvyzero/infra/modal/curvytron_gpu_render_probe.py` and
+`src/curvyzero/infra/modal/source_state_gpu_render_benchmark.py`. They do not
+touch live training runs or Modal volumes. Plain read: L4 device-side direct64
+rendering is very fast, but host-to-device transfer is often the larger bucket.
+For example, the synthetic source-state direct-gray64 probe at
+`browser_lines`, `B=128`, `trail_slots=2000` measured about `5.18ms` device
+render and `3.47ms` host->device transfer. A closer timing-only
+`block_704_gray64` probe at `browser_lines`, `B=16`, `trail_slots=100` measured
+about `6.37ms` device render and `3.17ms` host->device transfer. This is not a
+fidelity claim because it still does not prove exact RGB browser-line parity.
+The benchmark now has a tiny production-render comparison for the 704-style
+surface. With bonuses off, `B=1`, `trail_slots=64` now differs from production
+`render_source_state_canvas_gray64` on `0/4096` pixels after the
+production-like pixel-coordinate and float-luma fixes. With `8` bonuses active,
+it differs on `51/4096` pixels because bonus sprites are not implemented in the
+prototype. `B=16`, `trail_slots=64` takes about `4.74ms` device render plus
+`3.34ms` host-to-device copy on L4. Plain read: promising, but not trusted yet.
+At `B=16`, `trail_slots=500`, naive full GPU redraw takes about `46.7ms` device
+render plus `3.2ms` copy, so long trails still need dirty/incremental thinking.
+Next step is broader production-shaped parity, bonus sprites, or a CPU-compiled
+dirty-kernel route that keeps the current cache semantics. Current Amdahl read:
+production should first instrument and optimize the CPU dirty/cache renderer;
+GPU remains research until device-resident policy handoff or dirty GPU rendering
+is proven.
+Current GPU notes live in
+[GPU render exploration](gpu_render_exploration_2026-05-13.md).
+Current dirty-cache component notes live in
+[dirty cache component profile](render_dirty_cache_component_profile_2026-05-13.md).
+Current GPU sprite research lives in
+[GPU sprite render research](gpu_sprite_render_research_2026-05-13.md).
+
+2026-05-13 moving-target warning: Environment Reconstruction is still landing
+source-state and renderer fidelity changes. Optimizer profiles are comparable
+only when they name the code state and render semantics. If a speed number moves
+unexpectedly, first check whether the environment changed underneath the
+profile. Every new profile should record render mode, bonus render mode,
+natural bonus spawning, death mode, trajectory length, warmup, whether
+search/learner are included, and dirty-cache hit/fallback/component timing.
+
+2026-05-13 natural-bonus clarification: `natural_bonus_spawn` means the real
+source-game pickup system is active. It schedules bonus timers, samples bonus
+types and positions, inserts active bonus objects, and later expires or applies
+them. In the trusted visual path, active bonuses are browser-like sprite atlas
+tiles alpha-blended onto the RGB canvas. A tiny local component smoke showed
+about `0.13s` render/observation time over 20 no-death env steps with natural
+bonuses on versus about `0.05s` with natural bonuses off. That is roughly
+`6.5ms/step` vs `2.5ms/step` for local env observation rendering only, not the
+full MuZero training loop. The hot bucket in that smoke was `draw_bonuses_sec`,
+so active bonus sprite drawing is the next suspect to profile and optimize.
+
+2026-05-13 bonus dirty-cache fix: the real bug was bigger than sprite drawing.
+Stationary active bonuses were forcing their sprite boxes dirty every step. A
+500-step local no-death `browser_lines` profile with natural bonuses went from
+`162,185` dirty blocks and `4.43s` render time to `12,153` dirty blocks and
+`1.54s` render time after tracking bonus slot/id/type/position/radius and only
+dirtying changed bonus snapshots. The cache still expands dirty blocks when a
+trail/head touches a stationary sprite, so the draw order remains correct:
+trail, sprite, head. Focused RGB parity tests cover far stationary sprites,
+trail-under-sprite redraw, and bonus type-only changes.
+
+2026-05-13 renderer architecture read: the next serious renderer should be
+block-local, not a full 704-frame redraw. For each dirty 64x64 output cell,
+compose the exact 11x11 RGB tile in draw order, then immediately do BT.601 luma
+and area average. That is the shared CPU and GPU target. A trusted GPU version
+should be a Torch/CUDA custom op only if the observation can stay on GPU into
+policy/search; otherwise CPU dirty/block-local work is the nearer production
+win.
 
 2026-05-12 current optimizer pivot: the trusted CurvyTron lane is stock
 LightZero `train_muzero` with
@@ -38,9 +141,10 @@ architecture references, not current migrations.
 `env_manager_type=subprocess`, and start wide runs around `collector_env_num=96`
 for the stock fixed-opponent lane. C128/C160 only barely improved over C96.
 MCTS is not dominant at sim8-sim16. Long trajectories are still collection/render
-bound; `body_circles_fast` is about 1.75x faster than `browser_lines` on C32
-no-death profiles, but it is a fidelity choice, not an automatic training
-default. Frozen checkpoint opponent inference is a real fixed-opponent lane cost.
+bound. The old C32 no-death comparison where `body_circles_fast` was about
+1.75x faster than `browser_lines` is control evidence only now; it is not a
+recommendation lane because it changes fidelity. Frozen checkpoint opponent
+inference is a real fixed-opponent lane cost.
 Current tables and Coach-facing speed recommendations live in
 [profile validation results](architecture_reexploration_2026-05-12/profile_validation_results.md)
 and
@@ -50,9 +154,8 @@ and
 the frozen checkpoint opponent stays on CPU, and subprocess collection now works
 with that split. Short normal-death profiles keep scaling through C64 on the
 40-CPU L4 shape. Long no-death profiles are different: rich `browser_lines`
-rendering dominates env/collector time, while `body_circles_fast` is about 2x
-faster on matched 256-step and 1,024-step profiles. That is an optimizer signal,
-not a silent fidelity decision.
+rendering dominates env/collector time. The matched 256-step and 1,024-step
+`body_circles_fast` wins are historical control rows, not current advice.
 
 2026-05-12 fresh subprocess observability: profile-mode stock envs now emit
 worker-side timing in env telemetry. A C4 browser-lines no-death validation row
@@ -85,8 +188,8 @@ CPU by default.
 Historical custom two-seat render note, 2026-05-12: custom two-seat self-play
 defaults to `two_seat_trail_render_mode=browser_lines`. That route renders
 source-state RGB browser-style lines at 704x704, converts/downsamples to gray64,
-and stacks the 64x64 policy tensor. `body_circles_fast` is an explicit speed
-comparison mode. The same two-seat runner exposes
+and stacks the 64x64 policy tensor. `body_circles_fast` was an explicit speed
+comparison mode; keep it historical/control only. The same two-seat runner exposes
 `two_seat_death_mode=profile_no_death` for optimizer long-survival profiles
 only.
 
@@ -247,8 +350,9 @@ Training and policy-quality claims stay in the [training state index](../trainin
   current two-seat render bottleneck evidence, cost model, and optimization
   menu while Environment Reconstruction stabilizes richer visuals.
 - [CurvyTron render trajectory profile](render_trajectory_profile_2026-05-13.md) -
-  current stock fixed-opponent local no-death tables for `browser_lines` versus
-  `body_circles_fast` at 100/200/500/1000/2000 steps.
+  current stock fixed-opponent local no-death tables. Use the `browser_lines`
+  rows for full-fidelity recommendations; `body_circles_fast` rows are
+  historical/control comparisons.
 - [Runtime verdict](runtime_verdict_2026-05-10.md) - compact CurvyTron source
   path, CPU/GPU boundary, current profile, Modal Mctx evidence, and near-term
   architecture stance.
@@ -292,6 +396,10 @@ Training and policy-quality claims stay in the [training state index](../trainin
 - Primary CurvyTron training target is visual LightZero-style stacked frames.
   Do not treat scalar-ray `[B,2,106]` rows as the main coach-facing optimizer
   target unless new evidence explicitly justifies that switch.
+- Current render recommendations target full-fidelity `browser_lines`: source-state
+  RGB at the 704-style canvas, BT.601 luma, and 11x11 downsample to 64x64.
+  Treat `body_circles_fast` as historical/control only, not an optimization
+  lane.
 - CurvyTron visual profiling is non-ALE. The current trusted Coach-facing route
   is stock LightZero `train_muzero` via `--mode train` with
   `env_variant=source_state_fixed_opponent`,

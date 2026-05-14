@@ -2,7 +2,35 @@
 
 Date: 2026-05-09
 
-## Next
+May 13 correction: this backlog contains historical notes from the custom
+two-seat and fast-direct period. Before acting on anything here, read the
+current optimizer plate map:
+[current plate map](current_plate_map_2026-05-13.md). Current trusted lane is
+stock LightZero `--mode train` with `source_state_fixed_opponent`; current
+trusted visual target is CPU-reference `browser_lines`, not `fast_gray64_direct`
+and not `body_circles_fast`.
+
+## Current Queue
+
+- Track Coach's current stock `--mode train` refactor through
+  [system architecture map](system_architecture_map_2026-05-13.md). The trusted
+  lane is stock LightZero `train_muzero` with `source_state_fixed_opponent`.
+- Keep optimizer profiles read-only with respect to live Coach runs. Do not
+  cancel calls, mutate Modal volumes, or publish profile artifacts to GIF or
+  tournament surfaces unless explicitly asked.
+- Reprofile the stock path only after the current refactor/action-cadence
+  contract settles enough for numbers to be comparable.
+- Keep CPU-reference `browser_lines` as the trusted visual target. Treat
+  `body_circles_fast` as a control/ablation and `fast_gray64_direct` as old
+  custom-adapter history.
+- Next Amdahl baseline must name env step, render/observation, frozen opponent,
+  MCTS/search, replay/sample, learner, checkpoint/eval/GIF, and artifact I/O.
+
+## Historical Scratchpad
+
+The notes below are preserved for evidence, but many were written before the
+May 12/13 lane reset. Do not execute a command or recommendation from this
+section unless it has been refreshed in the current plate map or system map.
 
 - Current architecture investigation lives in
   [architecture re-exploration](architecture_reexploration_2026-05-12/README.md).

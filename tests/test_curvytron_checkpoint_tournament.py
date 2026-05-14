@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -44,6 +45,16 @@ def _fake_game(pair: dict, index: int, outcome: str, *, ok: bool = True) -> dict
             f"games/game-{index:06d}/summary.json"
         ),
     }
+
+
+def _distinct_opponents_by_checkpoint(pairs: list[dict]) -> dict[str, set[str]]:
+    opponents: dict[str, set[str]] = {}
+    for pair in pairs:
+        left = str(pair["players"][0]["checkpoint_id"])
+        right = str(pair["players"][1]["checkpoint_id"])
+        opponents.setdefault(left, set()).add(right)
+        opponents.setdefault(right, set()).add(left)
+    return opponents
 
 
 def _write_review_fixture(tmp_path):
@@ -316,6 +327,8 @@ def _write_live_rating_fixture(tmp_path):
             "phase": "games_running",
             "pair_count": len(pair_specs),
             "game_count": input_payload["game_count"],
+            "completed_pair_count": 0,
+            "completed_game_count": 0,
         },
     )
     pair = pair_specs[0]
@@ -853,6 +866,42 @@ def test_checkpoint_spec_reads_policy_render_mode_from_observation_contract() ->
     assert checkpoint["policy_trail_render_mode"] == "body_circles_fast"
 
 
+def test_checkpoint_label_from_ref_includes_run_and_iteration() -> None:
+    checkpoint = arena.normalize_checkpoint_spec(
+        (
+            "training/lightzero-curvytron-visual-survival/"
+            "curvy-survive-bonus-blank-browser-heavy-collect64-r298-s1141899/"
+            "attempts/try-blank-browser-heavy-collect64-r298-s1141899/"
+            "train/lightzero_exp/ckpt/iteration_300773.pth.tar"
+        )
+    )
+
+    assert checkpoint["label"] == "blank-browser-heavy-collect64-r298 i300773"
+
+
+def test_checkpoint_labels_disambiguate_duplicate_visible_names() -> None:
+    checkpoints = arena.normalize_checkpoint_specs(
+        [
+            (
+                "training/lightzero-curvytron-visual-survival/"
+                "curvy-survive-bonus-blank-fast-heavy-base-r159-s1113201/"
+                "attempts/a/train/lightzero_exp/ckpt/iteration_300000.pth.tar"
+            ),
+            (
+                "training/lightzero-curvytron-visual-survival/"
+                "curvy-survive-bonus-blank-fast-heavy-base-r159-s1119999/"
+                "attempts/b/train/lightzero_exp/ckpt/iteration_300000.pth.tar"
+            ),
+        ]
+    )
+
+    labels = [checkpoint["label"] for checkpoint in checkpoints]
+    assert labels == [
+        "blank-fast-heavy-base-r159 i300000 (s1113201)",
+        "blank-fast-heavy-base-r159 i300000 (s1119999)",
+    ]
+
+
 def test_checkpoint_policy_render_mode_falls_back_to_run_metadata(tmp_path) -> None:
     ref = _checkpoint_ref("run-a", 0)
     run_json = tmp_path / "training/lightzero-curvytron-visual-survival/run-a/run.json"
@@ -1219,6 +1268,53 @@ def test_rating_snapshot_uses_batch_elo_and_is_order_stable() -> None:
     assert snapshot["ratings"][0]["rating"] > arena.DEFAULT_RATING_INITIAL_RATING
 
 
+def test_rating_snapshot_status_requires_placement_evidence_target() -> None:
+    refs = [_checkpoint_ref(f"run-{index:02d}", index * 10) for index in range(21)]
+    rating_spec = arena.normalize_rating_spec(
+        {
+            "tournament_id": "arena-a",
+            "rating_run_id": "elo-test",
+            "checkpoints": refs,
+            "games_per_pair": 21,
+            "placement_min_games": 420,
+            "placement_min_opponents": 20,
+        }
+    )
+    checkpoints = rating_spec["checkpoints"]
+    previous_snapshot = {
+        "schema_id": arena.RATING_SNAPSHOT_SCHEMA_ID,
+        "context_hash": arena.rating_context_hash(rating_spec),
+        "checkpoint_roster": arena.rating_roster_by_checkpoint(checkpoints),
+        "ratings": [
+            {
+                "checkpoint_id": checkpoint["checkpoint_id"],
+                "rating": 1500.0 + index,
+                "games": 420,
+                "opponent_ids": [
+                    checkpoints[(index + offset) % len(checkpoints)]["checkpoint_id"]
+                    for offset in range(1, 21)
+                ],
+            }
+            for index, checkpoint in enumerate(checkpoints)
+        ],
+    }
+    previous_snapshot["ratings"][0]["opponent_ids"] = previous_snapshot["ratings"][0][
+        "opponent_ids"
+    ][:5]
+
+    snapshot = arena.rating_snapshot_from_pair_results(
+        pair_results=[],
+        rating_spec=rating_spec,
+        previous_snapshot=previous_snapshot,
+        round_index=1,
+        created_at="2026-05-13T00:00:00Z",
+    )
+    rows_by_id = {row["checkpoint_id"]: row for row in snapshot["ratings"]}
+
+    assert rows_by_id[checkpoints[0]["checkpoint_id"]]["status"] == "provisional"
+    assert rows_by_id[checkpoints[1]["checkpoint_id"]]["status"] == "active"
+
+
 def test_rating_pair_specs_carry_shard_settings() -> None:
     rating_spec = arena.normalize_rating_spec(
         {
@@ -1265,6 +1361,8 @@ def test_adaptive_v0_pair_specs_are_budgeted_unique_and_tagged() -> None:
             "pair_selection": "adaptive_v0",
             "pairs_per_round": 7,
             "games_per_pair": 3,
+            "placement_min_games": 0,
+            "placement_min_opponents": 0,
             "seed": 123,
         }
     )
@@ -1293,6 +1391,477 @@ def test_adaptive_v0_pair_specs_are_budgeted_unique_and_tagged() -> None:
     assert {pair["scheduled_round_index"] for pair in pairs} == {2}
     assert {pair["schedule_reason"] for pair in pairs}
     assert all(pair.get("schedule", {}).get("reason") for pair in pairs)
+
+
+def test_adaptive_v0_covers_new_checkpoints_when_budget_allows() -> None:
+    refs = [_checkpoint_ref(f"run-{index:02d}", index * 10) for index in range(20)]
+    rating_spec = arena.normalize_rating_spec(
+        {
+            "tournament_id": "arena-a",
+            "rating_run_id": "elo-test",
+            "checkpoints": refs,
+            "pair_selection": "adaptive_v0",
+            "pairs_per_round": 10,
+            "games_per_pair": 3,
+            "placement_min_opponents": 1,
+            "seed": 123,
+        }
+    )
+
+    pairs = arena.build_rating_round_pair_specs(rating_spec, round_index=0)
+    played = {
+        player["checkpoint_id"]
+        for pair in pairs
+        for player in pair["players"]
+    }
+
+    assert 10 <= len(pairs) <= 20
+    assert played == {
+        checkpoint["checkpoint_id"] for checkpoint in rating_spec["checkpoints"]
+    }
+    assert {pair["schedule_reason"] for pair in pairs} == {
+        arena.SCHEDULE_REASON_PLACEMENT
+    }
+
+
+def test_adaptive_v0_covers_mixed_new_checkpoints_against_established() -> None:
+    refs = [_checkpoint_ref(f"run-{index:02d}", index * 10) for index in range(10)]
+    rating_spec = arena.normalize_rating_spec(
+        {
+            "tournament_id": "arena-a",
+            "rating_run_id": "elo-test",
+            "checkpoints": refs,
+            "pair_selection": "adaptive_v0",
+            "pairs_per_round": 6,
+            "games_per_pair": 3,
+            "placement_min_opponents": 1,
+            "seed": 321,
+        }
+    )
+    established = rating_spec["checkpoints"][:4]
+    new = rating_spec["checkpoints"][4:]
+    previous_snapshot = {
+        "ratings": [
+            {
+                "checkpoint_id": checkpoint["checkpoint_id"],
+                "rating": 1500.0 + index * 20.0,
+                "games": 21,
+                "distinct_opponents": 3,
+                "opponent_ids": [established[(index + 1) % len(established)]["checkpoint_id"]],
+            }
+            for index, checkpoint in enumerate(established)
+        ]
+    }
+
+    pairs = arena.build_rating_round_pair_specs(
+        rating_spec,
+        previous_snapshot=previous_snapshot,
+        round_index=1,
+    )
+    new_ids = {checkpoint["checkpoint_id"] for checkpoint in new}
+    established_ids = {checkpoint["checkpoint_id"] for checkpoint in established}
+    played = {
+        player["checkpoint_id"]
+        for pair in pairs
+        for player in pair["players"]
+    }
+
+    assert len(pairs) == 6
+    assert new_ids <= played
+    assert {pair["schedule_reason"] for pair in pairs} == {
+        arena.SCHEDULE_REASON_PLACEMENT
+    }
+    assert all(
+        bool({player["checkpoint_id"] for player in pair["players"]} & new_ids)
+        and bool({player["checkpoint_id"] for player in pair["players"]} & established_ids)
+        for pair in pairs
+    )
+
+
+def test_adaptive_v0_expands_budget_to_cover_new_checkpoints() -> None:
+    refs = [_checkpoint_ref(f"run-{index:02d}", index * 10) for index in range(5)]
+    rating_spec = arena.normalize_rating_spec(
+        {
+            "tournament_id": "arena-a",
+            "rating_run_id": "elo-test",
+            "checkpoints": refs,
+            "pair_selection": "adaptive_v0",
+            "pairs_per_round": 1,
+            "games_per_pair": 3,
+            "seed": 456,
+        }
+    )
+
+    pairs = arena.build_rating_round_pair_specs(rating_spec, round_index=0)
+    played = {
+        player["checkpoint_id"]
+        for pair in pairs
+        for player in pair["players"]
+    }
+
+    distinct = _distinct_opponents_by_checkpoint(pairs)
+
+    assert rating_spec["placement_min_games"] == 12
+    assert rating_spec["placement_min_opponents"] == 20
+    assert len(pairs) == 10
+    assert played == {
+        checkpoint["checkpoint_id"] for checkpoint in rating_spec["checkpoints"]
+    }
+    assert all(len(opponents) == 4 for opponents in distinct.values())
+    assert {pair["schedule_reason"] for pair in pairs} == {
+        arena.SCHEDULE_REASON_PLACEMENT
+    }
+
+
+def test_adaptive_v0_revisits_until_twenty_distinct_opponents_when_budget_allows() -> None:
+    refs = [_checkpoint_ref(f"run-{index:02d}", index * 10) for index in range(24)]
+    rating_spec = arena.normalize_rating_spec(
+        {
+            "tournament_id": "arena-a",
+            "rating_run_id": "elo-test",
+            "checkpoints": refs,
+            "pair_selection": "adaptive_v0",
+            "pairs_per_round": 228,
+            "games_per_pair": 21,
+            "seed": 789,
+        }
+    )
+    checkpoints = rating_spec["checkpoints"]
+    previous_snapshot = {
+        "schema_id": arena.RATING_SNAPSHOT_SCHEMA_ID,
+        "context_hash": arena.rating_context_hash(rating_spec),
+        "checkpoint_roster": arena.rating_roster_by_checkpoint(
+            checkpoints
+        ),
+        "ratings": [
+            {
+                "checkpoint_id": checkpoint["checkpoint_id"],
+                "rating": 1500.0 + index,
+                "games": 21,
+                "distinct_opponents": 1,
+                "opponent_ids": [
+                    checkpoints[index ^ 1]["checkpoint_id"],
+                ],
+            }
+            for index, checkpoint in enumerate(checkpoints)
+        ],
+    }
+
+    pairs = arena.build_rating_round_pair_specs(
+        rating_spec,
+        previous_snapshot=previous_snapshot,
+        round_index=1,
+    )
+    scheduled = _distinct_opponents_by_checkpoint(pairs)
+
+    assert rating_spec["placement_min_games"] == 420
+    assert rating_spec["placement_min_opponents"] == 20
+    assert 228 <= len(pairs) <= 456
+    assert {pair["schedule_reason"] for pair in pairs} == {
+        arena.SCHEDULE_REASON_PLACEMENT
+    }
+    for index, checkpoint in enumerate(checkpoints):
+        checkpoint_id = checkpoint["checkpoint_id"]
+        total_opponents = set(scheduled[checkpoint_id])
+        total_opponents.add(checkpoints[index ^ 1]["checkpoint_id"])
+        assert len(total_opponents) >= 20
+
+
+def test_adaptive_v0_caps_placement_opponents_to_small_roster() -> None:
+    refs = [_checkpoint_ref(f"run-{index:02d}", index * 10) for index in range(7)]
+    rating_spec = arena.normalize_rating_spec(
+        {
+            "tournament_id": "arena-a",
+            "rating_run_id": "elo-test",
+            "checkpoints": refs,
+            "pair_selection": "adaptive_v0",
+            "pairs_per_round": 21,
+            "games_per_pair": 21,
+            "placement_min_opponents": 20,
+            "seed": 790,
+        }
+    )
+
+    pairs = arena.build_rating_round_pair_specs(rating_spec, round_index=1)
+    distinct = _distinct_opponents_by_checkpoint(pairs)
+
+    assert rating_spec["placement_min_games"] == 126
+    assert len(pairs) == 21
+    assert all(len(opponents) == 6 for opponents in distinct.values())
+    assert {pair["schedule_reason"] for pair in pairs} == {
+        arena.SCHEDULE_REASON_PLACEMENT
+    }
+
+
+def test_adaptive_v0_uses_opponent_ids_over_stale_distinct_scalar() -> None:
+    refs = [_checkpoint_ref(f"run-{index:02d}", index * 10) for index in range(8)]
+    rating_spec = arena.normalize_rating_spec(
+        {
+            "tournament_id": "arena-a",
+            "rating_run_id": "elo-test",
+            "checkpoints": refs,
+            "pair_selection": "adaptive_v0",
+            "pairs_per_round": 28,
+            "games_per_pair": 21,
+            "placement_min_opponents": 7,
+            "seed": 791,
+        }
+    )
+    checkpoints = rating_spec["checkpoints"]
+    previous_snapshot = {
+        "schema_id": arena.RATING_SNAPSHOT_SCHEMA_ID,
+        "context_hash": arena.rating_context_hash(rating_spec),
+        "checkpoint_roster": arena.rating_roster_by_checkpoint(checkpoints),
+        "ratings": [
+            {
+                "checkpoint_id": checkpoint["checkpoint_id"],
+                "rating": 1500.0,
+                "games": 21,
+                "distinct_opponents": 20,
+                "opponent_ids": [checkpoints[index ^ 1]["checkpoint_id"]],
+            }
+            for index, checkpoint in enumerate(checkpoints)
+        ],
+    }
+
+    pairs = arena.build_rating_round_pair_specs(
+        rating_spec,
+        previous_snapshot=previous_snapshot,
+        round_index=2,
+    )
+    scheduled = _distinct_opponents_by_checkpoint(pairs)
+
+    assert pairs
+    for index, checkpoint in enumerate(checkpoints):
+        checkpoint_id = checkpoint["checkpoint_id"]
+        total_opponents = set(scheduled[checkpoint_id])
+        total_opponents.add(checkpoints[index ^ 1]["checkpoint_id"])
+        assert len(total_opponents) == 7
+
+
+def test_adaptive_v0_ignores_distinct_scalar_without_opponent_ids() -> None:
+    refs = [_checkpoint_ref(f"run-{index:02d}", index * 10) for index in range(8)]
+    rating_spec = arena.normalize_rating_spec(
+        {
+            "tournament_id": "arena-a",
+            "rating_run_id": "elo-test",
+            "checkpoints": refs,
+            "pair_selection": "adaptive_v0",
+            "pairs_per_round": 28,
+            "games_per_pair": 21,
+            "placement_min_opponents": 7,
+            "seed": 795,
+        }
+    )
+    checkpoints = rating_spec["checkpoints"]
+    previous_snapshot = {
+        "schema_id": arena.RATING_SNAPSHOT_SCHEMA_ID,
+        "context_hash": arena.rating_context_hash(rating_spec),
+        "checkpoint_roster": arena.rating_roster_by_checkpoint(checkpoints),
+        "ratings": [
+            {
+                "checkpoint_id": checkpoint["checkpoint_id"],
+                "rating": 1500.0,
+                "games": 420,
+                "distinct_opponents": 7,
+            }
+            for checkpoint in checkpoints
+        ],
+    }
+
+    pairs = arena.build_rating_round_pair_specs(
+        rating_spec,
+        previous_snapshot=previous_snapshot,
+        round_index=2,
+    )
+    scheduled = _distinct_opponents_by_checkpoint(pairs)
+
+    assert pairs
+    assert {pair["schedule_reason"] for pair in pairs} == {
+        arena.SCHEDULE_REASON_PLACEMENT
+    }
+    for checkpoint in checkpoints:
+        assert len(scheduled[checkpoint["checkpoint_id"]]) == 7
+
+
+def test_adaptive_v0_places_undercovered_checkpoint_against_strong_unseen_opponent_first() -> None:
+    refs = [_checkpoint_ref(f"run-{index:02d}", index * 10) for index in range(6)]
+    rating_spec = arena.normalize_rating_spec(
+        {
+            "tournament_id": "arena-a",
+            "rating_run_id": "elo-test",
+            "checkpoints": refs,
+            "pair_selection": "adaptive_v0",
+            "pairs_per_round": 1,
+            "games_per_pair": 21,
+            "placement_min_opponents": 2,
+            "seed": 792,
+        }
+    )
+    checkpoints = rating_spec["checkpoints"]
+    previous_snapshot = {
+        "schema_id": arena.RATING_SNAPSHOT_SCHEMA_ID,
+        "context_hash": arena.rating_context_hash(rating_spec),
+        "checkpoint_roster": arena.rating_roster_by_checkpoint(checkpoints),
+        "ratings": [
+            {
+                "checkpoint_id": checkpoint["checkpoint_id"],
+                "rating": 1000.0 + index,
+                "games": 21,
+                "distinct_opponents": 1,
+                "opponent_ids": [f"prior-opponent-{index}"],
+            }
+            for index, checkpoint in enumerate(checkpoints)
+        ],
+    }
+
+    pairs = arena.build_rating_round_pair_specs(
+        rating_spec,
+        previous_snapshot=previous_snapshot,
+        round_index=3,
+    )
+
+    assert pairs[0]["players"][1]["checkpoint_id"] == checkpoints[-1]["checkpoint_id"]
+
+
+def _ranked_established_snapshot(
+    rating_spec: dict,
+    *,
+    opponent_count: int = 20,
+    undercovered_index: int | None = None,
+) -> dict:
+    checkpoints = rating_spec["checkpoints"]
+    rows = []
+    for index, checkpoint in enumerate(checkpoints):
+        opponents = [
+            checkpoints[(index + offset) % len(checkpoints)]["checkpoint_id"]
+            for offset in range(1, opponent_count + 1)
+        ]
+        games = 420
+        if index == undercovered_index:
+            opponents = opponents[:-1]
+            games = 399
+        rows.append(
+            {
+                "checkpoint_id": checkpoint["checkpoint_id"],
+                "rank": len(checkpoints) - index,
+                "rating": 1000.0 + index,
+                "games": games,
+                "distinct_opponents": len(opponents),
+                "opponent_ids": opponents,
+                "rated_battles": max(1, len(opponents)),
+                "last_round_delta": float(index % 5),
+            }
+        )
+    return {
+        "schema_id": arena.RATING_SNAPSHOT_SCHEMA_ID,
+        "context_hash": arena.rating_context_hash(rating_spec),
+        "checkpoint_roster": arena.rating_roster_by_checkpoint(checkpoints),
+        "ratings": rows,
+    }
+
+
+def test_adaptive_v0_placement_coverage_runs_before_top_band_bias() -> None:
+    refs = [_checkpoint_ref(f"run-{index:02d}", index * 10) for index in range(40)]
+    rating_spec = arena.normalize_rating_spec(
+        {
+            "tournament_id": "arena-a",
+            "rating_run_id": "elo-test",
+            "checkpoints": refs,
+            "pair_selection": "adaptive_v0",
+            "pairs_per_round": 30,
+            "games_per_pair": 21,
+            "placement_min_games": 420,
+            "placement_min_opponents": 20,
+            "seed": 793,
+        }
+    )
+    previous_snapshot = _ranked_established_snapshot(
+        rating_spec,
+        undercovered_index=3,
+    )
+
+    pairs = arena.build_rating_round_pair_specs(
+        rating_spec,
+        previous_snapshot=previous_snapshot,
+        round_index=4,
+    )
+
+    first_pair_ids = {
+        player["checkpoint_id"]
+        for player in pairs[0]["players"]
+    }
+    undercovered_id = rating_spec["checkpoints"][3]["checkpoint_id"]
+    top_band_ids = {
+        checkpoint["checkpoint_id"]
+        for checkpoint in rating_spec["checkpoints"][30:40]
+    }
+
+    assert pairs[0]["schedule_reason"] == arena.SCHEDULE_REASON_PLACEMENT
+    assert undercovered_id in first_pair_ids
+    assert not first_pair_ids <= top_band_ids
+    first_non_placement = next(
+        (
+            index
+            for index, pair in enumerate(pairs)
+            if pair["schedule_reason"] != arena.SCHEDULE_REASON_PLACEMENT
+        ),
+        len(pairs),
+    )
+    assert all(
+        pair["schedule_reason"] == arena.SCHEDULE_REASON_PLACEMENT
+        for pair in pairs[:first_non_placement]
+    )
+
+
+def test_adaptive_v0_top_band_bias_boosts_leaders_without_starving_other_phases() -> None:
+    refs = [_checkpoint_ref(f"run-{index:02d}", index * 10) for index in range(40)]
+    rating_spec = arena.normalize_rating_spec(
+        {
+            "tournament_id": "arena-a",
+            "rating_run_id": "elo-test",
+            "checkpoints": refs,
+            "pair_selection": "adaptive_v0",
+            "pairs_per_round": 80,
+            "games_per_pair": 21,
+            "placement_min_games": 420,
+            "placement_min_opponents": 20,
+            "seed": 794,
+        }
+    )
+    previous_snapshot = _ranked_established_snapshot(rating_spec)
+
+    pairs = arena.build_rating_round_pair_specs(
+        rating_spec,
+        previous_snapshot=previous_snapshot,
+        round_index=5,
+    )
+    appearances: dict[str, int] = {}
+    for pair in pairs:
+        for player in pair["players"]:
+            checkpoint_id = player["checkpoint_id"]
+            appearances[checkpoint_id] = appearances.get(checkpoint_id, 0) + 1
+    reason_counts: dict[str, int] = {}
+    for pair in pairs:
+        reason = pair["schedule_reason"]
+        reason_counts[reason] = reason_counts.get(reason, 0) + 1
+
+    top10_ids = [checkpoint["checkpoint_id"] for checkpoint in rating_spec["checkpoints"][30:40]]
+    top20_ids = [checkpoint["checkpoint_id"] for checkpoint in rating_spec["checkpoints"][20:40]]
+    lower_half_ids = [
+        checkpoint["checkpoint_id"] for checkpoint in rating_spec["checkpoints"][0:20]
+    ]
+    top10_average = sum(appearances.get(item, 0) for item in top10_ids) / len(top10_ids)
+    top20_average = sum(appearances.get(item, 0) for item in top20_ids) / len(top20_ids)
+    lower_half_average = (
+        sum(appearances.get(item, 0) for item in lower_half_ids) / len(lower_half_ids)
+    )
+
+    assert top10_average > lower_half_average
+    assert top20_average > lower_half_average
+    assert all(appearances.get(item, 0) > 0 for item in lower_half_ids)
+    assert reason_counts[arena.SCHEDULE_REASON_UNCERTAIN] > 0
+    assert reason_counts[arena.SCHEDULE_REASON_RANDOM_BRIDGE] > 0
 
 
 def test_schedule_metadata_survives_pair_summary() -> None:
@@ -1425,6 +1994,708 @@ def test_pair_history_rejects_pool_hash_mismatch() -> None:
         )
 
 
+def test_rating_context_hash_changes_for_evaluator_not_roster() -> None:
+    base = arena.normalize_rating_spec(
+        {
+            "tournament_id": "arena-a",
+            "rating_run_id": "elo-test",
+            "checkpoints": [
+                _checkpoint_ref("run-a", 0),
+                _checkpoint_ref("run-b", 10),
+            ],
+            "games_per_pair": 3,
+            "max_steps": 64,
+        }
+    )
+    expanded_roster = arena.normalize_rating_spec(
+        {
+            **base,
+            "checkpoints": [
+                *base["checkpoints"],
+                {"checkpoint_ref": _checkpoint_ref("run-c", 20), "checkpoint_id": "ckpt-c"},
+            ],
+        }
+    )
+    changed_context = arena.normalize_rating_spec({**base, "max_steps": 128})
+    non_context_change = arena.normalize_rating_spec(
+        {
+            **base,
+            "games_per_pair": 5,
+            "games_per_shard": 5,
+            "save_gif": True,
+            "gif_sample_games_per_pair": 3,
+        }
+    )
+
+    assert arena.rating_context_hash(base) == arena.rating_context_hash(expanded_roster)
+    assert arena.rating_context_hash(base) == arena.rating_context_hash(
+        non_context_change
+    )
+    assert arena.rating_pool_hash(base["checkpoints"]) != arena.rating_pool_hash(
+        expanded_roster["checkpoints"]
+    )
+    assert arena.rating_context_hash(base) != arena.rating_context_hash(changed_context)
+
+
+def test_pair_history_with_context_hash_allows_roster_expansion() -> None:
+    rating_spec = arena.normalize_rating_spec(
+        {
+            "tournament_id": "arena-a",
+            "rating_run_id": "elo-test",
+            "checkpoints": [
+                {"checkpoint_ref": _checkpoint_ref("run-a", 0), "checkpoint_id": "ckpt-a"},
+                {"checkpoint_ref": _checkpoint_ref("run-b", 10), "checkpoint_id": "ckpt-b"},
+            ],
+            "games_per_pair": 3,
+        }
+    )
+    pair = arena.build_rating_round_pair_specs(rating_spec)[0]
+    summary = arena.summarize_pair_results(
+        pair,
+        [
+            _fake_game(pair, 0, "seat_0_win"),
+            _fake_game(pair, 1, "draw"),
+            _fake_game(pair, 2, "seat_1_win"),
+        ],
+    )
+    first = arena.pair_history_from_pair_results(
+        [summary],
+        rating_spec=rating_spec,
+        round_index=0,
+    )
+    expanded_spec = arena.normalize_rating_spec(
+        {
+            **rating_spec,
+            "checkpoints": [
+                *rating_spec["checkpoints"],
+                {"checkpoint_ref": _checkpoint_ref("run-c", 20), "checkpoint_id": "ckpt-c"},
+            ],
+        }
+    )
+    second = arena.pair_history_from_pair_results(
+        [],
+        previous_pair_history=first,
+        rating_spec=expanded_spec,
+        round_index=1,
+    )
+
+    assert second["pool_hash"] != first["pool_hash"]
+    assert second["roster_hash"] == second["pool_hash"]
+    assert second["context_hash"] == first["context_hash"]
+    assert second["rows"] == first["rows"]
+
+
+def test_pair_history_rejects_context_hash_mismatch() -> None:
+    rating_spec = arena.normalize_rating_spec(
+        {
+            "tournament_id": "arena-a",
+            "rating_run_id": "elo-test",
+            "checkpoints": [
+                {"checkpoint_ref": _checkpoint_ref("run-a", 0), "checkpoint_id": "ckpt-a"},
+                {"checkpoint_ref": _checkpoint_ref("run-b", 10), "checkpoint_id": "ckpt-b"},
+            ],
+            "games_per_pair": 3,
+            "max_steps": 64,
+        }
+    )
+    history = arena.pair_history_from_pair_results([], rating_spec=rating_spec)
+    changed_context = arena.normalize_rating_spec({**rating_spec, "max_steps": 128})
+
+    with pytest.raises(ValueError, match="context_hash"):
+        arena.pair_history_from_pair_results(
+            [],
+            previous_pair_history=history,
+            rating_spec=changed_context,
+        )
+
+
+def test_pair_history_rejects_checkpoint_id_replacement() -> None:
+    rating_spec = arena.normalize_rating_spec(
+        {
+            "tournament_id": "arena-a",
+            "rating_run_id": "elo-test",
+            "checkpoints": [
+                {"checkpoint_ref": _checkpoint_ref("run-a", 0), "checkpoint_id": "ckpt-a"},
+                {"checkpoint_ref": _checkpoint_ref("run-b", 10), "checkpoint_id": "ckpt-b"},
+            ],
+            "games_per_pair": 3,
+        }
+    )
+    history = arena.pair_history_from_pair_results([], rating_spec=rating_spec)
+    replaced = arena.normalize_rating_spec(
+        {
+            **rating_spec,
+            "checkpoints": [
+                {"checkpoint_ref": _checkpoint_ref("run-a-replaced", 99), "checkpoint_id": "ckpt-a"},
+                rating_spec["checkpoints"][1],
+            ],
+        }
+    )
+
+    assert arena.rating_context_hash(replaced) == arena.rating_context_hash(rating_spec)
+    with pytest.raises(ValueError, match="checkpoint_roster"):
+        arena.pair_history_from_pair_results(
+            [],
+            previous_pair_history=history,
+            rating_spec=replaced,
+        )
+
+
+def test_adaptive_scheduler_state_rejects_context_hash_mismatch() -> None:
+    rating_spec = arena.normalize_rating_spec(
+        {
+            "tournament_id": "arena-a",
+            "rating_run_id": "elo-test",
+            "checkpoints": [
+                _checkpoint_ref("run-a", 0),
+                _checkpoint_ref("run-b", 10),
+                _checkpoint_ref("run-c", 20),
+            ],
+            "pair_selection": "adaptive_v0",
+            "pairs_per_round": 1,
+            "games_per_pair": 3,
+            "max_steps": 64,
+        }
+    )
+    changed_context = arena.normalize_rating_spec({**rating_spec, "max_steps": 128})
+    scheduler_state = {
+        "pool_hash": arena.rating_pool_hash(rating_spec["checkpoints"]),
+        "context_hash": arena.rating_context_hash(changed_context),
+    }
+
+    with pytest.raises(ValueError, match="scheduler_state context_hash"):
+        arena.build_rating_round_pair_specs(
+            rating_spec,
+            scheduler_state=scheduler_state,
+        )
+
+
+def test_adaptive_scheduler_state_rejects_checkpoint_id_replacement() -> None:
+    rating_spec = arena.normalize_rating_spec(
+        {
+            "tournament_id": "arena-a",
+            "rating_run_id": "elo-test",
+            "checkpoints": [
+                {"checkpoint_ref": _checkpoint_ref("run-a", 0), "checkpoint_id": "ckpt-a"},
+                {"checkpoint_ref": _checkpoint_ref("run-b", 10), "checkpoint_id": "ckpt-b"},
+                {"checkpoint_ref": _checkpoint_ref("run-c", 20), "checkpoint_id": "ckpt-c"},
+            ],
+            "pair_selection": "adaptive_v0",
+            "pairs_per_round": 1,
+            "games_per_pair": 3,
+        }
+    )
+    replaced = arena.normalize_rating_spec(
+        {
+            **rating_spec,
+            "checkpoints": [
+                {"checkpoint_ref": _checkpoint_ref("run-a-replaced", 99), "checkpoint_id": "ckpt-a"},
+                *rating_spec["checkpoints"][1:],
+            ],
+        }
+    )
+    scheduler_state = {
+        "pool_hash": arena.rating_pool_hash(rating_spec["checkpoints"]),
+        "context_hash": arena.rating_context_hash(rating_spec),
+        "checkpoint_roster": arena.rating_roster_by_checkpoint(rating_spec["checkpoints"]),
+    }
+
+    with pytest.raises(ValueError, match="scheduler_state checkpoint_roster"):
+        arena.build_rating_round_pair_specs(
+            replaced,
+            scheduler_state=scheduler_state,
+        )
+
+
+def test_rating_snapshot_rejects_previous_context_hash_mismatch() -> None:
+    rating_spec = arena.normalize_rating_spec(
+        {
+            "tournament_id": "arena-a",
+            "rating_run_id": "elo-test",
+            "checkpoints": [
+                _checkpoint_ref("run-a", 0),
+                _checkpoint_ref("run-b", 10),
+            ],
+            "games_per_pair": 3,
+            "max_steps": 64,
+        }
+    )
+    changed_context = arena.normalize_rating_spec({**rating_spec, "max_steps": 128})
+    previous_snapshot = arena.rating_snapshot_from_pair_results(
+        pair_results=[],
+        rating_spec=changed_context,
+        round_index=0,
+    )
+
+    with pytest.raises(ValueError, match="previous snapshot context_hash"):
+        arena.rating_snapshot_from_pair_results(
+            pair_results=[],
+            rating_spec=rating_spec,
+            previous_snapshot=previous_snapshot,
+            round_index=1,
+        )
+
+
+def test_rating_snapshot_rejects_checkpoint_id_replacement() -> None:
+    rating_spec = arena.normalize_rating_spec(
+        {
+            "tournament_id": "arena-a",
+            "rating_run_id": "elo-test",
+            "checkpoints": [
+                {"checkpoint_ref": _checkpoint_ref("run-a", 0), "checkpoint_id": "ckpt-a"},
+                {"checkpoint_ref": _checkpoint_ref("run-b", 10), "checkpoint_id": "ckpt-b"},
+            ],
+            "games_per_pair": 3,
+        }
+    )
+    previous_snapshot = arena.rating_snapshot_from_pair_results(
+        pair_results=[],
+        rating_spec=rating_spec,
+        round_index=0,
+    )
+    replaced = arena.normalize_rating_spec(
+        {
+            **rating_spec,
+            "checkpoints": [
+                {"checkpoint_ref": _checkpoint_ref("run-a-replaced", 99), "checkpoint_id": "ckpt-a"},
+                rating_spec["checkpoints"][1],
+            ],
+        }
+    )
+
+    with pytest.raises(ValueError, match="previous snapshot checkpoint_roster"):
+        arena.rating_snapshot_from_pair_results(
+            pair_results=[],
+            rating_spec=replaced,
+            previous_snapshot=previous_snapshot,
+            round_index=1,
+        )
+
+
+def test_rating_loop_start_state_continues_from_latest_with_new_checkpoint(
+    tmp_path,
+) -> None:
+    base_spec = arena.normalize_rating_spec(
+        {
+            "tournament_id": "arena-a",
+            "rating_run_id": "elo-test",
+            "checkpoints": [
+                _checkpoint_ref("run-a", 0),
+                _checkpoint_ref("run-b", 10),
+            ],
+            "pair_selection": "adaptive_v0",
+            "pairs_per_round": 1,
+            "games_per_pair": 3,
+            "max_steps": 64,
+        }
+    )
+    pair = arena.build_rating_round_pair_specs(base_spec, round_index=2)[0]
+    previous_snapshot = arena.rating_snapshot_from_pair_results(
+        pair_results=[
+            arena.summarize_pair_results(
+                pair,
+                [
+                    _fake_game(pair, 0, "seat_0_win"),
+                    _fake_game(pair, 1, "seat_0_win"),
+                    _fake_game(pair, 2, "draw"),
+                ],
+            )
+        ],
+        rating_spec=base_spec,
+        round_index=2,
+    )
+    modal_arena.runs.write_json(
+        tmp_path / arena.rating_latest_ref("arena-a", "elo-test"),
+        modal_arena._slim_rating_snapshot(previous_snapshot),
+    )
+    expanded_spec = arena.normalize_rating_spec(
+        {
+            **base_spec,
+            "continue_from_latest": True,
+            "checkpoints": [
+                *base_spec["checkpoints"],
+                _checkpoint_ref("run-c", 20),
+            ],
+        }
+    )
+
+    state = modal_arena._rating_loop_start_state(tmp_path, expanded_spec)
+    pairs = arena.build_rating_round_pair_specs(
+        expanded_spec,
+        previous_snapshot=state["previous_snapshot"],
+        pair_history=state["previous_pair_history"],
+        scheduler_state=state["scheduler_state"],
+        round_index=state["start_round_index"],
+    )
+    new_id = expanded_spec["checkpoints"][2]["checkpoint_id"]
+    played = {
+        player["checkpoint_id"]
+        for pair_spec in pairs
+        for player in pair_spec["players"]
+    }
+
+    assert state["continued_from_latest"] is True
+    assert state["start_round_index"] == 3
+    assert state["previous_snapshot"]["round_id"] == "round-000002"
+    assert new_id in played
+    assert pairs[0]["scheduled_round_index"] == 3
+    assert pairs[0]["schedule_reason"] == arena.SCHEDULE_REASON_PLACEMENT
+
+
+def test_rating_loop_start_state_rejects_changed_context(tmp_path) -> None:
+    base_spec = arena.normalize_rating_spec(
+        {
+            "tournament_id": "arena-a",
+            "rating_run_id": "elo-test",
+            "checkpoints": [
+                _checkpoint_ref("run-a", 0),
+                _checkpoint_ref("run-b", 10),
+            ],
+            "games_per_pair": 3,
+            "max_steps": 64,
+        }
+    )
+    previous_snapshot = arena.rating_snapshot_from_pair_results(
+        pair_results=[],
+        rating_spec=base_spec,
+        round_index=0,
+    )
+    modal_arena.runs.write_json(
+        tmp_path / arena.rating_latest_ref("arena-a", "elo-test"),
+        modal_arena._slim_rating_snapshot(previous_snapshot),
+    )
+    changed_spec = arena.normalize_rating_spec(
+        {
+            **base_spec,
+            "continue_from_latest": True,
+            "max_steps": 128,
+        }
+    )
+
+    with pytest.raises(ValueError, match="latest snapshot context_hash"):
+        modal_arena._rating_loop_start_state(tmp_path, changed_spec)
+
+
+def test_rating_spec_with_latest_roster_restores_checkpoint_ids(tmp_path) -> None:
+    base_spec = arena.normalize_rating_spec(
+        {
+            "tournament_id": "arena-a",
+            "rating_run_id": "elo-test",
+            "checkpoints": [
+                {
+                    "checkpoint_id": "ckpt-left",
+                    "label": "left",
+                    "checkpoint_ref": _checkpoint_ref("run-a", 10),
+                },
+                {
+                    "checkpoint_id": "ckpt-right",
+                    "label": "right",
+                    "checkpoint_ref": _checkpoint_ref("run-b", 20),
+                },
+            ],
+            "pair_selection": "adaptive_v0",
+            "pairs_per_round": 1,
+            "games_per_pair": 21,
+        }
+    )
+    latest = arena.rating_snapshot_from_pair_results(
+        pair_results=[],
+        rating_spec=base_spec,
+        round_index=0,
+    )
+    modal_arena.runs.write_json(
+        tmp_path / arena.rating_latest_ref("arena-a", "elo-test"),
+        latest,
+    )
+
+    restored = modal_arena._rating_spec_with_latest_roster(
+        tmp_path,
+        {
+            "tournament_id": "arena-a",
+            "rating_run_id": "elo-test",
+            "continue_from_latest": True,
+            "pair_selection": "adaptive_v0",
+            "pairs_per_round": 40,
+            "games_per_pair": 21,
+            "placement_min_opponents": 20,
+        },
+    )
+
+    assert [row["checkpoint_id"] for row in restored["checkpoints"]] == [
+        "ckpt-left",
+        "ckpt-right",
+    ]
+    assert arena.rating_pool_hash(restored["checkpoints"]) == arena.rating_pool_hash(
+        base_spec["checkpoints"]
+    )
+
+
+def test_named_artifact_refs_include_pair_spec_and_provisional_latest() -> None:
+    refs = [
+        arena.battle_pair_spec_ref("arena-a", "battle-a"),
+        arena.rating_provisional_latest_ref("arena-a", "elo-test"),
+        arena.rating_run_results_ref("arena-a", "elo-test"),
+        arena.tournament_intake_manifest_ref("arena-a", "elo-test"),
+        arena.tournament_intake_latest_tick_ref("arena-a", "elo-test"),
+    ]
+
+    for ref in refs:
+        assert arena.validate_tournament_artifact_ref(ref) == ref
+
+
+def test_intake_manifest_builds_seen_refs_and_queue_partition() -> None:
+    discovery = {
+        "checkpoint_refs": [
+            _checkpoint_ref("run-a", 10),
+            _checkpoint_ref("run-b", 20),
+        ],
+        "rows": [],
+        "found_count": 2,
+    }
+
+    manifest = modal_arena._intake_manifest_from_discovery(
+        tournament_id="arena-a",
+        rating_run_id="elo-test",
+        scan_spec={
+            "run_id_prefix": "run-",
+            "max_runs": 20,
+            "checkpoint_selection": arena.CHECKPOINT_SELECTION_LATEST,
+        },
+        rating_defaults={"games_per_pair": 21, "save_gif": True},
+        discovery=discovery,
+        existing={"seen_checkpoint_refs": [_checkpoint_ref("run-old", 0)]},
+    )
+
+    assert manifest["manifest_key"] == "manifest:arena-a:elo-test"
+    assert manifest["queue_partition"].startswith("q:arena-a:elo-test:")
+    assert len(manifest["queue_partition"]) <= 64
+    assert manifest["checkpoint_count"] == 2
+    assert manifest["seen_checkpoint_count"] == 3
+    assert manifest["queued_checkpoint_count"] == 0
+    assert _checkpoint_ref("run-old", 0) in manifest["seen_checkpoint_refs"]
+
+
+def test_intake_manifest_tracks_queued_refs_separately_from_seen_refs() -> None:
+    refs = [_checkpoint_ref("run-a", 10), _checkpoint_ref("run-b", 20)]
+    manifest = modal_arena._intake_manifest_from_discovery(
+        tournament_id="arena-a",
+        rating_run_id="elo-test",
+        scan_spec={"checkpoint_refs": refs},
+        rating_defaults={},
+        discovery={"checkpoint_refs": refs},
+    )
+
+    assert manifest["seen_checkpoint_count"] == 2
+    assert manifest["queued_checkpoint_count"] == 0
+
+    queued = modal_arena._mark_intake_manifest_queued(manifest, [refs[0]])
+
+    assert queued["seen_checkpoint_count"] == 2
+    assert queued["queued_checkpoint_count"] == 1
+    assert queued["queued_checkpoint_refs"] == [refs[0]]
+
+
+def test_intake_discovery_accepts_explicit_checkpoint_refs() -> None:
+    refs = [_checkpoint_ref("run-a", 10), _checkpoint_ref("run-b", 20)]
+
+    discovery = modal_arena._discover_checkpoint_refs_from_scan_spec(
+        {"checkpoint_refs": refs},
+        mount=Path("/unused"),
+    )
+
+    assert discovery["selection"] == "explicit_refs"
+    assert discovery["found_count"] == 2
+    assert discovery["checkpoint_refs"] == refs
+    assert [row["iteration"] for row in discovery["rows"]] == [10, 20]
+
+
+def test_rating_run_existing_output_guard_uses_named_refs(tmp_path: Path) -> None:
+    assert not modal_arena._rating_run_has_existing_output(
+        tmp_path,
+        tournament_id="arena-a",
+        rating_run_id="elo-test",
+    )
+
+    progress_path = tmp_path / arena.rating_progress_ref("arena-a", "elo-test")
+    progress_path.parent.mkdir(parents=True, exist_ok=True)
+    progress_path.write_text("{}", encoding="utf-8")
+
+    assert modal_arena._rating_run_has_existing_output(
+        tmp_path,
+        tournament_id="arena-a",
+        rating_run_id="elo-test",
+    )
+
+
+def test_intake_rating_spec_preserves_five_gif_samples_per_battle() -> None:
+    manifest = {
+        "tournament_id": "arena-a",
+        "rating_run_id": "elo-test",
+        "checkpoint_refs": [
+            _checkpoint_ref("run-a", 10),
+            _checkpoint_ref("run-b", 20),
+            _checkpoint_ref("run-c", 30),
+        ],
+        "rating_defaults": {
+            "round_count": 1,
+            "pair_selection": arena.RATING_PAIR_SELECTION_ADAPTIVE_V0,
+            "pairs_per_round": 2,
+                "games_per_pair": 21,
+                "games_per_shard": 21,
+                "placement_min_games": 0,
+                "placement_min_opponents": 0,
+                "save_gif": True,
+                "gif_sample_games_per_pair": 5,
+            "gif_sample_strategy": "evenly_spaced",
+            "max_steps": 64,
+            "num_simulations": 1,
+        },
+    }
+
+    spec = modal_arena._intake_rating_spec_from_manifest(manifest)
+    pairs = arena.build_rating_round_pair_specs(spec, round_index=0)
+
+    assert spec["save_gif"] is True
+    assert spec["gif_sample_games_per_pair"] == 5
+    assert spec["games_per_pair"] == 21
+    assert spec["games_per_shard"] == 21
+    assert len(pairs) == 2
+    assert all(len(arena.gif_sample_indices_for_pair(pair)) == 5 for pair in pairs)
+
+
+def test_intake_drain_does_not_consume_events_when_rating_exists(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    refs = [_checkpoint_ref("run-a", 10), _checkpoint_ref("run-b", 20)]
+    manifest = modal_arena._intake_manifest_from_discovery(
+        tournament_id="arena-a",
+        rating_run_id="elo-test",
+        scan_spec={"checkpoint_refs": refs},
+        rating_defaults={},
+        discovery={"checkpoint_refs": refs},
+    )
+    events = [{"checkpoint_ref": ref} for ref in refs]
+
+    class FakeState:
+        def get(self, key, default=None):
+            if key == manifest["manifest_key"]:
+                return manifest
+            return default
+
+        def put(self, *_args, **_kwargs):
+            raise AssertionError("drain should not claim an existing rating run")
+
+    class FakeQueue:
+        def __init__(self):
+            self.get_many_calls = 0
+
+        def len(self, *, partition):
+            assert partition == manifest["queue_partition"]
+            return len(events)
+
+        def get_many(self, *_args, **_kwargs):
+            self.get_many_calls += 1
+            return events
+
+    fake_queue = FakeQueue()
+    monkeypatch.setattr(modal_arena, "TOURNAMENT_MOUNT", tmp_path)
+    monkeypatch.setattr(modal_arena, "checkpoint_intake_state", FakeState())
+    monkeypatch.setattr(modal_arena, "checkpoint_intake_queue", fake_queue)
+    monkeypatch.setattr(modal_arena, "_reload_volume", lambda _volume: None)
+    monkeypatch.setattr(
+        modal_arena,
+        "_rating_run_has_existing_output",
+        lambda *_args, **_kwargs: True,
+    )
+
+    result = modal_arena.curvytron_checkpoint_intake_drain.local(
+        {
+            "tournament_id": "arena-a",
+            "rating_run_id": "elo-test",
+            "max_events": 10,
+            "spawn_rating": True,
+        }
+    )
+
+    assert result["event_count"] == 0
+    assert result["queue_len_before"] == 2
+    assert result["spawn_skipped_reason"] == "rating_run_already_exists"
+    assert fake_queue.get_many_calls == 0
+
+
+def test_intake_drain_claims_before_consuming_events(tmp_path, monkeypatch) -> None:
+    refs = [_checkpoint_ref("run-a", 10), _checkpoint_ref("run-b", 20)]
+    manifest = modal_arena._intake_manifest_from_discovery(
+        tournament_id="arena-a",
+        rating_run_id="elo-test",
+        scan_spec={"checkpoint_refs": refs},
+        rating_defaults={},
+        discovery={"checkpoint_refs": refs},
+    )
+    events = [{"checkpoint_ref": ref} for ref in refs]
+    call_order: list[str] = []
+
+    class FakeState:
+        def __init__(self):
+            self.values = {manifest["manifest_key"]: manifest}
+
+        def get(self, key, default=None):
+            return self.values.get(key, default)
+
+        def put(self, key, value, skip_if_exists=False):
+            call_order.append("claim")
+            if skip_if_exists and key in self.values:
+                return False
+            self.values[key] = value
+            return True
+
+    class FakeQueue:
+        def len(self, *, partition):
+            assert partition == manifest["queue_partition"]
+            return len(events)
+
+        def get_many(self, *_args, **_kwargs):
+            call_order.append("consume")
+            return events
+
+    class FakeCall:
+        object_id = "fc-test"
+
+    class FakeRatingLoop:
+        def spawn(self, _spec):
+            call_order.append("spawn")
+            return FakeCall()
+
+    monkeypatch.setattr(modal_arena, "TOURNAMENT_MOUNT", tmp_path)
+    monkeypatch.setattr(modal_arena, "checkpoint_intake_state", FakeState())
+    monkeypatch.setattr(modal_arena, "checkpoint_intake_queue", FakeQueue())
+    monkeypatch.setattr(modal_arena, "curvytron_rating_loop", FakeRatingLoop())
+    monkeypatch.setattr(modal_arena, "_reload_volume", lambda _volume: None)
+    monkeypatch.setattr(
+        modal_arena,
+        "_rating_run_has_existing_output",
+        lambda *_args, **_kwargs: False,
+    )
+
+    result = modal_arena.curvytron_checkpoint_intake_drain.local(
+        {
+            "tournament_id": "arena-a",
+            "rating_run_id": "elo-test",
+            "max_events": 10,
+            "spawn_rating": True,
+            "pairs_per_round": 1,
+            "games_per_pair": 3,
+        }
+    )
+
+    assert result["event_count"] == 2
+    assert result["rating_call_id"] == "fc-test"
+    assert call_order[0] == "claim"
+    assert "consume" in call_order
+    assert call_order[-1] == "spawn"
+
+
 def test_rating_round_outputs_write_pair_history_and_scheduler_state(tmp_path) -> None:
     rating_spec = arena.normalize_rating_spec(
         {
@@ -1483,6 +2754,8 @@ def test_rating_round_outputs_write_pair_history_and_scheduler_state(tmp_path) -
     ).as_posix()
     assert outputs["pair_history"]["rows"][0]["pair_key"] == pair["pair_key"]
     assert history["rows"][0]["pair_key"] == pair["pair_key"]
+    assert history["context_hash"] == arena.rating_context_hash(rating_spec)
+    assert scheduler["context_hash"] == arena.rating_context_hash(rating_spec)
     assert scheduler["pair_selection"] == "adaptive_v0"
     assert scheduler["schedule_reason_counts"][pair["schedule_reason"]] == 1
     assert scheduler["pair_history_row_count"] == 1
@@ -1650,6 +2923,142 @@ def test_modal_browser_filters_battle_index_by_checkpoint(tmp_path, monkeypatch)
     assert {row["battle_id"] for row in battles["rows"]} == {"battle-ab", "battle-ac"}
 
 
+def test_write_battle_index_writes_checkpoint_indexes(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(modal_arena, "TOURNAMENT_MOUNT", tmp_path)
+    tournament_id = "arena-a"
+    pair_results = [
+        {
+            "tournament_id": tournament_id,
+            "battle_id": "battle-ab",
+            "pair_index": 0,
+            "pair_key": arena.rating_pair_key("ckpt-a", "ckpt-b"),
+            "schedule_reason": arena.SCHEDULE_REASON_PLACEMENT,
+            "schedule_priority": 1.0,
+            "scheduled_round_index": 0,
+            "schedule": {
+                "reason": arena.SCHEDULE_REASON_PLACEMENT,
+                "priority": 1.0,
+            },
+            "players": [
+                {"checkpoint_id": "ckpt-a", "label": "A", "seat": 0},
+                {"checkpoint_id": "ckpt-b", "label": "B", "seat": 1},
+            ],
+            "tally": {"completed_count": 3, "failure_count": 0},
+            "summary_ref": arena.battle_summary_ref(
+                tournament_id,
+                "battle-ab",
+            ).as_posix(),
+            "ok": True,
+        },
+        {
+            "tournament_id": tournament_id,
+            "battle_id": "battle-ac",
+            "pair_index": 1,
+            "players": [
+                {"checkpoint_id": "ckpt-a", "label": "A", "seat": 0},
+                {"checkpoint_id": "ckpt-c", "label": "C", "seat": 1},
+            ],
+            "tally": {"completed_count": 3, "failure_count": 0},
+            "summary_ref": arena.battle_summary_ref(
+                tournament_id,
+                "battle-ac",
+            ).as_posix(),
+            "ok": True,
+        },
+    ]
+
+    payload = modal_arena._write_battle_index(
+        tournament_id,
+        pair_results,
+        mount=tmp_path,
+    )
+    checkpoint_path = tmp_path / arena.tournament_checkpoint_battle_index_ref(
+        tournament_id,
+        "ckpt-a",
+    )
+    checkpoint_payload = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    checkpoint_rows = {
+        row["battle_id"]: row
+        for row in checkpoint_payload["rows"]
+    }
+    battles = modal_arena._list_battle_index(
+        tmp_path,
+        tournament_id=tournament_id,
+        checkpoint_id="ckpt-a",
+        limit=10,
+        offset=0,
+    )
+
+    assert payload["checkpoint_index_count"] == 3
+    assert payload["ref"] == arena.tournament_battle_index_ref(tournament_id).as_posix()
+    assert checkpoint_payload["ref"] == arena.tournament_checkpoint_battle_index_ref(
+        tournament_id,
+        "ckpt-a",
+    ).as_posix()
+    assert checkpoint_payload["total"] == 2
+    assert checkpoint_rows["battle-ab"]["schedule_reason"] == arena.SCHEDULE_REASON_PLACEMENT
+    assert checkpoint_rows["battle-ab"]["pair_key"] == arena.rating_pair_key("ckpt-a", "ckpt-b")
+    assert battles["source"] == "checkpoint_battle_index"
+    assert battles["total"] == 2
+    assert {row["battle_id"] for row in battles["rows"]} == {"battle-ab", "battle-ac"}
+
+
+def test_checkpoint_battle_index_filters_stale_wrong_rows(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(modal_arena, "TOURNAMENT_MOUNT", tmp_path)
+    tournament_id = "arena-a"
+    checkpoint_id = "ckpt-a"
+    checkpoint_path = tmp_path / arena.tournament_checkpoint_battle_index_ref(
+        tournament_id,
+        checkpoint_id,
+    )
+    checkpoint_path.parent.mkdir(parents=True)
+    checkpoint_path.write_text(
+        json.dumps(
+            {
+                "schema_id": "curvyzero_curvytron_checkpoint_tournament_battle_index/v0",
+                "tournament_id": tournament_id,
+                "checkpoint_id": checkpoint_id,
+                "total": 2,
+                "rows": [
+                    {
+                        "tournament_id": tournament_id,
+                        "battle_id": "battle-ab",
+                        "checkpoint_ids": ["ckpt-a", "ckpt-b"],
+                        "players": [
+                            {"checkpoint_id": "ckpt-a", "label": "A", "seat": 0},
+                            {"checkpoint_id": "ckpt-b", "label": "B", "seat": 1},
+                        ],
+                        "updated_ts": 2.0,
+                    },
+                    {
+                        "tournament_id": tournament_id,
+                        "battle_id": "battle-cd",
+                        "checkpoint_ids": ["ckpt-c", "ckpt-d"],
+                        "players": [
+                            {"checkpoint_id": "ckpt-c", "label": "C", "seat": 0},
+                            {"checkpoint_id": "ckpt-d", "label": "D", "seat": 1},
+                        ],
+                        "updated_ts": 1.0,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    battles = modal_arena._list_battle_index(
+        tmp_path,
+        tournament_id=tournament_id,
+        checkpoint_id=checkpoint_id,
+        limit=10,
+        offset=0,
+    )
+
+    assert battles["source"] == "checkpoint_battle_index"
+    assert battles["total"] == 1
+    assert battles["rows"][0]["battle_id"] == "battle-ab"
+
+
 def test_modal_browser_lists_rating_runs_and_standings(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(modal_arena, "TOURNAMENT_MOUNT", tmp_path)
     tournament_id = "arena-a"
@@ -1727,6 +3136,71 @@ def test_review_checkpoint_payload_uses_rankings_and_battle_index(tmp_path, monk
     assert payload["rows"][0]["checkpoint_wins"] == 3
     assert payload["rows"][0]["opponent_wins"] == 1
     assert payload["rows"][0]["first_gif_ref"].endswith("/game.gif")
+
+
+def test_review_checkpoint_payload_uses_checkpoint_index_without_live_shard_scan(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(modal_arena, "TOURNAMENT_MOUNT", tmp_path)
+    tournament_id, rating_run_id = _write_review_fixture(tmp_path)
+    checkpoint_ref = arena.tournament_checkpoint_battle_index_ref(
+        tournament_id,
+        "ckpt-a",
+    )
+    modal_arena.runs.write_json(
+        tmp_path / checkpoint_ref,
+        {
+            "schema_id": "curvyzero_curvytron_checkpoint_tournament_battle_index/v0",
+            "tournament_id": tournament_id,
+            "checkpoint_id": "ckpt-a",
+            "ref": checkpoint_ref.as_posix(),
+            "total": 1,
+            "rows": [
+                {
+                    "tournament_id": tournament_id,
+                    "rating_run_id": rating_run_id,
+                    "battle_id": "battle-ab",
+                    "players": [
+                        {"checkpoint_id": "ckpt-a", "label": "A", "seat": 0},
+                        {"checkpoint_id": "ckpt-b", "label": "B", "seat": 1},
+                    ],
+                    "checkpoint_ids": ["ckpt-a", "ckpt-b"],
+                    "tally": {
+                        "completed_count": 6,
+                        "failure_count": 0,
+                        "draw_count": 2,
+                        "wins_by_checkpoint": {"ckpt-a": 3, "ckpt-b": 1},
+                        "wins_by_seat": {"seat_0": 3, "seat_1": 1},
+                        "average_physical_steps": 12.0,
+                    },
+                    "first_gif_ref": (
+                        "tournaments/curvytron/arena-a/battles/battle-ab/"
+                        "games/game-000000/game.gif"
+                    ),
+                    "updated_ts": 10.0,
+                    "ok": True,
+                }
+            ],
+        },
+    )
+
+    def fail_live_scan(*_args, **_kwargs):
+        raise AssertionError("checkpoint index path should not scan live shards")
+
+    monkeypatch.setattr(modal_arena, "_read_battle_shard_summaries", fail_live_scan)
+
+    payload = modal_arena._review_checkpoint_payload(
+        tmp_path,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+        checkpoint_id="ckpt-a",
+    )
+
+    assert payload["source"] == "checkpoint_battle_index"
+    assert payload["total"] == 1
+    assert payload["rows"][0]["battle_id"] == "battle-ab"
+    assert payload["rows"][0]["completed_count"] == 6
 
 
 def test_review_battle_payload_reads_shard_game_index_before_scanning(
@@ -1909,6 +3383,66 @@ def test_review_rankings_payload_builds_live_provisional_without_written_latest(
     assert payload["rows"][0]["games"] == 3
 
 
+def test_review_rankings_route_can_return_live_provisional_on_fresh_request(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    fastapi_testclient = pytest.importorskip("fastapi.testclient")
+    TestClient = fastapi_testclient.TestClient
+
+    monkeypatch.setattr(modal_arena, "TOURNAMENT_MOUNT", tmp_path)
+    monkeypatch.setattr(modal_arena, "_web_reload_volume", lambda *_args, **_kwargs: None)
+    modal_arena._WEB_CACHE.clear()
+    tournament_id, rating_run_id, _spec, _pair = _write_live_rating_fixture(tmp_path)
+    client = TestClient(modal_arena._build_fastapi_app(object()))
+
+    response = client.get(
+        "/api/review/rankings",
+        params={
+            "tournament_id": tournament_id,
+            "rating_run_id": rating_run_id,
+            "fresh": "true",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["provisional"] is True
+    assert payload["source"] == "live_shard_summaries"
+    assert payload["total"] == 3
+    assert payload["rows"][0]["games"] == 3
+
+
+def test_rating_standings_route_can_return_live_provisional_on_fresh_request(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    fastapi_testclient = pytest.importorskip("fastapi.testclient")
+    TestClient = fastapi_testclient.TestClient
+
+    monkeypatch.setattr(modal_arena, "TOURNAMENT_MOUNT", tmp_path)
+    monkeypatch.setattr(modal_arena, "_web_reload_volume", lambda *_args, **_kwargs: None)
+    modal_arena._WEB_CACHE.clear()
+    tournament_id, rating_run_id, _spec, _pair = _write_live_rating_fixture(tmp_path)
+    client = TestClient(modal_arena._build_fastapi_app(object()))
+
+    response = client.get(
+        "/api/rating-standings",
+        params={
+            "tournament_id": tournament_id,
+            "rating_run_id": rating_run_id,
+            "fresh": "true",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["provisional"] is True
+    assert payload["source"] == "live_shard_summaries"
+    assert payload["total"] == 3
+    assert payload["rows"][0]["games"] == 3
+
+
 def test_best_rating_snapshot_reads_written_provisional_file(
     tmp_path,
     monkeypatch,
@@ -1955,7 +3489,79 @@ def test_cached_live_rating_progress_reads_small_progress_artifact(
     assert progress["phase"] == "games_running"
     assert progress["pair_count"] == 3
     assert progress["game_count"] == 9
+    assert progress["completed_pair_count"] == 0
+    assert progress["completed_game_count"] == 0
     assert "count_basis" not in progress
+
+
+def test_live_rating_progress_reads_live_shard_progress(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(modal_arena, "TOURNAMENT_MOUNT", tmp_path)
+    modal_arena._WEB_CACHE.clear()
+    tournament_id, rating_run_id, _spec, _pair = _write_live_rating_fixture(tmp_path)
+
+    progress = modal_arena._read_live_rating_progress(
+        tmp_path,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+    )
+
+    assert progress["status"] == "running"
+    assert progress["phase"] == "games_running"
+    assert progress["pair_count"] == 3
+    assert progress["game_count"] == 9
+    assert progress["count_basis"] == "shard_summary_files"
+    assert progress["completed_pair_count"] == 1
+    assert progress["partial_pair_count"] == 0
+    assert progress["completed_game_count"] == 3
+
+
+def test_diagnostic_pair_progress_counts_game_summaries_without_shards(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(modal_arena, "TOURNAMENT_MOUNT", tmp_path)
+    modal_arena._WEB_CACHE.clear()
+    tournament_id, rating_run_id, _spec, pair = _write_live_rating_fixture(tmp_path)
+    shard_summary_path = tmp_path / arena.game_shard_summary_ref(
+        tournament_id,
+        pair["battle_id"],
+        "shard-000000-games-000000-000002",
+    )
+    shard_summary_path.unlink()
+    for index in range(2):
+        game = {
+            **_fake_game(pair, index, "seat_0_win"),
+            "tournament_id": tournament_id,
+            "battle_id": pair["battle_id"],
+            "pair_index": pair["pair_index"],
+        }
+        modal_arena.runs.write_json(
+            tmp_path
+            / arena.game_summary_ref(
+                tournament_id,
+                pair["battle_id"],
+                game["game_id"],
+            ),
+            game,
+        )
+
+    progress, _games_by_battle = modal_arena._rating_round_progress_payload(
+        tmp_path,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+        round_id=arena.rating_round_id(0),
+        load_summaries=False,
+        pair_only=True,
+        count_game_summaries=True,
+    )
+
+    assert progress["count_basis"] == "shard_summary_files"
+    assert progress["completed_game_count"] == 2
+    assert progress["completed_pair_count"] == 0
+    assert progress["partial_pair_count"] == 1
 
 
 def test_progress_merges_written_provisional_counts(
@@ -2139,7 +3745,7 @@ def test_provisional_artifacts_write_battle_index_for_checkpoint_drilldown(
     )
 
     assert artifacts["battle_index"]["total"] == 1
-    assert payload["source"] == "battle_index"
+    assert payload["source"] == "checkpoint_battle_index"
     assert payload["total"] == 1
     assert payload["rows"][0]["battle_id"] == pair["battle_id"]
 
@@ -2853,6 +4459,7 @@ def test_rating_progress_scans_committed_game_summaries(tmp_path) -> None:
     assert path_only_progress["unknown_result_count"] == 2
     assert path_only_progress["result_counts_known"] is False
     assert pair_only_progress["completed_game_count"] == 0
+    assert pair_only_progress["partial_pair_count"] == 0
     assert pair_only_progress["estimated_seen_game_count"] == 3
     assert pair_only_progress["count_basis"] == "shard_summary_files"
     assert pair_only_progress["result_counts_known"] is False

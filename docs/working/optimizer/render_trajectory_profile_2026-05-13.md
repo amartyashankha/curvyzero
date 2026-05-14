@@ -34,11 +34,20 @@ Tool:
 scripts/profile_curvytron_render_trajectory_lengths.py
 ```
 
-Artifact:
+The tool now splits scalar full-render time from cached/perspective render time
+and records dirty-cache stats in JSON/JSONL cells for future reruns.
+
+Latest artifact after the stock fixed-opponent dirty-cache landing:
 
 ```text
-artifacts/local/curvytron_render_profiles/render_trajectory_lengths_20260513b.json
-artifacts/local/curvytron_render_profiles/render_trajectory_lengths_20260513b.cells.jsonl
+artifacts/local/curvytron_render_profiles/render_trajectory_lengths_dirty_scalar_20260513.json
+artifacts/local/curvytron_render_profiles/render_trajectory_lengths_dirty_scalar_20260513.cells.jsonl
+```
+
+Previous scalar full-redraw baseline used for the comparison table:
+
+```text
+artifacts/local/curvytron_render_profiles/render_trajectory_lengths_20260513c.json
 ```
 
 Run:
@@ -49,7 +58,7 @@ uv run python scripts/profile_curvytron_render_trajectory_lengths.py \
   --render-modes browser_lines body_circles_fast \
   --repeats 1 \
   --warmup-steps 20 \
-  --output artifacts/local/curvytron_render_profiles/render_trajectory_lengths_20260513b.json \
+  --output artifacts/local/curvytron_render_profiles/render_trajectory_lengths_dirty_scalar_20260513.json \
   --markdown
 ```
 
@@ -57,53 +66,71 @@ Scope:
 
 - local env-only profile;
 - current `source_state_fixed_opponent` env wrapper;
+- includes the exact dirty/incremental cache when the wrapper enables it;
 - `death_mode=profile_no_death`;
 - `opponent_runtime_mode=blank_canvas_noop`;
 - wall-avoidant ego action heuristic;
 - no LightZero search, learner, replay, checkpoint, eval, or GIF work;
 - one clean pass per cell.
 
+This profiles the fixed-opponent LightZero wrapper. It does not measure the
+newer multiplayer trainer surface.
+
+## Recent Environment Review
+
+Rerun date: 2026-05-13 after recent environment commits.
+
+What changed that can affect these numbers:
+
+- runtime bonus/death/collision behavior changed, so `vector_step_sec`,
+  terminal timing, bonus density, and long no-death state evolution can move;
+- default bonus rendering is now browser-sprite based inside the full RGB
+  canvas path;
+- render mode names did not change for the stock fixed-opponent path:
+  `browser_lines` and `body_circles_fast` are still the current knobs.
+
 This answers the render Amdahl question for long env rollouts. It does not by
 itself predict full training wall time when games are short or when MCTS/search
 dominates.
 
-## Browser Lines
+## Browser Lines, Dirty Cache On
 
 | steps | wall s | steps/s | render s | render % | observation s | vector step s | other s |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 100 | 1.367 | 73.1 | 1.045 | 76.4% | 1.052 | 0.287 | 0.323 |
-| 200 | 6.278 | 31.9 | 5.502 | 87.6% | 5.518 | 0.699 | 0.776 |
-| 500 | 37.781 | 13.2 | 35.164 | 93.1% | 35.202 | 2.434 | 2.617 |
-| 1000 | 135.577 | 7.4 | 122.661 | 90.5% | 122.758 | 12.426 | 12.916 |
-| 2000 | 233.842 | 8.6 | 217.328 | 92.9% | 217.558 | 15.470 | 16.514 |
+| 100 | 1.046 | 95.6 | 0.548 | 52.4% | 0.564 | 0.448 | 0.498 |
+| 200 | 3.129 | 63.9 | 1.469 | 46.9% | 1.495 | 1.543 | 1.660 |
+| 500 | 10.492 | 47.7 | 5.195 | 49.5% | 5.245 | 5.109 | 5.297 |
+| 1000 | 23.293 | 42.9 | 12.121 | 52.0% | 12.229 | 10.782 | 11.172 |
+| 2000 | 46.903 | 42.6 | 26.898 | 57.3% | 27.096 | 19.277 | 20.004 |
 
-Plain read: in this long no-death env-only regime, `browser_lines` is render
-dominated almost immediately. At 500+ steps, about 90% or more of the local env
-wall time is inside the gray64 render call.
+Plain read: the exact dirty cache is a real win. `browser_lines` is still the
+largest single bucket in long no-death env-only rollouts, but it is no longer an
+overwhelming 88-89% redraw problem. The remaining local Amdahl ceiling from
+render-only work is now roughly 2.1x-2.3x for 500-2000 step rows.
 
 ## Body Circles Fast
 
 | steps | wall s | steps/s | render s | render % | observation s | vector step s | other s |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 100 | 1.002 | 99.8 | 0.624 | 62.3% | 0.631 | 0.341 | 0.378 |
-| 200 | 2.989 | 66.9 | 1.869 | 62.5% | 1.893 | 0.978 | 1.119 |
-| 500 | 13.843 | 36.1 | 10.840 | 78.3% | 10.883 | 2.803 | 3.002 |
-| 1000 | 46.509 | 21.5 | 36.661 | 78.8% | 36.738 | 9.468 | 9.848 |
-| 2000 | 68.480 | 29.2 | 56.690 | 82.8% | 56.825 | 11.153 | 11.791 |
+| 100 | 0.637 | 156.9 | 0.364 | 57.2% | 0.368 | 0.251 | 0.273 |
+| 200 | 2.000 | 100.0 | 1.321 | 66.0% | 1.330 | 0.628 | 0.679 |
+| 500 | 13.063 | 38.3 | 8.299 | 63.5% | 8.326 | 4.610 | 4.765 |
+| 1000 | 43.862 | 22.8 | 32.969 | 75.2% | 33.026 | 10.564 | 10.893 |
+| 2000 | 86.656 | 23.1 | 63.664 | 73.5% | 63.797 | 22.208 | 22.992 |
 
-Plain read: `body_circles_fast` is much faster than `browser_lines`, but it is
-still render dominated in long no-death env-only rollouts. At 1000-2000 steps,
-about 79-83% of local env wall time is still render.
+Plain read: `body_circles_fast` still wins at 100-200 steps, but after the
+dirty-cache landing it loses to cached `browser_lines` at 500+ steps in this
+local no-death profile. It remains render dominated at long lengths.
 
 ## Comparison
 
-| steps | browser wall | fast wall | fast speedup | browser render % | fast render % | browser render-only ceiling | fast render-only ceiling |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 100 | 1.367s | 1.002s | 1.37x | 76.4% | 62.3% | 4.2x | 2.7x |
-| 200 | 6.278s | 2.989s | 2.10x | 87.6% | 62.5% | 8.1x | 2.7x |
-| 500 | 37.781s | 13.843s | 2.73x | 93.1% | 78.3% | 14.4x | 4.6x |
-| 1000 | 135.577s | 46.509s | 2.92x | 90.5% | 78.8% | 10.5x | 4.7x |
-| 2000 | 233.842s | 68.480s | 3.41x | 92.9% | 82.8% | 14.2x | 5.8x |
+| steps | old browser full-redraw wall | browser dirty-cache wall | dirty-cache speedup | body-circles wall | fastest in this local row |
+| ---: | ---: | ---: | ---: | ---: | --- |
+| 100 | 1.133s | 1.046s | 1.08x | 0.637s | `body_circles_fast` |
+| 200 | 5.210s | 3.129s | 1.66x | 2.000s | `body_circles_fast` |
+| 500 | 39.144s | 10.492s | 3.73x | 13.063s | `browser_lines` |
+| 1000 | 96.774s | 23.293s | 4.15x | 43.862s | `browser_lines` |
+| 2000 | 175.943s | 46.903s | 3.75x | 86.656s | `browser_lines` |
 
 The render-only ceiling is the Amdahl limit if render became free and every
 other local env cost stayed the same. It is not a promise; it tells us the
@@ -111,9 +138,10 @@ largest possible win from only attacking render in this narrow local regime.
 
 ## Optimizer Read
 
-For long-lived policies, render remains a high-leverage target. The richer
-`browser_lines` path has a large possible render-only win. The fast path is
-already better, but still has a meaningful render ceiling.
+For long-lived policies, render remains a high-leverage target, but the first
+big local win is now landed for the trusted rich visual path. In this env-only
+no-death lens, `body_circles_fast` only wins at very short trajectories. Once
+the trail has history, cached `browser_lines` is both richer and faster.
 
 For current live training, do not overread this as "render is the whole training
 bottleneck." The live stock runs include MCTS/search, learner work, subprocess
@@ -125,10 +153,12 @@ Next useful optimizer steps:
 
 1. Keep paired `browser_lines` and `body_circles_fast` rows in Coach matrices
    until training quality decides the fidelity tradeoff.
-2. For renderer optimization, focus on `body_circles_fast` first if it remains
-   a serious training surface; it still spends most long-env time in render.
-3. For richer visual fidelity, `browser_lines` needs a more structural render
-   fix before it can be cheap in long-survival regimes.
+2. Prefer cached `browser_lines` for the next trusted rich-visual profiles.
+   Keep `body_circles_fast` as a short-trajectory and fidelity-ablation row, not
+   as the obvious speed default.
+3. The next renderer work should measure dirty-cache hit/fallback/dirty-block
+   counts and check whether fixed-opponent can avoid rendering two identical
+   player-perspective frames.
 4. Run one full stock LightZero profile at a mature long-survival checkpoint
    later, so the env-only Amdahl table can be reconciled with real search and
    learner timing.

@@ -127,6 +127,41 @@ Status: chosen as the next cleanup cut. The first critique pass from Arendt,
 Mill, Hilbert, Lorentz, Pauli, and Gibbs all points the same way: name the
 implicit contracts before extracting modules.
 
+Cleanup wave 2 has been delegated while Cut 1 is being finished:
+
+- Arendt: pure/domain module boundaries.
+- Mill: data contracts, artifact refs, Volume paths, and context mixing risk.
+- Pauli: validation and semantic-risk review of the current Cut 1 diff.
+- Hilbert: Modal ops, Volume/cache, and thin-wrapper cut order.
+- Lorentz: website/API/cache/paging cut order.
+- Gibbs: adaptive Elo/scheduler architecture and coach-misleading risks.
+
+Returned notes:
+
+- `checkpoint_tournament_refactor_domain_arendt_2026-05-13.md`
+- `checkpoint_tournament_refactor_contracts_mill_2026-05-13.md`
+- `checkpoint_tournament_refactor_modal_hilbert_2026-05-13.md`
+- `checkpoint_tournament_refactor_website_lorentz_2026-05-13.md`
+- `checkpoint_tournament_refactor_scheduler_gibbs_2026-05-13.md`
+
+Durable consensus:
+
+- Keep the existing public files as facades first. Move behavior behind them
+  only in small slices.
+- Durable truth stays in Volume artifacts. Caches, queues, and live scheduler
+  priority are not truth.
+- Split `pool_hash` into two ideas before serious adaptive reuse:
+  checkpoint roster identity and evaluator/rating context identity.
+- Website normal paths should read small committed artifacts. Shard/game scans
+  are recovery paths, not the product path.
+- The first extraction should be contracts, then scoring/specs/reducer/scheduler
+  only after each cut has focused tests.
+- The first website index cut has landed locally. Per-checkpoint battle indexes
+  live at
+  `tournaments/curvytron/<tournament_id>/checkpoints/<checkpoint_id>/battle_index.json`.
+
+Status update: Cut 1 is landed and focused tests pass.
+
 Include in this cut if it stays small:
 
 - checkpoint selection values: `latest`, `all`, `iteration`;
@@ -143,6 +178,47 @@ Do not include in this cut:
 - changing website behavior;
 - changing checkpoint discovery semantics.
 
+### Cut 1A: Extract The Pure Contract Surface
+
+Status: landed locally and tested.
+
+Added:
+
+```text
+src/curvyzero/tournament/curvytron/contracts.py
+src/curvyzero/tournament/curvytron/__init__.py
+```
+
+The old public module,
+`src/curvyzero/tournament/curvytron_checkpoint_tournament.py`, still re-exports
+the moved names. Existing Modal code and tests still import
+`curvytron_checkpoint_tournament as arena`.
+
+Moved in this cut:
+
+- schema ids;
+- selection names;
+- artifact filenames;
+- default tournament/rating constants;
+- safe id/hash helpers;
+- checkpoint id and pair key helpers;
+- tournament/rating/game artifact ref helpers;
+- artifact ref validation.
+
+Not moved:
+
+- `rating_context_hash`, because it depends on rating spec normalization;
+- pair/game/rating spec builders;
+- scoring;
+- policy loading and game execution.
+
+Validation:
+
+- compile check passed;
+- facade compatibility check passed for representative `arena.*` names;
+- focused tournament tests passed after the later roster guard:
+  `90 passed, 10 skipped`.
+
 ### Cut 2: Extract Discovery
 
 Move checkpoint discovery helpers from the Modal app into a pure module, likely:
@@ -152,6 +228,67 @@ Move checkpoint discovery helpers from the Modal app into a pure module, likely:
 Keep the Modal function as a thin wrapper that calls the pure helper.
 
 Tests already target local tmp paths, so this is a good first extraction.
+
+Updated ordering note: extraction should start with domain contracts if the
+current file remains confusing after Cut 1. Discovery extraction is still a good
+early cut, but it should reuse the named checkpoint selection and scan-glob
+contracts rather than inventing another contract surface.
+
+### Cut 2A: Add Rating Context Identity
+
+This is a small behavior guard before serious adaptive Elo reuse.
+
+Add a pure helper:
+
+`rating_context_hash(spec)`
+
+It should cover evaluator semantics, not checkpoint roster:
+
+- policy mode;
+- max steps;
+- decision timing and source-frame settings;
+- number of simulations;
+- natural bonus setting and env/reward compatibility fields;
+- scoring formula/version;
+- observation/render contract fields that affect policy inputs.
+
+Use it to prevent `pair_history.json` and `scheduler_state.json` from being
+reused across different tournament/evaluator meanings. Roster expansion should
+not by itself erase old pair evidence, but evaluator context drift must not
+silently mix evidence.
+
+Status: landed locally and tested. Previous snapshots, pair history, and
+scheduler state now reject changed evaluator context.
+
+Follow-up guard also landed:
+
+- rating artifacts now include `checkpoint_roster`;
+- roster expansion can still carry old pair evidence;
+- if the same checkpoint id points at a different checkpoint ref, previous
+  pair history, scheduler state, and previous snapshots are rejected.
+
+### Cut 2B: Per-Checkpoint Battle Indexes
+
+Status: landed locally and tested.
+
+The website now has a bounded checkpoint-drilldown path:
+
+```text
+tournaments/curvytron/<tournament_id>/checkpoints/<checkpoint_id>/battle_index.json
+```
+
+The global `battle_index.json` still exists. The per-checkpoint file is read
+first when a checkpoint is selected. Global-index filtering and live shard scans
+remain fallbacks for old artifacts and recovery cases.
+
+Follow-up tightening also landed:
+
+- checkpoint index files carry their own `ref`;
+- checkpoint index rows preserve `pair_key`, `schedule_reason`,
+  `schedule_priority`, `scheduled_round_index`, and `schedule`;
+- checkpoint-specific index reads still filter rows defensively;
+- checkpoint drilldown no longer live-scans shard summaries when the
+  checkpoint index is present.
 
 ### Cut 3: Extract Rating Artifacts
 

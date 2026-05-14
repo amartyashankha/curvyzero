@@ -63,6 +63,10 @@ FRAME_STACK_OWNER = "SourceStateMultiplayerTrainerSurface"
 NATIVE_SOURCE_CONTROL_MODEL = "real_time_control_state_plus_elapsed_ms_source_frames"
 JOINT_ACTION_LABEL = "wrapper-facing player-major control action"
 TRAINER_OBSERVATION_SOURCE = "SourceStateGray64Stack4"
+TRAINER_ALLOWED_TRAIL_RENDER_MODES = (
+    TRAIL_RENDER_MODE_BROWSER_LINES,
+    TRAIL_RENDER_MODE_BODY_CIRCLES_FAST,
+)
 
 MULTIPLAYER_TRAINER_SURFACE_SCHEMA = {
     "schema_id": MULTIPLAYER_TRAINER_SURFACE_SCHEMA_ID,
@@ -262,6 +266,33 @@ class SourceStateMultiplayerTrainerSurface:
             api="advance_warmdown",
         )
 
+    def advance_warmup(
+        self,
+        advance_ms: float | np.ndarray = vector_lifecycle.SOURCE_TRAIL_START_DELAY_MS,
+        *,
+        max_timer_callbacks: int | None = None,
+    ) -> MultiplayerTrainerStepV0:
+        """Advance source-shaped warmup rows and keep trainer arrays aligned."""
+
+        batch = self.env.advance_warmup(
+            advance_ms,
+            max_timer_callbacks=max_timer_callbacks,
+        )
+        observation = self.stack.update(self.env)
+        reward = np.asarray(batch.reward, dtype=np.float32).copy()
+        joint_action = np.full(
+            (self.batch_size, self.player_count),
+            -1,
+            dtype=np.int16,
+        )
+        return self._surface_step(
+            batch=batch,
+            observation=observation,
+            reward=reward,
+            joint_action=joint_action,
+            api="advance_warmup",
+        )
+
     def _surface_step(
         self,
         *,
@@ -388,12 +419,16 @@ class SourceStateMultiplayerTrainerSurface:
                 "browser_pixel_fidelity": False,
                 "trail_render_mode": self.trail_render_mode,
                 "default_trail_render_mode": TRAIL_RENDER_MODE_BROWSER_LINES,
+                "trainer_supported_trail_render_modes": list(
+                    TRAINER_ALLOWED_TRAIL_RENDER_MODES
+                ),
                 "bonus_render_mode": BONUS_RENDER_MODE_BROWSER_SPRITES,
                 "default_bonus_render_mode": BONUS_RENDER_MODE_DEFAULT,
                 "browser_sprites_bonus_render_claim": True,
                 "single_frame_schema_id": SOURCE_STATE_CANVAS_GRAY64_SCHEMA_ID,
                 "single_frame_schema_hash": SOURCE_STATE_CANVAS_GRAY64_SCHEMA_HASH,
                 "frame_stack_owner": FRAME_STACK_OWNER,
+                "visual_stack_dirty_render_stats": self.stack.dirty_render_stats(),
                 "observation_schema_id": STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID,
                 "trainer_observation_schema_id": STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID,
                 "reward_variant": REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME,

@@ -90,6 +90,28 @@ NOOP_ACTION_ID = 1
 LINEAR_FEATURE_DIM = 7
 
 
+def _is_dirty_render_stat_number(value: Any) -> bool:
+    return isinstance(value, (int, float, np.integer, np.floating)) and not isinstance(
+        value, bool
+    )
+
+
+def _merge_dirty_render_stats(target: dict[str, Any], stats: dict[str, Any]) -> None:
+    for key, value in stats.items():
+        name = str(key)
+        if isinstance(value, dict):
+            nested = target.setdefault(name, {})
+            if not isinstance(nested, dict):
+                continue
+            for nested_key, nested_value in value.items():
+                if _is_dirty_render_stat_number(nested_value):
+                    nested_name = str(nested_key)
+                    nested[nested_name] = nested.get(nested_name, 0) + nested_value
+            continue
+        if _is_dirty_render_stat_number(value):
+            target[name] = target.get(name, 0) + value
+
+
 @dataclass(frozen=True, slots=True)
 class CurrentPolicyActionBatch:
     """Actions selected by one shared current-policy object."""
@@ -366,9 +388,9 @@ class SourceStateGray64Stack4:
         return source_state_gray64_stack4_render_metadata(self.trail_render_mode)
 
     def dirty_render_stats(self) -> dict[str, Any]:
-        totals: Counter[str] = Counter()
+        totals: dict[str, Any] = {}
         for cache in self._dirty_render_caches:
-            totals.update(cache.stats.as_dict())
+            _merge_dirty_render_stats(totals, cache.stats.as_dict())
         hits = int(totals.get("hits", 0))
         attempts = int(totals.get("attempts", 0))
         return {
@@ -536,6 +558,10 @@ def source_state_gray64_stack4_render_metadata(
         "default_trail_render_mode": STACK_RENDER_MODE_DEFAULT,
         "supported_trail_render_modes": list(STACK_RENDER_MODE_ORDER),
         "single_frame_render_api": "render_source_state_canvas_gray64",
+        "two_seat_optimized_render_api": (
+            "render_source_state_canvas_gray64_player_perspectives"
+        ),
+        "two_seat_optimized_render_is_equivalence_cache": True,
         "render_pipeline": "source_state_rgb_canvas_like_raw_canvas_to_gray64",
         "rgb_source_frame_size": SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
         "downsample_target_frame_size": 64,
@@ -548,6 +574,8 @@ def source_state_gray64_stack4_render_metadata(
         "trail_renderer_is_approximation": (
             mode == TRAIL_RENDER_MODE_BODY_CIRCLES_FAST
         ),
+        "bonus_renderer_kind": "browser_sprites",
+        "bonus_renderer_is_approximation": False,
         "player_perspective_palette": {
             "semantics": (
                 "controlled player color index is rendered with self grayscale RGB; "

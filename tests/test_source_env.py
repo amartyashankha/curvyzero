@@ -1099,6 +1099,214 @@ def test_source_env_bonus_self_master_blocks_body_death_but_not_wall_death():
     ]
 
 
+def test_source_env_bonus_self_master_stops_print_manager_with_important_body_order():
+    env = _active_source_env()
+    assert env.game is not None
+    env.game.print_start_due_ms = None
+
+    avatar = env.avatar_by_id(1)
+    avatar.printing = True
+    avatar.trail_point_count = 1
+    avatar.trail_last_x = avatar.x
+    avatar.trail_last_y = avatar.y
+    avatar.visual_trail_last_x = avatar.x
+    avatar.visual_trail_last_y = avatar.y
+    avatar.print_manager.active = True
+    avatar.print_manager.distance = 99
+    avatar.print_manager.last_x = avatar.x
+    avatar.print_manager.last_y = avatar.y
+    env.seed_active_bonus("BonusSelfMaster", x=avatar.x, y=avatar.y)
+    env.events.clear()
+    env.random.calls.clear()
+
+    frame = env.step({}, elapsed_ms=0)
+
+    bonus_data = {
+        "id": 1,
+        "type": "BonusSelfMaster",
+        "duration": 7500,
+        "effects": [["invincible", True], ["printing", -1]],
+    }
+    bodies = [body for body in env.world_bodies_snapshot() if body["avatarId"] == avatar.id]
+    assert bodies == [
+        {
+            "id": 0,
+            "x": 20,
+            "y": 20,
+            "radius": 0.6,
+            "avatarId": 1,
+            "num": 0,
+            "birthMs": 0,
+            "trailLatency": 3,
+            "breakBefore": False,
+        }
+    ]
+    assert frame["game"]["worldBodyCount"] == 1
+    assert avatar.printing is False
+    assert avatar.trail_point_count == 0
+    assert avatar.trail_last_x is None
+    assert avatar.trail_last_y is None
+    assert avatar.visual_trail_last_x is None
+    assert avatar.visual_trail_last_y is None
+    assert avatar.print_manager.to_snapshot() == {
+        "active": False,
+        "distance": 0,
+        "lastX": 0,
+        "lastY": 0,
+    }
+    assert avatar.invincible is True
+    assert _source_event_data(env) == [
+        {"event": "bonus:clear", "data": {"bonus": 1}},
+        {"event": "point", "data": {"avatar": 1, "x": 20, "y": 20, "important": True}},
+        {
+            "event": "property",
+            "data": {"avatar": 1, "property": "printing", "value": False},
+        },
+        {
+            "event": "random",
+            "data": {
+                "index": 0,
+                "value": 0.5,
+                "site": "print_manager.stop_distance",
+                "avatar": 1,
+            },
+        },
+        {
+            "event": "property",
+            "data": {"avatar": 1, "property": "invincible", "value": True},
+        },
+        {
+            "event": "bonus:stack",
+            "data": {"avatar": 1, "method": "add", "bonus": bonus_data},
+        },
+    ]
+    assert env.random_calls == [
+        {
+            "index": 0,
+            "value": 0.5,
+            "atMs": 0,
+            "label": {"site": "print_manager.stop_distance", "avatar": 1},
+        }
+    ]
+
+
+def test_source_env_bonus_self_master_expiry_restarts_print_manager_with_important_body():
+    env = _active_source_env()
+    assert env.game is not None
+    env.game.print_start_due_ms = None
+
+    avatar = env.avatar_by_id(1)
+    env.seed_active_bonus("BonusSelfMaster", x=avatar.x, y=avatar.y)
+    env.step({}, elapsed_ms=0)
+    assert avatar.invincible is True
+    assert avatar.printing is False
+    assert avatar.print_manager.active is False
+    assert [body for body in env.world_bodies_snapshot() if body["avatarId"] == avatar.id] == []
+    env.events.clear()
+    env.random.calls.clear()
+
+    env.advance_timers(7500)
+
+    bonus_data = {
+        "id": 1,
+        "type": "BonusSelfMaster",
+        "duration": 7500,
+        "effects": [["invincible", True], ["printing", -1]],
+    }
+    bodies = [body for body in env.world_bodies_snapshot() if body["avatarId"] == avatar.id]
+    assert bodies == [
+        {
+            "id": 0,
+            "x": 20,
+            "y": 20,
+            "radius": 0.6,
+            "avatarId": 1,
+            "num": 0,
+            "birthMs": 7500,
+            "trailLatency": 3,
+            "breakBefore": True,
+        }
+    ]
+    assert avatar.printing is True
+    assert avatar.trail_point_count == 1
+    assert avatar.trail_last_x == 20
+    assert avatar.trail_last_y == 20
+    assert avatar.visual_trail_last_x == 20
+    assert avatar.visual_trail_last_y == 20
+    assert avatar.print_manager.to_snapshot() == {
+        "active": True,
+        "distance": 39,
+        "lastX": 20,
+        "lastY": 20,
+    }
+    assert avatar.invincible is False
+    assert avatar.active_bonuses == []
+    assert _source_event_data(env) == [
+        {"event": "point", "data": {"avatar": 1, "x": 20, "y": 20, "important": True}},
+        {
+            "event": "property",
+            "data": {"avatar": 1, "property": "printing", "value": True},
+        },
+        {
+            "event": "random",
+            "data": {
+                "index": 0,
+                "value": 0.5,
+                "site": "print_manager.start_distance",
+                "avatar": 1,
+            },
+        },
+        {
+            "event": "property",
+            "data": {"avatar": 1, "property": "invincible", "value": False},
+        },
+        {
+            "event": "bonus:stack",
+            "data": {"avatar": 1, "method": "remove", "bonus": bonus_data},
+        },
+    ]
+
+
+def test_source_env_bonus_self_master_expiry_after_death_does_not_restart_print_manager():
+    env = _active_source_env(player_count=3)
+    assert env.game is not None
+    env.game.print_start_due_ms = None
+    env.set_avatar_state(2, x=60, y=60, angle=0)
+    env.set_avatar_state(3, x=80, y=80, angle=0)
+
+    avatar = env.avatar_by_id(1)
+    env.seed_active_bonus("BonusSelfMaster", x=avatar.x, y=avatar.y)
+    env.step({}, elapsed_ms=0)
+    assert avatar.active_bonuses
+    assert avatar.invincible is True
+    env.events.clear()
+    env.random.calls.clear()
+
+    env.set_avatar_state(avatar.id, x=0.3, y=20, angle=math.pi)
+    env.step({}, elapsed_ms=0)
+    assert avatar.alive is False
+    assert avatar.active_bonuses == []
+    assert avatar.invincible is True
+    assert env.game.in_round is True
+    body_count_before_expiry = len(env.world_bodies_snapshot())
+    env.events.clear()
+    env.random.calls.clear()
+
+    env.advance_timers(7500)
+
+    assert avatar.printing is False
+    assert avatar.print_manager.to_snapshot() == {
+        "active": False,
+        "distance": 0,
+        "lastX": 0,
+        "lastY": 0,
+    }
+    assert avatar.invincible is True
+    assert len(env.world_bodies_snapshot()) == body_count_before_expiry
+    assert env.random_calls == []
+    assert _source_event_data(env) == []
+
+
 def test_source_env_bonus_all_color_rotates_alive_colors_and_expires():
     players = [
         {"avatar_id": 1, "name": "p0", "color": "#ff0000"},
@@ -1642,7 +1850,7 @@ def test_source_env_matches_js_oracle_for_default_bonus_weight_type_rng_fixture(
     assert source_env._source_number(bonus.y) == js_bonus_event["data"]["y"] == 73.745
 
 
-def test_source_env_default_non_clear_bonus_probabilities_are_base_one():
+def test_source_env_default_bonus_probabilities_match_source_class_map():
     game = source_env.SourceGameState(size=101, max_score=10)
     avatars = [
         source_env.SourceAvatarState(id=1, name="p0", alive=True),
@@ -1651,13 +1859,52 @@ def test_source_env_default_non_clear_bonus_probabilities_are_base_one():
         source_env.SourceAvatarState(id=4, name="p3", alive=False),
     ]
 
-    for bonus_type in (
+    assert source_env._SOURCE_DEFAULT_BONUS_PROBABILITIES == {
+        "BonusSelfSmall": 1.0,
+        "BonusSelfSlow": 1.0,
+        "BonusSelfFast": 1.0,
+        "BonusSelfMaster": 1.0,
+        "BonusEnemySlow": 1.0,
+        "BonusEnemyFast": 1.0,
+        "BonusEnemyBig": 1.0,
+        "BonusEnemyInverse": 0.8,
+        "BonusEnemyStraightAngle": 0.6,
+        "BonusGameBorderless": 0.8,
+        "BonusAllColor": 1.0,
+        "BonusGameClear": 1.0,
+    }
+    for bonus_type, probability in source_env._SOURCE_DEFAULT_BONUS_PROBABILITIES.items():
+        if bonus_type == "BonusGameClear":
+            continue
+        assert source_env._bonus_probability(bonus_type, game, avatars) == probability
+    assert source_env._bonus_probability("BonusGameClear", game, avatars) == 0.5
+
+
+def test_source_env_default_bonus_selection_uses_fractional_static_weights():
+    enabled_types = (
+        "BonusEnemyBig",
         "BonusEnemyInverse",
         "BonusEnemyStraightAngle",
         "BonusGameBorderless",
-    ):
-        assert source_env._bonus_probability(bonus_type, game, avatars) == 1.0
-    assert source_env._bonus_probability("BonusGameClear", game, avatars) == 0.5
+        "BonusAllColor",
+        "BonusGameClear",
+    )
+
+    def select_for_weighted_draw(weighted_draw: float) -> str | None:
+        env = CurvyTronSourceEnv(random_constant=0.0)
+        env.reset(player_count=4, warmup_ms=0)
+        env.avatar_by_id(3).alive = False
+        env.avatar_by_id(4).alive = False
+        env.bonus_types = enabled_types
+        env.set_random_sequence([weighted_draw / 4.7])
+        return env._select_bonus_type()
+
+    assert select_for_weighted_draw(1.79) == "BonusEnemyInverse"
+    assert select_for_weighted_draw(1.81) == "BonusEnemyStraightAngle"
+    assert select_for_weighted_draw(2.39) == "BonusEnemyStraightAngle"
+    assert select_for_weighted_draw(2.41) == "BonusGameBorderless"
+    assert select_for_weighted_draw(3.19) == "BonusGameBorderless"
+    assert select_for_weighted_draw(3.21) == "BonusAllColor"
 
 
 def test_source_env_matches_js_oracle_for_default_bonus_game_clear_type_rng_fixture():

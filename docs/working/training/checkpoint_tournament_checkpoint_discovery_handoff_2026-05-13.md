@@ -73,6 +73,11 @@ This was verified with a targeted `--mode discover` run on the six rows that
 fixed-path status showed as `iteration_0`; broad discovery found all six and
 returned timestamped `lightzero_exp_260513_*` checkpoint refs.
 
+A partial 212-row audit found this is broader than the six zero rows: at least
+50 preserved rows had later broad-discovery checkpoints than fixed-path status
+reported, including at least 45 rows whose fixed-path status was already
+nonzero. So do not trust a fixed-path ref just because it is nonzero.
+
 ## Main Investigation Doc
 
 Use this as the source of truth:
@@ -105,3 +110,13 @@ refs under `train/lightzero_exp/ckpt`. Those refs may be fine for old rows that
 really saved there, but they should not be copied as a general pattern. Any new
 manifest that selects "recent", "mid", or "old" checkpoints should use the same
 broad discovery rule before freezing refs.
+
+## 2026-05-13 Leaderboard/Training Consumer Reminder
+
+- Keep this discovery rule attached to the public leaderboard plan. If training
+  loops later sample frozen opponents from leaderboard rows, those rows must be
+  built from broad `train/lightzero_exp*/ckpt/iteration_*.pth.tar` discovery,
+  not stale fixed-path status.
+- Scheduler breadth is now part of the consumer contract too: a 21-game battle
+  against one opponent is provisional evidence. Leaderboard-active rows should
+  have at least 20 distinct opponents without requiring full N^2 all-pairs.

@@ -95,6 +95,7 @@ PROJECT_TRAINING_HELPER_METADATA_KEYS = (
 SOURCE_STATE_MULTIPLAYER_TRAINER_AUDIT_METADATA_KEYS = (
     "action_sidecar",
     "alive",
+    "borderless",
     "bonus_catch_count_step",
     "bonus_support",
     "bonus_support_mode",
@@ -103,6 +104,7 @@ SOURCE_STATE_MULTIPLAYER_TRAINER_AUDIT_METADATA_KEYS = (
     "death_cause_name",
     "death_count",
     "death_hit_owner",
+    "death_hit_old",
     "death_player",
     "final_observation_policy",
     "final_reward_policy",

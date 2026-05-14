@@ -33,6 +33,20 @@ _SOURCE_BONUS_DURATIONS_MS = {
     "BonusAllColor": 7_500,
     "BonusGameClear": 0,
 }
+_SOURCE_DEFAULT_BONUS_PROBABILITIES = {
+    "BonusSelfSmall": 1.0,
+    "BonusSelfSlow": 1.0,
+    "BonusSelfFast": 1.0,
+    "BonusSelfMaster": 1.0,
+    "BonusEnemySlow": 1.0,
+    "BonusEnemyFast": 1.0,
+    "BonusEnemyBig": 1.0,
+    "BonusEnemyInverse": 0.8,
+    "BonusEnemyStraightAngle": 0.6,
+    "BonusGameBorderless": 0.8,
+    "BonusAllColor": 1.0,
+    "BonusGameClear": 1.0,
+}
 
 
 class SourceEnvError(ValueError):
@@ -1599,6 +1613,15 @@ class CurvyTronSourceEnv:
             if bonus in avatar.active_bonuses:
                 avatar.active_bonuses.remove(bonus)
                 self._resolve_avatar_bonus_stack(avatar, removed_bonus=bonus)
+            elif any(
+                property_name == "printing"
+                for property_name, _value in _bonus_effects_for_avatar(
+                    bonus,
+                    avatar,
+                    self.reference,
+                )
+            ):
+                continue
             self._record_event(
                 "bonus:stack",
                 {
@@ -2142,6 +2165,10 @@ def _bonus_probability(
     game: SourceGameState,
     avatars: Sequence[SourceAvatarState],
 ) -> float:
+    try:
+        base_probability = _SOURCE_DEFAULT_BONUS_PROBABILITIES[bonus_type]
+    except KeyError as exc:
+        raise SourceEnvError(f"unsupported source bonus type {bonus_type}") from exc
     if bonus_type == "BonusGameClear":
         present_count = sum(1 for avatar in avatars if avatar.present)
         if present_count <= 0:
@@ -2149,9 +2176,9 @@ def _bonus_probability(
         alive_count = sum(1 for avatar in avatars if avatar.alive)
         ratio = 1.0 - alive_count / present_count
         if ratio < 0.5:
-            return 1.0
-        return _js_round((1.0 - ratio) * 10.0) / 10.0
-    return 1.0
+            return base_probability
+        return _js_round((base_probability - ratio) * 10.0) / 10.0
+    return base_probability
 
 
 def _coerce_bonus_rate(value: float) -> float:

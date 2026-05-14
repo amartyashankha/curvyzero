@@ -41,6 +41,12 @@ Source-state multiplayer trainer surface spec:
 [source_state_multiplayer_trainer_surface_spec_2026-05-13.md](source_state_multiplayer_trainer_surface_spec_2026-05-13.md).
 Source-state multiplayer target-row adapter spec:
 [source_state_multiplayer_lightzero_adapter_spec_2026-05-13.md](source_state_multiplayer_lightzero_adapter_spec_2026-05-13.md).
+Optimized path reorientation:
+[optimized_path_reorientation_2026-05-13.md](optimized_path_reorientation_2026-05-13.md).
+Full fidelity parallel spec:
+[full_fidelity_parallel_spec_2026-05-13.md](full_fidelity_parallel_spec_2026-05-13.md).
+Parallel execution todo:
+[parallel_execution_todo_2026-05-13.md](parallel_execution_todo_2026-05-13.md).
 
 ## Plain Current State
 
@@ -51,6 +57,9 @@ Source-state multiplayer target-row adapter spec:
   them as guarded downstream interfaces rather than the main focus.
 - Main active threads are multiplayer fidelity gaps, controls fidelity,
   renderer/fast-path boundary, and docs/orchestration rhythm.
+- Latest parallel fidelity wave promoted source-backed lifecycle/leave, bonus,
+  and collision fixtures through public env and trainer/replay proof. This
+  narrows the gap list but is not a full CurvyTron completion claim.
 - Working-memory snapshot: trainer surface done, replay arrays done,
   repo-owned target-row adapter done, deterministic sample batches done, and
   fake/injected native `GameSegment` mapping from target rows done.
@@ -62,6 +71,10 @@ Source-state multiplayer target-row adapter spec:
 - There is one active 2P visual product path:
   source-state browser-like 704x704 RGB raw frame -> 11x11 area-downsampled
   gray64 -> frame stack. Bonus64/rich tensors are diagnostics only.
+- The two-player trainer stack uses the optimized
+  `render_source_state_canvas_gray64_player_perspectives(...)` helper with
+  dirty render caching when safe. This is an equivalence optimization under the
+  declared render mode, not a second product observation path.
 - Visual terminology guardrail: `browser_lines` is now the default
   browser-style source-state renderer for this product image path, and
   `body_circles_fast` is an explicit approximation for speed/profiling. This is
@@ -116,14 +129,16 @@ Source-state multiplayer target-row adapter spec:
   delivery, 2P/3P/4P public source-frame control mapping, held-control parity,
   release-to-straight, invalid/live action rejection, inactive noops, one
   direct terminal early-stop trace, and one LightZero-facing wrapper terminal
-  trace. It does not yet prove terminal-padding noop, touch/gamepad input, real
-  transport/browser integration, or full replay arrays.
+  trace. Terminal-padding noop behavior is proven through a controlled padded
+  row fixture, not relaxed post-terminal public stepping. It still does not
+  prove touch/gamepad input, real transport/browser integration, or full replay
+  arrays.
 - Latest direct 2P product-route proof covers `VectorMultiplayerEnv` raw RGB ->
   gray64, seeded `BonusGameClear`, stale trail/body clear, terminal wall death,
   rewards, final observation masks, and metadata replay. Latest
-  LightZero-facing wrapper proof covers scalar joint-action decoding, raw RGB ->
-  gray64 stack, held source frames, terminal final observation, rewards, masks,
-  and native sidecars.
+  LightZero-facing wrapper proof covers wrapper-side scalar joint-action
+  decoding, raw RGB -> gray64 stack, held source frames, terminal final
+  observation, rewards, masks, and native sidecars.
 - Latest bonus probability fix: original JS effectively gives every
   non-`BonusGameClear` source-default bonus probability `1`; subclass prototype
   fields `0.8/0.6/0.8` are not effective type-selection weights.
@@ -407,6 +422,9 @@ Current execution wave:
   plumbing. Environment owns whether visual tensors, replay arrays,
   repo-owned target rows, and injected bridge rows are source-faithful and
   honestly claimed.
+- Coach consumes named runtime/training surfaces for learning, evaluation,
+  policy quality, and experiment interpretation. Coach results do not promote
+  route, profile, or learning evidence into Environment source-fidelity claims.
 - Latest landed pieces: multiplayer final-row metadata, explicit public
   `autoreset_done_rows`, metadata-only multiplayer replay record/chunk
   packaging plus recorder, optional-array fast-runtime `BonusSelfSmall`
@@ -570,11 +588,11 @@ Current fast-path snapshot:
 
 Plain remaining issues before stronger environment claims:
 
-1. Audit full-game multiplayer gaps: lifecycle, presence/leave, scoring,
-   match-end, replay/final observations, bonus stack/death stress, and 3P/4P
-   breadth.
+1. Convert the completed full-game multiplayer audit into focused tests/fixes:
+   lifecycle, presence/leave, scoring, match-end, replay/final observations,
+   bonus stack/death stress, and 3P/4P breadth.
 2. Keep controls fidelity source-backed: source-frame control delivery, held
-   and released inputs, terminal padding, touch/gamepad input, and
+   and released inputs, terminal-padding boundaries, touch/gamepad input, and
    browser/transport semantics.
 3. Keep renderer/fast-path boundaries explicit: optimized and approximate
    render paths must stay labeled and separate from engine rule fidelity.
@@ -694,12 +712,13 @@ Plain remaining issues before stronger environment claims:
 
 ## Next Tasks
 
-1. Run the multiplayer fidelity gap audit for lifecycle, presence/leave,
-   scoring, match-end, replay/final observations, bonus stack/death stress, and
-   3P/4P breadth.
+1. Convert the completed multiplayer fidelity gap audit into focused
+   `VectorMultiplayerEnv` tests/fixes for lifecycle, presence/leave, scoring,
+   match-end, replay/final observations, bonus stack/death stress, and 3P/4P
+   breadth.
 2. Continue the controls fidelity audit for source-frame delivery, held/released
-   inputs, terminal padding, touch/gamepad input, and browser/transport
-   semantics.
+   inputs, terminal-padding boundaries, touch/gamepad input, and
+   browser/transport semantics.
 3. Keep renderer/fast-path boundaries explicit; optimized/approximate paths
    stay labeled and separate from engine rule fidelity.
 4. Keep docs/orchestration rhythm current: docs as working memory, main thread
@@ -726,23 +745,23 @@ Plain remaining issues before stronger environment claims:
    overflow.
 11. Keep the fixed `BonusSelfMaster` wall/body parity checks in the focused
    bonus suite.
-9. Finish timer/random ordering for public bonus scheduling.
-10. Finish borderless stack/wrap/collision semantics beyond the seeded public
+12. Finish timer/random ordering for public bonus scheduling.
+13. Finish borderless stack/wrap/collision semantics beyond the seeded public
    expiry slice. Source/runtime/public duration/expiry has focused coverage; do
    not list that proof as missing.
-11. Add broader bonus stack/death interactions one source claim at a time,
+14. Add broader bonus stack/death interactions one source claim at a time,
     starting from the promoted `BonusSelfFast` wall-death proof.
-12. Fill full public replay and final-observation rows for multiplayer
+15. Fill full public replay and final-observation rows for multiplayer
    lifecycle and bonus states.
-13. Broaden lifecycle/multiplayer parity after the bonus and replay facts are
+16. Broaden lifecycle/multiplayer parity after the bonus and replay facts are
    named: natural reset/warmup, warmdown movement, next-round/match-end,
    present/absent, leave, masks, and rewards.
-14. Keep browser/source pixel parity later. It follows stable source state,
+17. Keep browser/source pixel parity later. It follows stable source state,
    public replay, and lifecycle rows. Source-vs-vector 704x704 raw ->
    downsampled gray64 parity proves the source-state observation raster only,
    not browser canvas pixels.
-15. Keep old toy/debug paths quarantined as historical smoke evidence only.
-16. Keep Modal, speed, and fixed-opponent route smokes labeled as route evidence
+18. Keep old toy/debug paths quarantined as historical smoke evidence only.
+19. Keep Modal, speed, and fixed-opponent route smokes labeled as route evidence
    only.
 
 ## Boundaries

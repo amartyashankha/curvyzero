@@ -127,6 +127,13 @@ now been sampled and fit this timestamped-directory pattern. Do not treat
 fixed-path `iteration_0` as proof that training failed until all
 `lightzero_exp*` directories have been scanned.
 
+Impact is broader than the six `iteration_0` rows. A partial 212-row preserved
+set audit found at least 54 rows with timestamped `lightzero_exp*` dirs and at
+least 50 rows where broad discovery finds a later checkpoint than fixed-path
+status. At least 45 of those are fixed-nonzero rows, so this is not just an
+`iteration_0` display problem. See
+[checkpoint_discovery_audit_2026-05-13.md](checkpoint_discovery_audit_2026-05-13.md).
+
 Checkpoint tournament warning: the current Modal tournament discovery helper has
 the right broad `train_root.glob("lightzero_exp*/ckpt")` scan when it discovers
 from run roots. The danger is any caller or manifest that passes fixed

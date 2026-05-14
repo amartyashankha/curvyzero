@@ -9,7 +9,10 @@ change behavior.
 
 North star: faithful multiplayer CurvyTron environment first, then speed and
 training integration. LightZero/training plumbing is a guarded downstream
-interface, not the main focus.
+interface, not the main focus. Environment owns source-fidelity claims;
+Optimizer and Coach consume named runtime, visual, replay, target-row, and
+training surfaces without turning route/profile/learning evidence into source
+truth.
 
 ## Reorientation Loop
 
@@ -63,6 +66,10 @@ trainer/replay, or renderer boundaries.
 - Renderer: source-state/native render modes, approximate speed modes, gray64,
   bonus diagnostics, and eventual browser/canvas pixels. This answers what a
   visual claim actually proves.
+- Consumer surfaces: Optimizer and Coach may consume named environment,
+  visual, replay, target-row, profiling, and learning surfaces. They do not
+  promote those surfaces into source-fidelity claims; Environment owns that
+  promotion gate.
 
 Do not close a gap by mixing surfaces. A source-state visual pass is not
 trainer replay proof. A metadata replay row is not full replay arrays. A route
@@ -70,6 +77,9 @@ smoke is not environment fidelity. A fast approximate render mode is not the
 default source-state visual gate.
 No-death/profile/training-helper modes are project features to preserve with
 explicit metadata, not source-fidelity evidence.
+Native CurvyTron control semantics are held real-time control state advanced
+through elapsed-ms source frames; `step` and `joint_action` are wrapper/API
+terms and must not replace that source model.
 
 ## Working Habits
 

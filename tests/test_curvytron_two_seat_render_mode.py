@@ -56,6 +56,56 @@ def _small_source_state() -> dict[str, np.ndarray]:
     }
 
 
+def _two_seat_player_palettes(
+    state: dict[str, np.ndarray],
+) -> list[tuple[tuple[int, int, int], ...]]:
+    return [
+        player_perspective_rgb_palette(
+            state,
+            row=0,
+            controlled_player=player,
+            player_count=2,
+        )
+        for player in range(2)
+    ]
+
+
+def _direct_two_seat_browser_line_frames(
+    state: dict[str, np.ndarray],
+    palettes: list[tuple[tuple[int, int, int], ...]],
+) -> np.ndarray:
+    return np.stack(
+        [
+            render_source_state_canvas_gray64(
+                state,
+                row=0,
+                player_rgb=palettes[player],
+                trail_render_mode=TRAIL_RENDER_MODE_BROWSER_LINES,
+            )
+            for player in range(2)
+        ],
+        axis=0,
+    )
+
+
+def _direct_two_seat_browser_line_rgbs(
+    state: dict[str, np.ndarray],
+    palettes: list[tuple[tuple[int, int, int], ...]],
+) -> np.ndarray:
+    return np.stack(
+        [
+            render_source_state_rgb_canvas_like(
+                state,
+                row=0,
+                player_rgb=palettes[player],
+                trail_render_mode=TRAIL_RENDER_MODE_BROWSER_LINES,
+            )
+            for player in range(2)
+        ],
+        axis=0,
+    )
+
+
 def test_two_seat_stack_defaults_to_browser_lines_rgb_to_gray_player_perspective():
     state = _small_source_state()
     env = SimpleNamespace(batch_size=1, player_count=2, state=state)
@@ -93,6 +143,12 @@ def test_two_seat_stack_defaults_to_browser_lines_rgb_to_gray_player_perspective
     assert stack.render_metadata()["single_frame_render_api"] == (
         "render_source_state_canvas_gray64"
     )
+    assert stack.render_metadata()["two_seat_optimized_render_api"] == (
+        "render_source_state_canvas_gray64_player_perspectives"
+    )
+    assert stack.render_metadata()["two_seat_optimized_render_is_equivalence_cache"] is True
+    assert stack.render_metadata()["bonus_renderer_kind"] == "browser_sprites"
+    assert stack.render_metadata()["bonus_renderer_is_approximation"] is False
     assert (
         stack.render_metadata()["rgb_source_frame_size"]
         == SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE
@@ -408,6 +464,338 @@ def test_two_seat_dirty_render_cache_matches_full_render_with_sprites():
     assert np.array_equal(dirty, full)
     assert dirty_cache.stats.hits >= 1
     assert dirty_cache.stats.dirty_blocks_total > 0
+
+
+def test_two_seat_dirty_render_cache_tracks_bonus_type_only_change():
+    state = _small_source_state()
+    state["visual_trail_active"] = np.asarray([[True, True, True]], dtype=bool)
+    state["visual_trail_write_cursor"] = np.asarray([3], dtype=np.int32)
+    state["visual_trail_pos"] = np.asarray(
+        [[[8.0, 8.0], [20.0, 12.0], [32.0, 16.0]]],
+        dtype=np.float64,
+    )
+    state["visual_trail_radius"] = np.asarray([[0.8, 0.8, 0.8]], dtype=np.float64)
+    state["visual_trail_owner"] = np.asarray([[0, 0, 0]], dtype=np.int16)
+    state["visual_trail_break_before"] = np.asarray([[False, False, False]], dtype=bool)
+    state["bonus_active"] = np.asarray([[True]], dtype=bool)
+    state["bonus_pos"] = np.asarray([[[24.0, 24.0]]], dtype=np.float64)
+    state["bonus_radius"] = np.asarray([[1.5]], dtype=np.float64)
+    state["bonus_type"] = np.asarray([[1]], dtype=np.int16)
+    palettes = [
+        player_perspective_rgb_palette(
+            state,
+            row=0,
+            controlled_player=player,
+            player_count=2,
+        )
+        for player in range(2)
+    ]
+    trail_cache = SourceStateBrowserLineTrailLayerCache(min_active_slots=1)
+    dirty_cache = SourceStateCanvasGray64DirtyRenderCache(player_count=2)
+
+    render_source_state_canvas_gray64_player_perspectives(
+        state,
+        row=0,
+        player_rgbs=palettes,
+        trail_cache=trail_cache,
+        dirty_render_cache=dirty_cache,
+        trail_render_mode=TRAIL_RENDER_MODE_BROWSER_LINES,
+    )
+    state["bonus_type"][0, 0] = 12
+
+    dirty = render_source_state_canvas_gray64_player_perspectives(
+        state,
+        row=0,
+        player_rgbs=palettes,
+        trail_cache=trail_cache,
+        dirty_render_cache=dirty_cache,
+        trail_render_mode=TRAIL_RENDER_MODE_BROWSER_LINES,
+    )
+    full = np.stack(
+        [
+            render_source_state_canvas_gray64(
+                state,
+                row=0,
+                player_rgb=palettes[player],
+                trail_render_mode=TRAIL_RENDER_MODE_BROWSER_LINES,
+            )
+            for player in range(2)
+        ],
+        axis=0,
+    )
+
+    assert np.array_equal(dirty, full)
+    assert dirty_cache.stats.hits >= 1
+    assert dirty_cache.stats.dirty_blocks_total > 0
+
+
+def test_two_seat_dirty_render_cache_skips_unchanged_far_sprite_without_rgb_drift():
+    state = _small_source_state()
+    state["visual_trail_active"] = np.asarray([[True, True, True]], dtype=bool)
+    state["visual_trail_write_cursor"] = np.asarray([2], dtype=np.int32)
+    state["visual_trail_pos"] = np.asarray(
+        [[[8.0, 8.0], [16.0, 8.0], [20.0, 8.0]]],
+        dtype=np.float64,
+    )
+    state["visual_trail_radius"] = np.asarray([[0.8, 0.8, 0.8]], dtype=np.float64)
+    state["visual_trail_owner"] = np.asarray([[0, 0, 0]], dtype=np.int16)
+    state["visual_trail_break_before"] = np.asarray([[True, False, False]], dtype=bool)
+    state["bonus_active"] = np.asarray([[True]], dtype=bool)
+    state["bonus_pos"] = np.asarray([[[52.0, 52.0]]], dtype=np.float64)
+    state["bonus_radius"] = np.asarray([[1.5]], dtype=np.float64)
+    state["bonus_type"] = np.asarray([[1]], dtype=np.int16)
+    palettes = _two_seat_player_palettes(state)
+    trail_cache = SourceStateBrowserLineTrailLayerCache(min_active_slots=1)
+    dirty_cache = SourceStateCanvasGray64DirtyRenderCache(player_count=2)
+
+    render_source_state_canvas_gray64_player_perspectives(
+        state,
+        row=0,
+        player_rgbs=palettes,
+        trail_cache=trail_cache,
+        dirty_render_cache=dirty_cache,
+        trail_render_mode=TRAIL_RENDER_MODE_BROWSER_LINES,
+    )
+    state["visual_trail_write_cursor"][0] = 3
+
+    dirty = render_source_state_canvas_gray64_player_perspectives(
+        state,
+        row=0,
+        player_rgbs=palettes,
+        trail_cache=trail_cache,
+        dirty_render_cache=dirty_cache,
+        trail_render_mode=TRAIL_RENDER_MODE_BROWSER_LINES,
+    )
+
+    np.testing.assert_array_equal(dirty, _direct_two_seat_browser_line_frames(state, palettes))
+    np.testing.assert_array_equal(
+        dirty_cache.rgb_frames,
+        _direct_two_seat_browser_line_rgbs(state, palettes),
+    )
+    assert dirty_cache.stats.hits >= 1
+
+
+def test_two_seat_dirty_render_cache_redraws_unchanged_sprite_when_trail_touches_it():
+    state = _small_source_state()
+    state["visual_trail_active"] = np.asarray([[True, True, True]], dtype=bool)
+    state["visual_trail_write_cursor"] = np.asarray([2], dtype=np.int32)
+    state["visual_trail_pos"] = np.asarray(
+        [[[18.0, 24.0], [22.0, 24.0], [26.0, 24.0]]],
+        dtype=np.float64,
+    )
+    state["visual_trail_radius"] = np.asarray([[0.8, 0.8, 0.8]], dtype=np.float64)
+    state["visual_trail_owner"] = np.asarray([[0, 0, 0]], dtype=np.int16)
+    state["visual_trail_break_before"] = np.asarray([[True, False, False]], dtype=bool)
+    state["bonus_active"] = np.asarray([[True]], dtype=bool)
+    state["bonus_pos"] = np.asarray([[[24.0, 24.0]]], dtype=np.float64)
+    state["bonus_radius"] = np.asarray([[1.5]], dtype=np.float64)
+    state["bonus_type"] = np.asarray([[1]], dtype=np.int16)
+    palettes = _two_seat_player_palettes(state)
+    trail_cache = SourceStateBrowserLineTrailLayerCache(min_active_slots=1)
+    dirty_cache = SourceStateCanvasGray64DirtyRenderCache(player_count=2)
+
+    render_source_state_canvas_gray64_player_perspectives(
+        state,
+        row=0,
+        player_rgbs=palettes,
+        trail_cache=trail_cache,
+        dirty_render_cache=dirty_cache,
+        trail_render_mode=TRAIL_RENDER_MODE_BROWSER_LINES,
+    )
+    state["visual_trail_write_cursor"][0] = 3
+
+    dirty = render_source_state_canvas_gray64_player_perspectives(
+        state,
+        row=0,
+        player_rgbs=palettes,
+        trail_cache=trail_cache,
+        dirty_render_cache=dirty_cache,
+        trail_render_mode=TRAIL_RENDER_MODE_BROWSER_LINES,
+    )
+
+    np.testing.assert_array_equal(dirty, _direct_two_seat_browser_line_frames(state, palettes))
+    np.testing.assert_array_equal(
+        dirty_cache.rgb_frames,
+        _direct_two_seat_browser_line_rgbs(state, palettes),
+    )
+    assert dirty_cache.stats.hits >= 1
+
+
+def test_two_seat_dirty_render_cache_invalidates_trail_and_body_clear():
+    state = _small_source_state()
+    state["visual_trail_active"] = np.asarray([[True, True, True, True]], dtype=bool)
+    state["visual_trail_write_cursor"] = np.asarray([4], dtype=np.int32)
+    state["visual_trail_pos"] = np.asarray(
+        [[[8.0, 8.0], [20.0, 12.0], [32.0, 16.0], [44.0, 20.0]]],
+        dtype=np.float64,
+    )
+    state["visual_trail_radius"] = np.asarray([[0.8, 0.8, 0.8, 0.8]], dtype=np.float64)
+    state["visual_trail_owner"] = np.asarray([[0, 0, 1, 1]], dtype=np.int16)
+    state["visual_trail_break_before"] = np.asarray([[False, False, True, False]], dtype=bool)
+    palettes = _two_seat_player_palettes(state)
+    trail_cache = SourceStateBrowserLineTrailLayerCache(min_active_slots=1)
+    dirty_cache = SourceStateCanvasGray64DirtyRenderCache(player_count=2)
+
+    render_source_state_canvas_gray64_player_perspectives(
+        state,
+        row=0,
+        player_rgbs=palettes,
+        trail_cache=trail_cache,
+        dirty_render_cache=dirty_cache,
+        trail_render_mode=TRAIL_RENDER_MODE_BROWSER_LINES,
+    )
+
+    state["visual_trail_active"][0, :] = False
+    state["body_active"][0, :] = False
+    state["body_write_cursor"][0] = 0
+    state["pos"][0] = np.asarray([[16.0, 48.0], [48.0, 16.0]], dtype=np.float64)
+
+    cached = render_source_state_canvas_gray64_player_perspectives(
+        state,
+        row=0,
+        player_rgbs=palettes,
+        trail_cache=trail_cache,
+        dirty_render_cache=dirty_cache,
+        trail_render_mode=TRAIL_RENDER_MODE_BROWSER_LINES,
+    )
+    direct = _direct_two_seat_browser_line_frames(state, palettes)
+
+    np.testing.assert_array_equal(cached, direct)
+    assert dirty_cache.stats.fallbacks >= 1
+    assert not dirty_cache.initialized
+
+
+def test_two_seat_dirty_render_cache_invalidates_wrap_break_mutation():
+    state = _small_source_state()
+    state["present"][:, :] = False
+    state["alive"][:, :] = False
+    state["body_active"][:, :] = False
+    state["body_write_cursor"][0] = 0
+    state["borderless"] = np.asarray([False], dtype=bool)
+    state["visual_trail_active"] = np.asarray([[True, True, True]], dtype=bool)
+    state["visual_trail_write_cursor"] = np.asarray([3], dtype=np.int32)
+    state["visual_trail_pos"] = np.asarray(
+        [[[58.0, 32.0], [63.0, 32.0], [1.0, 32.0]]],
+        dtype=np.float64,
+    )
+    state["visual_trail_radius"] = np.asarray([[1.0, 1.0, 1.0]], dtype=np.float64)
+    state["visual_trail_owner"] = np.asarray([[0, 0, 0]], dtype=np.int16)
+    state["visual_trail_break_before"] = np.asarray([[True, False, False]], dtype=bool)
+    palettes = _two_seat_player_palettes(state)
+    trail_cache = SourceStateBrowserLineTrailLayerCache(min_active_slots=1)
+    dirty_cache = SourceStateCanvasGray64DirtyRenderCache(player_count=2)
+
+    render_source_state_canvas_gray64_player_perspectives(
+        state,
+        row=0,
+        player_rgbs=palettes,
+        trail_cache=trail_cache,
+        dirty_render_cache=dirty_cache,
+        trail_render_mode=TRAIL_RENDER_MODE_BROWSER_LINES,
+    )
+
+    state["borderless"][0] = True
+    state["visual_trail_break_before"][0, 2] = True
+
+    cached = render_source_state_canvas_gray64_player_perspectives(
+        state,
+        row=0,
+        player_rgbs=palettes,
+        trail_cache=trail_cache,
+        dirty_render_cache=dirty_cache,
+        trail_render_mode=TRAIL_RENDER_MODE_BROWSER_LINES,
+    )
+    direct = _direct_two_seat_browser_line_frames(state, palettes)
+
+    np.testing.assert_array_equal(cached, direct)
+    assert dirty_cache.stats.fallbacks >= 1
+    assert trail_cache.stats.prefix_mutation_rebuilds >= 1
+
+
+def test_two_seat_dirty_render_cache_handles_wrapped_append_without_stale_bridge():
+    state = _small_source_state()
+    state["present"][:, :] = False
+    state["alive"][:, :] = False
+    state["body_active"][:, :] = False
+    state["body_write_cursor"][0] = 0
+    state["borderless"] = np.asarray([True], dtype=bool)
+    state["visual_trail_active"] = np.asarray([[True, True, True]], dtype=bool)
+    state["visual_trail_write_cursor"] = np.asarray([2], dtype=np.int32)
+    state["visual_trail_pos"] = np.asarray(
+        [[[58.0, 32.0], [63.0, 32.0], [1.0, 32.0]]],
+        dtype=np.float64,
+    )
+    state["visual_trail_radius"] = np.asarray([[1.0, 1.0, 1.0]], dtype=np.float64)
+    state["visual_trail_owner"] = np.asarray([[0, 0, 0]], dtype=np.int16)
+    state["visual_trail_break_before"] = np.asarray([[True, False, True]], dtype=bool)
+    palettes = _two_seat_player_palettes(state)
+    trail_cache = SourceStateBrowserLineTrailLayerCache(min_active_slots=1)
+    dirty_cache = SourceStateCanvasGray64DirtyRenderCache(player_count=2)
+
+    render_source_state_canvas_gray64_player_perspectives(
+        state,
+        row=0,
+        player_rgbs=palettes,
+        trail_cache=trail_cache,
+        dirty_render_cache=dirty_cache,
+        trail_render_mode=TRAIL_RENDER_MODE_BROWSER_LINES,
+    )
+    state["visual_trail_write_cursor"][0] = 3
+
+    cached = render_source_state_canvas_gray64_player_perspectives(
+        state,
+        row=0,
+        player_rgbs=palettes,
+        trail_cache=trail_cache,
+        dirty_render_cache=dirty_cache,
+        trail_render_mode=TRAIL_RENDER_MODE_BROWSER_LINES,
+    )
+    direct = _direct_two_seat_browser_line_frames(state, palettes)
+
+    np.testing.assert_array_equal(cached, direct)
+    assert dirty_cache.stats.hits >= 1
+    assert dirty_cache.stats.dirty_blocks_total > 0
+
+
+def test_two_seat_stack_reset_rows_clears_optimized_cache_for_new_round_state():
+    state = _small_source_state()
+    state["visual_trail_active"] = np.asarray([[True, True, True]], dtype=bool)
+    state["visual_trail_write_cursor"] = np.asarray([3], dtype=np.int32)
+    state["visual_trail_pos"] = np.asarray(
+        [[[8.0, 8.0], [20.0, 12.0], [32.0, 16.0]]],
+        dtype=np.float64,
+    )
+    state["visual_trail_radius"] = np.asarray([[0.8, 0.8, 0.8]], dtype=np.float64)
+    state["visual_trail_owner"] = np.asarray([[0, 0, 0]], dtype=np.int16)
+    state["visual_trail_break_before"] = np.asarray([[False, False, False]], dtype=bool)
+    state["bonus_active"] = np.asarray([[True]], dtype=bool)
+    state["bonus_pos"] = np.asarray([[[24.0, 24.0]]], dtype=np.float64)
+    state["bonus_radius"] = np.asarray([[1.5]], dtype=np.float64)
+    state["bonus_type"] = np.asarray([[1]], dtype=np.int16)
+    env = SimpleNamespace(batch_size=1, player_count=2, state=state)
+    stack = SourceStateGray64Stack4(batch_size=1, player_count=2)
+    stack.update(env)
+    stack.update(env)
+    assert stack.dirty_render_stats()["hits"] >= 1
+
+    state["tick"][0] = 0
+    state["elapsed_ms"][0] = 0.0
+    state["visual_trail_active"][0, :] = False
+    state["visual_trail_write_cursor"][0] = 0
+    state["body_active"][0, :] = False
+    state["body_write_cursor"][0] = 0
+    state["bonus_active"][0, :] = False
+    state["pos"][0] = np.asarray([[16.0, 48.0], [48.0, 16.0]], dtype=np.float64)
+
+    observation = stack.reset_rows(env, np.asarray([True], dtype=bool))
+    palettes = _two_seat_player_palettes(state)
+    direct = _direct_two_seat_browser_line_frames(state, palettes)
+
+    np.testing.assert_array_equal(observation[0, :, :3], np.zeros_like(observation[0, :, :3]))
+    for player in range(2):
+        expected = normalize_source_state_gray64(direct[player])[0]
+        np.testing.assert_array_equal(observation[0, player, -1], expected)
+    assert stack.dirty_render_stats()["hits"] == 0
 
 
 def test_rgb_canvas_like_to_gray64_downsample_scratch_matches_baseline():

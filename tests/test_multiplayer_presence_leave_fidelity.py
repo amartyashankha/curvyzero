@@ -1,8 +1,11 @@
+import json
 import math
+from pathlib import Path
 
 import numpy as np
 import pytest
 
+from curvyzero.env import vector_reset
 from curvyzero.training.multiplayer_source_state_trainer_replay import (
     SourceStateMultiplayerTrainerReplayRecorder,
 )
@@ -10,6 +13,9 @@ from curvyzero.training.multiplayer_source_state_trainer_surface import (
     SourceStateMultiplayerTrainerSurface,
 )
 from curvyzero.env.vector_multiplayer_env import VectorMultiplayerEnv
+
+
+SCENARIO_ROOT = Path(__file__).resolve().parents[1] / "scenarios" / "environment"
 
 
 @pytest.mark.parametrize("player_count", [3, 4])
@@ -237,10 +243,9 @@ def test_trainer_replay_preserves_presence_leave_rows(player_count: int):
     expected_live_after_warmdown = expected_present.copy()
     expected_warmdown_reward = np.zeros((2, player_count), dtype=np.float32)
     expected_warmdown_mask = np.repeat(expected_present[:, :, None], 3, axis=2)
-    expected_warmdown_policy_rows = (
-        [(0, player) for player in range(player_count) if player != 1]
-        + [(1, player) for player in range(player_count) if player != 0]
-    )
+    expected_warmdown_policy_rows = [
+        (0, player) for player in range(player_count) if player != 1
+    ] + [(1, player) for player in range(player_count) if player != 0]
 
     assert warmdown_step.info["trainer_surface_api"] == "advance_warmdown"
     np.testing.assert_array_equal(warmdown_step.info["present"], expected_present)
@@ -278,6 +283,545 @@ def test_trainer_replay_preserves_presence_leave_rows(player_count: int):
     assert chunk.records[3]["policy_row_count"] == 2 * (player_count - 1)
 
 
+def test_source_fixture_2p_mid_round_leave_immediate_terminal_public_and_replay():
+    scenario_name = "source_lifecycle_mid_round_remove_avatar_2p.json"
+    env, reset_batch = _make_source_public_env(scenario_name, player_count=2)
+
+    assert int(reset_batch.info["random_tape_cursor"][0]) == 8
+    np.testing.assert_array_equal(
+        reset_batch.info["present"],
+        np.asarray([[True, True]], dtype=bool),
+    )
+    np.testing.assert_array_equal(
+        reset_batch.info["alive"],
+        np.asarray([[True, True]], dtype=bool),
+    )
+    np.testing.assert_allclose(env.state["pos"][0], [[58.0, 44.0], [30.0, 44.0]])
+    np.testing.assert_allclose(env.state["heading"][0], [math.pi + 0.1, 0.1])
+
+    leave_batch = env.remove_player(1)
+
+    assert leave_batch.info["leave_metadata_only"] is True
+    assert leave_batch.info["leave_trainer_claim"] is False
+    np.testing.assert_array_equal(
+        leave_batch.info["leave_rows"],
+        np.asarray([0], dtype=np.int32),
+    )
+    np.testing.assert_array_equal(
+        leave_batch.info["leave_player_ids"],
+        np.asarray([1], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        leave_batch.info["leave_source_player_ids"],
+        np.asarray([2], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        leave_batch.info["leave_immediate_terminal_rows"],
+        np.asarray([0], dtype=np.int32),
+    )
+    np.testing.assert_array_equal(
+        leave_batch.info["present"],
+        np.asarray([[True, False]], dtype=bool),
+    )
+    np.testing.assert_array_equal(
+        leave_batch.info["alive"],
+        np.asarray([[True, False]], dtype=bool),
+    )
+    np.testing.assert_array_equal(
+        leave_batch.info["death_count"],
+        np.asarray([0], dtype=np.int32),
+    )
+    np.testing.assert_array_equal(
+        leave_batch.info["death_player"],
+        np.asarray([[-1, -1]], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        leave_batch.info["score"],
+        np.asarray([[1, 0]], dtype=np.int32),
+    )
+    np.testing.assert_array_equal(
+        leave_batch.info["round_score"],
+        np.zeros((1, 2), dtype=np.int32),
+    )
+    np.testing.assert_array_equal(leave_batch.info["winner"], np.asarray([0], dtype=np.int16))
+    np.testing.assert_array_equal(leave_batch.info["match_done"], np.asarray([False]))
+    np.testing.assert_array_equal(
+        leave_batch.info["round_done"],
+        np.asarray([True], dtype=bool),
+    )
+    np.testing.assert_array_equal(
+        leave_batch.info["warmdown_pending"],
+        np.asarray([True], dtype=bool),
+    )
+    np.testing.assert_array_equal(leave_batch.done, np.asarray([True], dtype=bool))
+    np.testing.assert_array_equal(leave_batch.terminated, np.asarray([True], dtype=bool))
+    np.testing.assert_array_equal(
+        leave_batch.info["terminal_reason"],
+        np.asarray([vector_reset.TERMINAL_REASON_SURVIVOR_WIN], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        leave_batch.reward,
+        np.asarray([[1.0, 0.0]], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        leave_batch.action_mask,
+        np.zeros((1, 2, 3), dtype=bool),
+    )
+    assert int(leave_batch.info["random_tape_cursor"][0]) == 9
+    _assert_public_final_rows(leave_batch, [0])
+    np.testing.assert_array_equal(leave_batch.final_reward, leave_batch.reward)
+    np.testing.assert_array_equal(leave_batch.info["final_reward_map"], leave_batch.reward)
+
+    surface = _make_source_surface(scenario_name, player_count=2)
+    recorder = SourceStateMultiplayerTrainerReplayRecorder()
+    reset_step = surface.reset(
+        seed=np.asarray([555], dtype=np.uint64),
+        source_fixture_random_tape_values=_lifecycle_random_tape(scenario_name),
+        source_fixture_ref=f"scenarios/environment/{scenario_name}",
+        source_fixture_new_round_time_ms=0.0,
+        source_fixture_warmup_advance_ms=3000.0,
+    )
+    recorder.record(reset_step, source_ref=scenario_name)
+    _assert_policy_rows(reset_step, [(0, 0), (0, 1)])
+
+    leave_step = surface.remove_player(1)
+    recorder.record(leave_step, source_ref=scenario_name)
+    chunk = recorder.build_chunk()
+
+    np.testing.assert_array_equal(leave_step.done, np.asarray([True], dtype=bool))
+    np.testing.assert_array_equal(
+        leave_step.info["present"],
+        np.asarray([[True, False]], dtype=bool),
+    )
+    np.testing.assert_array_equal(
+        leave_step.info["alive"],
+        np.asarray([[True, False]], dtype=bool),
+    )
+    np.testing.assert_array_equal(
+        leave_step.info["death_player"],
+        np.asarray([[-1, -1]], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        leave_step.info["score"],
+        np.asarray([[1, 0]], dtype=np.int32),
+    )
+    np.testing.assert_array_equal(leave_step.info["winner"], np.asarray([0], dtype=np.int16))
+    np.testing.assert_array_equal(leave_step.live_mask, np.zeros((1, 2), dtype=bool))
+    np.testing.assert_array_equal(
+        leave_step.legal_action_mask,
+        np.zeros((1, 2, 3), dtype=bool),
+    )
+    np.testing.assert_array_equal(
+        leave_step.joint_action,
+        np.full((1, 2), -1, dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        leave_step.reward,
+        np.asarray([[1.0, 0.0]], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        leave_step.final_observation_row_mask,
+        np.asarray([True], dtype=bool),
+    )
+    np.testing.assert_array_equal(
+        leave_step.final_reward_map,
+        np.asarray([[1.0, 0.0]], dtype=np.float32),
+    )
+    _assert_policy_rows(leave_step, [])
+
+    assert chunk.metadata["record_count"] == 2
+    assert chunk.metadata["closed_by_terminal"] is True
+    assert chunk.metadata["player_count"] == 2
+    assert [record["source_ref"] for record in chunk.records] == [
+        scenario_name,
+        scenario_name,
+    ]
+    assert chunk.records[1]["trainer_surface_api"] == "remove_player"
+    assert chunk.records[1]["done_rows"] == [0]
+    assert chunk.records[1]["final_observation_rows"] == [0]
+    assert [rows["policy_env_row"].size for rows in chunk.policy_rows] == [2, 0]
+    np.testing.assert_array_equal(
+        chunk.arrays["live_mask"][1],
+        np.zeros((1, 2), dtype=bool),
+    )
+    np.testing.assert_array_equal(
+        chunk.arrays["joint_action"][1],
+        np.full((1, 2), -1, dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        chunk.arrays["final_observation_row_mask"][1],
+        np.asarray([True], dtype=bool),
+    )
+    np.testing.assert_array_equal(
+        chunk.arrays["final_reward_map"][1],
+        np.asarray([[1.0, 0.0]], dtype=np.float32),
+    )
+
+
+def test_public_source_fixture_leave_to_single_present_scores_then_warmdown_reset_masks():
+    scenario_name = "source_lifecycle_remove_avatar_to_single_present_3p.json"
+    env, reset_batch = _make_source_public_env(scenario_name, player_count=3)
+
+    assert int(reset_batch.info["random_tape_cursor"][0]) == 12
+    np.testing.assert_array_equal(
+        reset_batch.info["present"],
+        np.asarray([[True, True, True]], dtype=bool),
+    )
+
+    env.state["pos"][0, 2] = np.asarray([93.0, 47.5], dtype=np.float64)
+    env.state["heading"][0, 2] = 0.0
+    env.state["prev_pos"][0, 2] = env.state["pos"][0, 2]
+    first_death_batch = env.step(np.asarray([[1, 1, 1]], dtype=np.int16))
+
+    np.testing.assert_array_equal(first_death_batch.done, np.asarray([False], dtype=bool))
+    np.testing.assert_array_equal(
+        first_death_batch.info["alive"],
+        np.asarray([[True, True, False]], dtype=bool),
+    )
+    np.testing.assert_array_equal(
+        first_death_batch.info["death_player"],
+        np.asarray([[2, -1, -1]], dtype=np.int16),
+    )
+
+    env.state["pos"][0, 0] = np.asarray([18.991, 60.0], dtype=np.float64)
+    env.state["heading"][0, 0] = 0.0
+    env.state["prev_pos"][0, 0] = env.state["pos"][0, 0]
+    env.state["speed"][0, 0] = 8.0
+    leave_batch = env.remove_player(1)
+
+    np.testing.assert_array_equal(
+        leave_batch.info["leave_immediate_terminal_rows"],
+        np.asarray([0], dtype=np.int32),
+    )
+    np.testing.assert_array_equal(
+        leave_batch.info["present"],
+        np.asarray([[True, False, True]], dtype=bool),
+    )
+    np.testing.assert_array_equal(
+        leave_batch.info["alive"],
+        np.asarray([[True, False, False]], dtype=bool),
+    )
+    np.testing.assert_array_equal(
+        leave_batch.info["death_player"],
+        np.asarray([[2, -1, -1]], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        leave_batch.info["score"],
+        np.asarray([[2, 0, 0]], dtype=np.int32),
+    )
+    np.testing.assert_array_equal(
+        leave_batch.info["round_score"],
+        np.zeros((1, 3), dtype=np.int32),
+    )
+    np.testing.assert_array_equal(leave_batch.info["winner"], np.asarray([0], dtype=np.int16))
+    np.testing.assert_array_equal(leave_batch.done, np.asarray([True], dtype=bool))
+    np.testing.assert_array_equal(leave_batch.terminated, np.asarray([True], dtype=bool))
+    np.testing.assert_array_equal(
+        leave_batch.info["terminal_reason"],
+        np.asarray([vector_reset.TERMINAL_REASON_SURVIVOR_WIN], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        leave_batch.reward,
+        np.asarray([[1.0, 0.0, -1.0]], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(leave_batch.action_mask, np.zeros((1, 3, 3), dtype=bool))
+    _assert_public_final_rows(leave_batch, [0])
+
+    warmdown_batch = env.advance_warmdown(5000.0)
+
+    assert warmdown_batch.info["warmdown_waited"] is True
+    assert warmdown_batch.info["warmdown_info"]["next_round_count"] == 1
+    assert warmdown_batch.info["warmdown_info"]["match_end_count"] == 0
+    np.testing.assert_array_equal(warmdown_batch.done, np.asarray([False], dtype=bool))
+    np.testing.assert_array_equal(
+        warmdown_batch.info["terminal_rows"],
+        np.asarray([], dtype=np.int32),
+    )
+    np.testing.assert_array_equal(
+        warmdown_batch.info["present"],
+        np.asarray([[True, False, True]], dtype=bool),
+    )
+    np.testing.assert_array_equal(
+        warmdown_batch.info["alive"],
+        np.asarray([[True, False, True]], dtype=bool),
+    )
+    np.testing.assert_array_equal(
+        warmdown_batch.info["round_done"],
+        np.asarray([False], dtype=bool),
+    )
+    np.testing.assert_array_equal(
+        warmdown_batch.info["warmdown_pending"],
+        np.asarray([False], dtype=bool),
+    )
+    np.testing.assert_array_equal(warmdown_batch.info["round_id"], np.asarray([2]))
+    np.testing.assert_array_equal(
+        warmdown_batch.action_mask,
+        np.asarray(
+            [[[True, True, True], [False, False, False], [True, True, True]]],
+            dtype=bool,
+        ),
+    )
+    _assert_public_final_rows(warmdown_batch, [])
+
+
+def test_trainer_replay_source_fixture_leave_round_end_match_threshold():
+    surface = _make_source_surface(
+        "source_lifecycle_mid_round_remove_avatar_3p_continue_round_end.json",
+        player_count=3,
+        episode_end_mode="match",
+        max_score=2,
+    )
+    recorder = SourceStateMultiplayerTrainerReplayRecorder()
+
+    reset_step = surface.reset(
+        seed=np.asarray([555], dtype=np.uint64),
+        source_fixture_random_tape_values=_lifecycle_random_tape(
+            "source_lifecycle_mid_round_remove_avatar_3p_continue_round_end.json"
+        ),
+        source_fixture_new_round_time_ms=0.0,
+        source_fixture_warmup_advance_ms=3000.0,
+    )
+    recorder.record(reset_step, source_ref="fixture-reset")
+
+    leave_step = surface.remove_player(1)
+    recorder.record(leave_step, source_ref="fixture-active-leave")
+
+    np.testing.assert_array_equal(
+        leave_step.info["present"],
+        np.asarray([[True, False, True]], dtype=bool),
+    )
+    np.testing.assert_array_equal(
+        leave_step.live_mask,
+        np.asarray([[True, False, True]], dtype=bool),
+    )
+    _assert_policy_rows(leave_step, [(0, 0), (0, 2)])
+
+    surface.env.state["pos"][0, 2] = np.asarray([93.0, 47.5], dtype=np.float64)
+    surface.env.state["heading"][0, 2] = 0.0
+    surface.env.state["prev_pos"][0, 2] = surface.env.state["pos"][0, 2]
+    round_step = surface.step(np.asarray([[1, -1, 1]], dtype=np.int16))
+    recorder.record(round_step, source_ref="fixture-round-end-after-leave")
+
+    np.testing.assert_array_equal(round_step.done, np.asarray([False], dtype=bool))
+    np.testing.assert_array_equal(round_step.info["round_done"], np.asarray([True], dtype=bool))
+    np.testing.assert_array_equal(
+        round_step.info["warmdown_pending"],
+        np.asarray([True], dtype=bool),
+    )
+    np.testing.assert_array_equal(round_step.info["score"], np.asarray([[2, 0, 0]]))
+    np.testing.assert_array_equal(round_step.live_mask, np.zeros((1, 3), dtype=bool))
+    np.testing.assert_array_equal(
+        round_step.final_observation_row_mask,
+        np.asarray([False], dtype=bool),
+    )
+
+    warmdown_step = surface.advance_warmdown(5000.0)
+    recorder.record(warmdown_step, source_ref="fixture-match-end-warmdown")
+    chunk = recorder.build_chunk()
+
+    assert warmdown_step.info["warmdown_info"]["next_round_count"] == 0
+    assert warmdown_step.info["warmdown_info"]["match_end_count"] == 1
+    np.testing.assert_array_equal(
+        warmdown_step.info["terminal_rows"],
+        np.asarray([0], dtype=np.int32),
+    )
+    np.testing.assert_array_equal(warmdown_step.done, np.asarray([True], dtype=bool))
+    np.testing.assert_array_equal(
+        warmdown_step.info["match_done"],
+        np.asarray([True], dtype=bool),
+    )
+    np.testing.assert_array_equal(
+        warmdown_step.info["match_winner"],
+        np.asarray([0], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        warmdown_step.final_observation_row_mask,
+        np.asarray([True], dtype=bool),
+    )
+    np.testing.assert_array_equal(warmdown_step.live_mask, np.zeros((1, 3), dtype=bool))
+    _assert_policy_rows(warmdown_step, [])
+
+    assert chunk.metadata["record_count"] == 4
+    assert chunk.metadata["closed_by_terminal"] is True
+    assert chunk.records[1]["trainer_surface_api"] == "remove_player"
+    assert chunk.records[2]["trainer_surface_api"] == "step"
+    assert chunk.records[3]["trainer_surface_api"] == "advance_warmdown"
+    assert chunk.records[3]["done_rows"] == [0]
+    np.testing.assert_array_equal(
+        chunk.arrays["final_observation_row_mask"][3],
+        np.asarray([True], dtype=bool),
+    )
+
+
+def test_trainer_replay_source_fixture_4p_leave_continues_then_scores_source_order():
+    scenario_name = "source_lifecycle_mid_round_remove_avatar_4p_continue_round_end.json"
+    surface = _make_source_surface(scenario_name, player_count=4)
+    recorder = SourceStateMultiplayerTrainerReplayRecorder()
+
+    reset_step = surface.reset(
+        seed=np.asarray([555], dtype=np.uint64),
+        source_fixture_random_tape_values=_lifecycle_random_tape(scenario_name),
+        source_fixture_new_round_time_ms=0.0,
+        source_fixture_warmup_advance_ms=3000.0,
+    )
+    recorder.record(reset_step, source_ref="fixture-reset")
+
+    leave_step = surface.remove_player(1)
+    recorder.record(leave_step, source_ref="fixture-active-leave")
+
+    np.testing.assert_array_equal(
+        leave_step.info["present"],
+        np.asarray([[True, False, True, True]], dtype=bool),
+    )
+    np.testing.assert_array_equal(
+        leave_step.info["death_player"],
+        np.asarray([[-1, -1, -1, -1]], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        leave_step.live_mask,
+        np.asarray([[True, False, True, True]], dtype=bool),
+    )
+    _assert_policy_rows(leave_step, [(0, 0), (0, 2), (0, 3)])
+
+    surface.env.state["pos"][0, 3] = np.asarray([99.0, 50.5], dtype=np.float64)
+    surface.env.state["heading"][0, 3] = 0.0
+    surface.env.state["prev_pos"][0, 3] = surface.env.state["pos"][0, 3]
+    first_death_step = surface.step(np.asarray([[1, -1, 1, 1]], dtype=np.int16))
+    recorder.record(first_death_step, source_ref="fixture-first-death-after-leave")
+
+    np.testing.assert_array_equal(first_death_step.done, np.asarray([False], dtype=bool))
+    np.testing.assert_array_equal(
+        first_death_step.info["alive"],
+        np.asarray([[True, False, True, False]], dtype=bool),
+    )
+    np.testing.assert_array_equal(
+        first_death_step.info["death_player"],
+        np.asarray([[3, -1, -1, -1]], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        first_death_step.live_mask,
+        np.asarray([[True, False, True, False]], dtype=bool),
+    )
+    _assert_policy_rows(first_death_step, [(0, 0), (0, 2)])
+
+    surface.env.state["pos"][0, 2] = np.asarray([1.0, 50.5], dtype=np.float64)
+    surface.env.state["heading"][0, 2] = math.pi
+    surface.env.state["prev_pos"][0, 2] = surface.env.state["pos"][0, 2]
+    terminal_step = surface.step(np.asarray([[1, -1, 1, -1]], dtype=np.int16))
+    recorder.record(terminal_step, source_ref="fixture-terminal-after-leave")
+    chunk = recorder.build_chunk()
+
+    np.testing.assert_array_equal(terminal_step.done, np.asarray([True], dtype=bool))
+    np.testing.assert_array_equal(
+        terminal_step.info["alive"],
+        np.asarray([[True, False, False, False]], dtype=bool),
+    )
+    np.testing.assert_array_equal(
+        terminal_step.info["death_player"],
+        np.asarray([[3, 2, -1, -1]], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        terminal_step.info["score"],
+        np.asarray([[3, 0, 1, 0]], dtype=np.int32),
+    )
+    np.testing.assert_array_equal(terminal_step.info["winner"], np.asarray([0], dtype=np.int16))
+    np.testing.assert_array_equal(
+        terminal_step.info["terminal_reason"],
+        np.asarray([vector_reset.TERMINAL_REASON_SURVIVOR_WIN], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(terminal_step.live_mask, np.zeros((1, 4), dtype=bool))
+    np.testing.assert_array_equal(
+        terminal_step.final_observation_row_mask,
+        np.asarray([True], dtype=bool),
+    )
+    _assert_policy_rows(terminal_step, [])
+
+    assert chunk.metadata["record_count"] == 4
+    assert chunk.metadata["closed_by_terminal"] is True
+    assert [rows["policy_env_row"].size for rows in chunk.policy_rows] == [4, 3, 2, 0]
+    assert chunk.records[1]["trainer_surface_api"] == "remove_player"
+    assert chunk.records[3]["done_rows"] == [0]
+    np.testing.assert_array_equal(
+        chunk.arrays["final_observation_row_mask"][3],
+        np.asarray([True], dtype=bool),
+    )
+
+
+def test_trainer_replay_source_fixture_warmdown_leave_next_round_masks_absent_player():
+    scenario_name = "source_lifecycle_remove_avatar_during_warmdown_3p.json"
+    surface = _make_source_surface(
+        scenario_name,
+        player_count=3,
+        episode_end_mode="match",
+    )
+    recorder = SourceStateMultiplayerTrainerReplayRecorder()
+
+    reset_step = surface.reset(
+        seed=np.asarray([555], dtype=np.uint64),
+        source_fixture_random_tape_values=_lifecycle_random_tape(scenario_name),
+        source_fixture_new_round_time_ms=0.0,
+        source_fixture_warmup_advance_ms=3000.0,
+    )
+    recorder.record(reset_step, source_ref="fixture-reset")
+
+    surface.env.state["pos"][0, 2] = np.asarray([93.0, 47.5], dtype=np.float64)
+    surface.env.state["heading"][0, 2] = 0.0
+    surface.env.state["prev_pos"][0, 2] = surface.env.state["pos"][0, 2]
+    surface.env.state["pos"][0, 1] = np.asarray([1.0, 47.5], dtype=np.float64)
+    surface.env.state["heading"][0, 1] = math.pi
+    surface.env.state["prev_pos"][0, 1] = surface.env.state["pos"][0, 1]
+    round_step = surface.step(np.asarray([[1, 1, 1]], dtype=np.int16))
+    recorder.record(round_step, source_ref="fixture-round-end")
+
+    leave_step = surface.remove_player(0)
+    recorder.record(leave_step, source_ref="fixture-warmdown-leave")
+
+    np.testing.assert_array_equal(
+        leave_step.info["leave_warmdown_rows"],
+        np.asarray([0], dtype=np.int32),
+    )
+    np.testing.assert_array_equal(
+        leave_step.info["present"],
+        np.asarray([[False, True, True]], dtype=bool),
+    )
+    np.testing.assert_array_equal(leave_step.live_mask, np.zeros((1, 3), dtype=bool))
+    np.testing.assert_array_equal(leave_step.legal_action_mask, np.zeros((1, 3, 3), dtype=bool))
+
+    warmdown_step = surface.advance_warmdown(5000.0)
+    recorder.record(warmdown_step, source_ref="fixture-next-round")
+    chunk = recorder.build_chunk()
+
+    assert warmdown_step.info["warmdown_info"]["next_round_count"] == 1
+    assert warmdown_step.info["warmdown_info"]["match_end_count"] == 0
+    np.testing.assert_array_equal(warmdown_step.done, np.asarray([False], dtype=bool))
+    np.testing.assert_array_equal(
+        warmdown_step.info["present"],
+        np.asarray([[False, True, True]], dtype=bool),
+    )
+    np.testing.assert_array_equal(
+        warmdown_step.live_mask,
+        np.asarray([[False, True, True]], dtype=bool),
+    )
+    np.testing.assert_array_equal(
+        warmdown_step.legal_action_mask,
+        np.asarray(
+            [[[False, False, False], [True, True, True], [True, True, True]]],
+            dtype=bool,
+        ),
+    )
+    _assert_policy_rows(warmdown_step, [(0, 1), (0, 2)])
+
+    assert chunk.metadata["record_count"] == 4
+    assert chunk.metadata["closed_by_terminal"] is False
+    assert chunk.records[2]["trainer_surface_api"] == "remove_player"
+    assert chunk.records[3]["trainer_surface_api"] == "advance_warmdown"
+    assert chunk.records[3]["policy_row_count"] == 2
+    np.testing.assert_array_equal(
+        chunk.arrays["live_mask"][3],
+        np.asarray([[False, True, True]], dtype=bool),
+    )
+
+
 def _make_public_env(player_count: int) -> VectorMultiplayerEnv:
     return VectorMultiplayerEnv(
         batch_size=2,
@@ -291,6 +835,75 @@ def _make_public_env(player_count: int) -> VectorMultiplayerEnv:
         timer_capacity=max(4, player_count),
         random_tape_capacity=512,
     )
+
+
+def _make_source_public_env(
+    scenario_name: str,
+    *,
+    player_count: int,
+    episode_end_mode: str = "round",
+    max_score: int | None = None,
+) -> tuple[VectorMultiplayerEnv, object]:
+    tape = _lifecycle_random_tape(scenario_name)
+    env = VectorMultiplayerEnv(
+        batch_size=1,
+        player_count=player_count,
+        seed=555,
+        decision_ms=100.0,
+        max_score=_lifecycle_max_score(scenario_name) if max_score is None else max_score,
+        episode_end_mode=episode_end_mode,
+        body_capacity=64,
+        event_capacity=64,
+        timer_capacity=max(4, player_count),
+        random_tape_capacity=tape.shape[1],
+    )
+    batch = env.reset(
+        seed=np.asarray([555], dtype=np.uint64),
+        source_fixture_random_tape_values=tape,
+        source_fixture_ref=f"scenarios/environment/{scenario_name}",
+        source_fixture_new_round_time_ms=0.0,
+        source_fixture_warmup_advance_ms=3000.0,
+    )
+    return env, batch
+
+
+def _make_source_surface(
+    scenario_name: str,
+    *,
+    player_count: int,
+    episode_end_mode: str = "round",
+    max_score: int | None = None,
+) -> SourceStateMultiplayerTrainerSurface:
+    tape = _lifecycle_random_tape(scenario_name)
+    return SourceStateMultiplayerTrainerSurface(
+        batch_size=1,
+        player_count=player_count,
+        seed=555,
+        decision_ms=100.0,
+        max_score=_lifecycle_max_score(scenario_name) if max_score is None else max_score,
+        episode_end_mode=episode_end_mode,
+        body_capacity=64,
+        event_capacity=64,
+        timer_capacity=max(4, player_count),
+        random_tape_capacity=tape.shape[1],
+        natural_bonus_spawn=False,
+    )
+
+
+def _lifecycle_random_tape(scenario_name: str) -> np.ndarray:
+    payload = _lifecycle_payload(scenario_name)
+    sequence = payload["source_setup"]["random"]["math_random_sequence"]
+    return np.asarray([sequence], dtype=np.float64)
+
+
+def _lifecycle_max_score(scenario_name: str) -> int:
+    payload = _lifecycle_payload(scenario_name)
+    return int(payload["source_setup"]["room"]["max_score"])
+
+
+def _lifecycle_payload(scenario_name: str) -> dict[str, object]:
+    with (SCENARIO_ROOT / scenario_name).open("r", encoding="utf-8") as handle:
+        return json.load(handle)
 
 
 def _force_player0_round_win(

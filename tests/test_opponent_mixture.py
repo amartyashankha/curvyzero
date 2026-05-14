@@ -163,6 +163,26 @@ def test_modal_mixture_resolution_rejects_mutable_frozen_checkpoint_ref():
         )
 
 
+@pytest.mark.parametrize(
+    ("checkpoint_ref", "match"),
+    [
+        ("training/run/checkpoints/lightzero/latest.pth.tar", "immutable"),
+        ("training/run/checkpoints/lightzero/ckpt_best.pth.tar", "immutable"),
+        ("training/run/checkpoints/lightzero/custom_ref.pth.tar", "iteration_N"),
+    ],
+)
+def test_top_level_frozen_opponent_resolution_rejects_mutable_or_non_iteration_ref(
+    checkpoint_ref,
+    match,
+):
+    with pytest.raises(ValueError, match=match):
+        train_mod._resolve_opponent_checkpoint_for_env(
+            opponent_policy_kind=train_mod.OPPONENT_POLICY_KIND_FROZEN_LIGHTZERO_CHECKPOINT,
+            opponent_checkpoint_ref=checkpoint_ref,
+            opponent_checkpoint_report_ref=None,
+        )
+
+
 def test_modal_mixture_resolution_keeps_static_frozen_refs(monkeypatch, tmp_path):
     checkpoint_path = tmp_path / "iteration_123.pth.tar"
     checkpoint_path.write_bytes(b"fake-checkpoint")

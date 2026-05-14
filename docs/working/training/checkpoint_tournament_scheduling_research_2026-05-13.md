@@ -85,6 +85,10 @@ Provisional placement matches:
 - Every new checkpoint starts provisional.
 - Give it a first slate against anchors and nearby lineage checkpoints before it
   enters normal near-rating scheduling.
+- Placement is moving to a simple "strong opponents first" heuristic for
+  undercovered/new checkpoints: prefer the highest-rated unseen policies before
+  weaker or repeated opponents. Top-policy games give useful signal, and offline
+  Modal rating is not constrained by human waiting time.
 - Suggested first slate: previous checkpoint from same run, current best, current
   median, current lower-quartile, one fixed baseline if available, and 3-6
   random established checkpoints.
@@ -120,6 +124,24 @@ Uncertainty-driven scheduling:
 Exploration/exploitation mix:
 
 - Exploitation: near-rating pairs and top-vs-near-top matches.
+- After placement coverage, bias additional battles smoothly toward higher
+  Elo/rank policies, especially top-10/top-20, because leaderboard and training
+  consumers need the top policies to be reliable.
+- Keep enough floor budget for low-Elo policies until they have sufficient games
+  and distinct opponents; the top-policy bias is not a hard cutoff.
+- Red-team risk: a lucky early leader can attract too many games and look more
+  certain than it really is. The V0 mitigation is coverage first, soft
+  appearance caps in the top-biased phase, and keeping uncertainty/random bridge
+  phases alive.
+- Red-team risk: non-transitive policies can be hidden if the top band only
+  plays itself. The V0 mitigation is to keep random cross-band bridges and later
+  add explicit replay against policies that beat or threaten current leaders.
+- Red-team risk: scalar-only `distinct_opponents` can falsely mark a checkpoint
+  as covered. The V0 rule is now stricter: coverage is based on real
+  `opponent_ids` plus pair history, not the scalar alone.
+- Red-team risk: `active` can look trusted too early. The V0 status gate now
+  follows the configured placement evidence target, currently 20 opponents by
+  default.
 - Exploration: random cross-band bridges, anchors, and occasional rematches for
   variance estimates.
 - Suggested V0 mix per round after placement:
@@ -160,9 +182,12 @@ lineage neighbors, random bridges, and replay queues directly.
    both seats if needed.
 5. After placement, select normal rounds with the 60/20/10/10 mix above.
 6. Enforce graph health:
-   minimum 5 distinct opponents before active status,
+   avoid repeat opponents for a checkpoint until its coverage target is met,
+   minimum 20 distinct opponents before active status,
    at least one anchor match per checkpoint family,
    at least one random bridge per rating band per round.
+   Track non-transitive policy risk: later rounds may need broader or random
+   replay if strong-first placement misses cyclic matchups.
 7. Keep batch reduction: build pair specs, run Modal shards, reduce once, write a
    slim latest snapshot.
 8. Stop or pause when all non-provisional checkpoints have enough games and
@@ -689,3 +714,20 @@ Source links used in this refresh:
   https://modal.com/docs/guide/scale
 - Modal Volume consistency guide:
   https://modal.com/docs/guide/volumes
+
+## 2026-05-13 Breadth Correction After Visual Canary
+
+- The current canary proves intake/GIF plumbing, not rating maturity. It used
+  21 games per battle but scheduled only one opponent per checkpoint.
+- Revise the active-status floor upward: target at least 20 distinct opponents
+  per checkpoint before showing the row as leaderboard-active.
+- Preserve the non-quadratic design. Use bounded placement, anchor, near-rating,
+  uncertainty, and random-bridge rounds to reach the opponent floor without
+  full N^2 coverage.
+- The public leaderboard is a future API/product contract for training loops.
+  Later self-play can sample frozen opponents from it, so scheduler state and
+  leaderboard rows must distinguish provisional one-opponent evidence from
+  mature, broad evidence.
+- Keep latest checkpoint discovery coupled to
+  `train/lightzero_exp*/ckpt/iteration_*.pth.tar`; timestamped
+  `lightzero_exp_*` directories are part of the live checkpoint set.

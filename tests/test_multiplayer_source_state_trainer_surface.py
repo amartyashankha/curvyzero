@@ -8,8 +8,13 @@ from curvyzero.env.vector_multiplayer_env import DEBUG_METADATA_OBSERVATION_SCHE
 from curvyzero.env.vector_visual_observation import BONUS_RENDER_MODE_BROWSER_SPRITES
 from curvyzero.env.vector_visual_observation import TRAIL_RENDER_MODE_BODY_CIRCLES_FAST
 from curvyzero.env.vector_visual_observation import TRAIL_RENDER_MODE_BROWSER_LINES
+from curvyzero.env.vector_visual_observation import normalize_source_state_gray64
+from curvyzero.env.vector_visual_observation import render_source_state_canvas_gray64
 from curvyzero.training.curvytron_current_policy_selfplay_smoke import (
     STACK_RENDER_MODE_FAST_GRAY64_DIRECT,
+)
+from curvyzero.training.curvytron_current_policy_selfplay_smoke import (
+    player_perspective_rgb_palette,
 )
 from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
     SURVIVAL_PLUS_BONUS_NO_OUTCOME_BONUS_REWARD,
@@ -91,10 +96,29 @@ def _assert_surface_reset_contract(step, *, batch_size: int, player_count: int) 
     assert info["browser_pixel_fidelity"] is False
     assert info["trail_render_mode"] == TRAIL_RENDER_MODE_BROWSER_LINES
     assert info["default_trail_render_mode"] == TRAIL_RENDER_MODE_BROWSER_LINES
+    assert info["trainer_supported_trail_render_modes"] == [
+        TRAIL_RENDER_MODE_BROWSER_LINES,
+        TRAIL_RENDER_MODE_BODY_CIRCLES_FAST,
+    ]
     assert info["bonus_render_mode"] == BONUS_RENDER_MODE_BROWSER_SPRITES
     assert info["default_bonus_render_mode"] == BONUS_RENDER_MODE_BROWSER_SPRITES
     assert info["browser_sprites_bonus_render_claim"] is True
     assert info["frame_stack_owner"] == FRAME_STACK_OWNER
+    assert info["render_metadata"]["bonus_renderer_kind"] == "browser_sprites"
+    assert info["render_metadata"]["bonus_renderer_is_approximation"] is False
+    stats = info["visual_stack_dirty_render_stats"]
+    assert stats["enabled"] is (player_count == 2)
+    assert set(stats) == {
+        "enabled",
+        "rows",
+        "attempts",
+        "hits",
+        "cold_starts",
+        "fallbacks",
+        "dirty_blocks_total",
+        "hit_rate",
+        "dirty_blocks_per_hit",
+    }
     assert info["decision_cadence_is_wrapper_abstraction"] is True
     assert info["native_source_control_model"] == NATIVE_SOURCE_CONTROL_MODEL
     assert info["policy_row_mapping_schema_id"] == (
@@ -175,6 +199,32 @@ def _assert_step_visual_contract(
     np.testing.assert_array_equal(step.info["legal_action_mask"], step.legal_action_mask)
     np.testing.assert_array_equal(step.info["lightzero_action_mask"], step.legal_action_mask)
     _assert_policy_rows_match_live_visual_observation(step)
+
+
+def _assert_last_frame_matches_direct_source_state_render(
+    surface: SourceStateMultiplayerTrainerSurface,
+    step,
+    *,
+    row: int,
+) -> None:
+    for player in range(surface.player_count):
+        expected = normalize_source_state_gray64(
+            render_source_state_canvas_gray64(
+                surface.env.state,
+                row=row,
+                player_rgb=player_perspective_rgb_palette(
+                    surface.env.state,
+                    row=row,
+                    controlled_player=player,
+                    player_count=surface.player_count,
+                ),
+                trail_render_mode=surface.trail_render_mode,
+            )
+        )[0]
+        np.testing.assert_array_equal(
+            step.observation[row, player, -1],
+            expected,
+        )
 
 
 def _install_step_mapping_probe_state(surface: SourceStateMultiplayerTrainerSurface) -> None:
@@ -370,12 +420,56 @@ def test_terminal_final_observation_is_visual_stack_not_metadata_observation():
     np.testing.assert_array_equal(step.final_observation_row_mask, np.asarray([True]))
     np.testing.assert_array_equal(step.final_observation, step.info["final_observation"])
     np.testing.assert_array_equal(step.final_observation[0], step.observation[0])
+    _assert_last_frame_matches_direct_source_state_render(surface, step, row=0)
     assert int(np.count_nonzero(step.final_observation)) > 0
     assert step.info["final_observation_policy"]["schema_id"] == (
         FINAL_VISUAL_OBSERVATION_POLICY_ID
     )
     assert step.info["final_observation_policy"]["metadata_only"] is False
     assert step.info["underlying_final_observation_shape"] == (1, 2, 6)
+
+
+def test_terminal_final_observation_matches_direct_render_after_dirty_cache_warmup():
+    surface = SourceStateMultiplayerTrainerSurface(
+        batch_size=1,
+        player_count=2,
+        seed=17,
+        decision_ms=100.0,
+        natural_bonus_spawn=False,
+    )
+    surface.reset(seed=17)
+    env = surface.env
+    env.state["pos"][0] = np.asarray(
+        [[5.0, 5.0], [87.0, 44.0]],
+        dtype=np.float64,
+    )
+    env.state["heading"][0] = np.asarray([math.pi / 4.0, 0.0], dtype=np.float64)
+    env.state["prev_pos"][0] = env.state["pos"][0]
+    env.state["speed"][0] = 0.0
+    env.state["print_manager_distance"][0] = 999.0
+    env.state["print_manager_last_pos"][0] = env.state["pos"][0]
+    surface.stack.reset_rows(env, np.asarray([True], dtype=bool))
+    surface.stack.update(env)
+    warmed_stats = surface.stack.dirty_render_stats()
+    assert warmed_stats["hits"] >= 1
+
+    env.state["prev_pos"][0] = env.state["pos"][0]
+    env.state["speed"][0] = np.asarray([8.0, 16.0], dtype=np.float64)
+    env.state["print_manager_distance"][0] = 999.0
+    env.state["print_manager_last_pos"][0] = env.state["pos"][0]
+
+    step = surface.step(np.asarray([[1, 1]], dtype=np.int16))
+    terminal_stats = step.info["visual_stack_dirty_render_stats"]
+
+    np.testing.assert_array_equal(step.done, np.asarray([True], dtype=bool))
+    assert terminal_stats["attempts"] > warmed_stats["attempts"]
+    assert (
+        terminal_stats["hits"] > warmed_stats["hits"]
+        or terminal_stats["fallbacks"] > warmed_stats["fallbacks"]
+    )
+    np.testing.assert_array_equal(step.final_observation_row_mask, np.asarray([True]))
+    np.testing.assert_array_equal(step.final_observation[0], step.observation[0])
+    _assert_last_frame_matches_direct_source_state_render(surface, step, row=0)
 
 
 def test_p4_terminal_final_observation_is_visual_stack_after_three_wall_deaths():
@@ -416,6 +510,7 @@ def test_p4_terminal_final_observation_is_visual_stack_after_three_wall_deaths()
     np.testing.assert_array_equal(step.final_observation_row_mask, np.asarray([True]))
     np.testing.assert_array_equal(step.final_observation, step.info["final_observation"])
     np.testing.assert_array_equal(step.final_observation[0], step.observation[0])
+    _assert_last_frame_matches_direct_source_state_render(surface, step, row=0)
     assert int(np.count_nonzero(step.final_observation)) > 0
     assert step.info["final_observation_policy"]["schema_id"] == (
         FINAL_VISUAL_OBSERVATION_POLICY_ID
@@ -449,6 +544,8 @@ def test_body_circles_fast_is_explicit_approximate_mode():
     assert step.info["visual_observation_is_approximation"] is True
     assert step.info["approximate_trail_render_mode"] is True
     assert step.info["trail_renderer_is_approximation"] is True
+    assert step.info["render_metadata"]["bonus_renderer_is_approximation"] is False
+    assert step.info["visual_stack_dirty_render_stats"]["enabled"] is False
     assert "explicit approximate mode" in step.info["approximation_reason"]
 
 

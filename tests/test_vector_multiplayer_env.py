@@ -1310,6 +1310,10 @@ def test_public_seeded_bonus_enemy_straight_angle_expiry_restores_turn_rate():
     )
     assert catch_batch.info["step_counters"]["bonus_enemy_straight_angle_catches"] == 1
     assert catch_batch.info["step_counters"]["bonus_stack_appends"] == 1
+    np.testing.assert_array_equal(
+        env.state["direction_in_loop"],
+        np.asarray([[True, False]]),
+    )
     np.testing.assert_allclose(
         env.state["angular_velocity_per_ms"],
         np.asarray(
@@ -1340,6 +1344,10 @@ def test_public_seeded_bonus_enemy_straight_angle_expiry_restores_turn_rate():
     _assert_seeded_bonus_public_claim(expiry_batch)
     assert expiry_batch.info["step_counters"]["bonus_enemy_straight_angle_expiries"] == 1
     assert expiry_batch.info["step_counters"]["bonus_stack_appends"] == 0
+    np.testing.assert_array_equal(
+        env.state["direction_in_loop"],
+        np.asarray([[True, True]]),
+    )
     np.testing.assert_allclose(env.state["angular_velocity_per_ms"], base_angular_velocity)
     np.testing.assert_array_equal(env.state["bonus_stack_count"], np.asarray([[0, 0]]))
     assert int(env.state["bonus_stack_type"][0, 1, 0]) == vector_runtime.BONUS_TYPE_NONE
@@ -1348,12 +1356,137 @@ def test_public_seeded_bonus_enemy_straight_angle_expiry_restores_turn_rate():
     )
 
 
+def test_public_seeded_bonus_enemy_straight_angle_catch_snaps_once_across_source_frames():
+    scenario_name = "source_bonus_self_small_expiry_restore_step.json"
+    scenario_path = f"scenarios/environment/{scenario_name}"
+    state, fixture = _fixture_state(scenario_path, body_capacity=8)
+    actions, step_ms = _fixture_actions_for_step(fixture, step_index=0)
+    decision_source_frames = 4
+    source_physics_step_ms = 25.0
+    assert step_ms == pytest.approx(decision_source_frames * source_physics_step_ms)
+    bonus = _first_active_bonus(scenario_name)
+    env = VectorMultiplayerEnv(
+        batch_size=1,
+        player_count=2,
+        decision_source_frames=decision_source_frames,
+        source_physics_step_ms=source_physics_step_ms,
+        body_capacity=8,
+        event_capacity=16,
+        timer_capacity=4,
+        random_tape_capacity=8,
+        event_mode="debug-event",
+    )
+    env.reset_from_state_arrays(
+        state,
+        reset_seed=np.asarray([101], dtype=np.uint64),
+    )
+    env.seed_active_bonus(
+        row=0,
+        bonus_type="BonusEnemyStraightAngle",
+        x=float(bonus["x"]),
+        y=float(bonus["y"]),
+    )
+
+    catch_batch = env.step(actions)
+
+    _assert_seeded_bonus_public_claim(catch_batch)
+    assert catch_batch.info["step_counters"]["bonus_enemy_straight_angle_catches"] == 1
+    assert catch_batch.info["step_counters"]["bonus_stack_appends"] == 1
+    np.testing.assert_array_equal(
+        catch_batch.info["source_physics_substeps_executed"],
+        np.asarray([decision_source_frames], dtype=np.int32),
+    )
+    np.testing.assert_array_equal(
+        env.state["direction_in_loop"],
+        np.asarray([[True, False]]),
+    )
+    assert env.state["angular_velocity_per_ms"][0, 1] == pytest.approx(
+        vector_runtime.SOURCE_STRAIGHT_ANGLE_RADIANS,
+    )
+    assert env.state["current_angular_velocity"][0, 1] == pytest.approx(0.0)
+
+    heading_after_catch = float(env.state["heading"][0, 1])
+    turn_actions = np.asarray([[1, 2]], dtype=np.int16)
+    turn_batch = env.step(turn_actions)
+
+    np.testing.assert_array_equal(
+        turn_batch.info["source_physics_substeps_executed"],
+        np.asarray([decision_source_frames], dtype=np.int32),
+    )
+    assert env.state["heading"][0, 1] - heading_after_catch == pytest.approx(
+        vector_runtime.SOURCE_STRAIGHT_ANGLE_RADIANS,
+    )
+    assert env.state["current_angular_velocity"][0, 1] == pytest.approx(0.0)
+
+    heading_after_first_turn = float(env.state["heading"][0, 1])
+    env.step(turn_actions)
+
+    # The wrapper emits a fresh turn event for each public trainer decision.
+    assert env.state["heading"][0, 1] - heading_after_first_turn == pytest.approx(
+        vector_runtime.SOURCE_STRAIGHT_ANGLE_RADIANS,
+    )
+    assert env.state["current_angular_velocity"][0, 1] == pytest.approx(0.0)
+
+
+def test_public_straight_angle_source_frame_decision_snaps_once_per_decision():
+    env = VectorMultiplayerEnv(
+        batch_size=1,
+        player_count=2,
+        decision_source_frames=4,
+        source_physics_step_ms=25.0,
+        body_capacity=8,
+        event_capacity=16,
+        timer_capacity=4,
+        random_tape_capacity=16,
+        event_mode="debug-event",
+    )
+    env.reset(
+        seed=np.asarray([101], dtype=np.uint64),
+        source_fixture_new_round_time_ms=0.0,
+        source_fixture_warmup_advance_ms=0.0,
+    )
+    env.state["timer_active"][0] = False
+    env.state["alive"][0] = True
+    env.state["present"][0] = True
+    env.state["printing"][0] = False
+    env.state["print_manager_active"][0] = False
+    env.state["pos"][0] = np.asarray([[25.0, 30.0], [70.0, 65.0]], dtype=np.float64)
+    env.state["prev_pos"][0] = env.state["pos"][0]
+    env.state["heading"][0] = 0.0
+    env.state["direction_in_loop"][0, 1] = False
+    env.state["angular_velocity_per_ms"][0, 1] = (
+        vector_runtime.SOURCE_STRAIGHT_ANGLE_RADIANS
+    )
+    env.state["current_angular_velocity"][0, 1] = 0.0
+
+    actions = np.asarray([[1, 2]], dtype=np.int16)
+    first = env.step(actions)
+
+    np.testing.assert_array_equal(
+        first.info["source_physics_substeps_executed"],
+        np.asarray([4], dtype=np.int32),
+    )
+    assert env.state["heading"][0, 1] == pytest.approx(
+        vector_runtime.SOURCE_STRAIGHT_ANGLE_RADIANS
+    )
+    assert env.state["current_angular_velocity"][0, 1] == pytest.approx(0.0)
+
+    env.step(actions)
+
+    assert env.state["heading"][0, 1] == pytest.approx(
+        2.0 * vector_runtime.SOURCE_STRAIGHT_ANGLE_RADIANS
+    )
+    assert env.state["current_angular_velocity"][0, 1] == pytest.approx(0.0)
+
+
 def test_public_seeded_bonus_self_master_invincible_printing_and_expiry():
     env = _direct_public_seeded_bonus_env(
         player_count=2,
         positions=[[20.0, 20.0], [70.0, 70.0]],
         bonus_type="BonusSelfMaster",
     )
+    player0_pos = env.state["pos"][0, 0].copy()
+    player1_pos = env.state["pos"][0, 1].copy()
 
     catch_batch = env.step(np.asarray([[1, 1]], dtype=np.int16))
 
@@ -1364,6 +1497,25 @@ def test_public_seeded_bonus_self_master_invincible_printing_and_expiry():
     np.testing.assert_array_equal(env.state["bonus_count"], np.asarray([0], dtype=np.int32))
     np.testing.assert_array_equal(env.state["invincible"], np.asarray([[True, False]]))
     np.testing.assert_array_equal(env.state["printing"], np.asarray([[False, True]]))
+    np.testing.assert_array_equal(
+        env.state["print_manager_active"],
+        np.asarray([[False, True]]),
+    )
+    np.testing.assert_allclose(env.state["print_manager_distance"], np.asarray([[0.0, 999.0]]))
+    np.testing.assert_allclose(
+        env.state["print_manager_last_pos"],
+        np.asarray([[[0.0, 0.0], player1_pos]], dtype=np.float64),
+    )
+    np.testing.assert_array_equal(env.state["visible_trail_count"][0], [0, 1])
+    np.testing.assert_array_equal(env.state["has_visible_trail_last"][0], [False, True])
+    np.testing.assert_allclose(env.state["visible_trail_last_pos"][0, 0], [0.0, 0.0])
+    important_player0 = (
+        env.state["body_active"][0]
+        & (env.state["body_owner"][0] == 0)
+        & (env.state["body_insert_kind"][0] == vector_runtime.BODY_KIND_IMPORTANT)
+    )
+    assert int(important_player0.sum()) == 1
+    np.testing.assert_allclose(env.state["body_pos"][0, important_player0], [player0_pos])
     np.testing.assert_array_equal(env.state["bonus_stack_count"], np.asarray([[1, 0]]))
     assert int(env.state["bonus_stack_type"][0, 0, 0]) == (
         vector_runtime.BONUS_TYPE_SELF_MASTER
@@ -1384,6 +1536,23 @@ def test_public_seeded_bonus_self_master_invincible_printing_and_expiry():
     assert expiry_batch.info["step_counters"]["bonus_stack_appends"] == 0
     np.testing.assert_array_equal(env.state["invincible"], np.asarray([[False, False]]))
     np.testing.assert_array_equal(env.state["printing"], np.asarray([[True, True]]))
+    np.testing.assert_array_equal(env.state["print_manager_active"], np.asarray([[True, True]]))
+    assert env.state["print_manager_distance"][0, 0] > 0.0
+    assert env.state["print_manager_distance"][0, 1] == pytest.approx(999.0)
+    np.testing.assert_allclose(env.state["print_manager_last_pos"][0], [player0_pos, player1_pos])
+    assert int(env.state["visible_trail_count"][0, 0]) == 1
+    assert bool(env.state["has_visible_trail_last"][0, 0]) is True
+    np.testing.assert_allclose(env.state["visible_trail_last_pos"][0, 0], player0_pos)
+    important_player0 = (
+        env.state["body_active"][0]
+        & (env.state["body_owner"][0] == 0)
+        & (env.state["body_insert_kind"][0] == vector_runtime.BODY_KIND_IMPORTANT)
+    )
+    assert int(important_player0.sum()) == 2
+    np.testing.assert_allclose(
+        env.state["body_pos"][0, important_player0],
+        [player0_pos, player0_pos],
+    )
     np.testing.assert_array_equal(env.state["bonus_stack_count"], np.asarray([[0, 0]]))
     assert int(env.state["bonus_stack_type"][0, 0, 0]) == vector_runtime.BONUS_TYPE_NONE
     assert int(env.state["bonus_stack_invincible_delta"][0, 0, 0]) == 0
@@ -1423,6 +1592,7 @@ def test_public_seeded_bonus_self_master_blocks_body_death_but_not_wall_death():
     _assert_seeded_bonus_public_claim(body_batch)
     assert body_batch.info["step_counters"]["body_hits"] == 1
     np.testing.assert_array_equal(env.state["alive"], np.asarray([[True, True]]))
+    np.testing.assert_array_equal(env.state["invincible"], np.asarray([[True, False]]))
     np.testing.assert_array_equal(
         body_batch.info["death_count"],
         np.asarray([0], dtype=np.int32),
@@ -1455,6 +1625,85 @@ def test_public_seeded_bonus_self_master_blocks_body_death_but_not_wall_death():
     np.testing.assert_array_equal(
         wall_batch.info["death_hit_owner"],
         np.asarray([[-1, -1]], dtype=np.int16),
+    )
+
+
+def test_public_seeded_bonus_self_master_death_before_expiry_does_not_restart_pm():
+    env = _direct_public_seeded_bonus_env(
+        player_count=3,
+        positions=[[20.0, 20.0], [70.0, 70.0], [80.0, 80.0]],
+        bonus_type="BonusSelfMaster",
+    )
+
+    catch_batch = env.step(np.asarray([[1, 1, 1]], dtype=np.int16))
+
+    _assert_seeded_bonus_public_claim(catch_batch)
+    assert catch_batch.info["step_counters"]["bonus_self_master_catches"] == 1
+    np.testing.assert_array_equal(env.state["alive"], np.asarray([[True, True, True]]))
+    np.testing.assert_array_equal(env.state["invincible"], np.asarray([[True, False, False]]))
+    np.testing.assert_array_equal(env.state["printing"], np.asarray([[False, True, True]]))
+    np.testing.assert_array_equal(
+        env.state["print_manager_active"],
+        np.asarray([[False, True, True]]),
+    )
+
+    env.state["pos"][0, 0] = np.asarray([0.3, 20.0], dtype=np.float64)
+    env.state["prev_pos"][0, 0] = env.state["pos"][0, 0]
+    env.state["heading"][0, 0] = math.pi
+
+    wall_batch = env.step(np.asarray([[1, 1, 1]], dtype=np.int16))
+
+    _assert_seeded_bonus_public_claim(wall_batch)
+    assert wall_batch.info["step_counters"]["normal_wall_deaths"] == 1
+    np.testing.assert_array_equal(env.state["done"], np.asarray([False], dtype=bool))
+    np.testing.assert_array_equal(env.state["alive"], np.asarray([[False, True, True]]))
+    np.testing.assert_array_equal(env.state["bonus_stack_count"], np.asarray([[0, 0, 0]]))
+    np.testing.assert_array_equal(env.state["invincible"], np.asarray([[False, False, False]]))
+    np.testing.assert_array_equal(env.state["printing"], np.asarray([[False, True, True]]))
+    np.testing.assert_array_equal(
+        env.state["print_manager_active"],
+        np.asarray([[False, True, True]]),
+    )
+    np.testing.assert_array_equal(
+        wall_batch.info["death_cause"],
+        np.asarray(
+            [
+                [
+                    vector_runtime.DEATH_CAUSE_WALL,
+                    vector_runtime.DEATH_CAUSE_NONE,
+                    vector_runtime.DEATH_CAUSE_NONE,
+                ],
+            ],
+            dtype=np.int16,
+        ),
+    )
+    before_expiry_invincible = env.state["invincible"].copy()
+    before_expiry_printing = env.state["printing"].copy()
+    before_expiry_print_manager_active = env.state["print_manager_active"].copy()
+    before_expiry_print_manager_distance = env.state["print_manager_distance"].copy()
+    before_expiry_print_manager_last_pos = env.state["print_manager_last_pos"].copy()
+
+    expiry_batch = env.step(
+        np.asarray([[1, 1, 1]], dtype=np.int16),
+        timer_advance_ms=vector_runtime.BONUS_SELF_MASTER_DURATION_MS,
+    )
+
+    _assert_seeded_bonus_public_claim(expiry_batch)
+    assert expiry_batch.info["step_counters"]["bonus_self_master_expiries"] == 0
+    np.testing.assert_array_equal(env.state["alive"], np.asarray([[False, True, True]]))
+    np.testing.assert_array_equal(env.state["invincible"], before_expiry_invincible)
+    np.testing.assert_array_equal(env.state["printing"], before_expiry_printing)
+    np.testing.assert_array_equal(
+        env.state["print_manager_active"],
+        before_expiry_print_manager_active,
+    )
+    np.testing.assert_allclose(
+        env.state["print_manager_distance"],
+        before_expiry_print_manager_distance,
+    )
+    np.testing.assert_allclose(
+        env.state["print_manager_last_pos"],
+        before_expiry_print_manager_last_pos,
     )
 
 
@@ -1864,6 +2113,87 @@ def test_public_natural_bonus_self_master_spawns_catches_and_expires():
     np.testing.assert_array_equal(env.state["bonus_stack_count"], np.asarray([[0, 0]]))
 
 
+def test_public_natural_bonus_self_master_death_before_expiry_does_not_restart_pm():
+    env = _direct_public_natural_bonus_env(
+        bonus_type="BonusSelfMaster",
+        player_count=3,
+    )
+    actions = np.asarray([[1, 1, 1]], dtype=np.int16)
+
+    catch_batch = env.step(
+        actions,
+        timer_advance_ms=np.asarray([3000.0], dtype=np.float64),
+    )
+
+    assert catch_batch.info["bonus_support_mode"] == "natural_spawn"
+    assert catch_batch.info["step_counters"]["bonus_self_master_catches"] == 1
+    assert catch_batch.info["step_counters"]["bonus_stack_appends"] == 1
+    np.testing.assert_array_equal(env.state["alive"], np.asarray([[True, True, True]]))
+    np.testing.assert_array_equal(env.state["invincible"], np.asarray([[True, False, False]]))
+    np.testing.assert_array_equal(env.state["printing"], np.asarray([[False, True, True]]))
+    np.testing.assert_array_equal(
+        env.state["print_manager_active"],
+        np.asarray([[False, True, True]]),
+    )
+
+    env._natural_bonus_timer_active[0] = False
+    env.state["pos"][0, 0] = np.asarray([0.3, 20.0], dtype=np.float64)
+    env.state["prev_pos"][0, 0] = env.state["pos"][0, 0]
+    env.state["heading"][0, 0] = math.pi
+
+    wall_batch = env.step(actions)
+
+    assert wall_batch.info["bonus_support_mode"] == "natural_spawn"
+    assert wall_batch.info["step_counters"]["normal_wall_deaths"] == 1
+    np.testing.assert_array_equal(wall_batch.done, np.asarray([False], dtype=bool))
+    np.testing.assert_array_equal(env.state["alive"], np.asarray([[False, True, True]]))
+    np.testing.assert_array_equal(env.state["bonus_stack_count"], np.asarray([[0, 0, 0]]))
+    np.testing.assert_array_equal(env.state["invincible"], np.asarray([[False, False, False]]))
+    np.testing.assert_array_equal(env.state["printing"], np.asarray([[False, True, True]]))
+    np.testing.assert_array_equal(
+        env.state["print_manager_active"],
+        np.asarray([[False, True, True]]),
+    )
+    np.testing.assert_array_equal(
+        wall_batch.info["death_cause"],
+        np.asarray(
+            [
+                [
+                    vector_runtime.DEATH_CAUSE_WALL,
+                    vector_runtime.DEATH_CAUSE_NONE,
+                    vector_runtime.DEATH_CAUSE_NONE,
+                ],
+            ],
+            dtype=np.int16,
+        ),
+    )
+    before_expiry_printing = env.state["printing"].copy()
+    before_expiry_print_manager_active = env.state["print_manager_active"].copy()
+    before_expiry_print_manager_distance = env.state["print_manager_distance"].copy()
+    before_expiry_print_manager_last_pos = env.state["print_manager_last_pos"].copy()
+
+    expiry_batch = env.step(
+        actions,
+        timer_advance_ms=vector_runtime.BONUS_SELF_MASTER_DURATION_MS,
+    )
+
+    assert expiry_batch.info["step_counters"]["bonus_self_master_expiries"] == 0
+    np.testing.assert_array_equal(env.state["alive"], np.asarray([[False, True, True]]))
+    np.testing.assert_array_equal(env.state["printing"], before_expiry_printing)
+    np.testing.assert_array_equal(
+        env.state["print_manager_active"],
+        before_expiry_print_manager_active,
+    )
+    np.testing.assert_allclose(
+        env.state["print_manager_distance"],
+        before_expiry_print_manager_distance,
+    )
+    np.testing.assert_allclose(
+        env.state["print_manager_last_pos"],
+        before_expiry_print_manager_last_pos,
+    )
+
+
 def test_public_natural_bonus_all_color_spawns_catches_and_expires():
     env = _direct_public_natural_bonus_env(bonus_type="BonusAllColor")
 
@@ -2080,6 +2410,10 @@ def test_public_natural_bonus_enemy_effects_spawn_catch_and_expire(
         assert int(env.state["bonus_stack_inverse_delta"][0, 1, 0]) == 1
     else:
         assert bonus_type == "BonusEnemyStraightAngle"
+        np.testing.assert_array_equal(
+            env.state["direction_in_loop"],
+            np.asarray([[True, False]]),
+        )
         assert env.state["angular_velocity_per_ms"][0, 1] == pytest.approx(
             vector_runtime.SOURCE_STRAIGHT_ANGLE_RADIANS
         )
@@ -2101,6 +2435,10 @@ def test_public_natural_bonus_enemy_effects_spawn_catch_and_expire(
     np.testing.assert_array_equal(env.state["radius_power"], np.asarray([[0, 0]]))
     np.testing.assert_allclose(env.state["speed"], np.asarray([[16.0, 16.0]]))
     np.testing.assert_array_equal(env.state["inverse"], np.asarray([[False, False]]))
+    np.testing.assert_array_equal(
+        env.state["direction_in_loop"],
+        np.asarray([[True, True]]),
+    )
     np.testing.assert_allclose(env.state["angular_velocity_per_ms"], base_angular_velocity)
 
 

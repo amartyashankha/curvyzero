@@ -682,6 +682,10 @@ def _seeded_bodies(
                     f"initial_state.world_bodies[{index}].radius",
                 ),
                 "num": _int(raw_body.get("num"), f"initial_state.world_bodies[{index}].num"),
+                "age_ms": _optional_nonnegative_number(
+                    _first_present(raw_body, ("age_ms", "ageMs")),
+                    f"initial_state.world_bodies[{index}].age_ms",
+                ),
                 "insert_kind": "seeded",
             }
         )
@@ -962,6 +966,7 @@ def _body_arrays(
     body_num = [-1 for _ in range(body_capacity)]
     insert_tick = [-1 for _ in range(body_capacity)]
     insert_kind = [-1 for _ in range(body_capacity)]
+    birth_ms = [0.0 for _ in range(body_capacity)]
 
     for slot, body in enumerate(seeded_bodies):
         active[slot] = True
@@ -970,6 +975,8 @@ def _body_arrays(
         owner[slot] = int(body["owner_index"])
         body_num[slot] = int(body["num"])
         insert_kind[slot] = BODY_KIND_SEEDED
+        age_ms = body.get("age_ms")
+        birth_ms[slot] = 0.0 if age_ms is None else -float(age_ms)
 
     return {
         "body_active": _array([active], "bool"),
@@ -979,6 +986,7 @@ def _body_arrays(
         "body_num": _array([body_num], "int32"),
         "body_insert_tick": _array([insert_tick], "int32"),
         "body_insert_kind": _array([insert_kind], "int8"),
+        "body_birth_ms": _array([birth_ms], "float64"),
         "body_write_cursor": _array([len(seeded_bodies)], "int32"),
         "world_body_count": _array([len(seeded_bodies)], "int32"),
         "body_overflow": _array([False], "bool"),
@@ -1169,6 +1177,15 @@ def _finite_number(value: Any, field: str) -> float:
     result = float(value)
     if result != result or result in {float("inf"), float("-inf")}:
         raise SeedError(f"{field} must be a finite number")
+    return result
+
+
+def _optional_nonnegative_number(value: Any, field: str) -> float | None:
+    if value is None:
+        return None
+    result = _finite_number(value, field)
+    if result < 0.0:
+        raise SeedError(f"{field} must be non-negative")
     return result
 
 

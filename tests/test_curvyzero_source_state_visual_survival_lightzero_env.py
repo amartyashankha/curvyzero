@@ -11,6 +11,7 @@ from curvyzero.env.vector_multiplayer_env import JOINT_ACTION_SCHEMA_ID
 from curvyzero.env.vector_multiplayer_env import NATURAL_BONUS_EFFECT_TYPE_NAMES
 from curvyzero.env.vector_multiplayer_env import NATURAL_BONUS_ENV_IMPL_ID
 from curvyzero.env.vector_multiplayer_env import PUBLIC_NATURAL_BONUS_ENV_CONTRACT_ID
+from curvyzero.env.vector_multiplayer_env import SOURCE_PHYSICS_STEP_MS
 from curvyzero.env.vector_multiplayer_env import VectorMultiplayerEnv
 from curvyzero.env.vector_visual_observation import (
     SOURCE_STATE_RGB_CANVAS_LIKE_RENDERER_IMPL_ID,
@@ -1024,6 +1025,29 @@ def test_source_state_visual_survival_action_repeat_is_one_policy_transition():
     assert timestep.info["bonus_catch_count_step_for_ego"] == 0
 
 
+def test_source_state_visual_survival_default_is_one_source_frame_per_policy_action():
+    env = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
+        {
+            "seed": 38,
+            "source_max_steps": 32,
+            "natural_bonus_spawn": False,
+            "opponent_runtime_mode": OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP,
+        }
+    )
+
+    env.reset(seed=38)
+    timestep = env.step(1)
+
+    assert timestep.info["decision_source_frames"] == 1
+    assert timestep.info["decision_ms"] == pytest.approx(SOURCE_PHYSICS_STEP_MS)
+    assert timestep.info["policy_action_repeat_requested"] == 1
+    assert timestep.info["policy_action_repeat_executed"] == 1
+    assert timestep.info["policy_action_repeat_extra_steps"] == 0
+    assert timestep.info["physical_step_index"] == 1
+    assert env._last_batch is not None
+    assert int(env._last_batch.info["source_physics_substeps_executed"][0]) == 1
+
+
 def test_source_state_visual_survival_proactive_wall_avoidant_turns_from_left_wall():
     env = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
         {
@@ -1376,6 +1400,51 @@ def test_blank_canvas_noop_steps_without_player_1_artifacts_or_terminal():
     assert 1 not in env._env.state["death_player"][0, : int(env._env.state["death_count"][0])]
     assert last.info["opponent_runtime_mode"] == "blank_canvas_noop"
     assert last.info["sparse_outcome_reward_for_ego"] == 0.0
+
+
+def test_source_state_scalar_dirty_render_cache_matches_full_renderer_after_steps():
+    env = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
+        {
+            "seed": 111,
+            "source_max_steps": 128,
+            "death_mode": vector_runtime.DEATH_MODE_PROFILE_NO_DEATH,
+            "opponent_runtime_mode": OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP,
+            "reward_variant": REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME,
+            "natural_bonus_spawn": False,
+            "source_state_trail_render_mode": SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES,
+        }
+    )
+    env.reset(seed=111)
+
+    for _ in range(12):
+        timestep = env.step(1)
+        assert not timestep.done
+
+    state_view = env._render_state_view()
+    expected_rgb = render_source_state_rgb_canvas_like(
+        state_view,
+        row=0,
+        trail_render_mode=SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES,
+    )
+    expected_gray64 = render_source_state_canvas_gray64(
+        state_view,
+        row=0,
+        trail_render_mode=SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES,
+    )
+
+    np.testing.assert_array_equal(env.raw_observation(), expected_rgb)
+    np.testing.assert_array_equal(
+        env.render("source_state_grayscale64_visual_tensor"),
+        expected_gray64,
+    )
+    np.testing.assert_allclose(
+        timestep.obs["observation"][-1],
+        expected_gray64[0].astype(np.float32) / np.float32(255.0),
+        rtol=0.0,
+        atol=1e-7,
+    )
+    assert env._scalar_dirty_render_cache.stats.hits > 0
+    assert env._scalar_dirty_render_cache.stats.fallbacks == 0
 
 
 def test_blank_canvas_noop_scrubs_seeded_player_1_body_before_collision():

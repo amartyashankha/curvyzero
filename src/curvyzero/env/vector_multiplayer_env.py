@@ -258,6 +258,7 @@ class VectorMultiplayerEnv:
         player_ids: tuple[str, ...] | None = None,
         max_warmup_timer_callbacks: int | None = None,
         natural_bonus_spawn: bool = False,
+        natural_bonus_rate: float | None = None,
         natural_bonus_type_codes: tuple[str | int, ...] | np.ndarray | None = None,
         natural_bonus_capacity: int = DEFAULT_NATURAL_BONUS_CAPACITY,
         natural_bonus_position_attempt_capacity: int = (
@@ -315,6 +316,7 @@ class VectorMultiplayerEnv:
         if event_mode not in vector_runtime.EVENT_MODES:
             raise VectorMultiplayerEnvError("event_mode must be 'debug-event' or 'no-event'")
         self.event_mode = event_mode
+        reference = CurvyTronReferenceDefaults()
         self.player_ids = _player_ids(player_ids, player_count=self.player_count)
         self.max_warmup_timer_callbacks = _optional_positive_int(
             max_warmup_timer_callbacks,
@@ -323,6 +325,9 @@ class VectorMultiplayerEnv:
         self.natural_bonus_spawn_default = _bool_flag(
             natural_bonus_spawn,
             "natural_bonus_spawn",
+        )
+        self.natural_bonus_rate = _natural_bonus_rate(
+            reference.default_bonus_rate if natural_bonus_rate is None else natural_bonus_rate
         )
         self.natural_bonus_type_codes = _natural_bonus_type_codes(
             natural_bonus_type_codes,
@@ -343,7 +348,6 @@ class VectorMultiplayerEnv:
             player_count=self.player_count,
         )
 
-        reference = CurvyTronReferenceDefaults()
         self.map_size = (
             float(reference.arena_size_for_players(self.player_count))
             if map_size is None
@@ -465,6 +469,8 @@ class VectorMultiplayerEnv:
         self.state["base_radius"][row_int] = self.state["radius"][row_int]
         self.state["base_speed"][row_int] = self.state["speed"][row_int]
         self.state["base_inverse"][row_int] = self.state["inverse"][row_int]
+        self.state["direction_in_loop"][row_int] = True
+        self.state["current_angular_velocity"][row_int] = 0.0
         self.state["base_invincible"][row_int] = self.state["invincible"][row_int]
         self.state["base_avatar_color"][row_int] = self.state["avatar_color"][row_int]
         self.state["base_angular_velocity_per_ms"][row_int] = self.state["angular_velocity_per_ms"][
@@ -766,6 +772,7 @@ class VectorMultiplayerEnv:
         self.state["death_player"][:, :] = -1
         self.state["death_cause"][:, :] = vector_runtime.DEATH_CAUSE_NONE
         self.state["death_hit_owner"][:, :] = -1
+        self.state["death_hit_old"][:, :] = -1
         self.state["winner"][:] = -1
         self.state["draw"][:] = False
         self.state["reset_source"][:] = np.asarray(reset_source, dtype=np.int16)
@@ -1184,6 +1191,7 @@ class VectorMultiplayerEnv:
                     print_manager_mode=print_manager_mode,
                     event_mode=self.event_mode,
                     timer_advance_ms=frame_timer_advance,
+                    apply_source_moves=substep_index == 0,
                     death_mode=self.death_mode,
                     death_immunity_mask=self._death_immunity_mask(),
                     disabled_player_mask=disabled_player_mask,
@@ -1243,7 +1251,9 @@ class VectorMultiplayerEnv:
             "next_due_elapsed_ms": self._natural_bonus_next_due_elapsed_ms.copy(),
             "pop_count": self._natural_bonus_pop_count.copy(),
             "substep_infos": infos,
-            "source_bonus_poping_time_ms": SOURCE_BONUS_POPING_TIME_MS,
+            "source_bonus_base_poping_time_ms": SOURCE_BONUS_POPING_TIME_MS,
+            "source_bonus_poping_time_ms": self._natural_bonus_poping_time_ms(),
+            "natural_bonus_rate": self.natural_bonus_rate,
             "random_label_policy_id": NATURAL_BONUS_RANDOM_LABEL_POLICY_ID,
         }
 
@@ -1511,6 +1521,7 @@ class VectorMultiplayerEnv:
                 "death_player",
                 "death_cause",
                 "death_hit_owner",
+                "death_hit_old",
                 "winner",
                 "draw",
             ),
@@ -1594,7 +1605,9 @@ class VectorMultiplayerEnv:
             "candidate_rows": row_mask.copy(),
             "enabled_rows": enabled_rows.copy(),
             "start_after_game_start_ms": first_warmup_ms,
-            "source_bonus_poping_time_ms": SOURCE_BONUS_POPING_TIME_MS,
+            "source_bonus_base_poping_time_ms": SOURCE_BONUS_POPING_TIME_MS,
+            "source_bonus_poping_time_ms": self._natural_bonus_poping_time_ms(),
+            "natural_bonus_rate": self.natural_bonus_rate,
             "random_label_policy_id": NATURAL_BONUS_RANDOM_LABEL_POLICY_ID,
         }
 
@@ -1625,7 +1638,7 @@ class VectorMultiplayerEnv:
                 label,
                 random_calls=random_calls,
             )
-            row_delay_ms = SOURCE_BONUS_POPING_TIME_MS * (1.0 + draw_value)
+            row_delay_ms = self._natural_bonus_poping_time_ms() * (1.0 + draw_value)
             row_remaining_ms = delay_origin_ms + row_delay_ms
             delay_draw[row_int] = draw_value
             delay_ms[row_int] = row_delay_ms
@@ -1701,7 +1714,9 @@ class VectorMultiplayerEnv:
                     "bonus.next_delay_after_pop",
                     random_calls=random_calls,
                 )
-                next_delay_ms = SOURCE_BONUS_POPING_TIME_MS * (1.0 + next_delay_draw)
+                next_delay_ms = (
+                    self._natural_bonus_poping_time_ms() * (1.0 + next_delay_draw)
+                )
                 schedule_calls.append(
                     {
                         "row": row_int,
@@ -1743,7 +1758,9 @@ class VectorMultiplayerEnv:
             "remaining_ms": self._natural_bonus_timer_remaining_ms.copy(),
             "next_due_elapsed_ms": self._natural_bonus_next_due_elapsed_ms.copy(),
             "pop_count": self._natural_bonus_pop_count.copy(),
-            "source_bonus_poping_time_ms": SOURCE_BONUS_POPING_TIME_MS,
+            "source_bonus_base_poping_time_ms": SOURCE_BONUS_POPING_TIME_MS,
+            "source_bonus_poping_time_ms": self._natural_bonus_poping_time_ms(),
+            "natural_bonus_rate": self.natural_bonus_rate,
             "random_label_policy_id": NATURAL_BONUS_RANDOM_LABEL_POLICY_ID,
         }
 
@@ -1885,6 +1902,11 @@ class VectorMultiplayerEnv:
         )
         return value
 
+    def _natural_bonus_poping_time_ms(self) -> float:
+        return SOURCE_BONUS_POPING_TIME_MS - (
+            (SOURCE_BONUS_POPING_TIME_MS / 2.0) * self.natural_bonus_rate
+        )
+
     def _ensure_seed_generated_random_tape_headroom(
         self,
         rows: np.ndarray,
@@ -1958,7 +1980,9 @@ class VectorMultiplayerEnv:
             "remaining_ms": self._natural_bonus_timer_remaining_ms.copy(),
             "next_due_elapsed_ms": self._natural_bonus_next_due_elapsed_ms.copy(),
             "pop_count": self._natural_bonus_pop_count.copy(),
-            "source_bonus_poping_time_ms": SOURCE_BONUS_POPING_TIME_MS,
+            "source_bonus_base_poping_time_ms": SOURCE_BONUS_POPING_TIME_MS,
+            "source_bonus_poping_time_ms": self._natural_bonus_poping_time_ms(),
+            "natural_bonus_rate": self.natural_bonus_rate,
             "random_label_policy_id": NATURAL_BONUS_RANDOM_LABEL_POLICY_ID,
         }
 
@@ -2458,6 +2482,8 @@ class VectorMultiplayerEnv:
         ][row_mask]
         self.state["inverse"][row_mask] = self.state["base_inverse"][row_mask]
         self.state["base_inverse"][row_mask] = self.state["inverse"][row_mask]
+        self.state["direction_in_loop"][row_mask] = True
+        self.state["current_angular_velocity"][row_mask] = 0.0
         self.state["invincible"][row_mask] = self.state["base_invincible"][row_mask]
         self.state["base_invincible"][row_mask] = self.state["invincible"][row_mask]
         self.state["avatar_color"][row_mask] = self.state["base_avatar_color"][row_mask]
@@ -2566,6 +2592,7 @@ class VectorMultiplayerEnv:
                 self.state["death_player"][row_int, count] = player
                 self.state["death_cause"][row_int, count] = vector_runtime.DEATH_CAUSE_BODY_UNKNOWN
                 self.state["death_hit_owner"][row_int, count] = -1
+                self.state["death_hit_old"][row_int, count] = -1
                 count += 1
                 existing.add(player)
             self.state["death_count"][row_int] = count
@@ -2887,6 +2914,7 @@ class VectorMultiplayerEnv:
         template["death_player"][mask, ...] = -1
         template["death_cause"][mask, ...] = vector_runtime.DEATH_CAUSE_NONE
         template["death_hit_owner"][mask, ...] = -1
+        template["death_hit_old"][mask, ...] = -1
         template["overflow"][mask] = False
         template["borderless"][mask] = False
         template["radius"][mask, ...] = self.radius
@@ -2894,6 +2922,7 @@ class VectorMultiplayerEnv:
         template["base_speed"][mask, ...] = self.speed
         template["inverse"][mask, ...] = False
         template["base_inverse"][mask, ...] = False
+        template["direction_in_loop"][mask, ...] = True
         if "invincible" in template:
             template["invincible"][mask, ...] = False
             template["base_invincible"][mask, ...] = False
@@ -2905,6 +2934,7 @@ class VectorMultiplayerEnv:
             template["avatar_color"][mask, ...] = default_colors[mask]
             template["base_avatar_color"][mask, ...] = default_colors[mask]
         template["angular_velocity_per_ms"][mask, ...] = self.angular_velocity_per_ms
+        template["current_angular_velocity"][mask, ...] = 0.0
         if "base_angular_velocity_per_ms" in template:
             template["base_angular_velocity_per_ms"][
                 mask,
@@ -2937,6 +2967,7 @@ class VectorMultiplayerEnv:
         template["body_num"][mask, ...] = -1
         template["body_insert_tick"][mask, ...] = -1
         template["body_insert_kind"][mask, ...] = -1
+        template["body_birth_ms"][mask, ...] = 0.0
         template["body_break_before"][mask, ...] = False
         template["body_write_cursor"][mask] = 0
         template["body_count"][mask, ...] = 0
@@ -2968,6 +2999,8 @@ class VectorMultiplayerEnv:
             ]
             template["inverse"][mask] = False
             template["base_inverse"][mask] = False
+            template["direction_in_loop"][mask] = True
+            template["current_angular_velocity"][mask] = 0.0
             template["invincible"][mask] = False
             template["base_invincible"][mask] = False
             default_colors = np.tile(
@@ -3133,6 +3166,7 @@ class VectorMultiplayerEnv:
                 self.state["death_cause"],
             ),
             "death_hit_owner": self.state["death_hit_owner"].copy(),
+            "death_hit_old": self.state["death_hit_old"].copy(),
             "death_order_policy": DEATH_ORDER_POLICY,
             "reset_seed": self.state["reset_seed"].copy(),
             "reset_source": self.state["reset_source"].copy(),
@@ -3266,7 +3300,9 @@ class VectorMultiplayerEnv:
             "natural_bonus_spawn_default": self.natural_bonus_spawn_default,
             "natural_bonus_policy_id": NATURAL_BONUS_SUPPORT_POLICY_ID,
             "natural_bonus_random_label_policy_id": (NATURAL_BONUS_RANDOM_LABEL_POLICY_ID),
-            "source_bonus_poping_time_ms": SOURCE_BONUS_POPING_TIME_MS,
+            "source_bonus_base_poping_time_ms": SOURCE_BONUS_POPING_TIME_MS,
+            "source_bonus_poping_time_ms": self._natural_bonus_poping_time_ms(),
+            "natural_bonus_rate": self.natural_bonus_rate,
             "supported_seeded_bonus_types": SEEDED_BONUS_TYPE_NAMES,
             "source_default_natural_bonus_types": SOURCE_DEFAULT_NATURAL_BONUS_TYPE_NAMES,
             "supported_natural_bonus_types": NATURAL_BONUS_TYPE_NAMES,
@@ -3649,6 +3685,7 @@ def _make_state_arrays(
             dtype=np.int16,
         ),
         "death_hit_owner": np.full((batch_size, player_count), -1, dtype=np.int16),
+        "death_hit_old": np.full((batch_size, player_count), -1, dtype=np.int8),
         "overflow": np.zeros(batch_size, dtype=bool),
         "borderless": np.zeros(batch_size, dtype=bool),
         "radius": np.full((batch_size, player_count), radius, dtype=np.float64),
@@ -3656,9 +3693,14 @@ def _make_state_arrays(
         "base_speed": np.full((batch_size, player_count), speed, dtype=np.float64),
         "inverse": np.zeros((batch_size, player_count), dtype=bool),
         "base_inverse": np.zeros((batch_size, player_count), dtype=bool),
+        "direction_in_loop": np.ones((batch_size, player_count), dtype=bool),
         "angular_velocity_per_ms": np.full(
             (batch_size, player_count),
             angular_velocity_per_ms,
+            dtype=np.float64,
+        ),
+        "current_angular_velocity": np.zeros(
+            (batch_size, player_count),
             dtype=np.float64,
         ),
         "live_body_num": np.zeros((batch_size, player_count), dtype=np.int32),
@@ -3698,6 +3740,7 @@ def _make_state_arrays(
         "body_num": np.full((batch_size, body_capacity), -1, dtype=np.int32),
         "body_insert_tick": np.full((batch_size, body_capacity), -1, dtype=np.int32),
         "body_insert_kind": np.full((batch_size, body_capacity), -1, dtype=np.int16),
+        "body_birth_ms": np.zeros((batch_size, body_capacity), dtype=np.float64),
         "body_break_before": np.zeros((batch_size, body_capacity), dtype=bool),
         "body_write_cursor": np.zeros(batch_size, dtype=np.int32),
         "body_count": np.zeros((batch_size, player_count), dtype=np.int32),
@@ -3813,6 +3856,18 @@ def _natural_bonus_type_codes(value: tuple[str | int, ...] | np.ndarray | None) 
             )
         codes.append(code)
     return np.asarray(codes, dtype=np.int16)
+
+
+def _natural_bonus_rate(value: float) -> float:
+    try:
+        rate = float(value)
+    except (TypeError, ValueError) as exc:
+        raise VectorMultiplayerEnvError("natural_bonus_rate must be a finite number") from exc
+    if not np.isfinite(rate):
+        raise VectorMultiplayerEnvError("natural_bonus_rate must be a finite number")
+    if rate < -1.0 or rate > 1.0:
+        raise VectorMultiplayerEnvError("natural_bonus_rate must be in [-1, 1]")
+    return rate
 
 
 def _source_fixture_warmup_advance_ms(

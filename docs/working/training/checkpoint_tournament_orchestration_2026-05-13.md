@@ -1,358 +1,213 @@
 # Checkpoint Tournament Orchestration, 2026-05-13
 
-## Current North Star
+## Purpose
+
+This is the planning/delegation/orchestration lane for the CurvyTron checkpoint
+tournament work. It is deliberately separate from implementation notes,
+validation logs, and long research docs.
+
+North star: build an ongoing checkpoint rating and inspection system that can
+absorb every useful checkpoint without all-pairs compute. The output should help
+the coach identify strong policies, inspect representative GIFs, and eventually
+feed a public leaderboard that future training can sample for frozen opponents.
+
+## Operating Pattern
+
+Main thread owns decisions, sequencing, launches, and final synthesis. Subagents
+own bounded research, critique, and audit lanes. The main thread should not use
+subagents as a substitute for reading the active ledger before acting.
+
+Before any launch or code edit:
+
+- Read this file, `checkpoint_tournament_active_threads_2026-05-13.md`, and
+  `checkpoint_tournament_todo_2026-05-13.md`.
+- Check the latest validation/evidence docs for completed runs and known
+  failures.
+- Confirm checkpoint discovery is broad and fresh.
+- Decide whether the work belongs in the main thread or a subagent lane.
+- Keep code changes out of this docs lane unless the user explicitly asks for
+  implementation.
+
+After any launch or decision:
+
+- Update the active-thread ledger first.
+- Record evidence, not vibes: arena id, rating run id, game count, battle count,
+  failure count, website/GIF checks, and known limitations.
+- Keep old launch commands marked historical when the target has moved.
+
+## Main Thread Vs Subagents
+
+Keep in the main thread:
+
+- deciding the next launch;
+- editing orchestration, todo, active-thread, and source-of-truth docs;
+- making small scoped implementation changes when requested;
+- running final tests, Modal smoke checks, deploys, and launch commands;
+- reconciling conflicting advice from subagents.
+
+Delegate to subagents:
+
+- scheduler/Elo critique and simulation design;
+- website scale and UX/API contract review;
+- Modal ops failure-mode review;
+- checkpoint discovery audits;
+- refactor boundary critiques;
+- docs synthesis when multiple notes disagree.
+
+Do not delegate:
+
+- final launch approval;
+- public leaderboard readiness calls;
+- edits that cross code ownership boundaries without a main-thread plan.
+
+## Active Lanes
+
+| Lane | State | Main-thread action |
+| --- | --- | --- |
+| Orchestration | active | keep this doc, active threads, and todo aligned |
+| Scheduler/adaptive Elo | active | enforce bounded placement and breadth before rank claims |
+| Checkpoint discovery | active guardrail | use broad `train/lightzero_exp*/ckpt/iteration_*.pth.tar` discovery |
+| Website sanity | active | verify indexed/paged read paths before larger GIF-heavy runs |
+| Modal intake/ops | V0 batch launcher | keep Dict/Queue for coordination and Volume artifacts as truth |
+| Validation | active | record exact run ids, counts, failure counts, and website checks |
+| Public leaderboard | future lane | do not expose as trusted until evidence breadth/status fields exist |
+| Refactor | opportunistic | only small cuts that preserve the public Modal facade |
+
+## Current Scheduler State
+
+The current target is all-checkpoint adaptive Elo, not latest-only all-pairs.
+`adaptive_v0` is batch-wave scheduling over immutable battle artifacts:
+
+- placement/low-coverage checkpoints get scheduled before ordinary near-rating
+  or random bridge work;
+- after placement coverage, spend extra battles with a smooth bias toward
+  higher Elo/rank policies, especially top-10/top-20 candidates, because public
+  leaderboard and training consumers care most about reliable top policies;
+- do not make that bias a hard cutoff or starve low-Elo policies before they
+  have sufficient games and distinct opponents;
+- placement is still the first gate. A new or undercovered checkpoint must get
+  enough distinct-opponent evidence before top-band polish can consume the
+  round budget;
+- live website progress must read shard summaries while a round is running, not
+  the stale round-start progress artifact;
+- live website progress must also handle per-game workers. A run with
+  `games_per_shard=1` writes game summaries but no shard summaries, so the
+  cheap website path uses pair-directory estimates unless an explicit diagnostic
+  exact count is requested;
+- the website should avoid direct large scans in normal request handlers. Prefer
+  small cached artifacts plus background refresh jobs, then page/lazy-load the
+  growing views;
+- pair specs carry scheduler metadata such as `pair_key` and
+  `schedule_reason`;
+- pair history and scheduler state are persisted between rounds;
+- rating context and roster identity must reject unsafe evidence reuse;
+- Volume artifacts are durable truth; Modal Dict/Queue are coordination tools.
 
-Build a CurvyTron checkpoint rating lane that can absorb every useful checkpoint
-without needing every checkpoint to play every other checkpoint.
+Current evidence from the expanded probe:
 
-The coach needs a live map of which policies are improving. The website should
-show rankings, progress, battles, and a few GIF samples. The rating system should
-keep running as new checkpoints arrive.
+- `arena-curvytron-top20runs-allckpts-placement-gpp21-gifs5-step8000-20260513a`
+  / `elo-top20runs-allckpts-placement-gpp21-gifs5-step8000-20260513a`;
+- 424 checkpoints, 212 placement battles, 4452 games;
+- `failed_game_count=0`;
+- zero zero-game checkpoints;
+- checked website paths served rankings, checkpoint drilldown, battle detail,
+  and GIF samples.
 
-## Current Pivot
+Important limitation: one placement battle per checkpoint is not leaderboard
+quality. It proves plumbing and coverage, not stable policy strength.
 
-The latest-only all-pairs stress run is no longer the main target.
+## Next Launch Plan
 
-The new target is an online/adaptive Elo system:
+Next launch should be chosen from two options, not improvised:
 
-- include every checkpoint that is worth rating, not only the latest checkpoint
-  from each run;
-- do not schedule all-pairs when the player pool gets large;
-- place new checkpoints with a small slate of useful opponents;
-- keep replaying useful old matchups when ratings are close, stale, noisy, or
-  important for the top ranks;
-- keep all game and battle artifacts immutable so ratings can be recomputed.
+1. Website/detail sanity lane.
+   - Preferred if the next work is scale safety.
+   - Add or verify lighter battle-detail/GIF sample artifacts and paged game
+     rows.
+   - Confirm checkpoint drilldown and battle detail do not scan huge global
+     indexes or live shard/game files in normal request paths.
 
-## Main Thread Job
+2. Modest adaptive breadth wave.
+   - Preferred if the next work is rating evidence.
+   - Use broad checkpoint discovery or an explicit broad-discovery manifest.
+   - Keep `games_per_pair=21`, GIFs capped or off unless this is explicitly a
+     visual inspection wave.
+   - Schedule enough placement/anchor/bridge pairs to increase distinct
+     opponents, not merely total games.
 
-The main thread should stay boring and clear:
+Do not launch a large all-checkpoint public leaderboard wave until website
+read paths, status fields, and evidence breadth are ready.
 
-1. Re-read this doc, the todo doc, and the scheduling research doc.
-2. Re-read the architecture critique doc.
-3. Check what changed in code before editing.
-4. Check the active-thread ledger and validation doc.
-5. Delegate research and critique lanes before implementation.
-6. Make small code/doc changes only after the target is clear.
-7. Run focused tests and a small Modal smoke before larger launches.
-8. Update docs with evidence, decisions, and remaining gaps.
-9. Decide the next batch of work from the latest evidence.
+## Website Sanity Lane
 
-If a requested launch no longer matches the current target, stop and rewrite the
-target first.
+Website sanity is now a first-class lane because the product value is inspection,
+not just a finished JSON artifact.
 
-## Parallelism Rule
+Required checks before scaling:
 
-Default to embarrassingly parallel work at every level:
+- tournaments list loads the intended active run and hides broken zero-checkpoint
+  attempts;
+- rankings show status/freshness and do not overstate provisional Elo;
+- checkpoint drilldown uses per-checkpoint indexes;
+- battle detail returns summary and GIF samples before any large game table;
+- `/gif?ref=...` serves sampled GIFs with correct content type;
+- refresh/reload failures are visible enough for operators to avoid stale data.
 
-- parallel sub-agents for independent research, critique, website, Modal, and
-  code architecture lanes;
-- parallel local reads and tests when they do not write the same files;
-- parallel validation gates when later gates do not require a fresh patch from
-  earlier gates;
-- rerun only the failed gates after a fix when earlier gates are still valid.
+Current known gap: battle detail and large game/GIF views still need stronger
+paging/index work before very large GIF-heavy runs.
 
-The main thread should hold the map and make decisions. It should not serialize
-work just because the task list is written as steps.
+## Public Leaderboard Future Lane
 
-## Current Reflection
+The leaderboard is a future training contract, not just a scoreboard. Training
+loops may later sample frozen opponents from it, so public rows must carry enough
+evidence for safe consumption.
 
-The useful thing here is not "run a tournament" by itself. The useful thing is a
-rating and inspection lane that lets the coach see which CurvyTron checkpoints
-are actually improving, without drowning in all-pairs compute or stale
-artifacts.
+Minimum readiness shape:
 
-That means the main risks are:
+- rank/Elo plus `provisional` or `active` status;
+- games, distinct opponents, outside-lineage opponents, failure rate, draw or
+  timeout rate, and freshness;
+- discovery provenance for the checkpoint ref;
+- scheduler/evaluator context id;
+- clear warning when evidence comes from one-opponent or low-breadth placement.
 
-- selecting stale or wrong checkpoints;
-- running policies with the wrong observation contract;
-- letting adaptive Elo look more certain than it is;
-- making the website feel live while it is really stale;
-- letting a huge Modal file hide contract drift.
+Current gate: target at least 20 distinct opponents per checkpoint before
+calling a row leaderboard-active. Use bounded adaptive waves to reach breadth;
+do not fall back to full N^2 all-pairs unless explicitly requested as a stress
+test.
 
-The current cleanup pivot is therefore in scope. It supports the product goal by
-making the tournament lane easier to reason about before it scales to every
-checkpoint.
+## Checkpoint Discovery Footgun
 
-## Sub-Agent Plan
+Never build tournament manifests from `train/lightzero_exp/ckpt` alone.
+DI-engine can create timestamped experiment directories after restart, such as:
 
-Use sub-agents for work that can run in parallel and does not block the next main
-thread step.
+```text
+train/lightzero_exp_260513_123802/ckpt
+```
 
-### Rating Research Lane
+Tournament discovery must scan:
 
-Difficulty: extra high.
+```text
+train/lightzero_exp*/ckpt/iteration_*.pth.tar
+```
 
-Owner: Gibbs now, plus Arendt as backup.
+This applies to:
 
-Questions:
+- latest-checkpoint visual canaries;
+- all-checkpoint adaptive runs;
+- explicit manifests passed into intake;
+- future public leaderboard rows;
+- any frozen-opponent training consumer that samples from leaderboard output.
 
-- How do Elo, Glicko, TrueSkill, Swiss, and active pairwise-comparison systems
-  place new players?
-- How should CurvyTron choose opponents without all-pairs?
-- How many games per battle are useful?
-- When should old battles be replayed?
-
-Output:
-
-- append short conclusions to
-  `checkpoint_tournament_scheduling_research_2026-05-13.md`;
-- return a V0 scheduler recommendation and V1 upgrades.
-
-### Code Architecture Lane
-
-Difficulty: high.
-
-Owner: Pauli.
-
-Questions:
-
-- Where should adaptive pair selection plug into
-  `build_rating_round_pair_specs(...)`?
-- What fields should pair specs carry, such as `schedule_reason`?
-- How can the reducer keep ratings available while work is still running?
-- What tests prove the scheduler is deterministic and bounded?
-
-Output:
-
-- minimal code-change plan;
-- risks if all checkpoints from all runs are included.
-
-### Modal Ops Lane
-
-Difficulty: high.
-
-Owner: Hilbert.
-
-Questions:
-
-- How far can shard fan-out be pushed before cold starts, queueing, or timeouts
-  dominate?
-- Where do retries and backoff belong?
-- Should Modal Dict or Queue help with progress, or is the current Volume
-  artifact path enough for now?
-- How do we avoid expensive Volume reloads and open-file reload errors?
-
-Output:
-
-- launch/runbook advice;
-- simple retry/progress pattern;
-- warnings before any very large launch.
-
-Current recommendation from the ops lane:
-
-- For adaptive Elo production, use one shard per selected pair:
-  `games_per_shard == games_per_pair`.
-- Keep GIFs off in large score waves. Run GIF canaries or sample jobs
-  separately.
-- Keep shard outputs compact and reduce at battle scale.
-- Add retry/backoff around commit/reload helpers if open-file or transient
-  freshness issues keep appearing.
-- Treat Modal Dict/Queue as optional coordination helpers, not the durable source
-  of truth. Durable truth stays in Volume artifacts.
-
-### Website Scale Lane
-
-Difficulty: high.
-
-Owner: Lorentz.
-
-Questions:
-
-- How should the site show a huge player set without a giant wall of rows?
-- How should it show partial rankings from the start?
-- How should policy -> battles -> GIF samples stay fast?
-- What should auto-refresh check, and how often?
-
-Output:
-
-- one-page UI plan;
-- needed API/cache changes;
-- smoke checks for reload, dropdowns, sorting, and GIF drilldown.
-
-Current recommendation from the website lane:
-
-- Initial HTML should be cheap: progress, first ranking page, and recent battles.
-- Policy click should read a small per-checkpoint battle index or a paged server
-  endpoint, not a giant full battle index.
-- Battle click should return summary and GIF samples first; detailed game rows
-  should be paged.
-- Auto-refresh should poll small progress/ranking artifacts and keep scroll and
-  selection stable.
-- Large runs need published web artifacts, not request-time shard/game scans.
-
-### Docs And Synthesis Lane
-
-Difficulty: medium to high.
-
-Owner: Mill.
-
-Questions:
-
-- Are the docs aligned with the current target?
-- Are old launch commands clearly marked as historical?
-- Are decisions and evidence easy for the coach to read later?
-
-Output:
-
-- doc section proposals;
-- stale or contradictory notes to clean up.
-
-### Architecture Critique Lane
-
-Difficulty: extra high.
-
-Owner: main thread plus reused sub-agents while the agent limit is full.
-
-Questions:
-
-- What could silently be wrong?
-- What could become too slow?
-- What could mislead the coach?
-- What could be correct for a smoke test but wrong at all-checkpoint scale?
-
-Output:
-
-- keep `checkpoint_tournament_architecture_critique_2026-05-13.md` current;
-- turn critique items into tests or explicit non-goals.
-
-## Current Known Code Shape
-
-- The rating helper currently supports `pair_selection` values `all_pairs`,
-  `random`, and `adaptive_v0`.
-- `all_pairs` and `random` still use the older full candidate-pair path.
-  `adaptive_v0` must stay bounded and must not materialize all possible pairs.
-- The sharded runner is already useful: `games_per_shard=21` can run one whole
-  21-game battle per worker and reuse loaded policies.
-- The current rating loop writes immutable battle summaries and derived rating
-  snapshots.
-- Website performance depends on small index/snapshot files. It should not scan
-  every game summary in request paths.
-- `normalize_pair_spec(...)` now preserves explicit adaptive metadata fields,
-  including `pair_key`, `schedule_reason`, and `schedule`.
-- Checkpoint discovery must scan
-  `train/lightzero_exp*/ckpt/iteration_*.pth.tar`, not only
-  `train/lightzero_exp/ckpt`. DI-engine can create timestamped experiment dirs
-  after restarts, and fixed-path discovery can accidentally select stale
-  `iteration_0` policies.
-- Refactor critiques agree that the safest first cleanup is naming contract
-  strings and artifact paths. Module extraction comes later.
-
-## V0 Adaptive Scheduler Shape
-
-Keep batch Elo. Add adaptive pair selection above it.
-
-The first scheduler should be simple:
-
-- `placement`: new checkpoints play anchors, lineage neighbors, median players,
-  and a few random established players.
-- `near_rating`: active checkpoints play opponents with nearby current ratings.
-- `uncertain`: checkpoints with few games, few opponents, high rating movement,
-  or many failures get more matches.
-- `bridge`: seeded random cross-band matches keep the graph connected.
-- `replay`: old close/noisy/stale matchups get refreshed.
-
-Each scheduled pair should carry `schedule_reason`.
-
-Minimal code shape:
-
-- add `adaptive_v0` as a third `pair_selection` value;
-- require `pairs_per_round` for `adaptive_v0`;
-- add additive args to `build_rating_round_pair_specs(...)`:
-  `scheduler_state` and `pair_history`;
-- add pure helper `select_adaptive_v0_pair_slots(...)`;
-- keep existing `all_pairs` and `random` behavior unchanged;
-- pass through schedule metadata in `normalize_pair_spec(...)`;
-- add pair history keyed by canonical sorted checkpoint ids, not battle id;
-- store a pool hash in history/scheduler state so old artifacts cannot silently
-  mix with a new checkpoint pool.
-
-Status: the pure helper patch and artifact wiring have landed. Rating rounds
-write `pair_history.json` and `scheduler_state.json`, and the parent rating loop
-passes them into the next round. Remote smoke is still pending.
-
-The first adaptive selector must not build all candidate pairs. It should use:
-
-- sorted ratings and small neighbor windows for near-rating pairs;
-- low-coverage rows for placement/uncertain pairs;
-- fixed anchors and rating quantiles;
-- capped seeded rejection sampling for random bridges;
-- existing pair history rows for replay candidates.
-
-The first implementation should avoid true game-by-game online updates. Use
-bounded batch-online waves instead:
-
-1. Snapshot ratings at the start of the wave.
-2. Pick at most `wave_battle_budget` pairs.
-3. Run all 21-game battles in parallel shards.
-4. Reduce to battle summaries.
-5. Write the next rating snapshot and scheduler state.
-6. Repeat.
-
-This keeps Modal completion order from changing the rating truth.
-
-## Pool And History
-
-The adaptive lane needs state above a single round:
-
-- pool rows: checkpoint ref, checkpoint id, run id, iteration, lineage key,
-  observation/env contract, status, first seen time;
-- pair history: stable sorted pair key, battle count, game count, last round,
-  last score, failures, draws, latest battle refs;
-- scheduler state: round index, seed, active anchors, budget settings, and
-  current quotas.
-
-Do not let long runs dominate just because they saved many checkpoints. The pool
-can include all checkpoints, while the scheduler enforces per-run or per-lineage
-budget caps.
-
-## Acceptance Checks For V0
-
-- The scheduler never creates more pairs than the requested budget.
-- The scheduler is deterministic for the same seed and snapshot.
-- Every new checkpoint gets a minimum number of distinct opponents before being
-  marked active.
-- The graph has random bridge pairs so rating islands do not form.
-- Historical checkpoints from one run cannot consume the whole round budget.
-- Replayed pairs create new immutable battle refs and update pair history.
-- Existing `all_pairs` and `random` modes still produce the same pair order and
-  same seeded behavior as before.
-- Pair history rejects pool-hash mismatch instead of mixing old and new pools.
-- The website can show partial rankings before all games complete.
-- Website checkpoint and battle drilldowns are paged or indexed. Clicking a row
-  should not scan every battle or every game.
-- A small synthetic simulator recovers the rough ordering of fake strengths.
-- A small remote smoke runs with GIFs off and writes a readable snapshot.
-
-## Research Evidence So Far
-
-- Glicko-2 tracks uncertainty directly and moves ratings more when results are
-  inconsistent with the current estimate: https://www.glicko.net/glicko/glicko2.html
-- TrueSkill matchmaking uses match quality and points out that close opponents
-  are useful, but new-vs-established matches can also teach the system a lot:
-  https://www.microsoft.com/en-us/research/project/trueskill-ranking-system/
-- Swiss systems pair players with similar scores and avoid repeat pairings in a
-  fixed event: https://handbook.fide.com/chapter/C0401Till2026
-
-For CurvyTron, this means: prefer close matches most of the time, but do not
-only do close matches. New checkpoints need anchors and random bridges too.
-
-## Immediate Next Steps
-
-1. Land refactor Cut 1: name repeated contract strings and artifact paths.
-2. Rerun focused tournament tests and compile checks.
-3. Run a tiny adaptive rating smoke with explicit checkpoint refs.
-4. Record the smoke result in validation and active-thread docs.
-5. Add website/per-checkpoint indexes before any large adaptive run.
-6. Then decide whether to run a larger all-checkpoint adaptive job.
+If a manifest was built from fixed-path trainer status, treat it as stale until
+rebuilt or verified with broad discovery.
 
 ## Guardrails
 
-- Do not launch another full all-pairs job unless the user explicitly asks for a
-  stress test.
-- Use meaningful names that include player set, scheduler, games per pair, and
-  max step cap.
-- Keep official score tournaments in eval/greedy mode unless the coach asks for
-  a separate collect-mode diagnostic.
-- Keep GIFs off for large rating jobs unless there is a clear sample cap.
-- Keep training separate. This lane reads checkpoints; it does not touch the
-  trainer.
+- Do not edit code in the docs/orchestration lane.
+- Do not describe plumbing canaries as policy-strength evidence.
+- Do not treat GIF-off smokes as website/GIF validation.
+- Do not allow a checkpoint with zero games or one opponent to look trusted.
+- Do not launch full all-pairs by habit.
+- Do not move `run_checkpoint_game`, policy loading, GIF writing, or public
+  Modal wrappers during cleanup unless a separate implementation plan says so.

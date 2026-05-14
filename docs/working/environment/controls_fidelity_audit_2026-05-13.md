@@ -9,8 +9,10 @@ Owner surface: Environment.
   server frames by elapsed milliseconds. It does not expose native trainer
   action ids, `step(joint_action)`, or simultaneous discrete decisions.
 - Browser input reduces to source moves: left-only `-1`, right-only `1`,
-  neither `0` on the wire, both/opposite keys `0` on the wire. The client emits
-  `player:move`; the server immediately calls `avatar.updateAngularVelocity`.
+  neither `0` on the wire, both/opposite inputs `0` on the wire. Keyboard,
+  touch, gamepad button, and gamepad axis bindings all reduce through the same
+  `PlayerInput.resolve()` path before the client emits `player:move`; the
+  server immediately calls `avatar.updateAngularVelocity`.
 - A control change affects the next `Game.update(step_ms)` after the server
   receives it. Deterministic traces may stage all planned move changes before an
   elapsed-ms source frame, but that staging is test harness language.
@@ -56,7 +58,9 @@ Primary evidence:
   `PlayerInput.js`, client `GameController.onMove`, and server
   `GameController.js`. It now proves keyboard left/right reduction,
   release-to-wire-0, opposite-key neutralization, restore-on-opposite-release,
-  no duplicate emits, and synchronous server delivery into
+  no duplicate emits, touch left/both/right/release reduction, gamepad button
+  and axis left/neutral/right/release reduction, client wire conversion to
+  `player:move`, and synchronous server delivery into
   `avatar.updateAngularVelocity` for `-1`, `0`, and `1`.
 - Source movement scenarios compare source-shaped Python movement with JS oracle
   traces for straight, left, right, two-player turning, multistep, varied
@@ -74,9 +78,10 @@ Primary evidence:
   runtime control proof to P=3 and P=4 for every player and every action id,
   plus a 4P held-control parity case.
 - `tests/test_lightzero_source_state_wrapper_product_fidelity.py` proves the
-  LightZero-facing source-state wrapper preserves scalar joint-action decoding,
-  native control sidecars, held source frames, raw RGB -> gray64 stack, terminal
-  final observation, rewards, masks, and terminal facts for one 2P trace.
+  LightZero-facing source-state wrapper preserves wrapper-side scalar
+  joint-action decoding, native control sidecars, held source frames, raw RGB
+  -> gray64 stack, terminal final observation, rewards, masks, and terminal
+  facts for one 2P trace.
 - Other `VectorMultiplayerEnv` tests record `source_moves`, action sidecars,
   masks, and native control values in several 2P/3P/4P fixtures.
 - A 2P public collision canary now proves `decision_source_frames` source-frame
@@ -88,11 +93,30 @@ Primary evidence:
   propagation into `joint_action` and `native_control_value`, but they are not a
   full controls-fidelity proof.
 
+## Trainer-Relevant Control Fidelity
+
+- Touch, gamepad, and browser transport do not currently feed the trainer or
+  runtime path. Training calls `VectorMultiplayerEnv.step(actions)` with wrapper
+  action ids; the runtime maps those ids to native source moves and advances
+  source-sized frames.
+- The current training blocker question is therefore answered as a non-blocker:
+  the source input families reduce to the same native move values, and the
+  trainer/runtime path already consumes those move values without DOM,
+  GamepadListener, browser, or Socket.IO dependencies.
+
+## Browser Transport Fidelity
+
+- Browser-play evaluation would need different proof: a real browser DOM
+  event path, the actual gamepad listener package, and a real Socket.IO
+  roundtrip into the original server/controller. That would be eval/product
+  evidence, not required to claim current source-state training control
+  fidelity.
+
 ## Missing Tests
 
-- No real browser DOM/EventEmitter integration or actual Socket.IO transport
-  proof exists. The current JS tests use small shims around original modules.
-- Touch and gamepad input reduction are not covered.
+- No real browser DOM/EventEmitter integration, actual gamepad listener package,
+  or actual Socket.IO transport proof exists. The current JS tests use small
+  shims around original modules.
 - Full multiplayer trainer replay arrays are still unsupported from the
   LightZero-facing wrapper. Current wrapper proof covers timestep observations
   and underlying public sidecars, not replay arrays.
@@ -128,10 +152,15 @@ Primary evidence:
 ## Exact Next Test Cases
 
 1. `test_touch_and_gamepad_input_reduction_if_training_or_browser_eval_needs_it`
-   Source keyboard behavior is now pinned. Touch/gamepad behavior should be
-   pinned only if a future route depends on it.
+   Done as shimmed source reduction proof in
+   `tests/test_controls_source_input_fidelity.py`. Do not promote this to real
+   browser or transport proof.
 
 2. `test_wrapper_replay_array_contract_when_replay_arrays_exist`
    The current wrapper proof intentionally stops at timestep observations and
    underlying public sidecars. Add replay-array assertions when that surface is
    promoted.
+
+3. `test_real_browser_or_socketio_transport_if_browser_play_eval_needs_it`
+   Add only if browser-play evaluation becomes a product requirement. It would
+   need a browser DOM/GamepadListener path plus a real Socket.IO roundtrip.

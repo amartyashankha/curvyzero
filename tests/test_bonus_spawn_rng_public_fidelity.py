@@ -40,8 +40,8 @@ def _public_default_bonus_tape(type_draw: float) -> np.ndarray:
 @pytest.mark.parametrize(
     ("type_draw", "expected_name", "expected_code", "expected_weighted_draw"),
     (
-        (0.945, "BonusAllColor", vector_runtime.BONUS_TYPE_ALL_COLOR, 10.8675),
-        (0.965, "BonusGameClear", vector_runtime.BONUS_TYPE_GAME_CLEAR, 11.0975),
+        (0.945, "BonusAllColor", vector_runtime.BONUS_TYPE_ALL_COLOR, 10.1115),
+        (0.965, "BonusGameClear", vector_runtime.BONUS_TYPE_GAME_CLEAR, 10.3255),
     ),
 )
 def test_public_default_bonus_spawn_uses_corrected_weights_and_rng_accounting(
@@ -101,7 +101,7 @@ def test_public_default_bonus_spawn_uses_corrected_weights_and_rng_accounting(
     assert type_info is not None
     np.testing.assert_array_equal(spawn_info["due_rows"], np.asarray([True]))
     np.testing.assert_allclose(type_info["game_clear_probability"], [0.5])
-    np.testing.assert_allclose(type_info["total_weight"], [11.5])
+    np.testing.assert_allclose(type_info["total_weight"], [10.7])
     np.testing.assert_allclose(type_info["weighted_draw"], [expected_weighted_draw])
     assert str(spawn_info["selected_type_name"][0]) == expected_name
     assert int(spawn_info["selected_type_code"][0]) == expected_code

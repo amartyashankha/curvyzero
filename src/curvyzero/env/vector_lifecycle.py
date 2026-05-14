@@ -1183,6 +1183,7 @@ def _clear_selected_round_local_arrays(
         "body_num",
         "body_insert_tick",
         "body_insert_kind",
+        "body_birth_ms",
     ):
         if name not in target:
             continue

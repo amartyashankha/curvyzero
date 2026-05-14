@@ -556,6 +556,45 @@ def test_source_state_canvas_gray64_is_downsampled_luminance_of_browser_like_rgb
         assert int(frame[0, py, px]) > int(round(34.0))
 
 
+def test_rgb_canvas_like_to_gray64_area_downsample_encodes_source_pixel_coverage():
+    source_size = SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE
+    target_size = SOURCE_STATE_CANVAS_GRAY64_SHAPE[1]
+    ratio = source_size // target_size
+    block_area = ratio * ratio
+    y_block = 3
+    x_block = 5
+    background = np.asarray(SOURCE_STATE_RGB_CANVAS_LIKE_BACKGROUND_RGB, dtype=np.uint8)
+    player = np.asarray(SOURCE_STATE_RGB_CANVAS_LIKE_PLAYER_RGB[0], dtype=np.uint8)
+    background_luma = int(
+        np.rint(0.299 * background[0] + 0.587 * background[1] + 0.114 * background[2])
+    )
+    player_luma = 0.299 * float(player[0]) + 0.587 * float(player[1]) + 0.114 * float(player[2])
+    rgb = np.empty((source_size, source_size, 3), dtype=np.uint8)
+    rgb[:, :] = background
+
+    empty = rgb_canvas_like_to_gray64(rgb)
+    assert int(empty[0, y_block, x_block]) == background_luma
+
+    y0 = y_block * ratio
+    x0 = x_block * ratio
+    rgb[y0, x0] = player
+    one_pixel = rgb_canvas_like_to_gray64(rgb)
+    expected_one = int(
+        np.rint(background_luma + (player_luma - background_luma) / float(block_area))
+    )
+    assert int(one_pixel[0, y_block, x_block]) == expected_one
+    assert expected_one == background_luma
+
+    rgb[y0, x0 + 1] = player
+    two_pixels = rgb_canvas_like_to_gray64(rgb)
+    expected_two = int(
+        np.rint(background_luma + 2.0 * (player_luma - background_luma) / float(block_area))
+    )
+    assert int(two_pixels[0, y_block, x_block]) == expected_two
+    assert expected_two > background_luma
+    assert np.count_nonzero(two_pixels[0] != background_luma) == 1
+
+
 def test_source_state_rgb_canvas_like_renders_distinct_source_bonus_sprite_patches():
     state = _small_source_state()
     state["present"][:, :] = False

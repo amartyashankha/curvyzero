@@ -32,6 +32,13 @@ have now been checked and have later checkpoints under timestamped
 `lightzero_exp_260513_*` directories. They are still status/poller failures, but
 not proof that the learner failed to checkpoint.
 
+Broader correction: a partial 212-row audit found at least 50 preserved rows
+where fixed-path status undercounted the true broad checkpoint state, including
+at least 45 rows whose fixed-path status was already nonzero. This file should
+now be treated as a snapshot of the old fixed-path reader, not as a true run
+health table. See
+[checkpoint_discovery_audit_2026-05-13.md](checkpoint_discovery_audit_2026-05-13.md).
+
 ## Counts
 
 | Check | Result |

@@ -432,6 +432,8 @@ def _add_forced_bonus_self_small_arrays(
         state["base_speed"] = state["speed"].copy()
     if "angular_velocity_per_ms" in state:
         state["base_angular_velocity_per_ms"] = state["angular_velocity_per_ms"].copy()
+    state["direction_in_loop"] = np.ones((row_count, player_count), dtype=bool)
+    state["current_angular_velocity"] = np.zeros((row_count, player_count), dtype=np.float64)
     state["inverse"] = np.zeros((row_count, player_count), dtype=bool)
     state["base_inverse"] = state["inverse"].copy()
     state["invincible"] = np.zeros((row_count, player_count), dtype=bool)
@@ -528,6 +530,8 @@ def _add_forced_bonus_stack_death_arrays(
     state["base_radius"] = state["radius"].copy()
     state["base_speed"] = state["speed"].copy()
     state["base_angular_velocity_per_ms"] = state["angular_velocity_per_ms"].copy()
+    state["direction_in_loop"] = np.ones((row_count, player_count), dtype=bool)
+    state["current_angular_velocity"] = np.zeros((row_count, player_count), dtype=np.float64)
     state["inverse"] = np.zeros((row_count, player_count), dtype=bool)
     state["base_inverse"] = state["inverse"].copy()
     state["invincible"] = np.zeros((row_count, player_count), dtype=bool)
@@ -858,6 +862,152 @@ def _print_manager_step_state(
         "random_tape_draw_count": np.zeros(row_count, dtype=np.int32),
         "random_tape_exhausted": np.zeros(row_count, dtype=bool),
     }
+
+
+def _death_guard_state(
+    row_count: int,
+    *,
+    player_count: int = 2,
+    body_capacity: int = 4,
+) -> dict[str, np.ndarray]:
+    pos = np.zeros((row_count, player_count, 2), dtype=np.float64)
+    pos[:, 0] = [20.0, 20.0]
+    if player_count > 1:
+        pos[:, 1:] = np.asarray(
+            [[70.0 + index, 70.0] for index in range(player_count - 1)],
+            dtype=np.float64,
+        )
+    return {
+        "tick": np.zeros(row_count, dtype=np.int32),
+        "done": np.zeros(row_count, dtype=bool),
+        "overflow": np.zeros(row_count, dtype=bool),
+        "world_body_count": np.zeros(row_count, dtype=np.int32),
+        "alive": np.ones((row_count, player_count), dtype=bool),
+        "death_tick": np.full((row_count, player_count), -1, dtype=np.int32),
+        "death_count": np.zeros(row_count, dtype=np.int32),
+        "death_player": np.full((row_count, player_count), -1, dtype=np.int16),
+        "death_cause": np.full(
+            (row_count, player_count),
+            vector_runtime.DEATH_CAUSE_NONE,
+            dtype=np.int16,
+        ),
+        "death_hit_owner": np.full((row_count, player_count), -1, dtype=np.int16),
+        "pos": pos.copy(),
+        "prev_pos": pos.copy(),
+        "heading": np.zeros((row_count, player_count), dtype=np.float64),
+        "angular_velocity_per_ms": np.zeros((row_count, player_count), dtype=np.float64),
+        "speed": np.zeros((row_count, player_count), dtype=np.float64),
+        "live_body_num": np.zeros((row_count, player_count), dtype=np.int32),
+        "trail_latency": np.zeros((row_count, player_count), dtype=np.int32),
+        "borderless": np.zeros(row_count, dtype=bool),
+        "map_size": np.full(row_count, 100.0, dtype=np.float64),
+        "radius": np.full((row_count, player_count), 0.6, dtype=np.float64),
+        "printing": np.zeros((row_count, player_count), dtype=bool),
+        "print_manager_active": np.zeros((row_count, player_count), dtype=bool),
+        "print_manager_distance": np.zeros((row_count, player_count), dtype=np.float64),
+        "print_manager_last_pos": pos.copy(),
+        "body_active": np.zeros((row_count, body_capacity), dtype=bool),
+        "body_pos": np.zeros((row_count, body_capacity, 2), dtype=np.float64),
+        "body_radius": np.zeros((row_count, body_capacity), dtype=np.float64),
+        "body_owner": np.full((row_count, body_capacity), -1, dtype=np.int16),
+        "body_num": np.full((row_count, body_capacity), -1, dtype=np.int32),
+        "body_insert_tick": np.full((row_count, body_capacity), -1, dtype=np.int32),
+        "body_insert_kind": np.full((row_count, body_capacity), -1, dtype=np.int16),
+        "body_write_cursor": np.zeros(row_count, dtype=np.int32),
+        "body_count": np.zeros((row_count, player_count), dtype=np.int32),
+        "body_overflow": np.zeros(row_count, dtype=bool),
+        "visible_trail_count": np.zeros((row_count, player_count), dtype=np.int32),
+        "has_visible_trail_last": np.zeros((row_count, player_count), dtype=bool),
+        "visible_trail_last_pos": np.zeros(
+            (row_count, player_count, 2),
+            dtype=np.float64,
+        ),
+        "has_draw_cursor": np.ones((row_count, player_count), dtype=bool),
+        "draw_cursor_pos": pos.copy(),
+        "score": np.zeros((row_count, player_count), dtype=np.int32),
+        "round_score": np.zeros((row_count, player_count), dtype=np.int32),
+        "event_count": np.zeros(row_count, dtype=np.int16),
+        "event_overflow_attempts": np.zeros(row_count, dtype=np.int32),
+        "random_tape_values": np.zeros((row_count, 1), dtype=np.float64),
+        "random_tape_length": np.ones(row_count, dtype=np.int32),
+        "random_tape_cursor": np.zeros(row_count, dtype=np.int32),
+        "random_tape_draw_count": np.zeros(row_count, dtype=np.int32),
+        "random_tape_exhausted": np.zeros(row_count, dtype=bool),
+    }
+
+
+def test_step_many_profile_no_death_keeps_players_alive_on_wall_and_body_hits():
+    state = _death_guard_state(row_count=2)
+    state["pos"][0, 0] = [0.3, 20.0]
+    state["prev_pos"][0, 0] = state["pos"][0, 0]
+    state["body_active"][1, 0] = True
+    state["body_pos"][1, 0] = state["pos"][1, 0]
+    state["body_radius"][1, 0] = 1.0
+    state["body_owner"][1, 0] = 1
+    state["body_num"][1, 0] = 0
+    state["body_insert_tick"][1, 0] = int(state["tick"][1])
+    state["body_insert_kind"][1, 0] = vector_runtime.BODY_KIND_NORMAL
+    state["body_write_cursor"][1] = 1
+    state["world_body_count"][1] = 1
+
+    counters = vector_runtime.step_many(
+        vector_runtime.VectorStepInput(
+            state=state,
+            step_ms=np.zeros(2, dtype=np.float64),
+            source_moves=np.zeros((2, 2), dtype=np.int8),
+            player_count=2,
+            death_mode=vector_runtime.DEATH_MODE_PROFILE_NO_DEATH,
+            event_mode=vector_runtime.EVENT_MODE_NONE,
+        ),
+    )
+
+    assert counters["normal_wall_deaths"] == 0
+    assert counters["body_hits"] == 1
+    assert counters["death_points_inserted"] == 0
+    np.testing.assert_array_equal(state["alive"], np.ones((2, 2), dtype=bool))
+    np.testing.assert_array_equal(state["death_count"], np.zeros(2, dtype=np.int32))
+    np.testing.assert_array_equal(
+        state["death_player"],
+        np.full((2, 2), -1, dtype=np.int16),
+    )
+
+
+def test_step_many_death_immunity_mask_allows_mortal_peer_to_die_same_batch():
+    state = _death_guard_state(row_count=1)
+    state["pos"][0, 0] = [0.3, 20.0]
+    state["pos"][0, 1] = [0.3, 40.0]
+    state["prev_pos"][0] = state["pos"][0]
+
+    counters = vector_runtime.step_many(
+        vector_runtime.VectorStepInput(
+            state=state,
+            step_ms=np.zeros(1, dtype=np.float64),
+            source_moves=np.zeros((1, 2), dtype=np.int8),
+            player_count=2,
+            death_immunity_mask=np.asarray([[True, False]], dtype=bool),
+            event_mode=vector_runtime.EVENT_MODE_NONE,
+        ),
+    )
+
+    assert counters["normal_wall_deaths"] == 1
+    assert counters["death_points_inserted"] == 1
+    np.testing.assert_array_equal(state["alive"], np.asarray([[True, False]]))
+    np.testing.assert_array_equal(state["death_count"], np.asarray([1], dtype=np.int32))
+    np.testing.assert_array_equal(
+        state["death_player"],
+        np.asarray([[1, -1]], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        state["death_cause"],
+        np.asarray(
+            [[vector_runtime.DEATH_CAUSE_WALL, vector_runtime.DEATH_CAUSE_NONE]],
+            dtype=np.int16,
+        ),
+    )
+    np.testing.assert_array_equal(
+        state["death_hit_owner"],
+        np.asarray([[-1, -1]], dtype=np.int16),
+    )
 
 
 def test_step_many_rejects_step_ms_shape_that_does_not_match_rows():
@@ -1658,6 +1808,74 @@ def test_advance_player_movement_inverts_turn_direction_when_inverse_is_present(
     assert state["heading"][0, 0] == pytest.approx(expected_heading)
 
 
+def test_source_like_straight_angle_consumes_current_turn_once_without_step_scaling():
+    state = {
+        "tick": np.asarray([0], dtype=np.int32),
+        "done": np.asarray([False], dtype=bool),
+        "overflow": np.asarray([False], dtype=bool),
+        "alive": np.asarray([[True]], dtype=bool),
+        "pos": np.asarray([[[10.0, 20.0]]], dtype=np.float64),
+        "prev_pos": np.full((1, 1, 2), -1.0, dtype=np.float64),
+        "heading": np.asarray([[0.0]], dtype=np.float64),
+        "angular_velocity_per_ms": np.asarray(
+            [[vector_runtime.SOURCE_STRAIGHT_ANGLE_RADIANS]],
+            dtype=np.float64,
+        ),
+        "current_angular_velocity": np.asarray([[0.0]], dtype=np.float64),
+        "direction_in_loop": np.asarray([[False]], dtype=bool),
+        "speed": np.asarray([[20.0]], dtype=np.float64),
+        "live_body_num": np.full((1, 1), -1, dtype=np.int32),
+        "body_count": np.asarray([[4]], dtype=np.int32),
+    }
+    step_ms = np.asarray([100.0], dtype=np.float64)
+    left = np.asarray([[1]], dtype=np.int8)
+
+    vector_runtime.apply_source_turn_inputs(
+        state,
+        source_moves=left,
+        player_count=1,
+    )
+    vector_runtime.advance_player_movement(
+        state,
+        player=0,
+        live_mask=np.asarray([True], dtype=bool),
+        step_ms=step_ms,
+        source_moves=left,
+    )
+
+    assert state["heading"][0, 0] == pytest.approx(
+        vector_runtime.SOURCE_STRAIGHT_ANGLE_RADIANS
+    )
+    assert state["current_angular_velocity"][0, 0] == pytest.approx(0.0)
+
+    vector_runtime.advance_player_movement(
+        state,
+        player=0,
+        live_mask=np.asarray([True], dtype=bool),
+        step_ms=step_ms,
+        source_moves=left,
+    )
+    assert state["heading"][0, 0] == pytest.approx(
+        vector_runtime.SOURCE_STRAIGHT_ANGLE_RADIANS
+    )
+
+    vector_runtime.apply_source_turn_inputs(
+        state,
+        source_moves=left,
+        player_count=1,
+    )
+    vector_runtime.advance_player_movement(
+        state,
+        player=0,
+        live_mask=np.asarray([True], dtype=bool),
+        step_ms=step_ms,
+        source_moves=left,
+    )
+    assert state["heading"][0, 0] == pytest.approx(
+        2.0 * vector_runtime.SOURCE_STRAIGHT_ANGLE_RADIANS
+    )
+
+
 def test_apply_borderless_wrap_preserves_source_axis_priority_and_strict_edges():
     state = {
         "tick": np.zeros(8, dtype=np.int32),
@@ -2055,8 +2273,8 @@ def test_bonus_type_selection_metadata_pins_reduced_game_clear_edges():
     assert info["surface"] == vector_runtime.BONUS_TYPE_SELECTION_METADATA_SURFACE
     np.testing.assert_array_equal(info["eligible_rows"], np.asarray([True, True]))
     np.testing.assert_allclose(info["game_clear_probability"], [0.5, 0.5])
-    np.testing.assert_allclose(info["total_weight"], [11.5, 11.5])
-    np.testing.assert_allclose(info["weighted_draw"], [10.8675, 11.0975])
+    np.testing.assert_allclose(info["total_weight"], [10.7, 10.7])
+    np.testing.assert_allclose(info["weighted_draw"], [10.1115, 10.3255])
     np.testing.assert_array_equal(
         info["selected_type_code"],
         np.asarray(
@@ -2088,8 +2306,8 @@ def test_bonus_type_selection_metadata_pins_full_probability_game_clear_edge():
     )
 
     np.testing.assert_allclose(info["game_clear_probability"], [1.0, 0.5])
-    np.testing.assert_allclose(info["total_weight"], [12.0, 11.5])
-    np.testing.assert_allclose(info["weighted_draw"], [11.16, 10.695])
+    np.testing.assert_allclose(info["total_weight"], [11.2, 10.7])
+    np.testing.assert_allclose(info["weighted_draw"], [10.416, 9.951])
     np.testing.assert_array_equal(
         info["selected_type_code"],
         np.asarray(
@@ -2102,7 +2320,7 @@ def test_bonus_type_selection_metadata_pins_full_probability_game_clear_edge():
     )
 
 
-def test_bonus_type_selection_metadata_pins_non_clear_source_probabilities_at_one():
+def test_bonus_type_selection_metadata_pins_fractional_non_clear_source_probabilities():
     state = _bonus_type_metadata_state(
         [
             [True, True, False, False],
@@ -2113,13 +2331,13 @@ def test_bonus_type_selection_metadata_pins_non_clear_source_probabilities_at_on
 
     info = vector_runtime.bonus_type_selection_metadata(
         state,
-        np.asarray([0.63, 0.71, 0.865], dtype=np.float64),
+        np.asarray([0.70, 0.75, 0.82], dtype=np.float64),
         player_count=4,
     )
 
     np.testing.assert_allclose(info["game_clear_probability"], [0.5, 0.5, 0.5])
-    np.testing.assert_allclose(info["total_weight"], [11.5, 11.5, 11.5])
-    np.testing.assert_allclose(info["weighted_draw"], [7.245, 8.165, 9.9475])
+    np.testing.assert_allclose(info["total_weight"], [10.7, 10.7, 10.7])
+    np.testing.assert_allclose(info["weighted_draw"], [7.49, 8.025, 8.774])
     np.testing.assert_array_equal(
         info["selected_type_code"],
         np.asarray(
@@ -2140,6 +2358,47 @@ def test_bonus_type_selection_metadata_pins_non_clear_source_probabilities_at_on
                 "BonusGameBorderless",
             ],
             dtype=object,
+        ),
+    )
+
+
+def test_bonus_type_selection_metadata_uses_fractional_probability_thresholds():
+    state = _bonus_type_metadata_state([[True, True, False, False]] * 6)
+    enabled_codes = np.asarray(
+        [
+            vector_runtime.BONUS_TYPE_ENEMY_BIG,
+            vector_runtime.BONUS_TYPE_ENEMY_INVERSE,
+            vector_runtime.BONUS_TYPE_ENEMY_STRAIGHT_ANGLE,
+            vector_runtime.BONUS_TYPE_GAME_BORDERLESS,
+            vector_runtime.BONUS_TYPE_ALL_COLOR,
+            vector_runtime.BONUS_TYPE_GAME_CLEAR,
+        ],
+        dtype=np.int16,
+    )
+    weighted_draws = np.asarray([1.79, 1.81, 2.39, 2.41, 3.19, 3.21])
+
+    info = vector_runtime.bonus_type_selection_metadata(
+        state,
+        weighted_draws / 4.7,
+        player_count=4,
+        enabled_type_codes=enabled_codes,
+    )
+
+    np.testing.assert_allclose(info["game_clear_probability"], np.full(6, 0.5))
+    np.testing.assert_allclose(info["total_weight"], np.full(6, 4.7))
+    np.testing.assert_allclose(info["weighted_draw"], weighted_draws)
+    np.testing.assert_array_equal(
+        info["selected_type_code"],
+        np.asarray(
+            [
+                vector_runtime.BONUS_TYPE_ENEMY_INVERSE,
+                vector_runtime.BONUS_TYPE_ENEMY_STRAIGHT_ANGLE,
+                vector_runtime.BONUS_TYPE_ENEMY_STRAIGHT_ANGLE,
+                vector_runtime.BONUS_TYPE_GAME_BORDERLESS,
+                vector_runtime.BONUS_TYPE_GAME_BORDERLESS,
+                vector_runtime.BONUS_TYPE_ALL_COLOR,
+            ],
+            dtype=np.int16,
         ),
     )
 
@@ -3212,6 +3471,7 @@ def test_step_many_catches_forced_bonus_enemy_straight_angle_and_expiry_restores
 
     assert catch_counters["bonus_enemy_straight_angle_catches"] == 1
     assert catch_counters["bonus_stack_appends"] == 1
+    np.testing.assert_array_equal(state["direction_in_loop"], np.asarray([[True, False]]))
     np.testing.assert_allclose(
         state["angular_velocity_per_ms"],
         np.asarray(
@@ -3241,9 +3501,300 @@ def test_step_many_catches_forced_bonus_enemy_straight_angle_and_expiry_restores
     )
 
     assert expiry_counters["bonus_enemy_straight_angle_expiries"] == 1
+    np.testing.assert_array_equal(state["direction_in_loop"], np.asarray([[True, True]]))
     np.testing.assert_allclose(state["angular_velocity_per_ms"], base_angular_velocity)
     np.testing.assert_array_equal(state["bonus_stack_count"], np.asarray([[0, 0]]))
     assert int(state["bonus_stack_type"][0, 1, 0]) == vector_runtime.BONUS_TYPE_NONE
+
+
+def _self_master_print_manager_fixture_state(
+    *,
+    printing: bool,
+    print_manager_active: bool = True,
+) -> tuple[dict[str, object], dict[str, np.ndarray]]:
+    scenario_name = "source_bonus_self_small_expiry_restore_step.json"
+    fixture, state = _runtime_fixture_state(f"scenarios/environment/{scenario_name}")
+    _add_forced_bonus_self_small_arrays(
+        state,
+        scenario_name,
+        bonus_type_code=vector_runtime.BONUS_TYPE_SELF_MASTER,
+    )
+    state["speed"][:, :] = 0.0
+    state["bonus_pos"][0, 0] = state["pos"][0, 0]
+    state["printing"][:, :] = False
+    state["print_manager_active"][:, :] = False
+    state["print_manager_distance"][:, :] = 0.0
+    state["print_manager_last_pos"][:, :, :] = 0.0
+    state["printing"][0, 0] = printing
+    state["print_manager_active"][0, 0] = print_manager_active
+    state["print_manager_distance"][0, 0] = 17.0
+    state["print_manager_last_pos"][0, 0] = state["pos"][0, 0]
+    state["death_count"] = np.zeros(1, dtype=np.int32)
+    state["death_player"] = np.full((1, 2), -1, dtype=np.int16)
+    state["death_cause"] = np.full(
+        (1, 2),
+        vector_runtime.DEATH_CAUSE_NONE,
+        dtype=np.int16,
+    )
+    state["death_hit_owner"] = np.full((1, 2), -1, dtype=np.int16)
+    state["has_draw_cursor"][:, :] = True
+    state["draw_cursor_pos"][:, :, :] = state["pos"]
+    if printing:
+        state["visible_trail_count"][0, 0] = 3
+        state["has_visible_trail_last"][0, 0] = True
+        state["visible_trail_last_pos"][0, 0] = state["pos"][0, 0]
+    state["random_tape_values"][0, :2] = [0.25, 0.50]
+    state["random_tape_length"][0] = 2
+    state["random_tape_cursor"][0] = 0
+    state["random_tape_draw_count"][0] = 0
+    return fixture, state
+
+
+def _seed_opponent_body_on_self_master_player(state: dict[str, np.ndarray]) -> None:
+    state["body_active"][0] = False
+    state["body_pos"][0] = 0.0
+    state["body_radius"][0] = 0.0
+    state["body_owner"][0] = -1
+    state["body_num"][0] = -1
+    state["body_insert_tick"][0] = -1
+    state["body_insert_kind"][0] = -1
+    if "body_birth_ms" in state:
+        state["body_birth_ms"][0] = 0.0
+    if "body_break_before" in state:
+        state["body_break_before"][0] = False
+    state["body_active"][0, 0] = True
+    state["body_pos"][0, 0] = state["pos"][0, 0]
+    state["body_radius"][0, 0] = 1.0
+    state["body_owner"][0, 0] = 1
+    state["body_num"][0, 0] = 0
+    state["body_insert_tick"][0, 0] = int(state["tick"][0])
+    state["body_insert_kind"][0, 0] = vector_runtime.BODY_KIND_NORMAL
+    state["body_write_cursor"][0] = 1
+    state["world_body_count"][0] = 1
+
+
+def test_step_many_forced_bonus_self_master_catch_stops_active_print_manager_side_effects():
+    fixture, state = _self_master_print_manager_fixture_state(printing=True)
+
+    counters = _step_runtime_fixture(fixture, state, step_index=0)
+
+    assert counters["bonus_self_master_catches"] == 1
+    assert counters["bonus_stack_appends"] == 1
+    assert counters["body_overflow_attempts"] == 0
+    np.testing.assert_array_equal(state["invincible"], np.asarray([[True, False]]))
+    np.testing.assert_array_equal(state["printing"], np.asarray([[False, False]]))
+    np.testing.assert_array_equal(state["print_manager_active"], np.asarray([[False, False]]))
+    np.testing.assert_allclose(state["print_manager_distance"], np.asarray([[0.0, 0.0]]))
+    np.testing.assert_allclose(state["print_manager_last_pos"], 0.0)
+    np.testing.assert_array_equal(state["random_tape_cursor"], np.asarray([1], dtype=np.int32))
+    np.testing.assert_array_equal(
+        state["random_tape_draw_count"],
+        np.asarray([1], dtype=np.int32),
+    )
+    np.testing.assert_array_equal(state["body_count"], np.asarray([[1, 0]], dtype=np.int32))
+    assert int(state["body_write_cursor"][0]) == 1
+    assert int(state["body_insert_kind"][0, 0]) == vector_runtime.BODY_KIND_IMPORTANT
+    assert int(state["body_owner"][0, 0]) == 0
+    np.testing.assert_allclose(state["body_pos"][0, 0], state["pos"][0, 0])
+    np.testing.assert_array_equal(state["visible_trail_count"], np.asarray([[0, 0]]))
+    np.testing.assert_array_equal(state["has_visible_trail_last"], np.asarray([[False, False]]))
+    np.testing.assert_array_equal(state["has_draw_cursor"], np.asarray([[False, True]]))
+
+    assert int(state["event_count"][0]) == 7
+    np.testing.assert_array_equal(
+        state["event_type"][0, :7],
+        np.asarray(
+            [
+                vector_runtime.EVENT_POSITION,
+                vector_runtime.EVENT_POSITION,
+                vector_runtime.EVENT_BONUS_CLEAR,
+                vector_runtime.EVENT_POINT,
+                vector_runtime.EVENT_PROPERTY,
+                vector_runtime.EVENT_PROPERTY,
+                vector_runtime.EVENT_BONUS_STACK,
+            ],
+            dtype=np.int16,
+        ),
+    )
+    assert int(state["event_bool"][0, 3]) == 1
+    np.testing.assert_array_equal(
+        state["event_value_i"][0, 4:6],
+        np.asarray(
+            [
+                [vector_runtime.PROPERTY_PRINTING, 0],
+                [vector_runtime.PROPERTY_INVINCIBLE, 0],
+            ],
+            dtype=np.int32,
+        ),
+    )
+    np.testing.assert_array_equal(state["event_bool"][0, 4:6], np.asarray([0, 1]))
+
+
+def test_step_many_forced_bonus_self_master_expiry_restarts_print_manager_side_effects():
+    fixture, state = _self_master_print_manager_fixture_state(printing=True)
+    _step_runtime_fixture(fixture, state, step_index=0)
+
+    counters = _step_runtime_timer_only(
+        state,
+        timer_advance_ms=vector_runtime.BONUS_SELF_MASTER_DURATION_MS,
+    )
+
+    assert counters["bonus_self_master_expiries"] == 1
+    assert counters["body_overflow_attempts"] == 0
+    np.testing.assert_array_equal(state["invincible"], np.asarray([[False, False]]))
+    np.testing.assert_array_equal(state["printing"], np.asarray([[True, False]]))
+    np.testing.assert_array_equal(state["print_manager_active"], np.asarray([[True, False]]))
+    np.testing.assert_allclose(state["print_manager_last_pos"][0, 0], state["pos"][0, 0])
+    assert state["print_manager_distance"][0, 0] == pytest.approx(39.0)
+    np.testing.assert_array_equal(state["random_tape_cursor"], np.asarray([2], dtype=np.int32))
+    np.testing.assert_array_equal(
+        state["random_tape_draw_count"],
+        np.asarray([2], dtype=np.int32),
+    )
+    np.testing.assert_array_equal(state["body_count"], np.asarray([[2, 0]], dtype=np.int32))
+    assert int(state["body_write_cursor"][0]) == 2
+    np.testing.assert_array_equal(
+        state["body_insert_kind"][0, :2],
+        np.asarray(
+            [
+                vector_runtime.BODY_KIND_IMPORTANT,
+                vector_runtime.BODY_KIND_IMPORTANT,
+            ],
+            dtype=np.int16,
+        ),
+    )
+    np.testing.assert_array_equal(state["visible_trail_count"], np.asarray([[1, 0]]))
+    np.testing.assert_array_equal(state["has_draw_cursor"], np.asarray([[True, True]]))
+
+    assert int(state["event_count"][0]) == 6
+    np.testing.assert_array_equal(
+        state["event_type"][0, :6],
+        np.asarray(
+            [
+                vector_runtime.EVENT_POINT,
+                vector_runtime.EVENT_PROPERTY,
+                vector_runtime.EVENT_PROPERTY,
+                vector_runtime.EVENT_BONUS_STACK,
+                vector_runtime.EVENT_POSITION,
+                vector_runtime.EVENT_POSITION,
+            ],
+            dtype=np.int16,
+        ),
+    )
+    assert int(state["event_bool"][0, 0]) == 1
+    np.testing.assert_array_equal(
+        state["event_value_i"][0, 1:3],
+        np.asarray(
+            [
+                [vector_runtime.PROPERTY_PRINTING, 0],
+                [vector_runtime.PROPERTY_INVINCIBLE, 0],
+            ],
+            dtype=np.int32,
+        ),
+    )
+    np.testing.assert_array_equal(state["event_bool"][0, 1:3], np.asarray([1, 0]))
+
+
+def test_step_many_forced_bonus_self_master_active_hole_catch_stops_without_body_point():
+    fixture, state = _self_master_print_manager_fixture_state(printing=False)
+
+    counters = _step_runtime_fixture(fixture, state, step_index=0)
+
+    assert counters["bonus_self_master_catches"] == 1
+    assert counters["bonus_stack_appends"] == 1
+    np.testing.assert_array_equal(state["invincible"], np.asarray([[True, False]]))
+    np.testing.assert_array_equal(state["printing"], np.asarray([[False, False]]))
+    np.testing.assert_array_equal(state["print_manager_active"], np.asarray([[False, False]]))
+    np.testing.assert_allclose(state["print_manager_distance"], np.asarray([[0.0, 0.0]]))
+    np.testing.assert_allclose(state["print_manager_last_pos"], 0.0)
+    np.testing.assert_array_equal(state["random_tape_cursor"], np.asarray([1], dtype=np.int32))
+    np.testing.assert_array_equal(
+        state["random_tape_draw_count"],
+        np.asarray([1], dtype=np.int32),
+    )
+    np.testing.assert_array_equal(state["body_count"], np.asarray([[0, 0]], dtype=np.int32))
+    assert int(state["body_write_cursor"][0]) == 0
+    assert int(state["event_count"][0]) == 6
+    assert vector_runtime.EVENT_POINT not in set(state["event_type"][0, :6])
+    np.testing.assert_array_equal(
+        state["event_value_i"][0, 3:5],
+        np.asarray(
+            [
+                [vector_runtime.PROPERTY_PRINTING, 0],
+                [vector_runtime.PROPERTY_INVINCIBLE, 0],
+            ],
+            dtype=np.int32,
+        ),
+    )
+    np.testing.assert_array_equal(state["event_bool"][0, 3:5], np.asarray([0, 1]))
+
+
+def test_step_many_forced_bonus_self_master_blocks_body_death_while_invincible():
+    fixture, state = _self_master_print_manager_fixture_state(printing=True)
+    _step_runtime_fixture(fixture, state, step_index=0)
+    _seed_opponent_body_on_self_master_player(state)
+
+    counters = vector_runtime.step_many(
+        vector_runtime.VectorStepInput(
+            state=state,
+            step_ms=np.zeros(1, dtype=np.float64),
+            source_moves=np.zeros((1, 2), dtype=np.int8),
+            player_count=2,
+            event_mode=vector_runtime.EVENT_MODE_NONE,
+        ),
+    )
+
+    assert counters["body_hits"] == 1
+    assert counters["death_points_inserted"] == 0
+    np.testing.assert_array_equal(state["alive"], np.asarray([[True, True]]))
+    np.testing.assert_array_equal(state["death_count"], np.asarray([0], dtype=np.int32))
+    np.testing.assert_array_equal(state["invincible"], np.asarray([[True, False]]))
+    np.testing.assert_array_equal(state["bonus_stack_count"], np.asarray([[1, 0]]))
+
+
+def test_step_many_forced_bonus_self_master_wall_death_clears_invincible_without_expiry():
+    fixture, state = _self_master_print_manager_fixture_state(printing=True)
+    _step_runtime_fixture(fixture, state, step_index=0)
+    state["pos"][0, 0] = np.asarray([0.3, 20.0], dtype=np.float64)
+    state["prev_pos"][0, 0] = state["pos"][0, 0]
+    state["heading"][0, 0] = math.pi
+
+    death_counters = vector_runtime.step_many(
+        vector_runtime.VectorStepInput(
+            state=state,
+            step_ms=np.zeros(1, dtype=np.float64),
+            source_moves=np.zeros((1, 2), dtype=np.int8),
+            player_count=2,
+            event_mode=vector_runtime.EVENT_MODE_NONE,
+        ),
+    )
+
+    assert death_counters["normal_wall_deaths"] == 1
+    assert death_counters["bonus_self_master_expiries"] == 0
+    np.testing.assert_array_equal(state["alive"], np.asarray([[False, True]]))
+    np.testing.assert_array_equal(state["death_count"], np.asarray([1], dtype=np.int32))
+    np.testing.assert_array_equal(
+        state["death_cause"],
+        np.asarray(
+            [[vector_runtime.DEATH_CAUSE_WALL, vector_runtime.DEATH_CAUSE_NONE]],
+            dtype=np.int16,
+        ),
+    )
+    np.testing.assert_array_equal(state["bonus_stack_count"], np.asarray([[0, 0]]))
+    np.testing.assert_array_equal(state["invincible"], np.asarray([[False, False]]))
+    np.testing.assert_array_equal(state["printing"], np.asarray([[False, False]]))
+    np.testing.assert_array_equal(state["print_manager_active"], np.asarray([[False, False]]))
+
+    expiry_counters = _step_runtime_timer_only(
+        state,
+        timer_advance_ms=vector_runtime.BONUS_SELF_MASTER_DURATION_MS,
+    )
+
+    assert expiry_counters["bonus_self_master_expiries"] == 0
+    assert expiry_counters["random_tape_draws"] == 0
+    np.testing.assert_array_equal(state["invincible"], np.asarray([[False, False]]))
+    np.testing.assert_array_equal(state["printing"], np.asarray([[False, False]]))
+    np.testing.assert_array_equal(state["print_manager_active"], np.asarray([[False, False]]))
 
 
 def test_step_many_catches_forced_bonus_self_master_and_expiry_restores_state():

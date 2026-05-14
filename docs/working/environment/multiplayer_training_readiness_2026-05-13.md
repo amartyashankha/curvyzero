@@ -47,17 +47,18 @@ and [source_state_multiplayer_trainer_surface_spec_2026-05-13.md](source_state_m
    surface/replay final visual rows, final rewards, death metadata, and bonus
    audit metadata. Training still needs other long-run stack/death cases before
    bonus-enabled multiplayer runs can be called source-faithful.
-5. Add raw JS oracle fixtures for hit-owner stress.
-   Runtime stress tests cover the important owner-order cases, and focused
-   propagation now carries one 3P terminal case and one 4P nonterminal
-   two-victim case through public env, trainer surface, replay metadata, and
-   debug events. Training still needs raw JS fixtures for those exact 3P/4P
-   stress shapes and broader collision edges.
+5. Keep hit-owner stress source-backed while broadening edges.
+   Runtime stress tests cover the important owner-order cases, raw JS oracle
+   fixtures now pin the exact 3P terminal and 4P nonterminal two-victim shapes,
+   and focused propagation carries those shapes through public env, trainer
+   surface, replay metadata, and debug events. Training still needs broader
+   collision edges.
 6. Widen to 3P/4P only after the 2P ladder is stable.
-   Existing 3P/4P scalar projection and metadata artifacts are useful
-   scaffolding, not trainer-ready multiplayer. Before 3P/4P training claims,
-   decide the learned-observation schema, ego rotation, opponent-policy
-   sidecars, match/round semantics, replay ownership, and evaluation panel.
+   Existing 3P/4P scalar projection, source-state trainer/replay lifecycle, and
+   presence/leave artifacts are useful scaffolding, not trainer-ready
+   multiplayer. Before 3P/4P training claims, finish the remaining lifecycle,
+   bonus, collision, replay ownership, policy/evaluation, and source-state
+   observation propagation proof.
 7. Keep browser/canvas pixels out of the P0 training blocker list.
    The active training visual surface is source-state raw RGB to gray64 stack.
    Browser/canvas pixel parity may matter later for human/browser parity, but
@@ -102,14 +103,15 @@ and [source_state_multiplayer_trainer_surface_spec_2026-05-13.md](source_state_m
 - Controls now use `decision_source_frames`, derive `decision_ms`, hold controls
   over source-sized internal frames, and stop early on death. Current proof
   covers 2P/3P/4P mapping slices, held-control parity, release-to-straight,
-  invalid/live action rejection, inactive noops, and one direct plus one
-  LightZero-facing terminal early-stop trace.
+  invalid/live action rejection, inactive noops, a controlled terminal-padding
+  noop fixture, and one direct plus one LightZero-facing terminal early-stop
+  trace.
 - Direct 2P product-route proof covers raw RGB -> gray64, seeded
   `BonusGameClear`, stale trail/body clear, live ticks, terminal wall death,
   rewards, final observation masks, and metadata replay.
-- LightZero-facing wrapper proof covers scalar joint-action decoding, raw RGB
-  -> gray64 stack, held source frames, terminal final observation, rewards,
-  masks, and native sidecars.
+- LightZero-facing wrapper proof covers wrapper-side scalar joint-action
+  decoding, raw RGB -> gray64 stack, held source frames, terminal final
+  observation, rewards, masks, and native sidecars.
 - Bonus defaults are no longer blocked on type-selection weights: source
   default non-`BonusGameClear` bonuses effectively have probability `1`.
   Natural bonus proof pins corrected `BonusGameClear` boundary draws, RNG
@@ -117,7 +119,8 @@ and [source_state_multiplayer_trainer_surface_spec_2026-05-13.md](source_state_m
   source-default bonus types.
 - Hit-owner runtime stress proof covers 4P newest-owner overlap, 4P source-style
   corner island order, 3P own-body latency, and 4P two-victim metadata
-  alignment.
+  alignment; raw JS oracle fixtures now pin the exact promoted 3P terminal and
+  4P nonterminal propagation shapes.
 - Metadata-only multiplayer wrappers, opponent policy sidecars, 3P/4P scalar
   projections, and replay-shaped scalar artifacts exist as scaffolding. They
   explicitly do not claim learned-observation trainer readiness.

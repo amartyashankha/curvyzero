@@ -458,3 +458,21 @@ after the basic runner is proven.
   policies survive. Prefer the first fresh score run without massive GIF
   sampling; launch smaller visual diagnostics separately if we need to inspect
   long games.
+
+## 2026-05-13 Scheduler Breadth And Public Leaderboard Contract
+
+- Current issue: the latest 20-checkpoint visual/intake canary is useful for
+  plumbing and GIF inspection, but its adaptive schedule gave each checkpoint
+  only one 21-game battle against one distinct opponent. That is not enough
+  opponent diversity for a trustworthy public ranking or future training use.
+- New scheduler target: each checkpoint should reach at least 20 distinct
+  opponents before it is treated as leaderboard-active. Do this with bounded
+  placement/anchor/near-rating/bridge rounds, not a full N^2 all-pairs run.
+- Future contract: maintain a public checkpoint leaderboard as a durable
+  product surface. Training loops can later sample frozen opponents from this
+  leaderboard, so rows must expose enough evidence metadata to avoid confusing a
+  provisional one-opponent placement result with a mature rating.
+- Discovery rule stays live: latest-checkpoint selection must scan
+  `train/lightzero_exp*/ckpt/iteration_*.pth.tar`, including timestamped
+  `lightzero_exp_*` directories, and must not rely only on
+  `train/lightzero_exp/ckpt`.

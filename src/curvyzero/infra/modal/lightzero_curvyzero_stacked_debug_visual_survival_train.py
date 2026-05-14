@@ -80,6 +80,7 @@ from curvyzero.env.vector_visual_observation import (
 )
 from curvyzero.env.vector_visual_observation import TRAIL_RENDER_MODE_DEFAULT
 from curvyzero.infra.modal import run_management as runs
+from curvyzero.training import lightzero_checkpoints as lz_checkpoints
 from curvyzero.training.curvytron_current_policy_selfplay_smoke import (
     STACK_RENDER_MODE_ORDER,
 )
@@ -1801,29 +1802,71 @@ def _safe_int_or_none(value: Any) -> int | None:
         return None
 
 
+def _lightzero_exp_sibling_roots(exp_name: Path) -> list[Path]:
+    return lz_checkpoints.lightzero_exp_sibling_roots(exp_name)
+
+
+def _lightzero_exp_checkpoint_dirs(exp_name: Path) -> list[Path]:
+    return lz_checkpoints.lightzero_exp_checkpoint_dirs(exp_name)
+
+
+def _lightzero_exp_resume_state_dirs(exp_name: Path) -> list[Path]:
+    return lz_checkpoints.lightzero_exp_resume_state_dirs(exp_name)
+
+
 def _latest_lightzero_iteration_checkpoint(exp_name: Path) -> dict[str, Any] | None:
-    ckpt_dir = exp_name / "ckpt"
-    if not ckpt_dir.is_dir():
+    latest = lz_checkpoints.latest_lightzero_iteration_checkpoint_from_dirs(
+        _lightzero_exp_checkpoint_dirs(exp_name)
+    )
+    if latest is None:
         return None
-    candidates: list[tuple[int, Path]] = []
-    for path in ckpt_dir.glob("iteration_*.pth.tar"):
-        iteration = _lightzero_iteration_from_checkpoint_name(path.name)
-        if iteration is not None:
-            candidates.append((iteration, path))
-    if not candidates:
-        return None
-    iteration, path = max(candidates, key=lambda item: item[0])
+    path = latest.path
     checkpoint_ref = None
     try:
         checkpoint_ref = _checkpoint_source_ref(path)
     except ValueError:
         checkpoint_ref = None
     return {
-        "iteration": int(iteration),
-        "checkpoint_name": path.name,
+        "iteration": int(latest.iteration),
+        "checkpoint_name": latest.checkpoint_name,
         "checkpoint_path": str(path),
         "checkpoint_ref": checkpoint_ref,
     }
+
+
+def _build_checkpoint_progress_latest_payload(
+    *,
+    run_id: str,
+    attempt_id: str,
+    checkpoint: dict[str, Any] | None,
+    learner_iteration: int | None,
+    elapsed_sec: float,
+    timestamp: str,
+    source: str,
+) -> dict[str, Any]:
+    iteration = (
+        int(checkpoint["iteration"])
+        if checkpoint is not None and checkpoint.get("iteration") is not None
+        else learner_iteration
+    )
+    payload = {
+        "schema_id": "curvyzero_lightzero_curvytron_train_progress_latest/v0",
+        "task_id": TASK_ID,
+        "run_id": run_id,
+        "attempt_id": attempt_id,
+        "iteration": iteration,
+        "learner_train_iter": learner_iteration,
+        "event": "checkpoint",
+        "elapsed_sec": round(max(0.0, float(elapsed_sec)), 6),
+        "timestamp": timestamp,
+        "updated_at": timestamp,
+        "source": source,
+    }
+    if checkpoint is not None:
+        payload["checkpoint"] = checkpoint
+        payload["checkpoint_ref"] = checkpoint.get("checkpoint_ref")
+        payload["checkpoint_name"] = checkpoint.get("checkpoint_name")
+    return payload
 
 
 def _write_checkpoint_progress_latest(
@@ -1838,29 +1881,16 @@ def _write_checkpoint_progress_latest(
 ) -> dict[str, Any]:
     checkpoint = _latest_lightzero_iteration_checkpoint(exp_name)
     learner_iteration = _safe_int_or_none(getattr(learner, "train_iter", None))
-    iteration = (
-        int(checkpoint["iteration"])
-        if checkpoint is not None and checkpoint.get("iteration") is not None
-        else learner_iteration
-    )
     now = runs.utc_timestamp()
-    payload = {
-        "schema_id": "curvyzero_lightzero_curvytron_train_progress_latest/v0",
-        "task_id": TASK_ID,
-        "run_id": run_id,
-        "attempt_id": attempt_id,
-        "iteration": iteration,
-        "learner_train_iter": learner_iteration,
-        "event": "checkpoint",
-        "elapsed_sec": round(max(0.0, time.perf_counter() - started_monotonic), 6),
-        "timestamp": now,
-        "updated_at": now,
-        "source": source,
-    }
-    if checkpoint is not None:
-        payload["checkpoint"] = checkpoint
-        payload["checkpoint_ref"] = checkpoint.get("checkpoint_ref")
-        payload["checkpoint_name"] = checkpoint.get("checkpoint_name")
+    payload = _build_checkpoint_progress_latest_payload(
+        run_id=run_id,
+        attempt_id=attempt_id,
+        checkpoint=checkpoint,
+        learner_iteration=learner_iteration,
+        elapsed_sec=time.perf_counter() - started_monotonic,
+        timestamp=now,
+        source=source,
+    )
     path = attempt_train_root / "progress_latest.json"
     return runs.write_json(path, _to_plain(payload))
 
@@ -2045,13 +2075,20 @@ def _install_lightzero_full_resume_state_hooks(
         def make_save_hook_wrapped(original: Any) -> Any:
             def wrapped(self: Any, engine: Any) -> Any:
                 result = original(self, engine)
-                _save_lightzero_resume_sidecar_state(
-                    run_id=run_id,
-                    attempt_id=attempt_id,
-                    exp_name=exp_name,
-                    holder=holder,
-                    learner=engine,
-                )
+                try:
+                    _save_lightzero_resume_sidecar_state(
+                        run_id=run_id,
+                        attempt_id=attempt_id,
+                        exp_name=exp_name,
+                        holder=holder,
+                        learner=engine,
+                    )
+                except Exception as exc:  # pragma: no cover - remote resilience only.
+                    print(
+                        "curvyzero resume sidecar save failed: "
+                        f"{type(exc).__name__}: {exc}",
+                        flush=True,
+                    )
                 if attempt_train_root is not None and started_monotonic is not None:
                     try:
                         _write_checkpoint_progress_latest(
@@ -2091,12 +2128,21 @@ def _save_lightzero_resume_sidecar_state(
     learner: Any,
 ) -> dict[str, Any]:
     iteration = int(getattr(learner, "train_iter", getattr(learner, "_last_iter", 0)))
-    ckpt_path = Path(exp_name) / "ckpt" / _lightzero_iteration_checkpoint_name(iteration)
-    if not ckpt_path.is_file():
+    checkpoint = lz_checkpoints.latest_lightzero_iteration_checkpoint(
+        candidate
+        for candidate in lz_checkpoints.collect_lightzero_iteration_checkpoints(
+            _lightzero_exp_checkpoint_dirs(Path(exp_name)),
+            require_non_empty=True,
+        )
+        if candidate.iteration == iteration
+    )
+    if checkpoint is None:
         return {"saved": False, "reason": "matching_iteration_checkpoint_not_found"}
 
+    ckpt_path = checkpoint.path
+    checkpoint_exp_name = ckpt_path.parent.parent
     sidecar_name = _lightzero_resume_state_name(iteration)
-    sidecar_path = Path(exp_name) / LIGHTZERO_RESUME_STATE_DIRNAME / sidecar_name
+    sidecar_path = checkpoint_exp_name / LIGHTZERO_RESUME_STATE_DIRNAME / sidecar_name
     sidecar_path.parent.mkdir(parents=True, exist_ok=True)
     payload = _build_lightzero_resume_sidecar_payload(
         run_id=run_id,
@@ -4042,6 +4088,7 @@ def _resolve_opponent_checkpoint_for_env(
         raise ValueError(f"unknown opponent_policy_kind {opponent_policy_kind!r}")
     if not opponent_checkpoint_ref:
         raise ValueError("opponent_checkpoint_ref is required with frozen_lightzero_checkpoint")
+    _reject_mutable_frozen_opponent_checkpoint_ref(str(opponent_checkpoint_ref))
     path, resolution = runs.resolve_mounted_ref_or_path(
         opponent_checkpoint_ref,
         mount=RUNS_MOUNT,
@@ -5145,14 +5192,20 @@ def _prepare_lightzero_auto_resume(
             pass
 
     run_root = runs.volume_path(RUNS_MOUNT, runs.run_root_ref(TASK_ID, run_id))
-    current_ckpt_dir = runs.volume_path(RUNS_MOUNT, exp_name_ref) / "ckpt"
+    current_exp_name = runs.volume_path(RUNS_MOUNT, exp_name_ref)
+    current_ckpt_dir = current_exp_name / "ckpt"
     stable_ckpt_dir = (
         runs.volume_path(RUNS_MOUNT, runs.checkpoints_root_ref(TASK_ID, run_id)) / "lightzero"
     )
     candidates: list[dict[str, Any]] = []
     source_roots: list[dict[str, Any]] = []
+    scanned_dirs: set[str] = set()
 
     def scan_dir(directory: Path, *, source_kind: str) -> None:
+        directory_key = str(directory)
+        if directory_key in scanned_dirs:
+            return
+        scanned_dirs.add(directory_key)
         source_roots.append(
             {
                 "source_kind": source_kind,
@@ -5165,44 +5218,41 @@ def _prepare_lightzero_auto_resume(
                 "exists": directory.exists(),
             }
         )
-        if not directory.is_dir():
-            return
-        for path in directory.iterdir():
-            iteration = _lightzero_iteration_from_checkpoint_name(path.name)
-            if iteration is None or not path.is_file():
-                continue
-            stat = path.stat()
-            if stat.st_size <= 0:
-                continue
+        for candidate in lz_checkpoints.collect_lightzero_iteration_checkpoints(
+            [directory],
+            require_non_empty=True,
+        ):
             candidates.append(
                 {
                     "found": True,
                     "source_kind": source_kind,
-                    "checkpoint_path": str(path),
-                    "checkpoint_ref": runs.file_ref(path, mount=RUNS_MOUNT),
-                    "name": path.name,
-                    "iteration": iteration,
-                    "size_bytes": int(stat.st_size),
-                    "mtime_ns": int(stat.st_mtime_ns),
+                    "checkpoint_path": str(candidate.path),
+                    "checkpoint_ref": runs.file_ref(candidate.path, mount=RUNS_MOUNT),
+                    "name": candidate.checkpoint_name,
+                    "iteration": int(candidate.iteration),
+                    "size_bytes": int(candidate.size_bytes),
+                    "mtime_ns": int(candidate.mtime_ns),
                 }
             )
 
-    scan_dir(current_ckpt_dir, source_kind="current_attempt_lightzero_exp")
+    for ckpt_dir in _lightzero_exp_checkpoint_dirs(current_exp_name):
+        scan_dir(ckpt_dir, source_kind=f"current_attempt_lightzero_exp:{ckpt_dir.parent.name}")
 
     attempts_dir = run_root / "attempts"
     if attempts_dir.is_dir():
         for attempt_dir in sorted(attempts_dir.iterdir(), key=lambda path: path.name):
             if not attempt_dir.is_dir():
                 continue
-            ckpt_dir = attempt_dir / "train" / "lightzero_exp" / "ckpt"
-            if ckpt_dir == current_ckpt_dir:
-                continue
             source_kind = (
                 "same_attempt_lightzero_exp"
                 if attempt_dir.name == attempt_id
                 else f"prior_attempt_lightzero_exp:{attempt_dir.name}"
             )
-            scan_dir(ckpt_dir, source_kind=source_kind)
+            exp_name = attempt_dir / "train" / "lightzero_exp"
+            for ckpt_dir in _lightzero_exp_checkpoint_dirs(exp_name):
+                if ckpt_dir == current_ckpt_dir:
+                    continue
+                scan_dir(ckpt_dir, source_kind=f"{source_kind}:{ckpt_dir.parent.name}")
 
     scan_dir(stable_ckpt_dir, source_kind="run_checkpoint_mirror")
 
@@ -5263,16 +5313,23 @@ def _find_lightzero_resume_sidecar(
     """Find the sidecar state for one exact LightZero iteration checkpoint."""
 
     run_root = runs.volume_path(RUNS_MOUNT, runs.run_root_ref(TASK_ID, run_id))
-    current_state_dir = runs.volume_path(RUNS_MOUNT, exp_name_ref) / LIGHTZERO_RESUME_STATE_DIRNAME
+    current_exp_name = runs.volume_path(RUNS_MOUNT, exp_name_ref)
+    current_state_dir = current_exp_name / LIGHTZERO_RESUME_STATE_DIRNAME
     stable_state_dir = (
         runs.volume_path(RUNS_MOUNT, runs.checkpoints_root_ref(TASK_ID, run_id))
         / LIGHTZERO_RESUME_STATE_DIRNAME
     )
     sidecar_name = _lightzero_resume_state_name(iteration)
     source_roots: list[dict[str, Any]] = []
-    candidates: list[dict[str, Any]] = []
+    source_kind_by_dir: dict[str, str] = {}
+    scanned_dirs: set[str] = set()
 
-    def scan_dir(directory: Path, *, source_kind: str) -> None:
+    def record_source_dir(directory: Path, *, source_kind: str) -> None:
+        directory_key = str(directory)
+        if directory_key in scanned_dirs:
+            return
+        scanned_dirs.add(directory_key)
+        source_kind_by_dir[directory_key] = source_kind
         source_roots.append(
             {
                 "source_kind": source_kind,
@@ -5285,43 +5342,35 @@ def _find_lightzero_resume_sidecar(
                 "exists": directory.exists(),
             }
         )
-        path = directory / sidecar_name
-        if not path.is_file():
-            return
-        stat = path.stat()
-        if stat.st_size <= 0:
-            return
-        candidates.append(
-            {
-                "resume_state_found": True,
-                "resume_state_source_kind": source_kind,
-                "resume_state_path": str(path),
-                "resume_state_ref": runs.file_ref(path, mount=RUNS_MOUNT),
-                "resume_state_name": path.name,
-                "resume_state_iteration": int(iteration),
-                "resume_state_size_bytes": int(stat.st_size),
-                "resume_state_mtime_ns": int(stat.st_mtime_ns),
-            }
-        )
 
-    scan_dir(current_state_dir, source_kind="current_attempt_lightzero_exp")
+    for state_dir in _lightzero_exp_resume_state_dirs(current_exp_name):
+        record_source_dir(
+            state_dir,
+            source_kind=f"current_attempt_lightzero_exp:{state_dir.parent.name}",
+        )
 
     attempts_dir = run_root / "attempts"
     if attempts_dir.is_dir():
         for attempt_dir in sorted(attempts_dir.iterdir(), key=lambda path: path.name):
             if not attempt_dir.is_dir():
                 continue
-            state_dir = attempt_dir / "train" / "lightzero_exp" / LIGHTZERO_RESUME_STATE_DIRNAME
-            if state_dir == current_state_dir:
-                continue
             source_kind = (
                 "same_attempt_lightzero_exp"
                 if attempt_dir.name == attempt_id
                 else f"prior_attempt_lightzero_exp:{attempt_dir.name}"
             )
-            scan_dir(state_dir, source_kind=source_kind)
+            exp_name = attempt_dir / "train" / "lightzero_exp"
+            for state_dir in _lightzero_exp_resume_state_dirs(exp_name):
+                if state_dir == current_state_dir:
+                    continue
+                record_source_dir(state_dir, source_kind=f"{source_kind}:{state_dir.parent.name}")
 
-    scan_dir(stable_state_dir, source_kind="run_resume_state_mirror")
+    record_source_dir(stable_state_dir, source_kind="run_resume_state_mirror")
+    candidates = lz_checkpoints.collect_lightzero_resume_state_candidates(
+        [Path(item["path"]) for item in source_roots],
+        iteration=iteration,
+        require_non_empty=True,
+    )
 
     base = {
         "resume_state_lookup": {
@@ -5332,17 +5381,21 @@ def _find_lightzero_resume_sidecar(
         },
         "resume_state_found": False,
     }
-    if not candidates:
+    latest = lz_checkpoints.latest_lightzero_resume_state_candidate(candidates)
+    if latest is None:
         return base
-    latest = max(
-        candidates,
-        key=lambda item: (
-            int(item["resume_state_mtime_ns"]),
-            int(item["resume_state_size_bytes"]),
-            str(item["resume_state_ref"]),
-        ),
-    )
-    return {**base, **latest}
+    state_dir = latest.path.parent
+    return {
+        **base,
+        "resume_state_found": True,
+        "resume_state_source_kind": source_kind_by_dir.get(str(state_dir), "unknown"),
+        "resume_state_path": str(latest.path),
+        "resume_state_ref": runs.file_ref(latest.path, mount=RUNS_MOUNT),
+        "resume_state_name": latest.state_name,
+        "resume_state_iteration": int(latest.iteration),
+        "resume_state_size_bytes": int(latest.size_bytes),
+        "resume_state_mtime_ns": int(latest.mtime_ns),
+    }
 
 
 def _is_under_run_mount(path: Path) -> bool:
@@ -5354,25 +5407,11 @@ def _is_under_run_mount(path: Path) -> bool:
 
 
 def _lightzero_iteration_from_checkpoint_name(name: str) -> int | None:
-    prefix = "iteration_"
-    suffix = ".pth.tar"
-    if not name.startswith(prefix) or not name.endswith(suffix):
-        return None
-    middle = name[len(prefix) : -len(suffix)]
-    if not middle.isdigit():
-        return None
-    return int(middle)
+    return lz_checkpoints.lightzero_iteration_from_checkpoint_name(name)
 
 
 def _lightzero_iteration_from_resume_state_name(name: str) -> int | None:
-    prefix = "iteration_"
-    suffix = ".resume_state.pkl"
-    if not name.startswith(prefix) or not name.endswith(suffix):
-        return None
-    middle = name[len(prefix) : -len(suffix)]
-    if not middle.isdigit():
-        return None
-    return int(middle)
+    return lz_checkpoints.lightzero_iteration_from_resume_state_name(name)
 
 
 def _opponent_training_relation(opponent_policy_kind: str) -> str:
@@ -5431,9 +5470,20 @@ def _parse_training_signals(stdout_text: str, stderr_text: str) -> dict[str, Any
 
 def _scan_lightzero_artifacts(exp_name: str) -> dict[str, Any]:
     root = Path(exp_name)
-    roots = [root]
+    roots: list[Path] = []
+    seen_roots: set[str] = set()
+
+    def add_roots(paths: list[Path]) -> None:
+        for path in paths:
+            key = str(path)
+            if key in seen_roots:
+                continue
+            seen_roots.add(key)
+            roots.append(path)
+
+    add_roots(_lightzero_exp_sibling_roots(root))
     if exp_name.startswith("/"):
-        roots.append(Path("." + exp_name))
+        add_roots(_lightzero_exp_sibling_roots(Path("." + exp_name)))
     files: list[dict[str, Any]] = []
     for candidate in roots:
         if not candidate.exists():
@@ -8201,8 +8251,13 @@ def _reject_mutable_frozen_opponent_checkpoint_ref(ref: str | None) -> None:
     name = Path(str(ref)).name
     if name in {"latest.pth.tar", "ckpt_best.pth.tar"}:
         raise ValueError(
-            "two-seat frozen opponent checkpoint refs must be immutable "
+            "frozen opponent checkpoint refs must be immutable exact "
             f"iteration_*.pth.tar files; got mutable ref {ref!r}"
+        )
+    if lz_checkpoints.lightzero_iteration_from_checkpoint_name(name) is None:
+        raise ValueError(
+            "frozen opponent checkpoint refs must be immutable exact "
+            f"iteration_N.pth.tar files; got {ref!r}"
         )
 
 

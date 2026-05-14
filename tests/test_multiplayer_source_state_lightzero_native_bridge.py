@@ -14,6 +14,7 @@ from curvyzero.training.multiplayer_source_state_target_rows import DEFAULT_TO_P
 from curvyzero.training.multiplayer_source_state_target_rows import (
     PROJECT_HELPER_RESTRICTED_SOURCE_FIDELITY_CLAIM,
 )
+from curvyzero.training.multiplayer_source_state_target_rows import PolicyRowRecordV0
 from curvyzero.training.multiplayer_source_state_target_rows import (
     SOURCE_STATE_MULTIPLAYER_TARGET_ROWS_CONTRACT_ID,
 )
@@ -25,6 +26,15 @@ from curvyzero.training.multiplayer_source_state_target_rows import (
 )
 from curvyzero.training.multiplayer_source_state_target_rows import (
     SourceStateMultiplayerTargetRowsV0,
+)
+from curvyzero.training.multiplayer_source_state_target_rows import (
+    build_source_state_multiplayer_target_rows_v0,
+)
+from curvyzero.training.multiplayer_source_state_trainer_replay import (
+    SourceStateMultiplayerTrainerReplayRecorder,
+)
+from curvyzero.training.multiplayer_source_state_trainer_surface import (
+    SourceStateMultiplayerTrainerSurface,
 )
 
 
@@ -117,6 +127,65 @@ def test_lightzero_source_state_bridge_accepts_prebuilt_specs_and_pushes_buffer(
     assert pushed.transition_count == 4
     assert pushed.buffer.pushed_segments == list(result.game_segments)
     assert len(pushed.buffer.pushed_meta) == 2
+
+
+def test_lightzero_source_state_bridge_preserves_real_source_state_rows():
+    rows = _real_source_state_target_rows(player_count=2, transition_count=2)
+
+    result = build_lightzero_source_state_native_game_segments_v0(
+        rows,
+        game_segment_cls=FakeLightZeroGameSegment,
+    )
+
+    assert rows.observation.shape == (4, 4, 64, 64)
+    assert rows.next_observation.shape == (4, 4, 64, 64)
+    np.testing.assert_array_equal(rows.to_play, np.full(4, DEFAULT_TO_PLAY))
+    assert len(result.game_segments) == 2
+    assert result.metadata["native_game_segment_claim"] is False
+    assert result.metadata["lightzero_native_game_segment_claim"] is False
+    assert result.metadata["muzero_game_buffer_claim"] is False
+
+    for spec, segment in zip(result.specs, result.game_segments, strict=True):
+        assert segment.game_segment_length == 2
+        assert len(spec.actions) == 2
+        assert spec.record_indices == (0, 1)
+
+        reset_call = segment.calls[0]
+        assert reset_call[0] == "reset"
+        assert len(reset_call[1]) == 1
+        assert reset_call[1][0].shape == (4, 64, 64)
+        np.testing.assert_array_equal(reset_call[1][0], spec.observations[0])
+        np.testing.assert_array_equal(
+            reset_call[1][0],
+            rows.observation[spec.row_id[0]],
+        )
+
+        for index, row_id in enumerate(spec.row_id):
+            search_call = segment.calls[1 + index * 2]
+            append_call = segment.calls[2 + index * 2]
+
+            assert search_call[0] == "store_search_stats"
+            np.testing.assert_allclose(search_call[1], rows.policy_target[row_id])
+            assert search_call[2] == pytest.approx(float(rows.root_value[row_id]))
+
+            assert append_call[0] == "append"
+            assert append_call[1] == int(rows.action[row_id])
+            assert append_call[2].shape == (4, 64, 64)
+            np.testing.assert_array_equal(
+                append_call[2],
+                rows.next_observation[row_id],
+            )
+            assert append_call[3] == pytest.approx(float(rows.reward[row_id]))
+            np.testing.assert_array_equal(
+                append_call[4],
+                rows.action_mask[row_id].astype(np.int8),
+            )
+            assert append_call[4].dtype == np.int8
+            assert append_call[5] == DEFAULT_TO_PLAY
+            assert append_call[5] == int(rows.to_play[row_id])
+            assert append_call[6] == int(rows.record_index[row_id])
+
+        assert segment.calls[-1] == ("game_segment_to_array",)
 
 
 def test_real_lightzero_source_state_native_segments_smoke_when_available():
@@ -299,3 +368,58 @@ def _policy(action: int) -> np.ndarray:
     policy = np.zeros((3,), dtype=np.float32)
     policy[action] = 1.0
     return policy
+
+
+def _real_source_state_target_rows(
+    *,
+    player_count: int,
+    transition_count: int,
+):
+    surface = SourceStateMultiplayerTrainerSurface(
+        batch_size=1,
+        player_count=player_count,
+        seed=20260513,
+        decision_source_frames=1,
+        natural_bonus_spawn=False,
+    )
+    recorder = SourceStateMultiplayerTrainerReplayRecorder()
+    recorder.record(surface.reset(seed=20260513))
+    for _ in range(transition_count):
+        recorder.record(
+            surface.step(np.ones((1, player_count), dtype=np.int16))
+        )
+    chunk = recorder.build_chunk()
+
+    policy_records = []
+    for record_index in range(transition_count):
+        policy_records.extend(_policy_records_for_record(chunk, record_index=record_index))
+    return build_source_state_multiplayer_target_rows_v0(chunk, policy_records)
+
+
+def _policy_records_for_record(chunk, *, record_index: int) -> list[PolicyRowRecordV0]:
+    policy = chunk.policy_rows[record_index]
+    records: list[PolicyRowRecordV0] = []
+    for policy_row, (env_row, player) in enumerate(
+        zip(policy["policy_env_row"], policy["policy_player"], strict=True)
+    ):
+        env_row = int(env_row)
+        player = int(player)
+        action = int(chunk.arrays["joint_action"][record_index + 1, env_row, player])
+        action_mask = policy["policy_action_mask"][policy_row].copy()
+        policy_target = np.zeros(3, dtype=np.float32)
+        policy_target[action] = 1.0
+        records.append(
+            PolicyRowRecordV0(
+                record_index=record_index,
+                policy_row=policy_row,
+                env_row=env_row,
+                player=player,
+                action=action,
+                action_mask=action_mask,
+                policy_target=policy_target,
+                root_value=float(record_index) + float(policy_row) / 10.0,
+                policy_source="unit_test_real_source_state_lightzero_boundary",
+                source_record_ref=f"{record_index}:{policy_row}",
+            )
+        )
+    return records

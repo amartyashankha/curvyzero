@@ -21,6 +21,7 @@ from curvyzero.infra.modal.lightzero_curvyzero_stacked_debug_visual_survival_tra
     image,
     runs_volume,
 )
+from curvyzero.training import lightzero_checkpoints as lz_checkpoints
 
 
 APP_NAME = "curvyzero-lightzero-curvytron-run-status"
@@ -814,43 +815,39 @@ def _checkpoint_summary(run_id: str, attempt_id: str | None = None) -> dict[str,
         )
     ]
     if attempt_id:
-        checkpoint_dirs.append(
-            runs.volume_path(
-                RUNS_MOUNT,
-                runs.attempt_train_ref(TASK_ID, run_id, attempt_id) / "lightzero_exp" / "ckpt",
+        attempt_train_root = runs.volume_path(
+            RUNS_MOUNT,
+            runs.attempt_train_ref(TASK_ID, run_id, attempt_id),
+        )
+        checkpoint_dirs.extend(
+            lz_checkpoints.lightzero_exp_checkpoint_dirs(
+                attempt_train_root / "lightzero_exp"
             )
         )
-    checkpoint_dir = next((path for path in checkpoint_dirs if path.is_dir()), None)
-    if checkpoint_dir is None:
-        return {"checkpoint_count": 0, "latest_checkpoint": None}
     artifacts: list[dict[str, Any]] = []
-    for child in checkpoint_dir.iterdir():
-        name = child.name
-        if not name.startswith("iteration_") or not name.endswith(".pth.tar"):
-            continue
-        text = name.removeprefix("iteration_").removesuffix(".pth.tar")
-        try:
-            iteration = int(text)
-        except ValueError:
-            continue
-        try:
-            stat = child.stat()
-            mtime = stat.st_mtime
-            size_bytes = stat.st_size
-        except FileNotFoundError:
-            mtime = None
-            size_bytes = None
+    for candidate in lz_checkpoints.collect_lightzero_iteration_checkpoints(
+        checkpoint_dirs
+    ):
         artifacts.append(
             {
-                "checkpoint": f"iteration_{iteration}",
-                "iteration": iteration,
-                "mtime": mtime,
-                "size_bytes": size_bytes,
+                "checkpoint": f"iteration_{candidate.iteration}",
+                "iteration": candidate.iteration,
+                "mtime": candidate.mtime,
+                "size_bytes": candidate.size_bytes,
+                "path": str(candidate.path),
+                "exp_dir_name": candidate.exp_dir_name,
             }
         )
     if not artifacts:
         return {"checkpoint_count": 0, "latest_checkpoint": None, "checkpoints": []}
-    artifacts.sort(key=lambda item: item["iteration"])
+    artifacts.sort(
+        key=lambda item: (
+            item["iteration"],
+            item["mtime"] if item["mtime"] is not None else -1.0,
+            item["size_bytes"] if item["size_bytes"] is not None else -1,
+            item["path"],
+        )
+    )
     latest = artifacts[-1]
     return {
         "checkpoint_count": len(artifacts),

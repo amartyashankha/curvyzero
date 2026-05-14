@@ -7,7 +7,6 @@ the first dead player loses; simultaneous death or timeout is a draw.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import random
@@ -16,144 +15,8 @@ from collections import Counter
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Sequence
 
-from curvyzero.env.vector_multiplayer_env import (
-    DEFAULT_DECISION_SOURCE_FRAMES,
-    SOURCE_PHYSICS_STEP_MS,
-)
 from curvyzero.infra.modal import run_management as runs
-
-
-TOURNAMENT_TASK_ID = "curvytron-checkpoint-tournament"
-TOURNAMENT_BASE_REF = PurePosixPath("tournaments") / "curvytron"
-TOURNAMENT_RUN_MARKER_FILENAME = "show_in_tournament_browser.flag"
-CHECKPOINT_SELECTION_LATEST = "latest"
-CHECKPOINT_SELECTION_ALL = "all"
-CHECKPOINT_SELECTION_ITERATION = "iteration"
-CHECKPOINT_SELECTION_CHOICES = (
-    CHECKPOINT_SELECTION_LATEST,
-    CHECKPOINT_SELECTION_ALL,
-    CHECKPOINT_SELECTION_ITERATION,
-)
-CHECKPOINT_SCAN_GLOB = "train/lightzero_exp*/ckpt/iteration_*.pth.tar"
-CHECKPOINT_EXP_CKPT_DIR_GLOB = "lightzero_exp*/ckpt"
-CHECKPOINT_WEIGHT_FILENAME_GLOB = "iteration_*.pth.tar"
-
-TOURNAMENT_SCHEMA_ID = "curvyzero_curvytron_checkpoint_tournament/v0"
-BATTLE_SCHEMA_ID = "curvyzero_curvytron_checkpoint_tournament_battle/v0"
-GAME_SCHEMA_ID = "curvyzero_curvytron_checkpoint_tournament_game/v0"
-GAME_SHARD_SCHEMA_ID = "curvyzero_curvytron_checkpoint_tournament_game_shard/v0"
-RATING_CONFIG_SCHEMA_ID = "curvyzero_curvytron_checkpoint_rating_config/v0"
-RATING_ROUND_SCHEMA_ID = "curvyzero_curvytron_checkpoint_rating_round/v0"
-RATING_SNAPSHOT_SCHEMA_ID = "curvyzero_curvytron_checkpoint_rating_snapshot/v0"
-RATING_PROGRESS_SCHEMA_ID = "curvyzero_curvytron_checkpoint_rating_progress/v0"
-RATING_SCHEDULER_STATE_SCHEMA_ID = "curvyzero_curvytron_checkpoint_rating_scheduler_state/v0"
-PAIR_HISTORY_SCHEMA_ID = "curvyzero_curvytron_checkpoint_rating_pair_history/v0"
-RATING_FORMULA_VERSION = "batch_elo_v1"
-
-POLICY_MODE_EVAL = "eval"
-POLICY_MODE_COLLECT = "collect"
-POLICY_MODE_CHOICES = (POLICY_MODE_EVAL, POLICY_MODE_COLLECT)
-
-DEFAULT_GAMES_PER_PAIR = 21
-DEFAULT_GAMES_PER_SHARD = 1
-DEFAULT_REUSE_POLICIES_PER_SHARD = True
-DEFAULT_MAX_STEPS = 8_000
-DEFAULT_SOURCE_PHYSICS_STEP_MS = float(SOURCE_PHYSICS_STEP_MS)
-DEFAULT_DECISION_MS = float(DEFAULT_DECISION_SOURCE_FRAMES * DEFAULT_SOURCE_PHYSICS_STEP_MS)
-DEFAULT_NUM_SIMULATIONS = 8
-DEFAULT_POLICY_BATCH_SIZE = 8
-DEFAULT_COLLECT_TEMPERATURE = 1.0
-DEFAULT_COLLECT_EPSILON = 0.25
-DEFAULT_FRAME_STRIDE = 1
-DEFAULT_GIF_FPS = 8.0
-DEFAULT_FRAME_SIZE = 704
-DEFAULT_GIF_TRAIL_RENDER_MODE = "browser_lines"
-DEFAULT_SAVE_GIF = False
-DEFAULT_GIF_SAMPLE_GAMES_PER_PAIR = 1
-DEFAULT_GIF_SAMPLE_STRATEGY = "evenly_spaced"
-GIF_SAMPLE_STRATEGY_CHOICES = ("first_n", "evenly_spaced")
-DEFAULT_SAVE_FRAMES_NPZ = False
-DEFAULT_ORDERED_PAIRS = False
-DEFAULT_INCLUDE_SELF_PAIRS = False
-DEFAULT_RATING_RUN_ID = "elo"
-DEFAULT_RATING_ROUND_COUNT = 1
-RATING_PAIR_SELECTION_ALL_PAIRS = "all_pairs"
-RATING_PAIR_SELECTION_RANDOM = "random"
-RATING_PAIR_SELECTION_ADAPTIVE_V0 = "adaptive_v0"
-DEFAULT_RATING_PAIR_SELECTION = RATING_PAIR_SELECTION_ALL_PAIRS
-DEFAULT_RATING_INITIAL_RATING = 1500.0
-DEFAULT_RATING_BASE_K = 32.0
-DEFAULT_RATING_K_REFERENCE_GAMES = 50.0
-DEFAULT_RATING_K_MIN = 16.0
-DEFAULT_RATING_K_MAX = 64.0
-DEFAULT_RATING_DELTA_CLAMP = 80.0
-DEFAULT_RATING_DRAW_SCORE = 0.5
-DEFAULT_RATING_MIN_VALID_FRACTION = 0.8
-DEFAULT_RATING_STOP_MAX_DELTA = 10.0
-RATING_PAIR_SELECTION_CHOICES = (
-    RATING_PAIR_SELECTION_ALL_PAIRS,
-    RATING_PAIR_SELECTION_RANDOM,
-    RATING_PAIR_SELECTION_ADAPTIVE_V0,
-)
-
-SCHEDULE_REASON_PLACEMENT = "placement"
-SCHEDULE_REASON_NEAR_RATING = "near_rating"
-SCHEDULE_REASON_UNCERTAIN = "uncertain"
-SCHEDULE_REASON_RANDOM_BRIDGE = "random_bridge"
-SCHEDULE_REASON_FILL = "fill"
-SCHEDULE_REASON_CHOICES = (
-    SCHEDULE_REASON_PLACEMENT,
-    SCHEDULE_REASON_NEAR_RATING,
-    SCHEDULE_REASON_UNCERTAIN,
-    SCHEDULE_REASON_RANDOM_BRIDGE,
-    SCHEDULE_REASON_FILL,
-)
-
-ARTIFACT_GAME_GIF_FILENAME = "game.gif"
-ARTIFACT_FRAMES_NPZ_FILENAME = "frames.npz"
-ARTIFACT_SUMMARY_FILENAME = "summary.json"
-ARTIFACT_BATTLE_SUMMARY_FILENAME = "battle.json"
-ARTIFACT_PAIR_SPEC_FILENAME = "pair_spec.json"
-ARTIFACT_TOURNAMENT_MANIFEST_FILENAME = "tournament.json"
-ARTIFACT_TOURNAMENT_STANDINGS_FILENAME = "standings.json"
-ARTIFACT_TOURNAMENT_COMPLETE_FILENAME = "complete.json"
-ARTIFACT_BATTLE_INDEX_FILENAME = "battle_index.json"
-ARTIFACT_CONFIG_FILENAME = "config.json"
-ARTIFACT_INPUT_FILENAME = "input.json"
-ARTIFACT_RESULTS_FILENAME = "results.json"
-ARTIFACT_RATINGS_FILENAME = "ratings.json"
-ARTIFACT_LATEST_FILENAME = "latest.json"
-ARTIFACT_PROVISIONAL_LATEST_FILENAME = "provisional_latest.json"
-ARTIFACT_PROGRESS_FILENAME = "progress.json"
-ARTIFACT_PAIR_HISTORY_FILENAME = "pair_history.json"
-ARTIFACT_SCHEDULER_STATE_FILENAME = "scheduler_state.json"
-
-ALLOWED_TOURNAMENT_ARTIFACT_FILENAMES = frozenset(
-    {
-        ARTIFACT_GAME_GIF_FILENAME,
-        ARTIFACT_FRAMES_NPZ_FILENAME,
-        ARTIFACT_SUMMARY_FILENAME,
-        ARTIFACT_BATTLE_SUMMARY_FILENAME,
-        ARTIFACT_PAIR_SPEC_FILENAME,
-        ARTIFACT_TOURNAMENT_MANIFEST_FILENAME,
-        ARTIFACT_TOURNAMENT_STANDINGS_FILENAME,
-        ARTIFACT_TOURNAMENT_COMPLETE_FILENAME,
-        ARTIFACT_BATTLE_INDEX_FILENAME,
-        ARTIFACT_CONFIG_FILENAME,
-        ARTIFACT_INPUT_FILENAME,
-        ARTIFACT_RESULTS_FILENAME,
-        ARTIFACT_RATINGS_FILENAME,
-        ARTIFACT_LATEST_FILENAME,
-        ARTIFACT_PROVISIONAL_LATEST_FILENAME,
-        ARTIFACT_PROGRESS_FILENAME,
-        ARTIFACT_PAIR_HISTORY_FILENAME,
-        ARTIFACT_SCHEDULER_STATE_FILENAME,
-    }
-)
-
-
-class TournamentRefError(ValueError):
-    """Raised when a tournament Volume ref is not safe."""
+from curvyzero.tournament.curvytron.contracts import *  # noqa: F401,F403
 
 
 def _validate_games_per_pair(value: int) -> int:
@@ -193,35 +56,41 @@ def exception_payload(exc: BaseException) -> dict[str, Any]:
     }
 
 
-def _safe_id(raw: str, *, label: str) -> str:
-    return runs.clean_id(raw, label=label)
-
-
-def _slug(text: str, *, max_len: int = 36) -> str:
-    chars = []
-    for char in str(text):
-        if char.isalnum() or char in {"-", "_", "."}:
-            chars.append(char)
-        elif char in {"/", " ", ":"}:
-            chars.append("-")
-    slug = "".join(chars).strip("-._")
-    if not slug:
-        slug = "item"
-    return slug[:max_len].strip("-._") or "item"
-
-
-def _short_hash(text: str, *, length: int = 10) -> str:
-    return hashlib.sha1(str(text).encode("utf-8")).hexdigest()[:length]
-
-
-def checkpoint_id_from_ref(ref: str, *, index: int = 0) -> str:
+def checkpoint_label_from_ref(ref: str) -> str:
     path = PurePosixPath(runs.require_relative_ref(ref))
-    pieces = [part for part in path.parts if part not in {"training", "checkpoints", "lightzero"}]
-    useful = "-".join(pieces[-4:]) if pieces else f"checkpoint-{index:03d}"
-    return _safe_id(
-        f"ckpt-{index:03d}-{_slug(useful, max_len=42)}-{_short_hash(path.as_posix(), length=8)}",
-        label="checkpoint_id",
-    )
+    filename = path.name
+    iteration = filename
+    if filename.startswith("iteration_") and filename.endswith(".pth.tar"):
+        iteration = f"i{filename.removeprefix('iteration_').removesuffix('.pth.tar')}"
+
+    parts = path.parts
+    run_id = None
+    for index, part in enumerate(parts):
+        if part == "lightzero-curvytron-visual-survival" and index + 1 < len(parts):
+            run_id = parts[index + 1]
+            break
+    if not run_id:
+        return iteration
+
+    prefix = "curvy-survive-bonus-"
+    run_label = run_id.removeprefix(prefix)
+    tokens = run_label.split("-")
+    if tokens and tokens[-1].startswith("s") and tokens[-1][1:].isdigit():
+        tokens = tokens[:-1]
+    run_label = "-".join(tokens) or run_id
+    return f"{run_label} {iteration}"
+
+
+def _checkpoint_label_disambiguator(ref: str) -> str:
+    path = PurePosixPath(runs.require_relative_ref(ref))
+    parts = path.parts
+    for index, part in enumerate(parts):
+        if part == "lightzero-curvytron-visual-survival" and index + 1 < len(parts):
+            tokens = parts[index + 1].split("-")
+            if tokens and tokens[-1].startswith("s") and tokens[-1][1:].isdigit():
+                return tokens[-1]
+            break
+    return _short_hash(path.as_posix(), length=6)
 
 
 def normalize_checkpoint_spec(raw: str | Mapping[str, Any], *, index: int = 0) -> dict[str, Any]:
@@ -229,7 +98,7 @@ def normalize_checkpoint_spec(raw: str | Mapping[str, Any], *, index: int = 0) -
         ref = runs.require_relative_ref(raw).as_posix()
         return {
             "checkpoint_id": checkpoint_id_from_ref(ref, index=index),
-            "label": PurePosixPath(ref).name,
+            "label": checkpoint_label_from_ref(ref),
             "checkpoint_ref": ref,
             "checkpoint_state_key": None,
             "model_env_variant": None,
@@ -265,204 +134,60 @@ def normalize_checkpoint_spec(raw: str | Mapping[str, Any], *, index: int = 0) -
 
 
 def normalize_checkpoint_specs(checkpoints: Sequence[str | Mapping[str, Any]]) -> list[dict[str, Any]]:
-    return [
+    normalized = [
         normalize_checkpoint_spec(checkpoint, index=index)
         for index, checkpoint in enumerate(checkpoints)
     ]
-
-
-def rating_pool_hash(checkpoints: Sequence[Mapping[str, Any]]) -> str:
-    rows = []
-    for checkpoint in checkpoints:
-        rows.append(
-            {
-                "checkpoint_id": str(checkpoint.get("checkpoint_id") or ""),
-                "checkpoint_ref": str(checkpoint.get("checkpoint_ref") or ""),
-                "model_env_variant": checkpoint.get("model_env_variant"),
-                "model_reward_variant": checkpoint.get("model_reward_variant"),
-                "policy_trail_render_mode": checkpoint.get("policy_trail_render_mode"),
-            }
+    labels = Counter(str(checkpoint.get("label") or "") for checkpoint in normalized)
+    for checkpoint in normalized:
+        label = str(checkpoint.get("label") or "")
+        if labels.get(label, 0) <= 1:
+            continue
+        checkpoint["label"] = (
+            f"{label} ({_checkpoint_label_disambiguator(str(checkpoint['checkpoint_ref']))})"
         )
-    rows.sort(key=lambda row: (row["checkpoint_id"], row["checkpoint_ref"]))
-    payload = json.dumps(rows, sort_keys=True, separators=(",", ":"))
-    return _short_hash(payload, length=16)
+    return normalized
 
 
-def rating_pair_key(checkpoint_id_a: str, checkpoint_id_b: str) -> str:
-    ids = sorted([str(checkpoint_id_a), str(checkpoint_id_b)])
-    digest = _short_hash("\n".join(ids), length=12)
-    return _safe_id(
-        f"pairkey-{_slug(ids[0], max_len=24)}-vs-{_slug(ids[1], max_len=24)}-{digest}",
-        label="pair_key",
-    )
+def rating_context_hash(rating_spec: Mapping[str, Any]) -> str:
+    """Hash evaluator meaning separately from the checkpoint roster."""
 
-
-def tournament_root_ref(tournament_id: str) -> PurePosixPath:
-    return TOURNAMENT_BASE_REF / _safe_id(tournament_id, label="tournament_id")
-
-
-def tournament_manifest_ref(tournament_id: str) -> PurePosixPath:
-    return tournament_root_ref(tournament_id) / ARTIFACT_TOURNAMENT_MANIFEST_FILENAME
-
-
-def tournament_marker_ref(tournament_id: str) -> PurePosixPath:
-    return tournament_root_ref(tournament_id) / TOURNAMENT_RUN_MARKER_FILENAME
-
-
-def tournament_standings_ref(tournament_id: str) -> PurePosixPath:
-    return tournament_root_ref(tournament_id) / ARTIFACT_TOURNAMENT_STANDINGS_FILENAME
-
-
-def tournament_complete_ref(tournament_id: str) -> PurePosixPath:
-    return tournament_root_ref(tournament_id) / ARTIFACT_TOURNAMENT_COMPLETE_FILENAME
-
-
-def tournament_battle_index_ref(tournament_id: str) -> PurePosixPath:
-    return tournament_root_ref(tournament_id) / ARTIFACT_BATTLE_INDEX_FILENAME
-
-
-def rating_root_ref(tournament_id: str, rating_run_id: str) -> PurePosixPath:
-    return (
-        tournament_root_ref(tournament_id)
-        / "ratings"
-        / _safe_id(rating_run_id, label="rating_run_id")
-    )
-
-
-def rating_config_ref(tournament_id: str, rating_run_id: str) -> PurePosixPath:
-    return rating_root_ref(tournament_id, rating_run_id) / ARTIFACT_CONFIG_FILENAME
-
-
-def rating_latest_ref(tournament_id: str, rating_run_id: str) -> PurePosixPath:
-    return rating_root_ref(tournament_id, rating_run_id) / ARTIFACT_LATEST_FILENAME
-
-
-def rating_provisional_latest_ref(tournament_id: str, rating_run_id: str) -> PurePosixPath:
-    return rating_root_ref(tournament_id, rating_run_id) / ARTIFACT_PROVISIONAL_LATEST_FILENAME
-
-
-def rating_progress_ref(tournament_id: str, rating_run_id: str) -> PurePosixPath:
-    return rating_root_ref(tournament_id, rating_run_id) / ARTIFACT_PROGRESS_FILENAME
-
-
-def rating_scheduler_state_ref(tournament_id: str, rating_run_id: str) -> PurePosixPath:
-    return rating_root_ref(tournament_id, rating_run_id) / ARTIFACT_SCHEDULER_STATE_FILENAME
-
-
-def rating_pair_history_ref(tournament_id: str, rating_run_id: str) -> PurePosixPath:
-    return rating_root_ref(tournament_id, rating_run_id) / ARTIFACT_PAIR_HISTORY_FILENAME
-
-
-def rating_run_results_ref(tournament_id: str, rating_run_id: str) -> PurePosixPath:
-    return rating_root_ref(tournament_id, rating_run_id) / ARTIFACT_RESULTS_FILENAME
+    spec = normalize_rating_spec(rating_spec)
+    payload = {
+        "schema_id": spec["schema_id"],
+        "formula_version": spec["formula_version"],
+        "policy_mode": spec["policy_mode"],
+        "collect_temperature": spec["collect_temperature"],
+        "collect_epsilon": spec["collect_epsilon"],
+        "max_steps": spec["max_steps"],
+        "decision_ms": spec["decision_ms"],
+        "decision_source_frames": spec["decision_source_frames"],
+        "source_physics_step_ms": spec["source_physics_step_ms"],
+        "num_simulations": spec["num_simulations"],
+        "policy_batch_size": spec["policy_batch_size"],
+        "natural_bonus_spawn": spec["natural_bonus_spawn"],
+        "policy_trail_render_mode": spec["policy_trail_render_mode"],
+        "trail_render_mode": spec["trail_render_mode"],
+        "initial_rating": spec["initial_rating"],
+        "base_k": spec["base_k"],
+        "k_reference_games": spec["k_reference_games"],
+        "k_min": spec["k_min"],
+        "k_max": spec["k_max"],
+        "delta_clamp": spec["delta_clamp"],
+        "draw_score": spec["draw_score"],
+        "min_valid_fraction": spec["min_valid_fraction"],
+        "env_variant": spec.get("env_variant"),
+        "reward_variant": spec.get("reward_variant"),
+        "evaluator_contract_version": spec.get("evaluator_contract_version"),
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return _short_hash(encoded, length=16)
 
 
 def rating_round_id(round_index: int) -> str:
     if round_index < 0:
         raise ValueError("round_index must be non-negative")
     return f"round-{int(round_index):06d}"
-
-
-def rating_round_root_ref(
-    tournament_id: str,
-    rating_run_id: str,
-    round_id: str,
-) -> PurePosixPath:
-    return rating_root_ref(tournament_id, rating_run_id) / "rounds" / _safe_id(
-        round_id,
-        label="round_id",
-    )
-
-
-def rating_round_input_ref(
-    tournament_id: str,
-    rating_run_id: str,
-    round_id: str,
-) -> PurePosixPath:
-    return rating_round_root_ref(tournament_id, rating_run_id, round_id) / ARTIFACT_INPUT_FILENAME
-
-
-def rating_round_results_ref(
-    tournament_id: str,
-    rating_run_id: str,
-    round_id: str,
-) -> PurePosixPath:
-    return rating_round_root_ref(tournament_id, rating_run_id, round_id) / ARTIFACT_RESULTS_FILENAME
-
-
-def rating_round_ratings_ref(
-    tournament_id: str,
-    rating_run_id: str,
-    round_id: str,
-) -> PurePosixPath:
-    return rating_round_root_ref(tournament_id, rating_run_id, round_id) / ARTIFACT_RATINGS_FILENAME
-
-
-def rating_round_progress_ref(
-    tournament_id: str,
-    rating_run_id: str,
-    round_id: str,
-) -> PurePosixPath:
-    return rating_round_root_ref(tournament_id, rating_run_id, round_id) / ARTIFACT_PROGRESS_FILENAME
-
-
-def battle_root_ref(tournament_id: str, battle_id: str) -> PurePosixPath:
-    return tournament_root_ref(tournament_id) / "battles" / _safe_id(battle_id, label="battle_id")
-
-
-def battle_summary_ref(tournament_id: str, battle_id: str) -> PurePosixPath:
-    return battle_root_ref(tournament_id, battle_id) / ARTIFACT_BATTLE_SUMMARY_FILENAME
-
-
-def battle_pair_spec_ref(tournament_id: str, battle_id: str) -> PurePosixPath:
-    return battle_root_ref(tournament_id, battle_id) / ARTIFACT_PAIR_SPEC_FILENAME
-
-
-def game_root_ref(tournament_id: str, battle_id: str, game_id: str) -> PurePosixPath:
-    return battle_root_ref(tournament_id, battle_id) / "games" / _safe_id(game_id, label="game_id")
-
-
-def game_summary_ref(tournament_id: str, battle_id: str, game_id: str) -> PurePosixPath:
-    return game_root_ref(tournament_id, battle_id, game_id) / ARTIFACT_SUMMARY_FILENAME
-
-
-def game_shard_root_ref(tournament_id: str, battle_id: str, shard_id: str) -> PurePosixPath:
-    return battle_root_ref(tournament_id, battle_id) / "shards" / _safe_id(
-        shard_id,
-        label="shard_id",
-    )
-
-
-def game_shard_summary_ref(tournament_id: str, battle_id: str, shard_id: str) -> PurePosixPath:
-    return game_shard_root_ref(tournament_id, battle_id, shard_id) / ARTIFACT_SUMMARY_FILENAME
-
-
-def game_gif_ref(tournament_id: str, battle_id: str, game_id: str) -> PurePosixPath:
-    return game_root_ref(tournament_id, battle_id, game_id) / ARTIFACT_GAME_GIF_FILENAME
-
-
-def game_frames_ref(tournament_id: str, battle_id: str, game_id: str) -> PurePosixPath:
-    return game_root_ref(tournament_id, battle_id, game_id) / ARTIFACT_FRAMES_NPZ_FILENAME
-
-
-def validate_tournament_artifact_ref(ref: str | PurePosixPath) -> PurePosixPath:
-    path = runs.require_relative_ref(ref)
-    if path.parts[:2] != TOURNAMENT_BASE_REF.parts:
-        raise TournamentRefError("ref must be under tournaments/curvytron")
-    if any("\\" in part or "\x00" in part for part in path.parts):
-        raise TournamentRefError("ref contains an unsafe segment")
-    if path.name not in ALLOWED_TOURNAMENT_ARTIFACT_FILENAMES:
-        raise TournamentRefError("ref is not an allowed tournament artifact")
-    return path
-
-
-def parse_checkpoint_refs(text: str) -> list[str]:
-    refs = []
-    for item in str(text).replace("\n", ",").split(","):
-        stripped = item.strip()
-        if stripped:
-            refs.append(runs.require_relative_ref(stripped).as_posix())
-    return refs
 
 
 def battle_id_for_pair(pair_index: int, player_a: Mapping[str, Any], player_b: Mapping[str, Any]) -> str:
@@ -1248,6 +973,23 @@ def normalize_rating_spec(raw: Mapping[str, Any] | None = None) -> dict[str, Any
         raise ValueError(
             f"gif_sample_strategy must be one of {GIF_SAMPLE_STRATEGY_CHOICES!r}"
         )
+    include_self_pairs = bool(
+        spec.get("include_self_pairs", DEFAULT_INCLUDE_SELF_PAIRS)
+    )
+    placement_min_opponents = int(spec.get("placement_min_opponents", 20))
+    if placement_min_opponents < 0:
+        raise ValueError("placement_min_opponents must be non-negative")
+    placement_min_games = spec.get("placement_min_games")
+    if placement_min_games in (None, "", 0, "0"):
+        if normalized_checkpoints:
+            possible_opponents = max(0, len(normalized_checkpoints) - 1)
+            default_opponents = min(placement_min_opponents, possible_opponents)
+        else:
+            default_opponents = placement_min_opponents
+        placement_min_games = games_per_pair * default_opponents
+    placement_min_games = int(placement_min_games)
+    if placement_min_games < 0:
+        raise ValueError("placement_min_games must be non-negative")
     return {
         "schema_id": RATING_CONFIG_SCHEMA_ID,
         "formula_version": RATING_FORMULA_VERSION,
@@ -1260,14 +1002,21 @@ def normalize_rating_spec(raw: Mapping[str, Any] | None = None) -> dict[str, Any
             label="rating_run_id",
         ),
         "checkpoints": normalized_checkpoints,
+        "env_variant": spec.get("env_variant"),
+        "reward_variant": spec.get("reward_variant"),
+        "evaluator_contract_version": str(
+            spec.get("evaluator_contract_version")
+            or "curvytron_checkpoint_tournament_v0"
+        ),
+        "continue_from_latest": bool(spec.get("continue_from_latest", False)),
         "round_count": round_count,
+        "placement_min_games": placement_min_games,
+        "placement_min_opponents": placement_min_opponents,
         "pairs_per_round": pairs_per_round,
         "pair_selection": pair_selection,
         "games_per_pair": games_per_pair,
         "ordered_pairs": bool(spec.get("ordered_pairs", DEFAULT_ORDERED_PAIRS)),
-        "include_self_pairs": bool(
-            spec.get("include_self_pairs", DEFAULT_INCLUDE_SELF_PAIRS)
-        ),
+        "include_self_pairs": include_self_pairs,
         "games_per_shard": games_per_shard,
         "reuse_policies_per_shard": reuse_policies_per_shard,
         "seed": int(spec.get("seed", 0)),
@@ -1399,6 +1148,33 @@ def _rating_row_value(
     return row.get(key, default)
 
 
+def _validate_rating_state_compatibility(
+    state: Mapping[str, Any] | None,
+    *,
+    expected_pool_hash: str,
+    expected_context_hash: str,
+    expected_roster: Mapping[str, Mapping[str, Any]],
+    label: str,
+) -> None:
+    if not isinstance(state, Mapping):
+        return
+    existing_roster = state.get("checkpoint_roster")
+    if isinstance(existing_roster, Mapping):
+        for checkpoint_id, expected_identity in expected_roster.items():
+            existing_identity = existing_roster.get(checkpoint_id)
+            if existing_identity is None:
+                continue
+            if _to_plain(existing_identity) != _to_plain(expected_identity):
+                raise ValueError(f"{label} checkpoint_roster does not match rating spec")
+    existing_context_hash = state.get("context_hash")
+    if existing_context_hash:
+        if str(existing_context_hash) != expected_context_hash:
+            raise ValueError(f"{label} context_hash does not match rating spec")
+        return
+    if state.get("pool_hash") and str(state["pool_hash"]) != expected_pool_hash:
+        raise ValueError(f"{label} pool_hash does not match rating spec")
+
+
 def select_adaptive_v0_pair_slots(
     rating_spec: Mapping[str, Any],
     *,
@@ -1408,21 +1184,27 @@ def select_adaptive_v0_pair_slots(
     round_index: int = 0,
 ) -> list[dict[str, Any]]:
     spec = normalize_rating_spec(rating_spec)
-    budget = int(spec["pairs_per_round"] or 0)
-    if budget < 1:
+    requested_budget = int(spec["pairs_per_round"] or 0)
+    if requested_budget < 1:
         raise ValueError("adaptive_v0 pair selection requires pairs_per_round")
     checkpoints = spec["checkpoints"]
     if len(checkpoints) < 2 and not spec["include_self_pairs"]:
         raise ValueError("at least two checkpoints are needed for adaptive_v0")
 
     expected_pool_hash = rating_pool_hash(checkpoints)
+    expected_context_hash = rating_context_hash(spec)
+    expected_roster = rating_roster_by_checkpoint(checkpoints)
     for state, label in (
         (scheduler_state, "scheduler_state"),
         (pair_history, "pair_history"),
     ):
-        if isinstance(state, Mapping) and state.get("pool_hash"):
-            if str(state["pool_hash"]) != expected_pool_hash:
-                raise ValueError(f"{label} pool_hash does not match rating spec")
+        _validate_rating_state_compatibility(
+            state,
+            expected_pool_hash=expected_pool_hash,
+            expected_context_hash=expected_context_hash,
+            expected_roster=expected_roster,
+            label=label,
+        )
 
     current_rows = _rating_rows_by_checkpoint(previous_snapshot)
     history_by_key = _pair_history_rows_by_key(pair_history)
@@ -1431,16 +1213,17 @@ def select_adaptive_v0_pair_slots(
     for index, checkpoint in enumerate(checkpoints):
         checkpoint_id = str(checkpoint["checkpoint_id"])
         games = int(_rating_row_value(current_rows, checkpoint, "games", 0) or 0)
-        distinct = int(
-            _rating_row_value(current_rows, checkpoint, "distinct_opponents", 0)
-            or len(_rating_row_value(current_rows, checkpoint, "opponent_ids", []) or [])
-            or 0
+        opponent_ids = sorted(
+            str(item)
+            for item in (_rating_row_value(current_rows, checkpoint, "opponent_ids", []) or [])
         )
+        distinct = len(opponent_ids)
         rows.append(
             {
                 "index": index,
                 "checkpoint": checkpoint,
                 "checkpoint_id": checkpoint_id,
+                "opponent_ids": opponent_ids,
                 "rating": float(
                     _rating_row_value(
                         current_rows,
@@ -1473,8 +1256,68 @@ def select_adaptive_v0_pair_slots(
             }
         )
 
+    id_to_index = {str(row["checkpoint_id"]): int(row["index"]) for row in rows}
+    for history in history_by_key.values():
+        if not int(history.get("battle_count") or 0):
+            continue
+        checkpoint_ids = history.get("checkpoint_ids")
+        if not isinstance(checkpoint_ids, Sequence) or len(checkpoint_ids) != 2:
+            continue
+        left_id = str(checkpoint_ids[0])
+        right_id = str(checkpoint_ids[1])
+        if left_id == right_id:
+            continue
+        left_index = id_to_index.get(left_id)
+        right_index = id_to_index.get(right_id)
+        if left_index is None or right_index is None:
+            continue
+        rows[left_index]["opponent_ids"] = sorted(
+            set(rows[left_index].get("opponent_ids", [])) | {right_id}
+        )
+        rows[right_index]["opponent_ids"] = sorted(
+            set(rows[right_index].get("opponent_ids", [])) | {left_id}
+        )
+        rows[left_index]["distinct_opponents"] = len(rows[left_index]["opponent_ids"])
+        rows[right_index]["distinct_opponents"] = len(rows[right_index]["opponent_ids"])
+
     by_rating = sorted(rows, key=lambda row: (float(row["rating"]), str(row["checkpoint_id"])))
     rating_position = {int(row["index"]): pos for pos, row in enumerate(by_rating)}
+    placement_min_games = int(spec.get("placement_min_games", 0) or 0)
+    placement_min_opponents = int(spec.get("placement_min_opponents", 0) or 0)
+    max_distinct_opponents = max(0, len(checkpoints) - 1)
+    placement_opponent_target = min(placement_min_opponents, max_distinct_opponents)
+    games_per_pair = int(spec["games_per_pair"])
+    coverage_deficit_by_index: dict[int, int] = {}
+    for row in rows:
+        game_deficit = 0
+        if int(row["games"]) < placement_min_games:
+            game_deficit = math.ceil(
+                float(placement_min_games - int(row["games"])) / float(games_per_pair)
+            )
+        opponent_deficit = max(
+            0,
+            int(placement_opponent_target) - int(row["distinct_opponents"]),
+        )
+        deficit = max(game_deficit, opponent_deficit)
+        if deficit > 0:
+            coverage_deficit_by_index[int(row["index"])] = int(deficit)
+    coverage_target_indices = set(coverage_deficit_by_index)
+    established_indices = [
+        int(row["index"])
+        for row in rows
+        if int(row["index"]) not in coverage_target_indices
+    ]
+    placement_floor = 0
+    placement_max_need = 0
+    if coverage_target_indices:
+        total_coverage_deficit = sum(coverage_deficit_by_index.values())
+        placement_floor = math.ceil(total_coverage_deficit / 2.0)
+        placement_max_need = int(total_coverage_deficit)
+    if spec["include_self_pairs"]:
+        max_pair_count = len(checkpoints) * (len(checkpoints) + 1) // 2
+    else:
+        max_pair_count = len(checkpoints) * (len(checkpoints) - 1) // 2
+    budget = min(max_pair_count, max(requested_budget, placement_floor))
     anchor_indices = []
     if by_rating:
         for pos in {0, len(by_rating) // 4, len(by_rating) // 2, len(by_rating) - 1}:
@@ -1484,6 +1327,9 @@ def select_adaptive_v0_pair_slots(
 
     slots: list[dict[str, Any]] = []
     used_keys: set[str] = set()
+    appearances_by_index: dict[int, int] = {
+        index: 0 for index in range(len(checkpoints))
+    }
     considered = 0
 
     def add_pair(i: int, j: int, reason: str, priority: float) -> bool:
@@ -1519,51 +1365,265 @@ def select_adaptive_v0_pair_slots(
                 "prior_battle_count": int(history.get("battle_count") or 0),
             }
         )
+        appearances_by_index[i] = appearances_by_index.get(i, 0) + 1
+        appearances_by_index[j] = appearances_by_index.get(j, 0) + 1
         return True
 
     def scheduled_count(reason: str) -> int:
         return len([slot for slot in slots if slot["schedule_reason"] == reason])
 
-    placement_budget = max(1, int(round(budget * 0.2)))
-    low_coverage = sorted(
+    existing_opponents_by_index = {
+        int(row["index"]): set(str(item) for item in row.get("opponent_ids", []))
+        for row in rows
+    }
+    scheduled_opponents_by_index: dict[int, set[str]] = {
+        int(row["index"]): set() for row in rows
+    }
+    rating_by_index = {
+        int(row["index"]): float(row["rating"])
+        for row in rows
+    }
+    row_by_index = {int(row["index"]): row for row in rows}
+    by_rating_desc = sorted(
         rows,
+        key=lambda row: (-float(row["rating"]), str(row["checkpoint_id"])),
+    )
+    rank_by_index = {
+        int(row["index"]): rank
+        for rank, row in enumerate(by_rating_desc, start=1)
+    }
+    top_20_indices = [
+        int(row["index"]) for row in by_rating_desc[: min(20, len(by_rating_desc))]
+    ]
+
+    def sigmoid(value: float) -> float:
+        return 1.0 / (1.0 + math.exp(-float(value)))
+
+    def top_band_boost(index: int) -> float:
+        rank = int(rank_by_index.get(index, len(rows)))
+        return (
+            1.0
+            + 2.0 * sigmoid((10.5 - float(rank)) / 2.0)
+            + 1.0 * sigmoid((20.5 - float(rank)) / 4.0)
+        )
+
+    def has_pair_history(i: int, j: int) -> bool:
+        pair_key = rating_pair_key(
+            str(checkpoints[i]["checkpoint_id"]),
+            str(checkpoints[j]["checkpoint_id"]),
+        )
+        return bool(history_by_key.get(pair_key, {}).get("battle_count"))
+
+    def is_new_opponent(i: int, j: int) -> bool:
+        opponent_id = str(checkpoints[j]["checkpoint_id"])
+        return (
+            opponent_id not in existing_opponents_by_index[i]
+            and opponent_id not in scheduled_opponents_by_index[i]
+        )
+
+    placement_budget = min(
+        max_pair_count,
+        max(1, int(round(budget * 0.2)), placement_floor, placement_max_need),
+    )
+    budget = placement_budget
+    low_coverage = sorted(
+        [row for row in rows if int(row["index"]) in coverage_target_indices],
         key=lambda row: (
             int(row["distinct_opponents"]),
             int(row["games"]),
             str(row["checkpoint_id"]),
         ),
     )
-    for row in low_coverage:
-        if scheduled_count(SCHEDULE_REASON_PLACEMENT) >= placement_budget:
-            break
-        target = int(row["index"])
-        candidates = [anchor for anchor in anchor_indices if anchor != target]
-        if not candidates:
-            candidates = [
-                int(other["index"])
-                for other in rows
-                if int(other["index"]) != target
-            ]
-        rng.shuffle(candidates)
-        for opponent in candidates:
-            if add_pair(target, opponent, SCHEDULE_REASON_PLACEMENT, 1.0):
-                break
 
+    def placement_candidates(target: int, *, mutual_only: bool) -> list[int]:
+        target_rows = [
+            index
+            for index, remaining in coverage_deficit_by_index.items()
+            if index != target
+            and remaining > 0
+            and is_new_opponent(target, index)
+            and is_new_opponent(index, target)
+        ]
+        if mutual_only:
+            target_rows.sort(
+                key=lambda index: (
+                    bool(has_pair_history(target, index)),
+                    -float(rating_by_index[index]),
+                    -coverage_deficit_by_index.get(index, 0),
+                    str(checkpoints[index]["checkpoint_id"]),
+                )
+            )
+            return target_rows
+        one_sided_target_rows = [
+            index
+            for index, remaining in coverage_deficit_by_index.items()
+            if index != target
+            and remaining > 0
+            and index not in target_rows
+            and is_new_opponent(target, index)
+        ]
+        established = [
+            index
+            for index in established_indices
+            if index != target and is_new_opponent(target, index)
+        ]
+        other_new = [
+            int(row["index"])
+            for row in rows
+            if int(row["index"]) != target
+            and int(row["index"]) not in target_rows
+            and int(row["index"]) not in established
+            and is_new_opponent(target, int(row["index"]))
+        ]
+        for candidate_group in (target_rows, one_sided_target_rows):
+            candidate_group.sort(
+                key=lambda index: (
+                    bool(has_pair_history(target, index)),
+                    -float(rating_by_index[index]),
+                    -coverage_deficit_by_index.get(index, 0),
+                    str(checkpoints[index]["checkpoint_id"]),
+                )
+            )
+        for candidate_group in (established, other_new):
+            candidate_group.sort(
+                key=lambda index: (
+                    bool(has_pair_history(target, index)),
+                    -float(rating_by_index[index]),
+                    str(checkpoints[index]["checkpoint_id"]),
+                )
+            )
+        ordered = established + target_rows + one_sided_target_rows + other_new
+        no_history = [index for index in ordered if not has_pair_history(target, index)]
+        with_history = [index for index in ordered if index not in no_history]
+        return no_history + with_history
+
+    while (
+        scheduled_count(SCHEDULE_REASON_PLACEMENT) < placement_budget
+        and any(remaining > 0 for remaining in coverage_deficit_by_index.values())
+    ):
+        progress = False
+        target_order = sorted(
+            [
+                row
+                for row in low_coverage
+                if coverage_deficit_by_index.get(int(row["index"]), 0) > 0
+            ],
+            key=lambda row: (
+                -coverage_deficit_by_index.get(int(row["index"]), 0),
+                int(row["distinct_opponents"]),
+                int(row["games"]),
+                str(row["checkpoint_id"]),
+            ),
+        )
+        for row in target_order:
+            if scheduled_count(SCHEDULE_REASON_PLACEMENT) >= placement_budget:
+                break
+            target = int(row["index"])
+            for opponent in placement_candidates(target, mutual_only=False):
+                target_gets_new = is_new_opponent(target, opponent)
+                opponent_gets_new = is_new_opponent(opponent, target)
+                if add_pair(target, opponent, SCHEDULE_REASON_PLACEMENT, 1.0):
+                    scheduled_opponents_by_index[target].add(
+                        str(checkpoints[opponent]["checkpoint_id"])
+                    )
+                    scheduled_opponents_by_index[opponent].add(
+                        str(checkpoints[target]["checkpoint_id"])
+                    )
+                    if target_gets_new:
+                        coverage_deficit_by_index[target] = max(
+                            0,
+                            coverage_deficit_by_index.get(target, 0) - 1,
+                        )
+                    if opponent in coverage_deficit_by_index and opponent_gets_new:
+                        coverage_deficit_by_index[opponent] = max(
+                            0,
+                            coverage_deficit_by_index.get(opponent, 0) - 1,
+                        )
+                    progress = True
+                    break
+        if not progress:
+            break
+
+    budget = min(max_pair_count, max(requested_budget, len(slots)))
     near_budget = max(1, int(round(budget * 0.6)))
+    appearance_cap = max(
+        3,
+        math.ceil(4.0 * (2.0 * float(budget) / max(1.0, float(len(checkpoints))))),
+    )
     target_order = list(range(len(by_rating)))
-    rng.shuffle(target_order)
+    target_order.sort(
+        key=lambda pos: (
+            -(
+                top_band_boost(int(by_rating[pos]["index"]))
+                + 0.5
+                * min(
+                    1.0,
+                    float(
+                        row_by_index[int(by_rating[pos]["index"])][
+                            "last_round_delta"
+                        ]
+                    )
+                    / 10.0,
+                )
+                + rng.random() * 0.001
+            ),
+            str(by_rating[pos]["checkpoint_id"]),
+        )
+    )
+
+    def near_rating_candidates(pos: int, index: int) -> list[int]:
+        candidates: list[int] = []
+        for offset in range(1, 9):
+            for neighbor_pos in (pos - offset, pos + offset):
+                if 0 <= neighbor_pos < len(by_rating):
+                    candidates.append(int(by_rating[neighbor_pos]["index"]))
+        if rank_by_index.get(index, len(rows)) <= 20:
+            candidates.extend(top_20_indices)
+        candidates.extend(anchor_indices)
+        unique: list[int] = []
+        seen: set[int] = set()
+        for candidate in candidates:
+            if candidate == index or candidate in seen:
+                continue
+            seen.add(candidate)
+            unique.append(candidate)
+        return unique
+
+    def near_rating_score(index: int, opponent: int) -> float:
+        pair_key = rating_pair_key(
+            str(checkpoints[index]["checkpoint_id"]),
+            str(checkpoints[opponent]["checkpoint_id"]),
+        )
+        history = history_by_key.get(pair_key, {})
+        prior_battles = int(history.get("battle_count") or 0)
+        freshness = 1.0 if prior_battles == 0 else 0.35 / float(1 + prior_battles)
+        rating_gap = abs(float(rating_by_index[index]) - float(rating_by_index[opponent]))
+        closeness = 1.0 / (1.0 + rating_gap / 200.0)
+        boost = max(top_band_boost(index), top_band_boost(opponent))
+        return boost * closeness * freshness + rng.random() * 0.0001
+
     for pos in target_order:
         if scheduled_count(SCHEDULE_REASON_NEAR_RATING) >= near_budget:
             break
         row = by_rating[pos]
         index = int(row["index"])
-        window = []
-        for offset in range(1, 9):
-            for neighbor_pos in (pos - offset, pos + offset):
-                if 0 <= neighbor_pos < len(by_rating):
-                    window.append(int(by_rating[neighbor_pos]["index"]))
-        for opponent in window:
-            if add_pair(index, opponent, SCHEDULE_REASON_NEAR_RATING, 0.9):
+        candidates = sorted(
+            near_rating_candidates(pos, index),
+            key=lambda opponent: (-near_rating_score(index, opponent), opponent),
+        )
+        for require_cap in (True, False):
+            scheduled = False
+            for opponent in candidates:
+                if require_cap and (
+                    appearances_by_index.get(index, 0) >= appearance_cap
+                    or appearances_by_index.get(opponent, 0) >= appearance_cap
+                ):
+                    continue
+                score = near_rating_score(index, opponent)
+                if add_pair(index, opponent, SCHEDULE_REASON_NEAR_RATING, score):
+                    scheduled = True
+                    break
+            if scheduled:
                 break
 
     uncertain_budget = max(1, int(round(budget * 0.2)))
@@ -1892,6 +1952,13 @@ def rating_snapshot_from_pair_results(
     created_at: str | None = None,
 ) -> dict[str, Any]:
     spec = normalize_rating_spec(rating_spec)
+    _validate_rating_state_compatibility(
+        previous_snapshot,
+        expected_pool_hash=rating_pool_hash(spec["checkpoints"]),
+        expected_context_hash=rating_context_hash(spec),
+        expected_roster=rating_roster_by_checkpoint(spec["checkpoints"]),
+        label="previous snapshot",
+    )
     checkpoints = spec["checkpoints"]
     rows = _base_rating_rows(
         checkpoints,
@@ -1987,6 +2054,11 @@ def rating_snapshot_from_pair_results(
 
     standings = []
     max_abs_delta = 0.0
+    active_opponent_target = min(
+        int(spec.get("placement_min_opponents", 0) or 0),
+        max(0, len(spec["checkpoints"]) - 1),
+    )
+    active_game_target = int(spec.get("placement_min_games", 0) or 0)
     for checkpoint_id, row in rows.items():
         delta = float(deltas[checkpoint_id])
         max_abs_delta = max(max_abs_delta, abs(delta))
@@ -1998,7 +2070,8 @@ def rating_snapshot_from_pair_results(
         row["win_rate"] = float(row["wins"]) / float(games) if games else None
         row["status"] = (
             "active"
-            if games >= 300 and int(row["distinct_opponents"]) >= 5
+            if games >= active_game_target
+            and int(row["distinct_opponents"]) >= active_opponent_target
             else "provisional"
         )
         standings.append(row)
@@ -2017,6 +2090,10 @@ def rating_snapshot_from_pair_results(
         "formula_version": RATING_FORMULA_VERSION,
         "tournament_id": spec["tournament_id"],
         "rating_run_id": spec["rating_run_id"],
+        "pool_hash": rating_pool_hash(spec["checkpoints"]),
+        "roster_hash": rating_pool_hash(spec["checkpoints"]),
+        "context_hash": rating_context_hash(spec),
+        "checkpoint_roster": rating_roster_by_checkpoint(spec["checkpoints"]),
         "round_id": round_id,
         "round_index": int(round_index),
         "created_at": created_at,
@@ -2045,9 +2122,15 @@ def pair_history_from_pair_results(
 ) -> dict[str, Any]:
     spec = normalize_rating_spec(rating_spec)
     pool_hash = rating_pool_hash(spec["checkpoints"])
-    if previous_pair_history and previous_pair_history.get("pool_hash"):
-        if str(previous_pair_history["pool_hash"]) != pool_hash:
-            raise ValueError("pair history pool_hash does not match rating spec")
+    context_hash = rating_context_hash(spec)
+    checkpoint_roster = rating_roster_by_checkpoint(spec["checkpoints"])
+    _validate_rating_state_compatibility(
+        previous_pair_history,
+        expected_pool_hash=pool_hash,
+        expected_context_hash=context_hash,
+        expected_roster=checkpoint_roster,
+        label="pair history",
+    )
     rows_by_key = _pair_history_rows_by_key(previous_pair_history)
 
     for summary in pair_results:
@@ -2114,6 +2197,9 @@ def pair_history_from_pair_results(
         "tournament_id": spec["tournament_id"],
         "rating_run_id": spec["rating_run_id"],
         "pool_hash": pool_hash,
+        "roster_hash": pool_hash,
+        "context_hash": context_hash,
+        "checkpoint_roster": checkpoint_roster,
         "updated_round_index": int(round_index),
         "rows": _to_plain(rows),
     }

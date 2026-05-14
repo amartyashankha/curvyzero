@@ -10,7 +10,9 @@ gravity.
 
 North star: faithful multiplayer CurvyTron environment first, then speed and
 training integration. LightZero/training plumbing is a guarded downstream
-interface only.
+interface only. Environment owns fidelity promotion; Optimizer and Coach
+consume explicit surfaces for profiling, adapter plumbing, learning, and eval
+without upgrading those results into source claims.
 
 ## Main-Thread Pattern
 
@@ -73,7 +75,8 @@ orchestration order is:
    Trace held controls from wrapper-facing actions through source-frame
    advancement. Confirm turn direction, decision-window hold behavior, masks,
    terminal padding, and sidecar action metadata without collapsing source
-   frames into one physics step.
+   frames into one physics step or treating `step`/`joint_action` as native
+   CurvyTron semantics.
 3. Renderer/fast-path boundary.
    Keep source-state/native fidelity claims separate from optimized or
    approximate render paths. `body_circles_fast` and similar modes stay
@@ -84,8 +87,8 @@ orchestration order is:
 5. Downstream training interface.
    Preserve trainer/replay/target-row/sample-batch work and Hume's opt-in
    real-LightZero construction helper, but treat it as downstream
-   construction-smoke only. Real buffer sampled-target parity remains
-   unproven.
+   construction-smoke only. Optimizer and Coach consume named surfaces from
+   here; real buffer sampled-target parity remains unproven.
 
 ## Queue Discipline
 
