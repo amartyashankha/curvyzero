@@ -2866,6 +2866,89 @@ def test_intake_rating_spec_preserves_discovery_metadata() -> None:
     assert checkpoints_by_ref[refs[1]]["latest_for_run"] is True
 
 
+def test_intake_manifest_merges_previous_discovery_rows_for_continuation() -> None:
+    old_ref = _checkpoint_ref("run-a", 10)
+    new_ref = _checkpoint_ref("run-a", 20)
+    existing = modal_arena._intake_manifest_from_discovery(
+        tournament_id="arena-a",
+        rating_run_id="elo-test",
+        scan_spec={"checkpoint_refs": [old_ref]},
+        rating_defaults={
+            "continue_from_latest": True,
+            "pairs_per_round": 1,
+            "games_per_pair": 3,
+        },
+        discovery={
+            "checkpoint_refs": [old_ref],
+            "rows": [
+                {
+                    "checkpoint_ref": old_ref,
+                    "run_id": "run-a",
+                    "attempt_id": "attempt-a",
+                    "iteration": 10,
+                    "checkpoint_mtime_ns": 100,
+                    "found": True,
+                }
+            ],
+        },
+    )
+
+    updated = modal_arena._intake_manifest_from_discovery(
+        tournament_id="arena-a",
+        rating_run_id="elo-test",
+        scan_spec={"checkpoint_refs": [new_ref]},
+        rating_defaults=existing["rating_defaults"],
+        discovery={
+            "checkpoint_refs": [new_ref],
+            "rows": [
+                {
+                    "checkpoint_ref": new_ref,
+                    "run_id": "run-a",
+                    "attempt_id": "attempt-a",
+                    "iteration": 20,
+                    "checkpoint_mtime_ns": 200,
+                    "found": True,
+                }
+            ],
+        },
+        existing=existing,
+    )
+
+    rating_spec = modal_arena._intake_rating_spec_from_manifest(updated)
+    checkpoints_by_ref = {
+        checkpoint["checkpoint_ref"]: checkpoint
+        for checkpoint in rating_spec["checkpoints"]
+    }
+
+    assert checkpoints_by_ref[old_ref]["checkpoint_mtime_ns"] == 100
+    assert checkpoints_by_ref[old_ref]["latest_for_run"] is False
+    assert checkpoints_by_ref[new_ref]["checkpoint_mtime_ns"] == 200
+    assert checkpoints_by_ref[new_ref]["latest_for_run"] is True
+
+
+def test_explicit_ref_discovery_stats_checkpoint_metadata(tmp_path) -> None:
+    ref = (
+        "training/lightzero-curvytron-visual-survival/run-a/attempts/attempt-a/"
+        "train/lightzero_exp/ckpt/iteration_10.pth.tar"
+    )
+    path = tmp_path / ref
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"checkpoint")
+    os.utime(path, ns=(123, 123))
+
+    discovery = modal_arena._discover_checkpoint_refs_from_scan_spec(
+        {"checkpoint_refs": [ref]},
+        mount=tmp_path,
+    )
+
+    assert discovery["checkpoint_selection"] == "explicit_refs"
+    assert discovery["rows"][0]["run_id"] == "run-a"
+    assert discovery["rows"][0]["attempt_id"] == "attempt-a"
+    assert discovery["rows"][0]["iteration"] == 10
+    assert discovery["rows"][0]["checkpoint_mtime_ns"] == 123
+    assert discovery["rows"][0]["checkpoint_size_bytes"] == len(b"checkpoint")
+
+
 def test_intake_submit_rejects_scheduler_knobs_in_payload() -> None:
     intake_service.validate_submit_payload(
         {
