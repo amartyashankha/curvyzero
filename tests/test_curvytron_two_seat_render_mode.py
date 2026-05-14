@@ -207,24 +207,24 @@ def test_two_seat_fast_gray64_direct_uses_visual_trail_and_player_perspective():
     assert observation[0, 0, -1, other_head_y, other_head_x] == pytest.approx(128.0 / 255.0)
     assert observation[0, 1, -1, other_head_y, other_head_x] == pytest.approx(96.0 / 255.0)
     bonus_a_patch = np.rint(
-        observation[0, 0, -1, bonus_a_y - 1 : bonus_a_y + 2, bonus_a_x - 1 : bonus_a_x + 2]
+        observation[0, 0, -1, bonus_a_y - 3 : bonus_a_y + 4, bonus_a_x - 3 : bonus_a_x + 4]
         * 255.0
     ).astype(np.uint8)
     bonus_b_patch = np.rint(
-        observation[0, 0, -1, bonus_b_y - 1 : bonus_b_y + 2, bonus_b_x - 1 : bonus_b_x + 2]
+        observation[0, 0, -1, bonus_b_y - 3 : bonus_b_y + 4, bonus_b_x - 3 : bonus_b_x + 4]
         * 255.0
     ).astype(np.uint8)
     np.testing.assert_array_equal(
         bonus_a_patch,
         np.rint(
-            observation[0, 1, -1, bonus_a_y - 1 : bonus_a_y + 2, bonus_a_x - 1 : bonus_a_x + 2]
+            observation[0, 1, -1, bonus_a_y - 3 : bonus_a_y + 4, bonus_a_x - 3 : bonus_a_x + 4]
             * 255.0
         ).astype(np.uint8),
     )
     np.testing.assert_array_equal(
         bonus_b_patch,
         np.rint(
-            observation[0, 1, -1, bonus_b_y - 1 : bonus_b_y + 2, bonus_b_x - 1 : bonus_b_x + 2]
+            observation[0, 1, -1, bonus_b_y - 3 : bonus_b_y + 4, bonus_b_x - 3 : bonus_b_x + 4]
             * 255.0
         ).astype(np.uint8),
     )
