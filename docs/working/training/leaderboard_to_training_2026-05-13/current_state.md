@@ -28,13 +28,13 @@
 | Area | Desired state | Current gap |
 | --- | --- | --- |
 | Public leaderboard snapshot production policy | Immutable `curvyzero_opponent_leaderboard_snapshot/v0` written to Volume from rating snapshots. | Smoke path works; still need production naming/retention/repair policy. |
-| Modal Dict live pointer repair | Small pointer to current leaderboard snapshot, not durable truth. | Local repair command exists and rebuilds `current:<leaderboard_id>` from validated immutable Volume snapshots. Needs remote operator smoke. |
+| Modal Dict live pointer repair | Small pointer to current leaderboard snapshot, not durable truth. | Local repair command exists and rebuilds `current:<leaderboard_id>` from validated immutable Volume snapshots. Remote-smoked on the `curvytron-latest212-smoke-20260513` leaderboard; still needs production runbook coverage. |
 | Assignment materializer persistence | `stable_slots_v1` writes concrete assignment entries and audit locally; assignment writer stores assignment/audit under a training attempt. | Production runbook and scheduled/operator policy are still needed. |
 | Run-scoped slot recipe control | Desired slot recipes should live in a Modal Dict keyed by training run id, then materialize to immutable assignment JSON. | Designed in `run_slot_control_design.md`; not implemented yet. |
 | Periodic assignment refresh | Long-running trainers should refresh slot assignments at safe boundaries. | Not automated; manual second-generation smoke proves mechanics. |
 | Online Elo continuation | New checkpoints enter existing pool, get placement, then adaptive rounds continue from `latest.json`. | Local tournament-job continuation, queue-loss repair, and stale-claim repair now have focused tests, but no production-scale remote smoke yet. |
 | Public active status | Rows become training-eligible only with enough games/opponents/context. | Active/provisional exists in rating rows. Publisher now refuses training-facing snapshots with no active rows unless diagnostic-only output is explicit. |
-| One-frame tournament parity | Official leaderboard should match current one-frame train semantics. | Publisher now fails closed unless `rating_spec.decision_source_frames == 1` or a diagnostic/legacy flag is explicit. Remote public-source smoke still needed. |
+| One-frame tournament parity | Official leaderboard should match current one-frame train semantics. | Publisher now fails closed unless `rating_spec.decision_source_frames == 1` or a diagnostic/legacy flag is explicit. Tiny two-checkpoint remote rating/publish smoke passed; larger current-source validation still needed. |
 | Non-checkpoint tournament players | Scripted/hand-coded players should eventually be representable if we want them ranked. | Current tournament/rating player specs require `checkpoint_ref`; policy loading goes through checkpoint loading only. |
 
 ## Current Architecture Boundary
@@ -68,11 +68,12 @@ timestamped `lightzero_exp_*` folders are expected.
 
 Before launching long-running leaderboard-fed training:
 
-1. Remote-smoke repair/fallback tooling for stale or missing leaderboard Dict
-   pointers.
+1. Write the production operator runbook for stale or missing leaderboard Dict
+   pointer repair.
 2. Promote `stable_slots_v1` and the assignment writer/operator flow from local
    helper/smoke path to documented production runbook.
-3. Remote-smoke tournament one-frame evaluator semantics and public publish.
+3. Run a larger current-source tournament one-frame evaluator/public publish
+   validation.
 4. Add safe refresh/continuation policy for long-running trainers.
 5. Prove online Elo continuation and queue/dedupe repair remotely at bounded scale.
 6. Rerun the bounded closed-loop smoke after the checkpoint-recency metadata fix.

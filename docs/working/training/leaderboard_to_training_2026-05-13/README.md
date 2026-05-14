@@ -78,14 +78,15 @@ still needs tests and wiring.
 - Public leaderboard publish now fails closed unless the rating snapshot is
   one-frame and has active rows, unless an explicit diagnostic/legacy path is
   used.
-- Public leaderboard Dict pointer repair exists locally and rebuilds from
-  immutable Volume snapshots; it still needs a remote operator smoke.
+- Public leaderboard Dict pointer repair exists, rebuilds from immutable Volume
+  snapshots, and has passed a tiny remote smoke. It still needs a production
+  runbook.
 - Trainer consumption of a leaderboard-derived assignment works in a remote
   tiny train smoke.
 - Intake V0 is a guarded batch launcher, not a full online Elo service.
-- One-frame training cadence is patched for the trusted train lane, but
-  tournament evaluator parity for the newest one-frame contract must be checked
-  before a new public leaderboard launch.
+- One-frame training cadence is patched for the trusted train lane. A tiny
+  two-checkpoint one-frame rating/publish smoke passed; still do a larger
+  current-source validation before trusting a new public leaderboard launch.
 - Non-neural policies are training-mixture concepts today. Tournament/rating
   remains checkpoint-player-centric until general participant specs are designed
   and tested.

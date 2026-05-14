@@ -44,6 +44,16 @@ What was proven:
 
 This is not production automation yet.
 
+Latest tiny remote smokes:
+
+- `leaderboard-pointer-repair` republished
+  `current:curvytron-latest212-smoke-20260513` from immutable Volume snapshots.
+- `arena-oneframe-public-publish-smoke-20260514b /
+  elo-oneframe-public-publish-smoke-20260514b` ran a two-checkpoint one-frame
+  rating smoke with `active_pool_limit=100`.
+- `curvytron-oneframe-public-smoke-20260514b` published that smoke as a
+  non-diagnostic public leaderboard with two active rows.
+
 ## Coach / Tournament Job Boundary
 
 Coach owns training:
@@ -167,6 +177,15 @@ Latest extra local coverage:
   `tests/test_curvytron_checkpoint_tournament.py`
 - one-frame leaderboard publish guard in
   `tests/test_curvytron_checkpoint_tournament.py`
+
+Latest tiny remote smoke coverage:
+
+- pointer repair rebuilt the live Dict pointer from immutable leaderboard
+  snapshots;
+- one-frame rating recorded `decision_source_frames=1`,
+  `decision_ms=16.666666666666668`, and `active_pool_limit=100`;
+- one-frame leaderboard publish wrote snapshot/latest refs and moved the live
+  pointer with `active_count=2`.
 
 Combined focused tournament check:
 

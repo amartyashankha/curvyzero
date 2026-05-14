@@ -4,12 +4,12 @@
 
 | Gap | Why it matters | First test |
 | --- | --- | --- |
-| Live Dict pointer repair | Publisher writes pointer, but Modal Dict is not durable truth. | Local repair command repopulates missing/stale Dict from validated immutable Volume snapshot; remote smoke still needed. |
+| Live Dict pointer repair | Publisher writes pointer, but Modal Dict is not durable truth. | Local repair command repopulates missing/stale Dict from validated immutable Volume snapshot; tiny remote smoke passed; production runbook still needed. |
 | Production assignment runbook | Assignment writer works, but the operator flow needs one documented safe path. | Runbook command stores `assignment.json` and `audit.json` under attempt path and records the returned refs. |
 | Run-scoped slot recipe control | Operators should be able to change a run's desired slots after launch without changing trainer code. | Dict recipe validator plus materializer smoke writes a new immutable assignment and audit for one run id. |
 | Intake continuation remote proof | Online Elo needs to add new checkpoints without resetting evidence. Local tests cover the contract; remote/prod proof is still needed. | Existing `latest.json` starts next round and preserves pair history in a bounded remote smoke. |
 | Queue/dedupe repair remote proof | Queue events are not durable enough alone. Local tests cover repair; remote/prod proof is still needed. | Duplicate/lost event repaired by periodic scan in a bounded remote smoke. |
-| One-frame tournament parity | New leaderboard must match current train cadence. | Rating spec with `decision_source_frames=1` is recorded, hashed, and used in game summaries. |
+| One-frame tournament parity | New leaderboard must match current train cadence. | Rating spec with `decision_source_frames=1` is recorded, hashed, and used in game summaries; tiny two-checkpoint remote rating/publish smoke passed. |
 | Stable-slot recency smoke | `recent_strong` only means recent if rating rows carry run/attempt/iteration/latest metadata. | Rerun a bounded multi-checkpoint smoke and verify `recent_strong` selects the latest checkpoint for the watched run, not only the best remaining row. |
 | Larger bounded closed-loop smoke | Tiny manual smoke proves plumbing, not scale or repair behavior. | Run a bounded multi-checkpoint smoke and verify publish -> assignment -> train still works after metadata repair. |
 | Seeded non-checkpoint players | Scripted/hand-coded baselines need roster identity if included. | Normalize scripted player specs without fake checkpoint refs. |
@@ -45,9 +45,9 @@ means:
 - some cross-band games remain so scalar Elo does not hide non-transitive
   matchups.
 
-Do not treat local contract coverage as production-scale proof. Production gates
-still need remote queue/stale-claim proof, a one-frame public leaderboard remote
-smoke, and a larger closed-loop smoke.
+Do not treat local contract coverage or tiny remote smokes as production-scale
+proof. Production gates still need remote queue/stale-claim proof, a larger
+current-source one-frame leaderboard run, and a larger closed-loop smoke.
 
 ## New Test Groups
 
@@ -181,14 +181,14 @@ smoke, and a larger closed-loop smoke.
 
 ## Blockers Before Overnight Leaderboard-Fed Training
 
-1. Modal Dict pointer repair/fallback has local tests, but still needs remote
-   operator smoke.
+1. Modal Dict pointer repair/fallback has local tests and a tiny remote smoke,
+   but still needs production runbook coverage.
 2. Assignment writer/operator flow needs a production runbook.
 3. Periodic safe refresh semantics are absent.
 4. Online Elo continuation and queue/stale-claim repair have local contract
    tests, but production-scale proof is still needed.
-5. One-frame tournament/leaderboard run is locally gated but not yet validated
-   as the current public source by remote smoke.
+5. One-frame tournament/leaderboard run has a tiny remote smoke, but is not yet
+   validated at current public-source scale.
 6. A larger bounded closed-loop smoke is still needed, and it should explicitly
    verify the `recent_strong` slot.
 
