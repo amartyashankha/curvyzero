@@ -204,6 +204,11 @@ def rating_roster_by_checkpoint(checkpoints: Sequence[Mapping[str, Any]]) -> dic
             continue
         roster[checkpoint_id] = {
             "checkpoint_ref": str(checkpoint.get("checkpoint_ref") or ""),
+            "run_id": checkpoint.get("run_id"),
+            "attempt_id": checkpoint.get("attempt_id"),
+            "iteration": checkpoint.get("iteration"),
+            "latest_for_run": bool(checkpoint.get("latest_for_run", False)),
+            "checkpoint_mtime_ns": checkpoint.get("checkpoint_mtime_ns"),
             "model_env_variant": checkpoint.get("model_env_variant"),
             "model_reward_variant": checkpoint.get("model_reward_variant"),
             "policy_trail_render_mode": checkpoint.get("policy_trail_render_mode"),

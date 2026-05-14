@@ -58,3 +58,13 @@ Files read:
 - Active-pool lane: the top-100 rule belongs in rating/scheduling, not only in
   the website or public leaderboard. Retired rows are unscheduled history, not
   deleted checkpoints.
+
+## Active Follow-Ups
+
+- Website performance: inspect the tournament browser route and propose the
+  smallest fast-shell/lazy-load/cache patch. Do not edit yet.
+- Subscriber/intake: verify the simple product contract:
+  watch training Volume paths, enqueue new checkpoints, continue ratings, keep
+  full history, and let scheduling exclude retired rows.
+- Refactor critique: identify safe extractions that shrink the Modal file
+  without moving app/image/Volume globals or changing behavior.

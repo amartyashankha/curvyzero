@@ -805,6 +805,44 @@ def test_direct_fast_simple_bonus_symbols_are_distinct_and_not_remapped():
     assert len(set(crop_hashes)) == len(vector_runtime.SOURCE_DEFAULT_BONUS_TYPE_CODES)
 
 
+def test_direct_fast_simple_bonus_symbols_stay_distinct_across_offsets_and_radii():
+    state = _small_source_state()
+    state["present"][:, :] = False
+    state["alive"][:, :] = False
+    state["body_active"][:, :] = False
+    state["body_write_cursor"][0] = 0
+    state.update(
+        {
+            "bonus_active": np.asarray([[True]], dtype=bool),
+            "bonus_type": np.asarray([[0]], dtype=np.int16),
+            "bonus_pos": np.asarray([[[0.0, 0.0]]], dtype=np.float64),
+            "bonus_radius": np.asarray([[3.0]], dtype=np.float64),
+        }
+    )
+    cases = (
+        ((20.0, 20.0), 2.0),
+        ((31.4, 32.6), 3.0),
+        ((47.8, 18.2), 4.0),
+        ((8.2, 55.1), 3.0),
+    )
+
+    for (x_value, y_value), radius in cases:
+        hashes = []
+        state["bonus_pos"][0, 0] = (x_value, y_value)
+        state["bonus_radius"][0, 0] = radius
+        for code in vector_runtime.SOURCE_DEFAULT_BONUS_TYPE_CODES:
+            state["bonus_type"][0, 0] = int(code)
+            frames = render_source_state_gray64_fast_player_perspectives(
+                state,
+                player_count=2,
+                bonus_render_mode=BONUS_RENDER_MODE_SIMPLE_SYMBOLS,
+            )
+            np.testing.assert_array_equal(frames[0], frames[1])
+            hashes.append(frames[0].tobytes())
+
+        assert len(set(hashes)) == len(vector_runtime.SOURCE_DEFAULT_BONUS_TYPE_CODES)
+
+
 def test_direct_fast_legacy_luma_circle_mode_is_still_available():
     state = _small_source_state()
     state["present"][:, :] = False

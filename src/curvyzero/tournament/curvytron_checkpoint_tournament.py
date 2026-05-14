@@ -1287,11 +1287,27 @@ def _validate_rating_state_compatibility(
         return
     existing_roster = state.get("checkpoint_roster")
     if isinstance(existing_roster, Mapping):
+        identity_keys = (
+            "checkpoint_ref",
+            "model_env_variant",
+            "model_reward_variant",
+            "policy_trail_render_mode",
+        )
         for checkpoint_id, expected_identity in expected_roster.items():
             existing_identity = existing_roster.get(checkpoint_id)
             if existing_identity is None:
                 continue
-            if _to_plain(existing_identity) != _to_plain(expected_identity):
+            existing_core = {
+                key: existing_identity.get(key)
+                for key in identity_keys
+                if isinstance(existing_identity, Mapping)
+            }
+            expected_core = {
+                key: expected_identity.get(key)
+                for key in identity_keys
+                if isinstance(expected_identity, Mapping)
+            }
+            if _to_plain(existing_core) != _to_plain(expected_core):
                 raise ValueError(f"{label} checkpoint_roster does not match rating spec")
     existing_context_hash = state.get("context_hash")
     if existing_context_hash:
