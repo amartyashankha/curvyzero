@@ -902,6 +902,23 @@ def _intake_manifest_from_discovery(
         if str(ref).strip()
     ]
     seen_refs = sorted(set(existing_refs).union(checkpoint_refs))
+    merged_rows_by_ref: dict[str, dict[str, Any]] = {}
+    existing_discovery = existing.get("discovery") if isinstance(existing, Mapping) else {}
+    for source in (existing_discovery, discovery):
+        rows = source.get("rows") if isinstance(source, Mapping) else []
+        if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
+            continue
+        for row in rows:
+            if not isinstance(row, Mapping) or not row.get("checkpoint_ref"):
+                continue
+            merged_rows_by_ref[str(row["checkpoint_ref"])] = dict(row)
+    merged_discovery = dict(discovery)
+    if merged_rows_by_ref:
+        merged_discovery["rows"] = [
+            merged_rows_by_ref[ref]
+            for ref in seen_refs
+            if ref in merged_rows_by_ref
+        ]
     return {
         "schema_id": "curvyzero_curvytron_checkpoint_intake_manifest/v0",
         "app_name": APP_NAME,
@@ -923,7 +940,7 @@ def _intake_manifest_from_discovery(
         "checkpoint_count": len(checkpoint_refs),
         "seen_checkpoint_count": len(seen_refs),
         "queued_checkpoint_count": len(queued_refs.intersection(seen_refs)),
-        "discovery": arena._to_plain(dict(discovery)),
+        "discovery": arena._to_plain(merged_discovery),
     }
 
 
@@ -7202,11 +7219,11 @@ def curvytron_checkpoint_intake_submit(spec: Mapping[str, Any] | None = None) ->
             "missing_count": 0,
             "checkpoint_refs": cumulative_refs,
             "rows": [
-                {
-                    "checkpoint_ref": ref,
-                    "iteration": _checkpoint_iteration_from_path(Path(ref)),
-                    "found": True,
-                }
+                _checkpoint_discovery_row_from_ref(
+                    ref,
+                    mount=RUNS_MOUNT,
+                    found=True,
+                )
                 for ref in cumulative_refs
             ],
         }
