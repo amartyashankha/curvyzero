@@ -5998,6 +5998,16 @@ def _spawn_one_checkpoint_background_eval(
             max_eval_steps=int(config["max_eval_steps"]),
             step_detail_limit=config.get("step_detail_limit"),
             source_max_steps=int(config["source_max_steps"]),
+            decision_ms=float(config.get("decision_ms", DEFAULT_DECISION_MS)),
+            decision_source_frames=int(
+                config.get("decision_source_frames", DEFAULT_DECISION_SOURCE_FRAMES)
+            ),
+            source_physics_step_ms=float(
+                config.get("source_physics_step_ms", DEFAULT_SOURCE_PHYSICS_STEP_MS)
+            ),
+            source_max_steps_semantics=str(
+                config.get("source_max_steps_semantics", "source_physics_steps")
+            ),
             num_simulations=int(config["num_simulations"]),
             batch_size=int(config["batch_size"]),
             env_variant=str(config["env_variant"]),
@@ -6105,6 +6115,27 @@ def _spawn_one_checkpoint_background_gif(
     gif_config["frame_size_policy"] = (
         "checkpoint_selfplay_gif_always_uses_full_source_state_rgb_canvas"
     )
+    gif_config["decision_ms"] = float(
+        gif_config.get("decision_ms", config.get("decision_ms", DEFAULT_DECISION_MS))
+    )
+    gif_config["decision_source_frames"] = int(
+        gif_config.get(
+            "decision_source_frames",
+            config.get("decision_source_frames", DEFAULT_DECISION_SOURCE_FRAMES),
+        )
+    )
+    gif_config["source_physics_step_ms"] = float(
+        gif_config.get(
+            "source_physics_step_ms",
+            config.get("source_physics_step_ms", DEFAULT_SOURCE_PHYSICS_STEP_MS),
+        )
+    )
+    gif_config["source_max_steps_semantics"] = str(
+        gif_config.get(
+            "source_max_steps_semantics",
+            config.get("source_max_steps_semantics", "source_physics_steps"),
+        )
+    )
     base_seed = int(gif_config.get("seed", DEFAULT_SEED + DEFAULT_BACKGROUND_GIF_SEED_OFFSET))
     checkpoint_seed_mix = _stable_seed_mix(checkpoint_ref, checkpoint_label, eval_id)
     checkpoint_seed_mixing_enabled = bool(
@@ -6145,6 +6176,10 @@ def _spawn_one_checkpoint_background_gif(
                 gif_config.get("max_steps", DEFAULT_BACKGROUND_GIF_MAX_STEPS)
             ),
             source_max_steps=int(gif_config.get("source_max_steps", DEFAULT_SOURCE_MAX_STEPS)),
+            decision_ms=float(gif_config["decision_ms"]),
+            decision_source_frames=int(gif_config["decision_source_frames"]),
+            source_physics_step_ms=float(gif_config["source_physics_step_ms"]),
+            source_max_steps_semantics=str(gif_config["source_max_steps_semantics"]),
             num_simulations=int(
                 gif_config.get(
                     "num_simulations",
@@ -6667,6 +6702,10 @@ def _run_checkpoint_eval_and_inspect(
     max_eval_steps: int,
     step_detail_limit: int | None,
     source_max_steps: int,
+    decision_ms: float = DEFAULT_DECISION_MS,
+    decision_source_frames: int = DEFAULT_DECISION_SOURCE_FRAMES,
+    source_physics_step_ms: float = DEFAULT_SOURCE_PHYSICS_STEP_MS,
+    source_max_steps_semantics: str = "source_physics_steps",
     num_simulations: int,
     batch_size: int,
     env_variant: str,
@@ -6743,6 +6782,10 @@ def _run_checkpoint_eval_and_inspect(
             max_eval_steps=max_eval_steps,
             step_detail_limit=step_detail_limit,
             source_max_steps=max(int(source_max_steps), int(max_eval_steps)),
+            decision_ms=decision_ms,
+            decision_source_frames=decision_source_frames,
+            source_physics_step_ms=source_physics_step_ms,
+            source_max_steps_semantics=source_max_steps_semantics,
             num_simulations=num_simulations,
             batch_size=batch_size,
             emit_result_json=False,
@@ -6791,6 +6834,10 @@ def _run_checkpoint_eval_and_inspect(
             "eval_seed_sampler_seed": eval_seed_sampler_seed,
             "eval_primary_metric": "steps_survived",
             "env_variant": env_variant,
+            "decision_ms": float(decision_ms),
+            "decision_source_frames": int(decision_source_frames),
+            "source_physics_step_ms": float(source_physics_step_ms),
+            "source_max_steps_semantics": str(source_max_steps_semantics),
             "eval_reward_variant": reward_variant,
             "env_reward_variant": reward_variant,
             "reward_variant": reward_variant,
@@ -6825,6 +6872,10 @@ def _run_checkpoint_eval_and_inspect(
             "max_eval_steps": max_eval_steps,
             "step_detail_limit": step_detail_limit,
             "source_max_steps": max(int(source_max_steps), int(max_eval_steps)),
+            "decision_ms": float(decision_ms),
+            "decision_source_frames": int(decision_source_frames),
+            "source_physics_step_ms": float(source_physics_step_ms),
+            "source_max_steps_semantics": str(source_max_steps_semantics),
             "num_simulations": num_simulations,
             "batch_size": batch_size,
             "slim_manifest": True,
