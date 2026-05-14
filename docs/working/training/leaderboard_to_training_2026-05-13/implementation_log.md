@@ -247,13 +247,15 @@ Remaining caveat:
 
 ## Still Not Done
 
-- Remote smoke for Modal Dict pointer repair.
+- Production runbook for Modal Dict pointer repair. Tiny remote smoke passed,
+  but operator flow is not documented enough yet.
 - Production runbook for the `stable_slots_v1` operator workflow.
 - Automatic `stable_slots_v1` workflow that writes assignments on a schedule.
 - Periodic safe assignment refresh during long training.
 - Online Elo continuation from existing `latest.json` at production scale.
 - Automated end-to-end test for the full loop.
-- One-frame public leaderboard launch and validation at real scale.
+- One-frame public leaderboard validation at real scale. Tiny two-checkpoint
+  remote rating/publish smoke passed.
 
 Remote smoke:
 
