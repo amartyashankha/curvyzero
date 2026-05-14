@@ -42,16 +42,18 @@ Implemented:
   checkpoint discovery/intake, tiny rating, public leaderboard publish, fresh
   assignment selection, and second assignment-backed train smoke.
 
-Not yet proven remotely or automated:
+Not yet proven at production scale or automated:
 
 - Modal Dict pointer repair/fallback for public leaderboard snapshots. Local
-  repair coverage exists; remote operator smoke is still needed.
+  repair coverage and a tiny remote smoke exist; production runbook coverage is
+  still needed.
 - Periodic safe assignment refresh during long training.
 - Online Elo continuation from existing `latest.json` at production scale.
   Local continuation coverage exists.
 - Queue/dedupe repair from durable scans when Dict/Queue state is stale. Local
   repair coverage exists.
-- One-frame public leaderboard validation at real scale. Local gating exists.
+- One-frame public leaderboard validation at real scale. Local gating and a
+  tiny two-checkpoint remote smoke exist.
 - Automated end-to-end test from checkpoint emission to tournament promotion to
   trainer refresh.
 
@@ -109,6 +111,26 @@ Training assignment should not expose "top 5" as a live query. It should expose:
   ]
 }
 ```
+
+## Run-Scoped Slot Recipes
+
+Operators should be able to change the desired slot recipe for a specific
+training run after launch.
+
+The recipe can live in Modal Dict:
+
+```text
+curvyzero-training-slot-recipes
+run_slot_recipe:<training_run_id>
+```
+
+This Dict value is not training truth. It is mutable intent. A Coach
+materializer reads the recipe, reads a verified public leaderboard snapshot,
+then writes a new immutable `assignment.json`, `audit.json`, and refresh record
+to the training Volume.
+
+The trainer still consumes only assignment refs at safe boundaries. It should
+not read this Dict during learner updates.
 
 ## Refresh Semantics
 
