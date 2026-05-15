@@ -149,7 +149,7 @@ Do not treat a partial loop as proof of the whole loop.
 | Does the current Tournament Arena dropdown visibly say current? | Main | Fresh page HTML after deploy, not just API JSON. |
 | Why are only 51 checkpoints ranked? | Main + delegated audit | Current answer: latest reduced round has 51; running round has 193 checkpoints / 18,528 pairs. Need decide whether to kill/replace that giant round. |
 | Should old sweep winners be injected as anchors? | New old-champion lane | Find the best prior full-sweep tournament, extract top five exact checkpoint refs, inject them, and monitor acceptance/rating. |
-| Did we accidentally expect GPU rendering from H100? | Main + render audit | Current read from optimizer handoff: no. H100 accelerates model/search/training; `body_circles_fast + simple_symbols` is CPU fast render. Need decide whether that is acceptable or whether true GPU render is now required. |
+| Did we accidentally expect GPU rendering from H100? | Main + render audit | Current read from optimizer handoff: no. H100 accelerates model/search/training; `body_circles_fast + simple_symbols` was CPU fast render in the invalidated diagnostic lane. Fresh production should use CPU `cpu_oracle` `browser_lines + simple_symbols`; GPU rendering is lab/profiling-only until trainer-visible parity passes. |
 
 ## Immediate To-Do
 
@@ -167,7 +167,7 @@ Do not treat a partial loop as proof of the whole loop.
 | P0 | Start old champion-anchor lane: find prior strongest checkpoint refs and plan injection. | Added now; delegated next |
 | P0 | Decide whether to relaunch all 18 rows or a smaller honest fallback first. | Pending |
 | P1 | Fix visible Tournament Arena current-label if it is still absent. | Patched locally; redeploy/verify pending. |
-| P1 | Confirm body-circles/H100/GPU-render distinction and decide if any manifest change is needed. | Current manifest is CPU fast render on H100. True GPU render is not wired; treat as a decision, not an assumption. |
+| P1 | Confirm body-circles/H100/GPU-render distinction and decide if any manifest change is needed. | Historical manifest was CPU fast render on H100. Fresh manifests should target CPU `cpu_oracle` `browser_lines + simple_symbols`; true GPU render is not a production backend yet. |
 | P1 | Decide explicit GIF safety policy for huge tournament max steps. | Pending |
 | P1 | Refresh interval decision: keep `50` until resume-safety audit returns. | Pending |
 | P2 | Cleanup old arenas/apps after the current lane is stable. | Pending |

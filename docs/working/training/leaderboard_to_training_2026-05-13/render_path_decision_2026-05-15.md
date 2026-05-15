@@ -26,7 +26,7 @@ Meaning, historically:
 ## Evidence
 
 - The old local manifest has all 18 rows set to `body_circles_fast` and
-  `simple_symbols`; keep that as historical/current CPU evidence only.
+  `simple_symbols`; keep that as historical CPU-control evidence only.
 - `docs/working/optimizer/coach_handoff_fast_stock_recommendation_2026-05-14.md`
   historically recommended H100 compute with
   `body_circles_fast + simple_symbols`. That recommendation is superseded here;
