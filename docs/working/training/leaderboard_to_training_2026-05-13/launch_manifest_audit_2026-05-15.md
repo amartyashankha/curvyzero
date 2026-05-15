@@ -47,6 +47,15 @@ storage, stale tournaments, or a static no-refresh opponent setup.
   check that the initial checkpoint ref and all frozen assignment/mixture refs
   exist in the selected all-v2 runs volume. This is separate from syntactic
   `iteration_N.pth.tar` checks.
+- Implemented guardrail:
+  `scripts/audit_curvytron_launch_manifest_refs.py`. Local tests cover
+  collection, missing refs, good refs, and bad mutable/control-prefixed refs.
+  A real Modal audit of the canary dry-run manifest against
+  `curvyzero-runs-v2` passed with `4/4` unique checkpoint refs present.
+- Source recommendation: select top active candidate refs from historical
+  `loop18-main-adaptive417`, copy/rematerialize those checkpoint files into
+  `curvyzero-runs-v2`, and rerate under fresh all-v2 ids. The old leaderboard
+  is candidate selection only, not launch truth.
 - Choose fresh real tournament/rating ids and update the shared contract in the
   same patch as the dashboard redeploy.
 - Generate the candidate restart18 manifest and save the resolved JSON.
@@ -108,3 +117,8 @@ Dry-run audit results:
 - Broader E2E-adjacent slice covering tournament, GIF browser, trainer refresh
   plumbing, env, and opponent modules passed with `343 passed, 24 skipped`.
 - Ruff passed for touched launch/contract/GIF-browser/test files.
+- Added ref-audit validation:
+  `tests/test_curvytron_launch_manifest_ref_audit.py` -> `4 passed`;
+  focused launch/promotion/ref-audit bundle -> `30 passed`;
+  ruff passed after exporting
+  `DEFAULT_TOURNAMENT_POLICY_OBSERVATION_BACKEND` from tournament contracts.

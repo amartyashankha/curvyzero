@@ -39,8 +39,8 @@ short, factual, and updated as lanes move.
 | P0 | Close the behavior proof while the trainer is still alive. | Passed: controlrun2 applied promoted sha at train iter `1798` |
 | P0 | Prove the same storage pattern in v2. | Passed: v2 intake-spawned rating completed, direct rating also completed, and v2 proof3 applied promoted sha `adb04ed3905fb9c8984e5e213a9261079f0e4be188315912d12ae5290d55b770` at train iter `1904` |
 | P0 | Prove the recreated all-v2 lane after deleting/recreating v2 objects. | Passed: `curvy-e2e-allv2-canary-20260515a` wrote checkpoints, v2 intake/tournament completed `round-000003` with `18/18` games and `0` failures, promotion wrote sha `0597bceb176580d19d658fd513f752a47a7d4e0f5c9094d5c0f58f60f422c2e0`, and the same trainer applied it at train iter `5061`; latest env telemetry fetch had `1836` provider-ok rows with that sha. |
-| P0 | Find a production-quality all-v2 source leaderboard for restart18. | Active: Plato found no production-quality source in current v2 storage; only the tiny canary leaderboard exists. Rawls is auditing rematerialize/rerate vs migrate/copy vs grow fresh. |
-| P0 | Prevent missing-ref launches. | Active: add a manifest ref-existence audit so stale old snapshots cannot silently launch rows whose checkpoint refs do not exist in `curvyzero-runs-v2`. |
+| P0 | Find a production-quality all-v2 source leaderboard for restart18. | Recommended path: use historical `loop18-main-adaptive417` only to select top active checkpoint refs, copy them into `curvyzero-runs-v2`, then rerate fresh in v2. |
+| P0 | Prevent missing-ref launches. | Done locally: `scripts/audit_curvytron_launch_manifest_refs.py` checks manifest checkpoint syntax and local/Modal existence for initial and frozen opponent refs. |
 | P0 | Track survival metrics with numbers, not vibes. | Eval summary done; fresh checkpoint/survival audit delegated |
 | P0 | Keep docs current while work moves in parallel. | Active |
 | P1 | Redeploy/verify Tournament Arena current-marker UI. | Patched locally; not the current blocker |
@@ -69,7 +69,7 @@ short, factual, and updated as lanes move.
 | Live v2real18 inventory | Rawls | What is actually running, how many checkpoints exist, are metrics improving, and what does the leaderboard contain? | New at 09:40 EDT. Write `v2real18_live_metrics_inventory_2026-05-15.md`. |
 | Workspace cleanup inventory | Volta | Which apps/arenas/artifacts are necessary and which are cleanup candidates? | New at 09:40 EDT. Write `workspace_cleanup_inventory_2026-05-15.md`. |
 | Weak-run immortal intervention | Godel | Was the requested 50% blank/immortal intervention applied, and how can it be applied safely to only weak rows? | New at 09:40 EDT. Write `weak_run_immortal_intervention_2026-05-15.md`. |
-| Production source strategy | Rawls | Which source should feed restart18 now that v2 contains only the canary? | New at 2026-05-15. Read-only audit of rematerialized old champions vs old snapshot migration vs fresh growth. |
+| Production source strategy | Rawls | Which source should feed restart18 now that v2 contains only the canary? | Returned: rematerialize top active refs from `loop18-main-adaptive417` into v2, then rerate fresh. Do not copy old leaderboard as truth. |
 
 ## Current V2 Real18 Lane
 

@@ -36,8 +36,9 @@ Do not launch new training until all boxes in this section are checked.
 - [ ] Build and audit the exact larger launch manifest for stale non-v2
   checkpoint refs, fresh leaderboard snapshot metadata, fresh tournament/rating
   ids, and resolved shared-contract defaults.
-- [ ] Run the manifest checkpoint-ref existence audit against the active
-  all-v2 runs volume, not only local JSON syntax checks.
+- [x] Add a manifest checkpoint-ref existence audit. The canary dry-run
+  manifest passed against `curvyzero-runs-v2`; run it again on the final real
+  restart18 manifest before launch.
 - [ ] Identify or run a production-shaped bounded leaderboard/assignment
   validation with real active-row gates. The all-v2 canary's provisional
   relaxations do not prove production-quality ranking.

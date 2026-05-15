@@ -6,8 +6,9 @@ Scope: trusted stock LightZero `source_state_fixed_opponent` path. Live training
 runs are read-only for this note. Numbers below are local env/prototype signals,
 not full-training measurements.
 
-Current target: full-fidelity `browser_lines` only. That means source-state RGB
-on the 704-style canvas, BT.601 luma, then 11x11 downsample to 64x64.
+Current production target: CPU `cpu_oracle` `browser_lines + simple_symbols`.
+That means source-state RGB on the 704-style canvas, simple-symbol bonuses,
+BT.601 luma, then 11x11 downsample to 64x64.
 `body_circles_fast` is historical/control evidence only and is not a current
 optimization lane.
 
@@ -87,7 +88,7 @@ dirty-block bug.
 `body_circles_fast` is not inherently useless. It is simpler than browser-style
 lines, and it wins on short trajectories today. Keep those numbers as
 historical/control evidence. They are not recommendations because the current
-target is full-fidelity `browser_lines`.
+target is CPU `cpu_oracle` `browser_lines + simple_symbols`.
 
 The reason `body_circles_fast` loses at long lengths is simple: the current code
 still redraws all active body circles every observation, while cached
