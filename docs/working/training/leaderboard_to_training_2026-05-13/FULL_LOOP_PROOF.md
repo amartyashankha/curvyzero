@@ -585,7 +585,8 @@ parallel:
 
 - 5-10 checkpoints;
 - same one-frame timing;
-- same `body_circles_fast + simple_symbols` observation surface;
+- same CPU `cpu_oracle` `browser_lines + simple_symbols` production
+  observation surface;
 - same assignment materializer;
 - one tiny trainer consuming the result.
 

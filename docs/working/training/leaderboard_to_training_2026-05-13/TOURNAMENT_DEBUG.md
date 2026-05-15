@@ -50,7 +50,8 @@ canary, with new tournament/rating ids and durable proof in this doc.
   - launch corrected rerate with explicit
     `decision_source_frames=1`, `decision_ms=16.666666666666668`, and
     `source_physics_step_ms=16.666666666666668`;
-  - carry `policy_bonus_render_mode=simple_symbols` explicitly with
+  - for this historical diagnostic rerate, carry
+    `policy_bonus_render_mode=simple_symbols` explicitly with
     `policy_trail_render_mode=body_circles_fast`;
   - include both render fields in rating context/hash/summary so future
     rankings cannot silently mix observation surfaces.
@@ -164,14 +165,23 @@ Clean fix direction:
 
 ## Problem 2: Policy Observation Surface Mismatch
 
-Current read:
+Historical diagnostic read:
 
-- Trainer fast rows use `body_circles_fast + simple_symbols`.
+- Trainer fast rows used `body_circles_fast + simple_symbols`.
 - Tournament historically carried `policy_trail_render_mode` but not
   `policy_bonus_render_mode`.
 - `body_circles_fast` without the bonus mode can evaluate a policy on a surface
   different from what it trained on.
-- Current tournament ratings are suspect until fixed and rerated.
+- Those tournament ratings are suspect until fixed and rerated.
+
+Fresh production read:
+
+- Trainer and tournament policy observations should use CPU `cpu_oracle`
+  `browser_lines + simple_symbols`.
+- GPU `browser_lines + simple_symbols` is lab/profiling-only until
+  trainer-visible contract parity passes.
+- `body_circles_fast` is historical/control only and should not be accepted as
+  a fresh source-state training env policy surface.
 
 Patch requirements:
 
@@ -180,7 +190,8 @@ Patch requirements:
   hash, and compatibility checks must preserve it.
 - Tournament policy stacks must group observations by the full
   `(trail_render_mode, bonus_render_mode)` pair.
-- Current fast rows should evaluate on `body_circles_fast + simple_symbols`.
+- Historical diagnostic fast rows should evaluate on
+  `body_circles_fast + simple_symbols`.
 - Old artifacts may be repaired at boundaries, but new artifacts should be
   explicit.
 
