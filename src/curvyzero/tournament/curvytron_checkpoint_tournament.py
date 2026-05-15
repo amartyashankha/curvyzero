@@ -656,6 +656,7 @@ def build_game_specs_for_pair(pair_spec: Mapping[str, Any]) -> list[dict[str, An
                 "natural_bonus_spawn": pair["natural_bonus_spawn"],
                 "policy_trail_render_mode": pair["policy_trail_render_mode"],
                 "policy_bonus_render_mode": pair["policy_bonus_render_mode"],
+                "policy_observation_backend": pair["policy_observation_backend"],
                 "policy_observation_contract_id": pair["policy_observation_contract_id"],
                 "observation_contract": pair["observation_contract"],
                 "gif_trail_render_mode": pair["gif_trail_render_mode"],

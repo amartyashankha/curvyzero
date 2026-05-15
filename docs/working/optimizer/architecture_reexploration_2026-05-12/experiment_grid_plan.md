@@ -64,7 +64,7 @@ Run 3-4 jobs:
 | A0 smoke | current | current | current | browser_lines | on | current CPU/GPU |
 | A1 anchor | current | subprocess | current | browser_lines | on | current CPU/GPU |
 | A2 no-death lens | current | subprocess | current | browser_lines | off | current CPU/GPU |
-| A3 fast-render lens | current | subprocess | current | body_circles_fast | off | current CPU/GPU |
+| A3 fast-render lens | historical/profile only | subprocess | historical/profile only | body_circles_fast | off | control only |
 
 Purpose: establish timing buckets and denominator correctness before scaling.
 A2/A3 are bottleneck lenses, not fidelity claims.

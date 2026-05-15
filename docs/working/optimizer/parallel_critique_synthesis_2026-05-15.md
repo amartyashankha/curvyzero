@@ -69,10 +69,11 @@ trainer, tournament, or Coach recommendations.
    and tournament checkpoint loading must match before promotion.
 
 5. **Metadata identity drift.**
-   The current audit still flags backend identity as under-specified in
-   checkpoint/tournament/rating metadata. `cpu_oracle` and scalar `jax_gpu`
-   should not collapse into the same rating identity if scalar GPU is ever used
-   for a lab checkpoint.
+   First pass fixed: checkpoint specs, pair/game specs, rating context, rating
+   pool hash, and rating roster now carry `policy_observation_backend`, and
+   tournament/rating reject lab `jax_gpu` by default. Remaining audit work is to
+   verify checkpoint payload extraction and downstream public leaderboard
+   consumers preserve this field everywhere it matters.
 
 6. **Collector/search scaling.**
    Wider collector rows help, but root batching and policy/search boundaries may
@@ -108,3 +109,11 @@ trainer, tournament, or Coach recommendations.
   passed: `3 passed`.
 - `uv run pytest tests/test_source_state_visual_survival_learner_seat_regression.py -q`
   passed: `5 passed`.
+- `uv run pytest tests/test_curvytron_checkpoint_tournament.py::test_tournament_render_contract_pins_policy_surface_and_full_gif
+  tests/test_curvytron_checkpoint_tournament.py::test_tournament_rejects_legacy_policy_surface
+  tests/test_curvytron_checkpoint_tournament.py::test_tournament_rejects_lab_policy_observation_backend
+  tests/test_curvytron_checkpoint_tournament.py::test_checkpoint_spec_reads_policy_render_mode_from_observation_contract
+  tests/test_curvytron_checkpoint_tournament.py::test_rating_context_hash_changes_for_evaluator_not_roster -q`
+  passed: `5 passed`.
+- `uv run pytest tests/test_source_state_gpu_render_benchmark_cpu.py -q`
+  passed: `9 passed, 2 skipped`.

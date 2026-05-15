@@ -43,6 +43,14 @@ Current restart decision:
   Any old leaderboard/champion source must be explicitly copied or rerated into
   v2, and every referenced checkpoint file must exist in `curvyzero-runs-v2`,
   before building a real restart18 launch.
+- Current recommendation: use the old `loop18-main-adaptive417` leaderboard
+  only to choose top active candidate checkpoint refs, copy those exact files
+  into `curvyzero-runs-v2`, then run a fresh v2 rerate. The new v2 rating is
+  the source of truth, not the old leaderboard.
+- New prelaunch guardrail:
+  `scripts/audit_curvytron_launch_manifest_refs.py` audits every
+  initial-policy and frozen-opponent checkpoint ref in a launch manifest and
+  can verify those refs exist in the active all-v2 runs volume.
 - Modal operating pattern: use deployed apps for durable services, Volume JSON
   as truth, Dict/Queue for coordination only, stop stale detached apps, and
   avoid broad reload-dependent behavior.

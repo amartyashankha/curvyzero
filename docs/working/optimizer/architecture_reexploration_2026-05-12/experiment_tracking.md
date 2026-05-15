@@ -33,7 +33,7 @@ family.
 | `collectors` | `collector_env_num`; include `evaluator_env_num` separately if non-default. |
 | `n_episode` | LightZero collector episode count per collection call. Match this to collector width for subprocess scale profiles unless intentionally testing otherwise. |
 | `sims` | `num_simulations` used by MCTS. |
-| `render_mode` | Source-state trail render mode, currently `browser_lines` or `body_circles_fast`. |
+| `render_mode` | Source-state trail render mode recorded for historical/profile rows. Fresh production policy rows should use `browser_lines + simple_symbols` through `cpu_oracle`; `body_circles_fast` is control-only. |
 | `death_mode` | `normal` or `death_off`; record the exact flag such as `disable_death_for_profile=true`. |
 | `env_manager` | `base`, `subprocess`, or any future manager name. |
 | `checkpoint_ref` | Learner checkpoint start/ref if used. Prefer immutable iteration refs; never use `latest`. |
