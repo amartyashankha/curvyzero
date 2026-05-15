@@ -44,6 +44,15 @@ Read this first. This page is the current plain truth, not a full history.
   rematerialization/rerate step that copies selected old strong checkpoint refs
   into v2 storage and rates them there. Old/non-v2 snapshots are not launch
   inputs until their referenced checkpoint files exist in `curvyzero-runs-v2`.
+- Current recommended source strategy: use the old
+  `loop18-main-adaptive417` leaderboard only to select candidate refs, copy the
+  top active exact checkpoints into `curvyzero-runs-v2`, then run a fresh v2
+  tournament/rating under new ids. Do not copy the old leaderboard as truth.
+- New guardrail: `scripts/audit_curvytron_launch_manifest_refs.py` collects
+  initial-policy refs and frozen assignment/mixture refs, then checks syntax
+  and optional local/Modal existence. The canary dry-run manifest passed a real
+  Modal existence check against `curvyzero-runs-v2` with `4/4` unique refs
+  present; that proves the guardrail, not launch quality.
 - Fresh all-v2 canary is proven at wiring scale:
   `curvy-e2e-allv2-canary-20260515a` /
   `try-e2e-allv2-canary-20260515a`; poller
@@ -67,8 +76,9 @@ Read this first. This page is the current plain truth, not a full history.
   after fail-closed manifest/app-guard patches:
   `tests/test_curvytron_tonight18_manifest.py`,
   `tests/test_curvytron_survivaldiag_submitter.py`,
-  `tests/test_curvytron_shared_contracts.py`, and
-  `tests/test_promote_curvytron_rating_round.py` -> `26 passed`.
+  `tests/test_curvytron_shared_contracts.py`,
+  `tests/test_promote_curvytron_rating_round.py`, and
+  `tests/test_curvytron_launch_manifest_ref_audit.py` -> `30 passed`.
 - Broader E2E-adjacent local regression passed after the all-v2 proof and
   fail-closed launch patch:
   checkpoint tournament, live eval plumbing, source-state env, opponent

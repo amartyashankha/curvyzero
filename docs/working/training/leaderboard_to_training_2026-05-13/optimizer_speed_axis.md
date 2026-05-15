@@ -71,7 +71,7 @@ Other reads:
 | `sim8` | default; `sim16` not earning quality cost | sim16 may be affordable | keep sim16 sentinel only |
 | `collector32` | clean baseline | C64/C96 improve throughput | consider C64 probe separately |
 | browser-lines render | target semantics | CPU path is current reliable backend; batched GPU path is target architecture | use `cpu_oracle` now; use batched GPU only after it is wired and profiled |
-| body-circles/fast render | historical/current CPU evidence only | ablation/control surface, not the renderer target | keep only when explicitly labeled ablation/control/fallback |
+| body-circles/fast render | historical CPU evidence only | ablation/control surface, not the renderer target | keep only when explicitly labeled ablation/control/fallback |
 
 ## Safe Speed Constraints
 

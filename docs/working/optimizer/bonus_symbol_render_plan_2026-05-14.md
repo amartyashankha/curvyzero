@@ -118,8 +118,10 @@ These CPU measurements are useful speed history, not the current target:
   subprocess collection, replay, and learner work were still present.
 
 Plain read: symbols are cheap enough to justify as the bonus target, but the
-policy-observation destination is GPU `browser_lines + simple_symbols`, not
-CPU `body_circles_fast`.
+production policy-observation path is CPU `cpu_oracle`
+`browser_lines + simple_symbols`, not CPU `body_circles_fast`. GPU
+`browser_lines + simple_symbols` remains a lab/profiling backend until
+trainer-visible contract parity passes.
 
 ## Tests And Gates
 

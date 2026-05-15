@@ -175,7 +175,7 @@ Speed probes:
   observation surface;
 - cheaper wide compute probe: `C384/L4/sim8` with the target observation
   surface;
-- old `fast` body-circles rows are historical/current CPU controls, not a
+- old `fast` body-circles rows are historical CPU controls, not a
   learning default or GPU-render proof.
 
 ## Reward Variants
