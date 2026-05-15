@@ -283,9 +283,11 @@ Long canary tournament/promotion:
 - The existing real18 feedback mechanics are partially proven, but the current
   67-ref rerate is not valid final tournament evidence because it used 20ms
   tournament source ticks against 16.6667ms trainer/checkpoint runtime.
-- The next proof step is a corrected detached rerate with explicit 16.6667ms
-  source timing and explicit `body_circles_fast + simple_symbols` policy
-  observation surface.
+- The corrected detached rerate for this historical diagnostic lane needed
+  explicit 16.6667ms source timing and explicit
+  `body_circles_fast + simple_symbols` policy observation surface. Fresh
+  production proof steps should use CPU `cpu_oracle`
+  `browser_lines + simple_symbols`.
 - Do not use the wrong-tick rerate to update training opponents. Use it only as
   evidence that game workers are live.
 

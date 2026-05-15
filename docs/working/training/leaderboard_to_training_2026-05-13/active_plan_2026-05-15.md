@@ -93,18 +93,17 @@ Do not treat a partial loop as proof of the whole loop.
   exist, but they are in a giant unreduced round. This is not a good operator
   experience and may be a scheduling bug or active-pool policy miss.
 - Render-path correction: `compute=gpu-h100-cpu40` does not mean GPU
-  observation rendering. The current `v2refresh18p` manifest uses H100 compute
-  plus CPU-side `body_circles_fast + simple_symbols` observations. This matches
-  the latest optimizer Coach handoff, which explicitly says the faithful GPU
-  renderer is still a prototype and not wired into stock training. If the user
-  wants a true GPU-render training lane, that is an implementation gap and a
-  launch-critical decision.
+  observation rendering. The invalidated `v2refresh18p` manifest used H100
+  compute plus CPU-side `body_circles_fast + simple_symbols` observations.
+  Fresh production guidance is CPU `cpu_oracle`
+  `browser_lines + simple_symbols`; faithful GPU rendering is still
+  lab/profiling-only until trainer-visible contract parity passes.
 - P0 tournament parity bug found locally: tournament eval carried
   `policy_trail_render_mode` but did not carry `policy_bonus_render_mode`.
   Worse, `SourceStateGray64Stack4(trail_render_mode="body_circles_fast")`
   used the canvas/downsample path with default browser-sprite bonuses, while
-  the trainer's current fast lane uses direct gray64 with `simple_symbols`.
-  Current tournament ratings are therefore suspect for the current H100 fast
+  the trainer's historical fast lane used direct gray64 with `simple_symbols`.
+  Those tournament ratings are therefore suspect for the historical H100 fast
   training rows until patched, redeployed, and re-rated.
 - Local patch in progress: add `policy_bonus_render_mode` to checkpoint specs,
   pair/game specs, rating roster/context, policy loader metadata, and tournament
@@ -202,8 +201,8 @@ Before any clean relaunch:
 6. If using huge tournament max steps with GIFs on, the GIF frame policy is
    explicit.
 7. Tournament policy observations include both the checkpoint's trail render
-   mode and bonus render mode. For current runs that means
-   `body_circles_fast + simple_symbols`, not just `body_circles_fast`.
+   mode and bonus render mode. For fresh production runs that means CPU
+   `cpu_oracle` `browser_lines + simple_symbols`.
 
 Parallel rule: if one gate is slow, start a smaller honest loop that tests the
 same contract rather than waiting passively.
