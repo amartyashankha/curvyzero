@@ -19,6 +19,12 @@ Render names also changed with the lane reset: in the current stock
 fixed-opponent lane, the fast comparison is `body_circles_fast`, not
 `fast_gray64_direct`.
 
+2026-05-15 correction: even that reset language is now stale as launch advice.
+Current production policy observations are CPU `cpu_oracle`
+`browser_lines + simple_symbols` as `[4,64,64]`. `body_circles_fast` and
+`fast_gray64_direct` are historical/control names only, scalar `jax_gpu` is
+diagnostic only, and the GPU renderer is lab/profiling only.
+
 Historical copy-paste handoff: use the canonical CurvyTron two-seat current-policy
 self-play launcher and run an aggressive approximation-heavy overnight matrix.
 The main training surface is `fast_gray64_direct`, not `browser_lines`.
@@ -336,8 +342,9 @@ target. Keep learning runs at repeat min/max `1` and extra probability `0`.
 - Use L4/T4 for most runs. It is cheaper and enough for B64 fast-direct runs.
 - Use H100 only for the six listed scale probes. H100 helps B128 more than L4,
   but it is not proven to improve learning per dollar or per wall-clock yet.
-- Skip multi-GPU tonight. The canonical two-seat path has not shown a clean
-  model-throughput bottleneck where multi-GPU is the obvious next move.
+- Historical note: skipped multi-GPU for this old matrix because the custom
+  two-seat path had not shown a clean model-throughput bottleneck where
+  multi-GPU was the obvious next move.
 
 ## What To Watch
 

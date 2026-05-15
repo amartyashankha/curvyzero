@@ -18,6 +18,11 @@ The trainer should not turn the Dict into live per-step behavior. The Dict is
 control-plane intent. The durable training input is still an immutable
 `assignment.json`.
 
+Follow-up design note: this slot recipe can become one section of a broader
+per-run control record. That broader record can also carry reward settings such
+as survival, bonus, and final-outcome weights. See
+`run_reward_control_design.md`.
+
 ## Proposed Shape
 
 One Modal Dict stores recipes keyed by training run id.

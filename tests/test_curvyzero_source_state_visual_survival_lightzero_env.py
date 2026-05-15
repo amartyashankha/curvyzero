@@ -14,6 +14,7 @@ from curvyzero.env.vector_multiplayer_env import PUBLIC_NATURAL_BONUS_ENV_CONTRA
 from curvyzero.env.vector_multiplayer_env import SOURCE_PHYSICS_STEP_MS
 from curvyzero.env.vector_multiplayer_env import VectorMultiplayerEnv
 from curvyzero.env.vector_visual_observation import (
+    BONUS_RENDER_MODE_SIMPLE_SYMBOLS,
     SOURCE_STATE_RGB_CANVAS_LIKE_RENDERER_IMPL_ID,
 )
 from curvyzero.env.vector_visual_observation import (
@@ -37,12 +38,14 @@ from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env imp
     OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP,
     OPPONENT_POLICY_KIND_NONE_CENTRALIZED_JOINT_ACTION,
     OPPONENT_POLICY_KIND_PROACTIVE_WALL_AVOIDANT,
+    REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME,
     REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME,
     SOURCE_STATE_CANVAS_LIKE_GRAY64_SCHEMA_HASH,
     SOURCE_STATE_CANVAS_LIKE_GRAY64_SCHEMA_ID,
     SOURCE_STATE_CANVAS_LIKE_GRAY64_SURFACE,
     SOURCE_STATE_CANVAS_LIKE_RAW_CANVAS_SCHEMA_HASH,
     SOURCE_STATE_CANVAS_LIKE_RAW_CANVAS_SHAPE,
+    SOURCE_STATE_DEFAULT_BONUS_RENDER_MODE,
     SOURCE_STATE_DEFAULT_TRAIL_RENDER_MODE,
     SOURCE_STATE_FIXED_OPPONENT_ENV_VARIANT,
     SOURCE_STATE_FIXED_OPPONENT_RUNTIME_TOPOLOGY,
@@ -51,6 +54,7 @@ from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env imp
     SOURCE_STATE_JOINT_ACTION_ENV_VARIANT,
     SOURCE_STATE_JOINT_ACTION_RUNTIME_TOPOLOGY,
     SOURCE_STATE_JOINT_ACTION_TRAINING_STATUS,
+    SOURCE_STATE_SUPPORTED_BONUS_RENDER_MODES,
     SOURCE_STATE_SUPPORTED_TRAIL_RENDER_MODES,
     SOURCE_STATE_TRAIL_RENDER_MODE_BODY_CIRCLES_FAST,
     SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES,
@@ -59,10 +63,100 @@ from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env imp
     STACKED_SOURCE_STATE_GRAY64_SHAPE,
     SURVIVAL_PLUS_BONUS_NO_OUTCOME_BONUS_REWARD,
     SURVIVAL_PLUS_BONUS_NO_OUTCOME_REWARD_SCHEMA_ID,
+    SURVIVAL_PLUS_BONUS_PLUS_OUTCOME_REWARD_SCHEMA_ID,
     _normalize_player_perspective,
     _player_perspective_lut,
 )
 from curvyzero.training.multiplayer_opponent_policy import OpponentPolicySelection
+
+
+def _ego_player_rgb(env: CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv):
+    return env_mod._player_perspective_rgb_palette(
+        env._render_state_view(),
+        row=0,
+        controlled_player=env.ego_player_index,
+        player_count=2,
+    )
+
+
+def test_jax_scalar_gpu_trail_slot_profile_uses_active_prefix_bucket():
+    state = {
+        "visual_trail_active": np.zeros((1, 4096), dtype=bool),
+        "visual_trail_write_cursor": np.asarray([933], dtype=np.int32),
+    }
+    state["visual_trail_active"][0, 930] = True
+    renderer = env_mod._JaxScalarPolicyObservationRenderer(
+        player_count=2,
+        min_trail_slots=1024,
+    )
+
+    profile = renderer._trail_slot_profile(state)
+
+    assert profile["visual_trail_capacity"] == 4096
+    assert profile["visual_trail_last_active_exclusive"] == 931
+    assert profile["render_trail_slots"] == 1024
+    assert profile["render_trail_slots_reduced_from_capacity"] is True
+
+
+def test_jax_scalar_gpu_trail_slot_profile_grows_bucket_without_truncating():
+    state = {
+        "visual_trail_active": np.zeros((1, 4096), dtype=bool),
+        "visual_trail_write_cursor": np.asarray([1501], dtype=np.int32),
+    }
+    state["visual_trail_active"][0, 1500] = True
+    renderer = env_mod._JaxScalarPolicyObservationRenderer(
+        player_count=2,
+        min_trail_slots=1024,
+    )
+
+    profile = renderer._trail_slot_profile(state)
+
+    assert profile["render_trail_slots"] == 2048
+
+
+def test_jax_scalar_gpu_trail_slot_profile_ignores_stale_slots_after_cursor():
+    state = {
+        "visual_trail_active": np.zeros((1, 4096), dtype=bool),
+        "visual_trail_write_cursor": np.asarray([3], dtype=np.int32),
+    }
+    state["visual_trail_active"][0, 2] = True
+    state["visual_trail_active"][0, 1500] = True
+    renderer = env_mod._JaxScalarPolicyObservationRenderer(
+        player_count=2,
+        min_trail_slots=1024,
+    )
+
+    profile = renderer._trail_slot_profile(state)
+
+    assert profile["visual_trail_active_count"] == 1
+    assert profile["visual_trail_last_active_exclusive"] == 3
+    assert profile["render_trail_slots"] == 1024
+
+
+def _joint_action_for_env(
+    env: CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv,
+    *,
+    ego_action: int,
+    opponent_action: int,
+) -> np.ndarray:
+    actions = np.full((1, 2), 1, dtype=np.int16)
+    actions[0, env.ego_player_index] = int(ego_action)
+    actions[0, env.opponent_player_index] = int(opponent_action)
+    return actions
+
+
+def _joint_action_dict_for_env(
+    env: CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv,
+    *,
+    ego_action: int,
+    opponent_action: int,
+) -> dict[str, int]:
+    actions = _joint_action_for_env(
+        env,
+        ego_action=ego_action,
+        opponent_action=opponent_action,
+    )
+    return {"player_0": int(actions[0, 0]), "player_1": int(actions[0, 1])}
 
 
 def test_source_state_visual_survival_reset_shape_and_metadata():
@@ -126,6 +220,27 @@ def test_source_state_visual_survival_reset_shape_and_metadata():
         env.last_reset_info["trail_render_mode"]
         == SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES
     )
+    assert (
+        env.last_reset_info["source_state_bonus_render_mode"]
+        == BONUS_RENDER_MODE_SIMPLE_SYMBOLS
+    )
+    assert env.last_reset_info["default_bonus_render_mode"] == (
+        SOURCE_STATE_DEFAULT_BONUS_RENDER_MODE
+    )
+    assert env.last_reset_info["supported_bonus_render_modes"] == list(
+        SOURCE_STATE_SUPPORTED_BONUS_RENDER_MODES
+    )
+    assert (
+        env.last_reset_info["model_observation_bonus_render_mode"]
+        == BONUS_RENDER_MODE_SIMPLE_SYMBOLS
+    )
+    assert (
+        env.last_reset_info["raw_observation_bonus_render_mode"]
+        == BONUS_RENDER_MODE_SIMPLE_SYMBOLS
+    )
+    assert env.last_reset_info["bonus_render_mode"] == BONUS_RENDER_MODE_SIMPLE_SYMBOLS
+    assert env.last_reset_info["bonus_renderer_kind"] == "simple_symbol_masks"
+    assert env.last_reset_info["bonus_renderer_is_approximation"] is True
     assert env.last_reset_info["trail_renderer_kind"] == "connected_rounded_lines"
     assert (
         env.last_reset_info["trail_renderer_truth_level"]
@@ -244,10 +359,11 @@ def test_source_state_visual_survival_bonus_spawn_can_be_disabled_from_cfg():
     np.testing.assert_array_equal(
         human_rgb,
         render_source_state_rgb_canvas_like(
-            env._env.state,
+            env._render_state_view(),
             row=0,
             frame_size=128,
             trail_render_mode=SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES,
+            bonus_render_mode=env._raw_observation_bonus_render_mode,
         ),
     )
     np.testing.assert_array_equal(
@@ -258,15 +374,25 @@ def test_source_state_visual_survival_bonus_spawn_can_be_disabled_from_cfg():
     gray64 = rgb_canvas_like_to_gray64(raw)
     np.testing.assert_array_equal(
         gray64,
-        render_source_state_canvas_gray64(env._env.state, row=0),
+        render_source_state_canvas_gray64(
+            env._render_state_view(),
+            row=0,
+            bonus_render_mode=env._raw_observation_bonus_render_mode,
+        ),
+    )
+    model_gray64 = render_source_state_canvas_gray64(
+        env._render_state_view(),
+        row=0,
+        player_rgb=_ego_player_rgb(env),
+        bonus_render_mode=env._model_bonus_render_mode,
     )
     np.testing.assert_array_equal(
         env.render("source_state_grayscale64_visual_tensor"),
-        gray64,
+        model_gray64,
     )
     np.testing.assert_allclose(
         observation["observation"][-1],
-        gray64[0].astype(np.float32) / np.float32(255.0),
+        model_gray64[0].astype(np.float32) / np.float32(255.0),
         rtol=0.0,
         atol=1e-7,
     )
@@ -290,7 +416,11 @@ def test_source_state_visual_survival_terminal_snapshots_survive_manual_reset():
     assert saved_terminal_raw is not None
     np.testing.assert_array_equal(
         saved_terminal_raw,
-        render_source_state_rgb_canvas_like(env._env.state, row=0),
+        render_source_state_rgb_canvas_like(
+            env._render_state_view(),
+            row=0,
+            bonus_render_mode=env._raw_observation_bonus_render_mode,
+        ),
     )
 
     returned_raw_copy = env.raw_observation()
@@ -346,7 +476,11 @@ def test_source_state_visual_survival_step_and_terminal_telemetry(tmp_path):
     )
     assert timestep.info["requested_ego_action"] == 0
     assert timestep.info["executed_ego_action"] == 0
-    assert timestep.info["joint_action"] == {"player_0": 0, "player_1": 1}
+    assert timestep.info["joint_action"] == _joint_action_dict_for_env(
+        env,
+        ego_action=0,
+        opponent_action=1,
+    )
     assert timestep.info["joint_action_schema_id"] == JOINT_ACTION_SCHEMA_ID
     assert timestep.info["opponent_action_id"] == 1
     assert timestep.info["opponent_policy_kind"] == "fixed_straight"
@@ -378,16 +512,30 @@ def test_source_state_visual_survival_step_and_terminal_telemetry(tmp_path):
     np.testing.assert_array_equal(terminal_raw, terminal_raw_from_render)
     np.testing.assert_array_equal(
         terminal_raw,
-        render_source_state_rgb_canvas_like(env._env.state, row=0),
+        render_source_state_rgb_canvas_like(
+            env._render_state_view(),
+            row=0,
+            bonus_render_mode=env._raw_observation_bonus_render_mode,
+        ),
     )
     terminal_gray64 = rgb_canvas_like_to_gray64(terminal_player_perspective_raw)
     np.testing.assert_array_equal(
         terminal_gray64,
-        render_source_state_canvas_gray64(env._env.state, row=0),
+        render_source_state_canvas_gray64(
+            env._render_state_view(),
+            row=0,
+            bonus_render_mode=env._raw_observation_bonus_render_mode,
+        ),
+    )
+    terminal_model_gray64 = render_source_state_canvas_gray64(
+        env._render_state_view(),
+        row=0,
+        player_rgb=_ego_player_rgb(env),
+        bonus_render_mode=env._model_bonus_render_mode,
     )
     np.testing.assert_allclose(
         timestep.info["final_observation"]["observation"][-1],
-        terminal_gray64[0].astype(np.float32) / np.float32(255.0),
+        terminal_model_gray64[0].astype(np.float32) / np.float32(255.0),
         rtol=0.0,
         atol=1e-7,
     )
@@ -416,6 +564,15 @@ def test_source_state_visual_survival_step_and_terminal_telemetry(tmp_path):
         SOURCE_STATE_SUPPORTED_TRAIL_RENDER_MODES
     )
     assert timestep.info["trail_render_mode"] == SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES
+    assert timestep.info["bonus_render_mode"] == BONUS_RENDER_MODE_SIMPLE_SYMBOLS
+    assert (
+        timestep.info["model_observation_bonus_render_mode"]
+        == BONUS_RENDER_MODE_SIMPLE_SYMBOLS
+    )
+    assert (
+        timestep.info["raw_observation_bonus_render_mode"]
+        == BONUS_RENDER_MODE_SIMPLE_SYMBOLS
+    )
     assert timestep.info["trail_renderer_kind"] == "connected_rounded_lines"
     assert (
         timestep.info["trail_renderer_truth_level"]
@@ -435,14 +592,14 @@ def test_source_state_visual_survival_step_and_terminal_telemetry(tmp_path):
     assert runtime_info is not None
     np.testing.assert_array_equal(
         runtime_info["joint_action"],
-        np.array([[0, 1]], dtype=np.int16),
+        _joint_action_for_env(env, ego_action=0, opponent_action=1),
     )
     action_sidecar = runtime_info["action_sidecar"]
     assert action_sidecar["action_space_id"] == ACTION_SPACE_ID
     assert action_sidecar["joint_action_schema_id"] == JOINT_ACTION_SCHEMA_ID
     np.testing.assert_array_equal(
         action_sidecar["player_action"],
-        np.array([[0, 1]], dtype=np.int16),
+        _joint_action_for_env(env, ego_action=0, opponent_action=1),
     )
     np.testing.assert_array_equal(
         action_sidecar["player_action_mask"],
@@ -454,10 +611,9 @@ def test_source_state_visual_survival_step_and_terminal_telemetry(tmp_path):
     )
     np.testing.assert_array_equal(
         action_sidecar["native_control_value"],
-        np.array(
-            [[ACTION_ID_TO_SOURCE_MOVE[0], ACTION_ID_TO_SOURCE_MOVE[1]]],
-            dtype=np.int8,
-        ),
+        np.asarray(ACTION_ID_TO_SOURCE_MOVE, dtype=np.int8)[
+            _joint_action_for_env(env, ego_action=0, opponent_action=1)
+        ],
     )
     np.testing.assert_array_equal(
         action_sidecar["action_source"],
@@ -581,11 +737,11 @@ def test_source_state_visual_survival_can_use_frozen_checkpoint_opponent(
                 }
             )
             actions = np.full((1, 2), -1, dtype=np.int16)
-            actions[0, 1] = 2
+            actions[opponent_mask] = 2
             action_seed = np.full((1, 2), -1, dtype=np.int64)
-            action_seed[0, 1] = 123
+            action_seed[opponent_mask] = 123
             action_logp = np.full((1, 2), np.nan, dtype=np.float32)
-            action_logp[0, 1] = -0.25
+            action_logp[opponent_mask] = -0.25
             return OpponentPolicySelection(
                 policy_id=self.policy_id,
                 policy_version=self.policy_version,
@@ -637,7 +793,11 @@ def test_source_state_visual_survival_can_use_frozen_checkpoint_opponent(
     env.reset(seed=21)
     timestep = env.step(0)
 
-    assert timestep.info["joint_action"] == {"player_0": 0, "player_1": 2}
+    assert timestep.info["joint_action"] == _joint_action_dict_for_env(
+        env,
+        ego_action=0,
+        opponent_action=2,
+    )
     assert timestep.info["opponent_action_id"] == 2
     assert timestep.info["opponent_policy_kind"] == "frozen_lightzero_checkpoint"
     assert (
@@ -651,7 +811,9 @@ def test_source_state_visual_survival_can_use_frozen_checkpoint_opponent(
         "runs/checkpoints/iteration_7.pth.tar"
     )
     assert calls[0]["decision_index"] == 0
-    np.testing.assert_array_equal(calls[0]["opponent_mask"], np.array([[False, True]]))
+    expected_opponent_mask = np.zeros((1, 2), dtype=bool)
+    expected_opponent_mask[0, env.opponent_player_index] = True
+    np.testing.assert_array_equal(calls[0]["opponent_mask"], expected_opponent_mask)
     assert calls[0]["observation"].shape == (1, 2, *STACKED_SOURCE_STATE_GRAY64_SHAPE)
     assert calls[0]["legal_action_mask"].shape == (1, 2, 3)
     rows = [
@@ -682,6 +844,15 @@ def test_source_state_fixed_opponent_config_names_non_self_play_runtime_contract
     assert config["two_seat_self_play"] is False
     assert config["two_seat_self_play_status"] == SOURCE_STATE_FIXED_OPPONENT_TWO_SEAT_STATUS
     assert config["fixed_opponent_is_two_seat_self_play"] is False
+
+
+def test_source_state_env_rejects_body_circles_fast_trail_mode():
+    with pytest.raises(ValueError, match="source_state_trail_render_mode"):
+        CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
+            {
+                "source_state_trail_render_mode": SOURCE_STATE_TRAIL_RENDER_MODE_BODY_CIRCLES_FAST,
+            }
+        )
 
 
 def test_source_state_survival_plus_bonus_no_outcome_keeps_survival_without_catch():
@@ -725,12 +896,13 @@ def test_source_state_survival_plus_bonus_no_outcome_rewards_same_step_bonus():
     )
 
     env.reset(seed=92)
+    ego = env.ego_player_index
     env._env.seed_active_bonus(
         row=0,
         bonus_type="BonusSelfSmall",
-        x=15.0,
-        y=15.0,
-        radius=3.0,
+        x=float(env._env.state["pos"][0, ego, 0]),
+        y=float(env._env.state["pos"][0, ego, 1]),
+        radius=20.0,
     )
 
     catch_timestep = env.step(1)
@@ -764,7 +936,9 @@ def test_source_state_survival_plus_bonus_no_outcome_excludes_terminal_outcome()
     )
 
     env.reset(seed=93)
-    env._env.state["pos"][0, 0] = np.array([-1.0, -1.0], dtype=np.float64)
+    ego = env.ego_player_index
+    ego_key = f"player_{ego}"
+    env._env.state["pos"][0, ego] = np.array([-1.0, -1.0], dtype=np.float64)
     timestep = env.step(1)
 
     assert timestep.done is True
@@ -774,43 +948,140 @@ def test_source_state_survival_plus_bonus_no_outcome_excludes_terminal_outcome()
     assert timestep.info["bonus_pickup_reward_for_ego"] == 0.0
     assert timestep.info["sparse_outcome_reward_for_ego"] == -1.0
     assert timestep.info["terminal_outcome_bonus"] == 0.0
-    assert timestep.info["final_step_training_reward_map"]["player_0"] == 0.0
-    assert timestep.info["source_terminal_reward_map"]["player_0"] == -1.0
-    assert timestep.info["final_reward_map"]["player_0"] == -1.0
+    assert timestep.info["final_step_training_reward_map"][ego_key] == 0.0
+    assert timestep.info["source_terminal_reward_map"][ego_key] == -1.0
+    assert timestep.info["final_reward_map"][ego_key] == -1.0
 
 
-def test_source_state_visual_survival_allows_explicit_fast_trail_mode_metadata():
+def test_source_state_survival_plus_bonus_plus_outcome_keeps_survival_without_catch():
     env = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
         {
-            "seed": 23,
-            "source_max_steps": 1,
-            "source_state_trail_render_mode": SOURCE_STATE_TRAIL_RENDER_MODE_BODY_CIRCLES_FAST,
+            "seed": 94,
+            "source_max_steps": 4,
+            "natural_bonus_spawn": False,
+            "reward_variant": REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME,
         }
     )
 
-    env.reset(seed=23)
+    env.reset(seed=94)
+    timestep = env.step(1)
+
+    assert timestep.done is False
+    assert timestep.reward == 1.0
+    assert timestep.info["reward_schema_id"] == (
+        SURVIVAL_PLUS_BONUS_PLUS_OUTCOME_REWARD_SCHEMA_ID
+    )
+    assert timestep.info["reward_perspective"] == (
+        "ego_player_dense_survival_plus_same_step_bonus_plus_scaled_outcome"
+    )
+    assert timestep.info["dense_survival_helper_for_ego"] == 1.0
+    assert timestep.info["bonus_catch_count_step_for_ego"] == 0
+    assert timestep.info["bonus_pickup_reward_for_ego"] == 0.0
+    assert timestep.info["terminal_outcome_reward_for_ego"] == 0.0
+    assert timestep.info["sparse_outcome_reward_for_ego"] == 0.0
+    assert timestep.info["terminal_outcome_bonus"] == 1.0
+    assert timestep.info["terminal_outcome_scale"] == "episode_source_step_count"
+    assert timestep.info["winner_bonus"] == 1.0
+    assert timestep.info["loser_penalty"] == -1.0
+
+
+def test_source_state_survival_plus_bonus_plus_outcome_rewards_same_step_bonus():
+    env = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
+        {
+            "seed": 95,
+            "source_max_steps": 4,
+            "natural_bonus_spawn": False,
+            "reward_variant": REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME,
+        }
+    )
+
+    env.reset(seed=95)
+    ego = env.ego_player_index
+    env._env.seed_active_bonus(
+        row=0,
+        bonus_type="BonusSelfSmall",
+        x=float(env._env.state["pos"][0, ego, 0]),
+        y=float(env._env.state["pos"][0, ego, 1]),
+        radius=20.0,
+    )
+
+    timestep = env.step(1)
+
+    assert timestep.done is False
+    assert timestep.info["bonus_catch_count_step_for_ego"] == 1
+    assert timestep.info["bonus_pickup_reward_per_catch"] == (
+        SURVIVAL_PLUS_BONUS_NO_OUTCOME_BONUS_REWARD
+    )
+    assert timestep.info["bonus_pickup_reward_for_ego"] == (
+        SURVIVAL_PLUS_BONUS_NO_OUTCOME_BONUS_REWARD
+    )
+    assert timestep.info["terminal_outcome_reward_for_ego"] == 0.0
+    assert timestep.info["terminal_outcome_reward_enabled"] is True
+    assert timestep.info["terminal_outcome_scale"] == "episode_source_step_count"
+    assert timestep.reward == (
+        1.0 + SURVIVAL_PLUS_BONUS_NO_OUTCOME_BONUS_REWARD
+    )
+
+
+def test_source_state_survival_plus_bonus_plus_outcome_scales_terminal_loss():
+    env = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
+        {
+            "seed": 95,
+            "source_max_steps": 64,
+            "natural_bonus_spawn": False,
+            "reward_variant": REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME,
+        }
+    )
+
+    env.reset(seed=95)
+    first = env.step(1)
+    ego = env.ego_player_index
+    ego_key = f"player_{ego}"
+    env._env.state["pos"][0, ego] = np.array([-1.0, -1.0], dtype=np.float64)
+    terminal = env.step(1)
+
+    assert first.reward == 1.0
+    assert terminal.done is True
+    assert terminal.info["source_tick_index"] == 2
+    assert terminal.info["dense_survival_helper_for_ego"] == 0.0
+    assert terminal.info["bonus_pickup_reward_for_ego"] == 0.0
+    assert terminal.info["sparse_outcome_reward_for_ego"] == -1.0
+    assert terminal.info["terminal_outcome_reward_for_ego"] == -2.0
+    assert terminal.reward == -2.0
+    assert terminal.info["trainer_reward"] == -2.0
+    assert terminal.info["episode_training_return"] == -1.0
+    assert terminal.info["final_step_training_reward_map"][ego_key] == -2.0
+    assert terminal.info["source_terminal_reward_map"][ego_key] == -1.0
+
+
+def test_source_state_visual_survival_allows_explicit_bonus_render_mode_metadata():
+    env = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
+        {
+            "seed": 24,
+            "source_max_steps": 1,
+            "source_state_bonus_render_mode": BONUS_RENDER_MODE_SIMPLE_SYMBOLS,
+        }
+    )
+
+    env.reset(seed=24)
     timestep = env.step(1)
 
     assert (
-        env.last_reset_info["default_trail_render_mode"]
-        == SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES
+        env.last_reset_info["source_state_bonus_render_mode"]
+        == BONUS_RENDER_MODE_SIMPLE_SYMBOLS
     )
     assert (
-        env.last_reset_info["trail_render_mode"]
-        == SOURCE_STATE_TRAIL_RENDER_MODE_BODY_CIRCLES_FAST
+        env.last_reset_info["model_observation_bonus_render_mode"]
+        == BONUS_RENDER_MODE_SIMPLE_SYMBOLS
     )
-    assert env.last_reset_info["trail_renderer_kind"] == "circle_per_body"
     assert (
-        env.last_reset_info["trail_renderer_truth_level"]
-        == "source_state_fast_body_circle_approximation"
+        env.last_reset_info["raw_observation_bonus_render_mode"]
+        == BONUS_RENDER_MODE_SIMPLE_SYMBOLS
     )
-    assert env.last_reset_info["trail_renderer_is_approximation"] is True
-    assert env.last_reset_info["browser_style_trail_renderer"] is False
-    assert env.raw_observation().shape == SOURCE_STATE_CANVAS_LIKE_RAW_CANVAS_SHAPE
-    assert timestep.info["trail_render_mode"] == (
-        SOURCE_STATE_TRAIL_RENDER_MODE_BODY_CIRCLES_FAST
-    )
-    assert timestep.info["trail_renderer_is_approximation"] is True
+    assert env.last_reset_info["bonus_render_mode"] == BONUS_RENDER_MODE_SIMPLE_SYMBOLS
+    assert env.last_reset_info["bonus_renderer_kind"] == "simple_symbol_masks"
+    assert env.last_reset_info["bonus_renderer_is_approximation"] is True
+    assert timestep.info["bonus_render_mode"] == BONUS_RENDER_MODE_SIMPLE_SYMBOLS
     assert timestep.info["final_observation"] is not None
 
 
@@ -818,6 +1089,13 @@ def test_source_state_visual_survival_rejects_unknown_trail_mode():
     with pytest.raises(ValueError, match="source_state_trail_render_mode"):
         CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
             {"source_state_trail_render_mode": "mystery_trails"}
+        )
+
+
+def test_source_state_visual_survival_rejects_unknown_bonus_mode():
+    with pytest.raises(ValueError, match="source_state_bonus_render_mode"):
+        CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
+            {"source_state_bonus_render_mode": "mystery_bonus"}
         )
 
 
@@ -832,8 +1110,10 @@ def test_source_state_visual_survival_opponent_immortal_still_allows_ego_wall_de
     )
 
     env.reset(seed=70)
-    env._env.state["pos"][0, 0] = np.array([-1.0, -1.0], dtype=np.float64)
-    env._env.state["pos"][0, 1] = np.array([-1.0, -1.0], dtype=np.float64)
+    ego = env.ego_player_index
+    opponent = env.opponent_player_index
+    env._env.state["pos"][0, ego] = np.array([-1.0, -1.0], dtype=np.float64)
+    env._env.state["pos"][0, opponent] = np.array([-1.0, -1.0], dtype=np.float64)
     timestep = env.step(1)
 
     assert timestep.done is True
@@ -843,9 +1123,9 @@ def test_source_state_visual_survival_opponent_immortal_still_allows_ego_wall_de
     assert timestep.info["opponent_death_mode_claim"] == (
         "diagnostic_opponent_immortal_not_source_faithful"
     )
-    assert bool(env._env.state["alive"][0, 0]) is False
-    assert bool(env._env.state["alive"][0, 1]) is True
-    assert timestep.info["death_player_ids"] == ("player_0",)
+    assert bool(env._env.state["alive"][0, ego]) is False
+    assert bool(env._env.state["alive"][0, opponent]) is True
+    assert timestep.info["death_player_ids"] == (f"player_{ego}",)
     assert timestep.info["death_cause_name"][0][0] == "wall"
 
 
@@ -860,14 +1140,16 @@ def test_source_state_visual_survival_opponent_immortal_blocks_opponent_wall_dea
     )
 
     env.reset(seed=71)
-    env._env.state["pos"][0, 1] = np.array([-1.0, -1.0], dtype=np.float64)
+    ego = env.ego_player_index
+    opponent = env.opponent_player_index
+    env._env.state["pos"][0, opponent] = np.array([-1.0, -1.0], dtype=np.float64)
     timestep = env.step(1)
 
     assert timestep.done is False
     assert timestep.info["death_mode"] == "normal"
     assert timestep.info["opponent_death_mode"] == OPPONENT_DEATH_MODE_IMMORTAL
-    assert bool(env._env.state["alive"][0, 0]) is True
-    assert bool(env._env.state["alive"][0, 1]) is True
+    assert bool(env._env.state["alive"][0, ego]) is True
+    assert bool(env._env.state["alive"][0, opponent]) is True
     assert timestep.info["death_player_ids"] == ()
 
 
@@ -882,24 +1164,26 @@ def test_source_state_visual_survival_opponent_immortal_blocks_opponent_body_dea
     )
 
     env.reset(seed=72)
-    opponent_pos = env._env.state["pos"][0, 1].copy()
+    ego = env.ego_player_index
+    opponent = env.opponent_player_index
+    opponent_pos = env._env.state["pos"][0, opponent].copy()
     env._env.state["body_active"][0, 0] = True
     env._env.state["body_pos"][0, 0] = opponent_pos
     env._env.state["body_radius"][0, 0] = 8.0
-    env._env.state["body_owner"][0, 0] = 0
+    env._env.state["body_owner"][0, 0] = ego
     env._env.state["body_num"][0, 0] = 0
     env._env.state["body_insert_tick"][0, 0] = 0
     env._env.state["body_insert_kind"][0, 0] = vector_runtime.BODY_KIND_NORMAL
     env._env.state["body_write_cursor"][0] = 1
     env._env.state["world_body_count"][0] = 1
-    env._env.state["body_count"][0, 0] = 1
+    env._env.state["body_count"][0, ego] = 1
 
     timestep = env.step(1)
 
     assert timestep.done is False
     assert timestep.info["opponent_death_mode"] == OPPONENT_DEATH_MODE_IMMORTAL
-    assert bool(env._env.state["alive"][0, 0]) is True
-    assert bool(env._env.state["alive"][0, 1]) is True
+    assert bool(env._env.state["alive"][0, ego]) is True
+    assert bool(env._env.state["alive"][0, opponent]) is True
     assert timestep.info["death_player_ids"] == ()
     assert env._last_batch is not None
     assert env._last_batch.info["step_counters"]["body_hits"] >= 1
@@ -1213,6 +1497,7 @@ def test_opponent_mixture_selects_once_per_reset_not_per_step():
                         "weight": 1,
                         "opponent_policy_kind": "fixed_straight",
                         "opponent_runtime_mode": OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP,
+                        "opponent_immortal": True,
                     }
                 ],
             },
@@ -1233,6 +1518,139 @@ def test_opponent_mixture_selects_once_per_reset_not_per_step():
     assert second.info["opponent_policy_sidecar"]["action_ignored"] is True
 
 
+def test_opponent_mixture_refresh_applies_on_reset_and_records_assignment_context():
+    env = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
+        {
+            "seed": 119,
+            "source_max_steps": 64,
+            "natural_bonus_spawn": False,
+            "reward_variant": REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME,
+            "opponent_mixture": {
+                "seed": 5,
+                "entries": [
+                    {
+                        "name": "blank",
+                        "weight": 1,
+                        "opponent_policy_kind": "fixed_straight",
+                        "opponent_runtime_mode": OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP,
+                        "opponent_immortal": True,
+                    }
+                ],
+            },
+            "opponent_assignment_context": {
+                "assignment_id": "assignment-a",
+                "assignment_ref": "training/a/assignment.json",
+                "assignment_sha256": "a" * 64,
+                "refresh_index": 0,
+            },
+        }
+    )
+
+    env.reset(seed=119)
+    before = env.step(1)
+    after_reset_obs = env.reset(
+        seed=120,
+        opponent_mixture={
+            "seed": 6,
+            "entries": [
+                {
+                    "name": "wall",
+                    "weight": 1,
+                    "opponent_policy_kind": OPPONENT_POLICY_KIND_PROACTIVE_WALL_AVOIDANT,
+                    "opponent_immortal": True,
+                }
+            ],
+        },
+        opponent_assignment_context={
+            "assignment_id": "assignment-b",
+            "assignment_ref": "training/b/assignment.json",
+            "assignment_sha256": "b" * 64,
+            "refresh_index": 1,
+        },
+    )
+    assert env.last_reset_info is not None
+    assert env.last_reset_info["opponent_assignment_id"] == "assignment-b"
+    assert env.last_reset_info["opponent_assignment_ref"] == "training/b/assignment.json"
+    assert env.last_reset_info["opponent_assignment_sha256"] == "b" * 64
+    assert env.last_reset_info["opponent_assignment_refresh_index"] == 1
+    after = env.step(1)
+
+    assert before.info["opponent_mixture_entry_name"] == "blank"
+    assert before.info["opponent_runtime_mode"] == OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP
+    assert before.info["opponent_assignment_id"] == "assignment-a"
+    assert before.info["opponent_assignment_refresh_index"] == 0
+    assert after_reset_obs["observation"].shape == STACKED_SOURCE_STATE_GRAY64_SHAPE
+    assert after.info["opponent_mixture_entry_name"] == "wall"
+    assert after.info["opponent_policy_kind"] == OPPONENT_POLICY_KIND_PROACTIVE_WALL_AVOIDANT
+    assert after.info["opponent_death_mode"] == OPPONENT_DEATH_MODE_IMMORTAL
+    assert after.info["opponent_assignment_id"] == "assignment-b"
+    assert after.info["opponent_assignment_ref"] == "training/b/assignment.json"
+    assert after.info["opponent_assignment_sha256"] == "b" * 64
+    assert after.info["opponent_assignment_refresh_index"] == 1
+
+
+def test_opponent_mixture_refresh_clears_loaded_frozen_slot_with_same_name(monkeypatch):
+    built_paths = []
+
+    class FakeFrozenOpponent:
+        def __init__(self, checkpoint_path):
+            self.checkpoint_path = checkpoint_path
+            self.policy_id = f"fake:{checkpoint_path}"
+            self.policy_version = "test"
+
+    def fake_build(cfg, *, seed):
+        del seed
+        path = cfg["opponent_checkpoint_path"]
+        built_paths.append(path)
+        return FakeFrozenOpponent(path)
+
+    monkeypatch.setattr(
+        env_mod,
+        "_build_source_state_frozen_lightzero_opponent_policy",
+        fake_build,
+    )
+    env = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
+        {
+            "seed": 121,
+            "source_max_steps": 64,
+            "natural_bonus_spawn": False,
+            "opponent_mixture": {
+                "entries": [
+                    {
+                        "name": "slot_champion",
+                        "weight": 1,
+                        "opponent_policy_kind": "frozen_lightzero_checkpoint",
+                        "opponent_checkpoint_path": "/tmp/champion-a.pth.tar",
+                    }
+                ]
+            },
+        }
+    )
+
+    env.reset(seed=121)
+    first_policy = env.opponent_policy
+    env.reset(
+        seed=122,
+        opponent_mixture={
+            "entries": [
+                {
+                    "name": "slot_champion",
+                    "weight": 1,
+                    "opponent_policy_kind": "frozen_lightzero_checkpoint",
+                    "opponent_checkpoint_path": "/tmp/champion-b.pth.tar",
+                }
+            ]
+        },
+    )
+    second_policy = env.opponent_policy
+
+    assert built_paths == ["/tmp/champion-a.pth.tar", "/tmp/champion-b.pth.tar"]
+    assert first_policy is not second_policy
+    assert first_policy.checkpoint_path == "/tmp/champion-a.pth.tar"
+    assert second_policy.checkpoint_path == "/tmp/champion-b.pth.tar"
+    assert list(env._opponent_policy_cache) == ["slot_champion"]
+
+
 def test_opponent_mixture_supports_passive_immortal_dirty_control():
     env = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
         {
@@ -1245,7 +1663,7 @@ def test_opponent_mixture_supports_passive_immortal_dirty_control():
                         "name": "passive_immortal",
                         "weight": 1,
                         "opponent_policy_kind": "fixed_straight",
-                        "opponent_death_mode": OPPONENT_DEATH_MODE_IMMORTAL,
+                        "opponent_immortal": True,
                     }
                 ]
             },
@@ -1253,14 +1671,15 @@ def test_opponent_mixture_supports_passive_immortal_dirty_control():
     )
 
     env.reset(seed=120)
-    env._env.state["pos"][0, 1] = np.array([-1.0, -1.0], dtype=np.float64)
+    opponent = env.opponent_player_index
+    env._env.state["pos"][0, opponent] = np.array([-1.0, -1.0], dtype=np.float64)
     timestep = env.step(1)
 
     assert timestep.done is False
     assert timestep.info["opponent_mixture_entry_name"] == "passive_immortal"
     assert timestep.info["opponent_policy_kind"] == "fixed_straight"
     assert timestep.info["opponent_death_mode"] == OPPONENT_DEATH_MODE_IMMORTAL
-    assert bool(env._env.state["alive"][0, 1]) is True
+    assert bool(env._env.state["alive"][0, opponent]) is True
 
 
 def test_source_state_visual_survival_render_does_not_mutate_stack():
@@ -1428,21 +1847,24 @@ def test_blank_canvas_noop_reset_hides_player_1_but_keeps_public_lifecycle():
 
     observation = env.reset(seed=101)
 
-    assert bool(env._env.state["present"][0, 1])
-    assert bool(env._env.state["alive"][0, 1])
+    opponent = env.opponent_player_index
+    assert bool(env._env.state["present"][0, opponent])
+    assert bool(env._env.state["alive"][0, opponent])
     assert env.last_reset_info["opponent_runtime_mode"] == "blank_canvas_noop"
     assert env.last_reset_info["blank_canvas_noop"] is True
     assert env.last_reset_info["blank_canvas_noop_uses_remove_player"] is False
     assert env.last_reset_info["blank_canvas_noop_public_player_1_present_alive"] is True
     assert observation["observation"].shape == STACKED_SOURCE_STATE_GRAY64_SHAPE
     assert float(observation["observation"][-1].max()) > 0.0
-    assert not bool(env._render_state_view()["present"][0, 1])
+    assert not bool(env._render_state_view()["present"][0, env.opponent_player_index])
     np.testing.assert_array_equal(
         env.render("source_state_grayscale64_visual_tensor"),
         render_source_state_canvas_gray64(
             env._render_state_view(),
             row=0,
+            player_rgb=_ego_player_rgb(env),
             trail_render_mode=env._source_state_trail_render_mode,
+            bonus_render_mode=env._raw_observation_bonus_render_mode,
         ),
     )
 
@@ -1458,11 +1880,12 @@ def test_blank_canvas_noop_steps_without_player_1_artifacts_or_terminal():
         }
     )
     env.reset(seed=103)
+    opponent = env.opponent_player_index
     env._env.seed_active_bonus(
         row=0,
         bonus_type="BonusSelfSmall",
-        x=float(env._env.state["pos"][0, 1, 0]),
-        y=float(env._env.state["pos"][0, 1, 1]),
+        x=float(env._env.state["pos"][0, opponent, 0]),
+        y=float(env._env.state["pos"][0, opponent, 1]),
         radius=20.0,
     )
 
@@ -1472,12 +1895,13 @@ def test_blank_canvas_noop_steps_without_player_1_artifacts_or_terminal():
         assert not last.done
 
     assert last is not None
-    assert bool(env._env.state["present"][0, 1])
-    assert bool(env._env.state["alive"][0, 1])
-    assert not _owner_active(env._env.state, "body", 1)
-    assert not _owner_active(env._env.state, "visual_trail", 1)
-    assert int(env._env.state["bonus_catch_count_step"][0, 1]) == 0
-    assert 1 not in env._env.state["death_player"][0, : int(env._env.state["death_count"][0])]
+    assert bool(env._env.state["present"][0, opponent])
+    assert bool(env._env.state["alive"][0, opponent])
+    assert not _owner_active(env._env.state, "body", opponent)
+    assert not _owner_active(env._env.state, "visual_trail", opponent)
+    assert int(env._env.state["bonus_catch_count_step"][0, opponent]) == 0
+    deaths = env._env.state["death_player"][0, : int(env._env.state["death_count"][0])]
+    assert opponent not in deaths
     assert last.info["opponent_runtime_mode"] == "blank_canvas_noop"
     assert last.info["sparse_outcome_reward_for_ego"] == 0.0
 
@@ -1505,11 +1929,14 @@ def test_source_state_scalar_dirty_render_cache_matches_full_renderer_after_step
         state_view,
         row=0,
         trail_render_mode=SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES,
+        bonus_render_mode=env._raw_observation_bonus_render_mode,
     )
     expected_gray64 = render_source_state_canvas_gray64(
         state_view,
         row=0,
+        player_rgb=_ego_player_rgb(env),
         trail_render_mode=SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES,
+        bonus_render_mode=env._raw_observation_bonus_render_mode,
     )
 
     np.testing.assert_array_equal(env.raw_observation(), expected_rgb)
@@ -1539,18 +1966,20 @@ def test_blank_canvas_noop_scrubs_seeded_player_1_body_before_collision():
     )
     env.reset(seed=107)
     state = env._env.state
+    ego = env.ego_player_index
+    opponent = env.opponent_player_index
     state["body_active"][0, 0] = True
-    state["body_owner"][0, 0] = 1
-    state["body_pos"][0, 0] = state["pos"][0, 0]
+    state["body_owner"][0, 0] = opponent
+    state["body_pos"][0, 0] = state["pos"][0, ego]
     state["body_radius"][0, 0] = 30.0
-    state["body_count"][0, 1] = 1
+    state["body_count"][0, opponent] = 1
     state["world_body_count"][0] = int(state["body_active"][0].sum())
 
     timestep = env.step(1)
 
     assert not timestep.done
-    assert bool(state["alive"][0, 0])
-    assert not _owner_active(state, "body", 1)
+    assert bool(state["alive"][0, ego])
+    assert not _owner_active(state, "body", opponent)
 
 
 def test_blank_canvas_noop_player_0_wall_death_still_works():
@@ -1564,14 +1993,17 @@ def test_blank_canvas_noop_player_0_wall_death_still_works():
         }
     )
     env.reset(seed=109)
-    env._env.state["pos"][0, 0] = np.asarray([-10.0, -10.0], dtype=np.float64)
+    ego = env.ego_player_index
+    opponent = env.opponent_player_index
+    env._env.state["pos"][0, ego] = np.asarray([-10.0, -10.0], dtype=np.float64)
 
     timestep = env.step(1)
 
     assert timestep.done
-    assert not bool(env._env.state["alive"][0, 0])
-    assert bool(env._env.state["alive"][0, 1])
-    assert 1 not in env._env.state["death_player"][0, : int(env._env.state["death_count"][0])]
+    assert not bool(env._env.state["alive"][0, ego])
+    assert bool(env._env.state["alive"][0, opponent])
+    deaths = env._env.state["death_player"][0, : int(env._env.state["death_count"][0])]
+    assert opponent not in deaths
     assert timestep.reward == 0.0
 
 

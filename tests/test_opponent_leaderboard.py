@@ -268,6 +268,8 @@ def test_select_opponent_assignment_from_leaderboard_outputs_parser_compatible_a
         "iteration_100000.pth.tar"
     )
     assert assignment["entries"][-1]["opponent_runtime_mode"] == "blank_canvas_noop"
+    assert assignment["entries"][-1]["opponent_immortal"] is True
+    assert all("opponent_death_mode" not in entry for entry in assignment["entries"])
 
     parsed = parse_opponent_assignment_snapshot(assignment)
     assert parsed is not None
@@ -403,11 +405,11 @@ def test_stable_slots_v1_outputs_parser_compatible_stable5_assignment_and_audit(
     assert {
         entry["opponent_policy_kind"] for entry in checkpoint_entries
     } == {"frozen_lightzero_checkpoint"}
-    assert {
-        entry["opponent_death_mode"] for entry in checkpoint_entries
-    } == {"immortal"}
+    assert {entry["opponent_immortal"] for entry in checkpoint_entries} == {True}
+    assert all("opponent_death_mode" not in entry for entry in assignment["entries"])
     assert assignment["entries"][-1]["opponent_policy_kind"] == "fixed_straight"
     assert assignment["entries"][-1]["opponent_runtime_mode"] == "blank_canvas_noop"
+    assert assignment["entries"][-1]["opponent_immortal"] is True
 
     parsed = parse_opponent_assignment_snapshot(assignment)
     assert parsed is not None
@@ -588,7 +590,8 @@ def test_stable_slots_v1_outputs_wall_avoidant_immortal_sentinel():
     assert sentinel["name"] == "slot_sentinel_wall_avoidant_immortal"
     assert sentinel["opponent_policy_kind"] == "proactive_wall_avoidant"
     assert sentinel["opponent_runtime_mode"] == "normal"
-    assert sentinel["opponent_death_mode"] == "immortal"
+    assert sentinel["opponent_immortal"] is True
+    assert "opponent_death_mode" not in sentinel
     assert parse_opponent_assignment_snapshot(assignment) is not None
     assert audit["hardcoded_slots"][-1]["slot"] == "sentinel"
     assert audit["hardcoded_slots"][-1]["slot_kind"] == "wall_avoidant_immortal"

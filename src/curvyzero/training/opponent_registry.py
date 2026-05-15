@@ -112,7 +112,10 @@ def _validate_assignment_frozen_refs(mixture: dict[str, Any]) -> None:
                 "opponent assignment frozen entries require immutable "
                 "opponent_checkpoint_ref"
             )
-        checkpoint_name = Path(str(checkpoint_ref)).name
+        checkpoint_ref_text = str(checkpoint_ref)
+        if checkpoint_ref_text.startswith(("runs:", "control:")):
+            checkpoint_ref_text = checkpoint_ref_text.split(":", 1)[1]
+        checkpoint_name = Path(checkpoint_ref_text).name
         if (
             checkpoint_name in MUTABLE_CHECKPOINT_NAMES
             or lightzero_iteration_from_checkpoint_name(checkpoint_name) is None

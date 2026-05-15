@@ -17,6 +17,13 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Sequence
 
 from curvyzero.infra.modal import run_management as runs
+from curvyzero.env.observation_surface_contract import (
+    POLICY_OBSERVATION_PERSPECTIVE,
+    POLICY_OBSERVATION_PERSPECTIVE_PLAYER_AXIS,
+    POLICY_OBSERVATION_PERSPECTIVE_SCHEMA_ID,
+    is_policy_surface,
+    policy_observation_surface,
+)
 from curvyzero.tournament.curvytron.contracts import *  # noqa: F401,F403
 
 
@@ -27,6 +34,55 @@ def _validate_games_per_pair(value: int) -> int:
     if games_per_pair % 2 == 0:
         raise ValueError("games_per_pair must be odd")
     return games_per_pair
+
+
+def _normalize_seat_order_mode(raw: Any) -> str:
+    if raw is None:
+        return DEFAULT_SEAT_ORDER_MODE
+    mode = str(raw)
+    if mode not in SEAT_ORDER_CHOICES:
+        raise ValueError(f"seat_order_mode must be one of {SEAT_ORDER_CHOICES!r}")
+    return mode
+
+
+def _policy_surface_contract(
+    trail_render_mode: str,
+    bonus_render_mode: str,
+    *,
+    backend: str = DEFAULT_TOURNAMENT_POLICY_OBSERVATION_BACKEND,
+) -> dict[str, Any]:
+    return policy_observation_surface(
+        trail_render_mode=trail_render_mode,
+        bonus_render_mode=bonus_render_mode,
+        backend=backend,
+    )
+
+
+def _require_policy_surface(
+    *,
+    trail_render_mode: str,
+    bonus_render_mode: str,
+    context: str,
+) -> None:
+    if is_policy_surface(
+        trail_render_mode=trail_render_mode,
+        bonus_render_mode=bonus_render_mode,
+    ):
+        return
+    raise ValueError(
+        f"{context} policy surface must be "
+        f"{DEFAULT_POLICY_TRAIL_RENDER_MODE!r} + {DEFAULT_POLICY_BONUS_RENDER_MODE!r}; "
+        f"got {trail_render_mode!r} + {bonus_render_mode!r}."
+    )
+
+
+def _require_policy_observation_backend(*, backend: str, context: str) -> None:
+    if str(backend) == DEFAULT_TOURNAMENT_POLICY_OBSERVATION_BACKEND:
+        return
+    raise ValueError(
+        f"{context} policy observation backend must be "
+        f"{DEFAULT_TOURNAMENT_POLICY_OBSERVATION_BACKEND!r}; got {backend!r}."
+    )
 
 
 def _to_plain(value: Any) -> Any:
@@ -135,7 +191,12 @@ def normalize_checkpoint_spec(raw: str | Mapping[str, Any], *, index: int = 0) -
             "checkpoint_state_key": None,
             "model_env_variant": None,
             "model_reward_variant": None,
-            "policy_trail_render_mode": None,
+            "policy_trail_render_mode": DEFAULT_POLICY_TRAIL_RENDER_MODE,
+            "policy_bonus_render_mode": DEFAULT_POLICY_BONUS_RENDER_MODE,
+            "policy_observation_backend": DEFAULT_TOURNAMENT_POLICY_OBSERVATION_BACKEND,
+            "policy_observation_contract_id": DEFAULT_POLICY_OBSERVATION_CONTRACT_ID,
+            "observation_contract": DEFAULT_POLICY_OBSERVATION_SURFACE,
+            "policy_surface_source": "default_policy_observation_contract",
         }
     ref_value = raw.get("checkpoint_ref") or raw.get("ref")
     if not isinstance(ref_value, str):
@@ -149,6 +210,42 @@ def normalize_checkpoint_spec(raw: str | Mapping[str, Any], *, index: int = 0) -
         if isinstance(observation_contract, Mapping)
         else None
     )
+    contract_bonus_render_mode = (
+        observation_contract.get("bonus_render_mode")
+        if isinstance(observation_contract, Mapping)
+        else None
+    )
+    contract_backend = (
+        observation_contract.get("backend")
+        if isinstance(observation_contract, Mapping)
+        else None
+    )
+    trail_render_mode = (
+        raw.get("policy_trail_render_mode")
+        or contract_trail_render_mode
+        or DEFAULT_POLICY_TRAIL_RENDER_MODE
+    )
+    bonus_render_mode = (
+        raw.get("policy_bonus_render_mode")
+        or contract_bonus_render_mode
+        or DEFAULT_POLICY_BONUS_RENDER_MODE
+    )
+    policy_observation_backend = (
+        raw.get("policy_observation_backend")
+        or raw.get("observation_backend")
+        or contract_backend
+        or DEFAULT_TOURNAMENT_POLICY_OBSERVATION_BACKEND
+    )
+    normalized_observation_contract = (
+        dict(observation_contract)
+        if isinstance(observation_contract, Mapping)
+        else _policy_surface_contract(
+            str(trail_render_mode),
+            str(bonus_render_mode),
+            backend=str(policy_observation_backend),
+        )
+    )
+    normalized_observation_contract["backend"] = str(policy_observation_backend)
     metadata = checkpoint_metadata_from_ref(ref)
     raw_iteration = raw.get("iteration")
     iteration = metadata.get("iteration")
@@ -172,12 +269,16 @@ def normalize_checkpoint_spec(raw: str | Mapping[str, Any], *, index: int = 0) -
         "checkpoint_state_key": raw.get("checkpoint_state_key"),
         "model_env_variant": raw.get("model_env_variant"),
         "model_reward_variant": raw.get("model_reward_variant"),
-        "policy_trail_render_mode": (
-            raw.get("policy_trail_render_mode")
-            or raw.get("observation_trail_render_mode")
-            or contract_trail_render_mode
-            or raw.get("trail_render_mode")
+        "policy_trail_render_mode": trail_render_mode,
+        "policy_bonus_render_mode": bonus_render_mode,
+        "policy_observation_backend": str(policy_observation_backend),
+        "policy_observation_contract_id": str(
+            raw.get("policy_observation_contract_id")
+            or raw.get("observation_contract_id")
+            or DEFAULT_POLICY_OBSERVATION_CONTRACT_ID
         ),
+        "observation_contract": normalized_observation_contract,
+        "policy_surface_source": str(raw.get("policy_surface_source") or "checkpoint_spec"),
     }
 
 
@@ -239,7 +340,10 @@ def rating_context_hash(rating_spec: Mapping[str, Any]) -> str:
         "num_simulations": spec["num_simulations"],
         "policy_batch_size": spec["policy_batch_size"],
         "natural_bonus_spawn": spec["natural_bonus_spawn"],
+        "seat_order_mode": spec["seat_order_mode"],
         "policy_trail_render_mode": spec["policy_trail_render_mode"],
+        "policy_bonus_render_mode": spec["policy_bonus_render_mode"],
+        "policy_observation_backend": spec["policy_observation_backend"],
         "trail_render_mode": spec["trail_render_mode"],
         "initial_rating": spec["initial_rating"],
         "base_k": spec["base_k"],
@@ -358,9 +462,35 @@ def normalize_pair_spec(raw: Mapping[str, Any]) -> dict[str, Any]:
     )
     policy_trail_render_mode = (
         raw.get("policy_trail_render_mode")
-        or raw.get("observation_trail_render_mode")
-        or raw.get("trail_render_mode")
+        or DEFAULT_POLICY_TRAIL_RENDER_MODE
     )
+    policy_bonus_render_mode = (
+        raw.get("policy_bonus_render_mode")
+        or DEFAULT_POLICY_BONUS_RENDER_MODE
+    )
+    _require_policy_surface(
+        trail_render_mode=str(policy_trail_render_mode),
+        bonus_render_mode=str(policy_bonus_render_mode),
+        context="pair",
+    )
+    _require_policy_observation_backend(
+        backend=str(
+            raw.get("policy_observation_backend")
+            or DEFAULT_TOURNAMENT_POLICY_OBSERVATION_BACKEND
+        ),
+        context="pair",
+    )
+    for player in normalized_players:
+        _require_policy_surface(
+            trail_render_mode=str(player["policy_trail_render_mode"]),
+            bonus_render_mode=str(player["policy_bonus_render_mode"]),
+            context=f"checkpoint {player['checkpoint_id']}",
+        )
+        _require_policy_observation_backend(
+            backend=str(player["policy_observation_backend"]),
+            context=f"checkpoint {player['checkpoint_id']}",
+        )
+    seat_order_mode = _normalize_seat_order_mode(raw.get("seat_order_mode"))
     gif_trail_render_mode = DEFAULT_GIF_TRAIL_RENDER_MODE
     normalized = {
         "schema_id": BATTLE_SCHEMA_ID,
@@ -371,6 +501,7 @@ def normalize_pair_spec(raw: Mapping[str, Any]) -> dict[str, Any]:
         "games_per_pair": games_per_pair,
         "games_per_shard": games_per_shard,
         "reuse_policies_per_shard": reuse_policies_per_shard,
+        "seat_order_mode": seat_order_mode,
         "seed": int(raw.get("seed", 0)),
         "max_steps": int(raw.get("max_steps", DEFAULT_MAX_STEPS)),
         "decision_ms": float(raw.get("decision_ms", DEFAULT_DECISION_MS)),
@@ -385,6 +516,14 @@ def normalize_pair_spec(raw: Mapping[str, Any]) -> dict[str, Any]:
         "collect_epsilon": float(raw.get("collect_epsilon", DEFAULT_COLLECT_EPSILON)),
         "natural_bonus_spawn": bool(raw.get("natural_bonus_spawn", True)),
         "policy_trail_render_mode": policy_trail_render_mode,
+        "policy_bonus_render_mode": policy_bonus_render_mode,
+        "policy_observation_backend": DEFAULT_TOURNAMENT_POLICY_OBSERVATION_BACKEND,
+        "policy_observation_contract_id": DEFAULT_POLICY_OBSERVATION_CONTRACT_ID,
+        "observation_contract": _policy_surface_contract(
+            str(policy_trail_render_mode),
+            str(policy_bonus_render_mode),
+            backend=DEFAULT_TOURNAMENT_POLICY_OBSERVATION_BACKEND,
+        ),
         "gif_trail_render_mode": gif_trail_render_mode,
         "trail_render_mode": policy_trail_render_mode,
         "frame_stride": int(raw.get("frame_stride", DEFAULT_FRAME_STRIDE)),
@@ -407,6 +546,45 @@ def normalize_pair_spec(raw: Mapping[str, Any]) -> dict[str, Any]:
     if isinstance(raw.get("schedule"), Mapping):
         normalized["schedule"] = _to_plain(dict(raw["schedule"]))
     return normalized
+
+
+def _seat_order_swaps_for_pair(pair: Mapping[str, Any]) -> list[bool]:
+    count = int(pair["games_per_pair"])
+    if str(pair.get("seat_order_mode") or SEAT_ORDER_FIXED) == SEAT_ORDER_FIXED:
+        return [False] * count
+    swaps = [False, True] * (count // 2)
+    if count % 2:
+        swaps.append(False)
+    rng = random.Random(int(pair["seed"]) ^ 0x5EED_0A0D)
+    rng.shuffle(swaps)
+    return swaps
+
+
+def seat_order_for_game(pair_spec: Mapping[str, Any], game_index: int) -> dict[str, Any]:
+    pair = normalize_pair_spec(pair_spec)
+    index = int(game_index)
+    if index < 0 or index >= int(pair["games_per_pair"]):
+        raise ValueError("game_index is outside games_per_pair")
+    swapped = bool(_seat_order_swaps_for_pair(pair)[index])
+    seat_to_logical_index = [1, 0] if swapped else [0, 1]
+    logical_to_seat = {
+        str(logical_index): seat
+        for seat, logical_index in enumerate(seat_to_logical_index)
+    }
+    return {
+        "schema_id": "curvyzero_curvytron_checkpoint_tournament_seat_order/v0",
+        "mode": pair["seat_order_mode"],
+        "randomized": pair["seat_order_mode"] != SEAT_ORDER_FIXED,
+        "swapped": swapped,
+        "game_index": index,
+        "seed": int(pair["seed"]) + index,
+        "seat_to_logical_index": seat_to_logical_index,
+        "logical_to_seat": logical_to_seat,
+        "seat_to_checkpoint_id": [
+            str(pair["players"][logical_index]["checkpoint_id"])
+            for logical_index in seat_to_logical_index
+        ],
+    }
 
 
 def gif_sample_count_for_pair(pair_spec: Mapping[str, Any]) -> int:
@@ -448,6 +626,11 @@ def build_game_specs_for_pair(pair_spec: Mapping[str, Any]) -> list[dict[str, An
     specs = []
     for game_index in range(count):
         game_id = f"game-{game_index:06d}"
+        seat_order = seat_order_for_game(pair, game_index)
+        players = [
+            {**pair["players"][logical_index], "seat": seat}
+            for seat, logical_index in enumerate(seat_order["seat_to_logical_index"])
+        ]
         specs.append(
             {
                 "schema_id": GAME_SCHEMA_ID,
@@ -456,7 +639,10 @@ def build_game_specs_for_pair(pair_spec: Mapping[str, Any]) -> list[dict[str, An
                 "pair_index": pair["pair_index"],
                 "game_index": game_index,
                 "game_id": game_id,
-                "players": pair["players"],
+                "players": players,
+                "battle_players": pair["players"],
+                "seat_order": seat_order,
+                "seat_order_mode": pair["seat_order_mode"],
                 "seed": int(pair["seed"]) + game_index,
                 "max_steps": pair["max_steps"],
                 "decision_ms": pair["decision_ms"],
@@ -469,6 +655,9 @@ def build_game_specs_for_pair(pair_spec: Mapping[str, Any]) -> list[dict[str, An
                 "collect_epsilon": pair["collect_epsilon"],
                 "natural_bonus_spawn": pair["natural_bonus_spawn"],
                 "policy_trail_render_mode": pair["policy_trail_render_mode"],
+                "policy_bonus_render_mode": pair["policy_bonus_render_mode"],
+                "policy_observation_contract_id": pair["policy_observation_contract_id"],
+                "observation_contract": pair["observation_contract"],
                 "gif_trail_render_mode": pair["gif_trail_render_mode"],
                 "trail_render_mode": pair["trail_render_mode"],
                 "frame_stride": pair["frame_stride"],
@@ -820,6 +1009,7 @@ def _pair_summary_settings(pair: Mapping[str, Any]) -> dict[str, Any]:
         key: pair[key]
         for key in (
             "games_per_pair",
+            "seat_order_mode",
             "max_steps",
             "decision_ms",
             "decision_source_frames",
@@ -830,6 +1020,7 @@ def _pair_summary_settings(pair: Mapping[str, Any]) -> dict[str, Any]:
             "collect_epsilon",
             "natural_bonus_spawn",
             "policy_trail_render_mode",
+            "policy_bonus_render_mode",
             "gif_trail_render_mode",
             "trail_render_mode",
             "frame_stride",
@@ -916,6 +1107,9 @@ def _compact_game_result(result: Mapping[str, Any]) -> dict[str, Any]:
         "game_index": result.get("game_index"),
         "seed": result.get("seed"),
         "players": result.get("players"),
+        "battle_players": result.get("battle_players"),
+        "seat_order": result.get("seat_order"),
+        "seat_order_mode": result.get("seat_order_mode"),
         "score": result.get("score"),
         "physical_steps": result.get("physical_steps"),
         "gif_ref": result.get("gif_ref"),
@@ -924,6 +1118,15 @@ def _compact_game_result(result: Mapping[str, Any]) -> dict[str, Any]:
         "error": result.get("error"),
         "error_type": result.get("error_type"),
     }
+
+
+def _game_players_for_score(
+    game: Mapping[str, Any],
+) -> Sequence[Mapping[str, Any]]:
+    players = game.get("players")
+    if isinstance(players, Sequence) and not isinstance(players, (str, bytes)) and len(players) == 2:
+        return players
+    raise ValueError("game summary needs per-game players for seat-aware scoring")
 
 
 def standings_from_pair_results(pair_results: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -953,9 +1156,11 @@ def standings_from_pair_results(pair_results: Sequence[Mapping[str, Any]]) -> di
             score = game.get("score") if isinstance(game.get("score"), Mapping) else {}
             winner = score.get("winner_seat")
             loser = score.get("loser_seat")
+            game_players = _game_players_for_score(game)
             if winner in (0, 1):
-                winner_id = str(players[int(winner)]["checkpoint_id"])
-                loser_id = str(players[int(loser)]["checkpoint_id"])
+                winner_id = str(game_players[int(winner)]["checkpoint_id"])
+                loser_seat = int(loser) if loser in (0, 1) else 1 - int(winner)
+                loser_id = str(game_players[loser_seat]["checkpoint_id"])
                 rows[winner_id]["wins"] += 1
                 rows[loser_id]["losses"] += 1
                 rows[winner_id]["games"] += 1
@@ -1016,6 +1221,7 @@ def normalize_rating_spec(raw: Mapping[str, Any] | None = None) -> dict[str, Any
     policy_mode = str(spec.get("policy_mode", POLICY_MODE_EVAL))
     if policy_mode not in POLICY_MODE_CHOICES:
         raise ValueError(f"policy_mode must be one of {POLICY_MODE_CHOICES!r}")
+    seat_order_mode = _normalize_seat_order_mode(spec.get("seat_order_mode"))
     k_reference_games = float(
         spec.get("k_reference_games", DEFAULT_RATING_K_REFERENCE_GAMES)
     )
@@ -1063,11 +1269,45 @@ def normalize_rating_spec(raw: Mapping[str, Any] | None = None) -> dict[str, Any
     placement_min_games = int(placement_min_games)
     if placement_min_games < 0:
         raise ValueError("placement_min_games must be non-negative")
-    active_pool_limit = int(
-        spec.get("active_pool_limit", DEFAULT_RATING_ACTIVE_POOL_LIMIT)
+    active_pool_limit_default = (
+        len(normalized_checkpoints)
+        if normalized_checkpoints
+        else DEFAULT_RATING_ACTIVE_POOL_LIMIT
     )
+    active_pool_limit = int(spec.get("active_pool_limit", active_pool_limit_default))
     if active_pool_limit < 2:
         raise ValueError("active_pool_limit must be at least 2")
+    policy_trail_render_mode = (
+        spec.get("policy_trail_render_mode")
+        or DEFAULT_POLICY_TRAIL_RENDER_MODE
+    )
+    policy_bonus_render_mode = (
+        spec.get("policy_bonus_render_mode")
+        or DEFAULT_POLICY_BONUS_RENDER_MODE
+    )
+    policy_observation_backend = (
+        spec.get("policy_observation_backend")
+        or DEFAULT_TOURNAMENT_POLICY_OBSERVATION_BACKEND
+    )
+    _require_policy_surface(
+        trail_render_mode=str(policy_trail_render_mode),
+        bonus_render_mode=str(policy_bonus_render_mode),
+        context="rating spec",
+    )
+    _require_policy_observation_backend(
+        backend=str(policy_observation_backend),
+        context="rating spec",
+    )
+    for checkpoint in normalized_checkpoints:
+        _require_policy_surface(
+            trail_render_mode=str(checkpoint["policy_trail_render_mode"]),
+            bonus_render_mode=str(checkpoint["policy_bonus_render_mode"]),
+            context=f"checkpoint {checkpoint['checkpoint_id']}",
+        )
+        _require_policy_observation_backend(
+            backend=str(checkpoint["policy_observation_backend"]),
+            context=f"checkpoint {checkpoint['checkpoint_id']}",
+        )
     return {
         "schema_id": RATING_CONFIG_SCHEMA_ID,
         "formula_version": RATING_FORMULA_VERSION,
@@ -1098,6 +1338,7 @@ def normalize_rating_spec(raw: Mapping[str, Any] | None = None) -> dict[str, Any
         "include_self_pairs": include_self_pairs,
         "games_per_shard": games_per_shard,
         "reuse_policies_per_shard": reuse_policies_per_shard,
+        "seat_order_mode": seat_order_mode,
         "seed": int(spec.get("seed", 0)),
         "max_steps": int(spec.get("max_steps", DEFAULT_MAX_STEPS)),
         "decision_ms": float(spec.get("decision_ms", DEFAULT_DECISION_MS)),
@@ -1117,17 +1358,11 @@ def normalize_rating_spec(raw: Mapping[str, Any] | None = None) -> dict[str, Any
             spec.get("collect_epsilon", DEFAULT_COLLECT_EPSILON)
         ),
         "natural_bonus_spawn": bool(spec.get("natural_bonus_spawn", True)),
-        "policy_trail_render_mode": (
-            spec.get("policy_trail_render_mode")
-            or spec.get("observation_trail_render_mode")
-            or spec.get("trail_render_mode")
-        ),
+        "policy_trail_render_mode": policy_trail_render_mode,
+        "policy_bonus_render_mode": policy_bonus_render_mode,
+        "policy_observation_backend": policy_observation_backend,
         "gif_trail_render_mode": DEFAULT_GIF_TRAIL_RENDER_MODE,
-        "trail_render_mode": (
-            spec.get("policy_trail_render_mode")
-            or spec.get("observation_trail_render_mode")
-            or spec.get("trail_render_mode")
-        ),
+        "trail_render_mode": policy_trail_render_mode,
         "frame_stride": int(spec.get("frame_stride", DEFAULT_FRAME_STRIDE)),
         "frame_size": DEFAULT_FRAME_SIZE,
         "gif_fps": float(spec.get("gif_fps", DEFAULT_GIF_FPS)),
@@ -1652,7 +1887,7 @@ def select_adaptive_v0_pair_slots(
         and any(remaining > 0 for remaining in coverage_deficit_by_index.values())
     ):
         progress = False
-        for mutual_only in (True, False):
+        for mutual_only in (False, True):
             target_order = sorted(
                 [
                     row
@@ -1929,6 +2164,7 @@ def build_rating_round_pair_specs(
                     "games_per_pair": spec["games_per_pair"],
                     "games_per_shard": spec["games_per_shard"],
                     "reuse_policies_per_shard": spec["reuse_policies_per_shard"],
+                    "seat_order_mode": spec["seat_order_mode"],
                     "seed": int(spec["seed"])
                     + int(round_index) * 1_000_000
                     + pair_slot * 10_000,
@@ -1943,6 +2179,8 @@ def build_rating_round_pair_specs(
                     "collect_epsilon": spec["collect_epsilon"],
                     "natural_bonus_spawn": spec["natural_bonus_spawn"],
                     "policy_trail_render_mode": spec["policy_trail_render_mode"],
+                    "policy_bonus_render_mode": spec["policy_bonus_render_mode"],
+                    "policy_observation_backend": spec["policy_observation_backend"],
                     "gif_trail_render_mode": spec["gif_trail_render_mode"],
                     "trail_render_mode": spec["trail_render_mode"],
                     "frame_stride": spec["frame_stride"],
@@ -2071,21 +2309,34 @@ def rating_result_from_pair_summary(
                 failure_count += 1
                 continue
             score = game.get("score") if isinstance(game.get("score"), Mapping) else {}
-            outcome = str(score.get("outcome") or "")
             winner = score.get("winner_seat")
-            if score.get("draw") or outcome == "draw":
+            if score.get("draw"):
                 draws += 1
-            elif winner == 0 or outcome == "seat_0_win":
-                wins_a += 1
-            elif winner == 1 or outcome == "seat_1_win":
-                wins_b += 1
+            elif winner in (0, 1):
+                game_players = _game_players_for_score(game)
+                winner_checkpoint = str(game_players[int(winner)]["checkpoint_id"])
+                if winner_checkpoint == checkpoint_a:
+                    wins_a += 1
+                elif winner_checkpoint == checkpoint_b:
+                    wins_b += 1
+                else:
+                    invalid_count += 1
             else:
                 invalid_count += 1
     else:
         tally = pair_summary.get("tally") if isinstance(pair_summary.get("tally"), Mapping) else {}
-        wins_by_seat = tally.get("wins_by_seat") if isinstance(tally.get("wins_by_seat"), Mapping) else {}
-        wins_a = int(wins_by_seat.get("seat_0") or 0)
-        wins_b = int(wins_by_seat.get("seat_1") or 0)
+        wins_by_checkpoint = (
+            tally.get("wins_by_checkpoint")
+            if isinstance(tally.get("wins_by_checkpoint"), Mapping)
+            else {}
+        )
+        if wins_by_checkpoint:
+            wins_a = int(wins_by_checkpoint.get(checkpoint_a) or 0)
+            wins_b = int(wins_by_checkpoint.get(checkpoint_b) or 0)
+        else:
+            raise ValueError(
+                "tally-only rating summaries need wins_by_checkpoint for seat-aware scoring"
+            )
         draws = int(tally.get("draw_count") or 0)
         failure_count = int(tally.get("failure_count") or 0)
         tally_game_count = int(tally.get("game_count") or requested_games)
@@ -2407,7 +2658,10 @@ def _save_gif(frames: Sequence[Any], path: Path, *, fps: float) -> dict[str, Any
     if raw_frames.shape[0] < 1:
         raise ValueError("GIF needs at least one frame")
     path.parent.mkdir(parents=True, exist_ok=True)
-    duration_ms = max(20, int(round(1000.0 / float(fps))))
+    duration_ms = max(
+        int(DEFAULT_GIF_MIN_FRAME_DURATION_MS),
+        int(round(1000.0 / float(fps))),
+    )
     pil_frames = [Image.fromarray(frame, mode="RGB") for frame in raw_frames]
     pil_frames[0].save(
         path,
@@ -2478,6 +2732,79 @@ def _checkpoint_policy_trail_render_mode_from_payload(payload: Any) -> str | Non
             payload.get("policy_trail_render_mode"),
             payload.get("source_state_trail_render_mode"),
             payload.get("trail_render_mode"),
+        ]
+    )
+    for value in candidates:
+        if value:
+            return str(value)
+    return None
+
+
+def _checkpoint_policy_bonus_render_mode_from_payload(payload: Any) -> str | None:
+    if not isinstance(payload, Mapping):
+        return None
+    candidates: list[Any] = []
+    metadata = payload.get("metadata")
+    if isinstance(metadata, Mapping):
+        candidates.extend(
+            [
+                metadata.get("policy_bonus_render_mode"),
+                metadata.get("bonus_render_mode"),
+                metadata.get("source_state_bonus_render_mode"),
+            ]
+        )
+        observation_contract = metadata.get("observation_contract")
+        if isinstance(observation_contract, Mapping):
+            candidates.append(observation_contract.get("bonus_render_mode"))
+    config = payload.get("config")
+    if isinstance(config, Mapping):
+        candidates.extend(
+            [
+                config.get("policy_bonus_render_mode"),
+                config.get("source_state_bonus_render_mode"),
+                config.get("bonus_render_mode"),
+            ]
+        )
+    candidates.extend(
+        [
+            payload.get("policy_bonus_render_mode"),
+            payload.get("source_state_bonus_render_mode"),
+            payload.get("bonus_render_mode"),
+        ]
+    )
+    for value in candidates:
+        if value:
+            return str(value)
+    return None
+
+
+def _checkpoint_policy_observation_backend_from_payload(payload: Any) -> str | None:
+    if not isinstance(payload, Mapping):
+        return None
+    candidates: list[Any] = []
+    metadata = payload.get("metadata")
+    if isinstance(metadata, Mapping):
+        candidates.extend(
+            [
+                metadata.get("policy_observation_backend"),
+                metadata.get("observation_backend"),
+            ]
+        )
+        observation_contract = metadata.get("observation_contract")
+        if isinstance(observation_contract, Mapping):
+            candidates.append(observation_contract.get("backend"))
+    config = payload.get("config")
+    if isinstance(config, Mapping):
+        candidates.extend(
+            [
+                config.get("policy_observation_backend"),
+                config.get("observation_backend"),
+            ]
+        )
+    candidates.extend(
+        [
+            payload.get("policy_observation_backend"),
+            payload.get("observation_backend"),
         ]
     )
     for value in candidates:
@@ -2606,6 +2933,36 @@ def _checkpoint_policy_trail_render_mode_from_ref(
     return None
 
 
+def _checkpoint_policy_bonus_render_mode_from_ref(
+    checkpoint_ref: str,
+    *,
+    mount: Path,
+) -> str | None:
+    path = runs.require_relative_ref(checkpoint_ref)
+    parts = path.parts
+    metadata_refs: list[PurePosixPath] = []
+    if len(parts) >= 3 and parts[0] == "training":
+        run_root = PurePosixPath(*parts[:3])
+        metadata_refs.append(run_root / "run.json")
+    if len(parts) >= 5 and parts[0] == "training" and parts[3] == "attempts":
+        attempt_root = PurePosixPath(*parts[:5])
+        metadata_refs.append(attempt_root / "attempt.json")
+        metadata_refs.append(attempt_root / "command.json")
+    for ref in metadata_refs:
+        metadata_path = runs.volume_path(mount, ref)
+        if not metadata_path.exists():
+            continue
+        try:
+            with metadata_path.open("r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except Exception:
+            continue
+        mode = _checkpoint_policy_bonus_render_mode_from_payload(payload)
+        if mode:
+            return mode
+    return None
+
+
 def _checkpoint_runtime_settings_from_ref(
     checkpoint_ref: str,
     *,
@@ -2668,6 +3025,14 @@ def _load_policy_from_checkpoint(
         _checkpoint_policy_trail_render_mode_from_payload(payload)
         or _checkpoint_policy_trail_render_mode_from_ref(checkpoint_ref, mount=mount)
     )
+    policy_bonus_render_mode = (
+        _checkpoint_policy_bonus_render_mode_from_payload(payload)
+        or _checkpoint_policy_bonus_render_mode_from_ref(checkpoint_ref, mount=mount)
+    )
+    policy_observation_backend = (
+        _checkpoint_policy_observation_backend_from_payload(payload)
+        or DEFAULT_TOURNAMENT_POLICY_OBSERVATION_BACKEND
+    )
     payload_model_contract = _checkpoint_model_contract_from_payload(payload)
     ref_model_contract = _checkpoint_model_contract_from_ref(checkpoint_ref, mount=mount)
     effective_model_env_variant = (
@@ -2726,10 +3091,13 @@ def _load_policy_from_checkpoint(
             pass
     return {
         "policy": policy,
+        "checkpoint_ref": runs.require_relative_ref(checkpoint_ref).as_posix(),
         "checkpoint_path": str(checkpoint_path),
         "checkpoint_resolution": resolution,
         "checkpoint_state_key": found_key,
         "policy_trail_render_mode": policy_trail_render_mode,
+        "policy_bonus_render_mode": policy_bonus_render_mode,
+        "policy_observation_backend": policy_observation_backend,
         "runtime_settings": runtime_settings,
         "model_env_variant": (
             str(effective_model_env_variant) if effective_model_env_variant else None
@@ -2747,6 +3115,41 @@ def _load_policy_from_checkpoint(
         },
         "surface": surface,
     }
+
+
+def _preloaded_policy_entries_for_players(
+    policy_entries: Sequence[Mapping[str, Any]],
+    players: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    entries = [dict(entry) for entry in policy_entries]
+    if len(entries) != len(players):
+        return entries
+    if not all(entry.get("checkpoint_ref") for entry in entries):
+        return entries
+    ordered: list[dict[str, Any]] = []
+    used: set[int] = set()
+    for player in players:
+        player_ref = runs.require_relative_ref(str(player["checkpoint_ref"])).as_posix()
+        player_state_key = player.get("checkpoint_state_key")
+        match_index = None
+        for index, entry in enumerate(entries):
+            if index in used:
+                continue
+            entry_ref = runs.require_relative_ref(str(entry.get("checkpoint_ref"))).as_posix()
+            if entry_ref != player_ref:
+                continue
+            entry_state_key = entry.get("requested_checkpoint_state_key")
+            if entry_state_key is None:
+                entry_state_key = entry.get("checkpoint_state_key")
+            if player_state_key not in (None, "") and entry_state_key != player_state_key:
+                continue
+            match_index = index
+            break
+        if match_index is None:
+            return entries
+        used.add(match_index)
+        ordered.append(entries[match_index])
+    return ordered
 
 
 def load_policy_entries_for_game(
@@ -2904,15 +3307,25 @@ def _source_frame_runtime_settings(
     )
     if not math.isfinite(source_physics_step_ms) or source_physics_step_ms <= 0.0:
         raise ValueError("source_physics_step_ms must be positive and finite")
+    if runtime_source_physics is not None and not math.isclose(
+        source_physics_step_ms,
+        float(runtime_source_physics),
+        rel_tol=0.0,
+        abs_tol=1e-6,
+    ):
+        raise ValueError(
+            "tournament source_physics_step_ms does not match checkpoint runtime: "
+            f"spec={source_physics_step_ms}, checkpoint={float(runtime_source_physics)}"
+        )
 
     runtime_frames = _consistent_runtime_value(policy_entries, "decision_source_frames")
+    runtime_decision_ms = _consistent_runtime_value(policy_entries, "decision_ms")
     raw_frames = (
         game.get("decision_source_frames")
         or pair.get("decision_source_frames")
         or runtime_frames
     )
     if raw_frames is None:
-        runtime_decision_ms = _consistent_runtime_value(policy_entries, "decision_ms")
         spec_decision_ms = float(game.get("decision_ms", pair["decision_ms"]))
         decision_ms = (
             float(runtime_decision_ms)
@@ -2942,6 +3355,21 @@ def _source_frame_runtime_settings(
         if decision_source_frames < 1:
             raise ValueError("decision_source_frames must be positive")
     decision_ms = float(decision_source_frames) * source_physics_step_ms
+    if runtime_frames is not None and int(runtime_frames) != int(decision_source_frames):
+        raise ValueError(
+            "tournament decision_source_frames does not match checkpoint runtime: "
+            f"spec={int(decision_source_frames)}, checkpoint={int(runtime_frames)}"
+        )
+    if runtime_decision_ms is not None and not math.isclose(
+        decision_ms,
+        float(runtime_decision_ms),
+        rel_tol=0.0,
+        abs_tol=1e-6,
+    ):
+        raise ValueError(
+            "tournament decision_ms does not match checkpoint runtime: "
+            f"spec={decision_ms}, checkpoint={float(runtime_decision_ms)}"
+        )
     return {
         "decision_ms": decision_ms,
         "decision_source_frames": int(decision_source_frames),
@@ -2971,6 +3399,8 @@ def run_checkpoint_game(
     )
     from curvyzero.training.curvytron_current_policy_selfplay_smoke import (
         SourceStateGray64Stack4,
+        resolve_stack_bonus_render_mode,
+        validate_stack_bonus_render_mode,
         validate_stack_trail_render_mode,
     )
 
@@ -3016,7 +3446,10 @@ def run_checkpoint_game(
         )
         preloaded = False
     else:
-        policy_entries = [dict(entry) for entry in preloaded_policy_entries]
+        policy_entries = _preloaded_policy_entries_for_players(
+            preloaded_policy_entries,
+            pair["players"],
+        )
         preloaded = True
     if len(policy_entries) != 2:
         raise ValueError("run_checkpoint_game needs exactly two policy entries")
@@ -3036,24 +3469,57 @@ def run_checkpoint_game(
     default_policy_trail_render_mode = validate_stack_trail_render_mode(
         str(
             game.get("policy_trail_render_mode")
-            or game.get("observation_trail_render_mode")
-            or game.get("trail_render_mode")
             or pair.get("policy_trail_render_mode")
-            or pair.get("trail_render_mode")
             or TRAIL_RENDER_MODE_DEFAULT
         )
     )
+    default_policy_bonus_render_mode = (
+        game.get("policy_bonus_render_mode")
+        or pair.get("policy_bonus_render_mode")
+    )
+    if default_policy_bonus_render_mode:
+        default_policy_bonus_render_mode = validate_stack_bonus_render_mode(
+            str(default_policy_bonus_render_mode)
+        )
     policy_trail_render_modes = []
+    policy_bonus_render_modes = []
+    policy_observation_backends = []
+    policy_render_surfaces: list[tuple[str, str]] = []
     for player, load in zip(pair["players"], policy_entries, strict=True):
-        mode = validate_stack_trail_render_mode(
+        trail_mode = validate_stack_trail_render_mode(
             str(
                 player.get("policy_trail_render_mode")
-                or player.get("observation_trail_render_mode")
                 or load.get("policy_trail_render_mode")
                 or default_policy_trail_render_mode
             )
         )
-        policy_trail_render_modes.append(mode)
+        raw_bonus_mode = (
+            player.get("policy_bonus_render_mode")
+            or load.get("policy_bonus_render_mode")
+            or default_policy_bonus_render_mode
+        )
+        bonus_mode = resolve_stack_bonus_render_mode(
+            trail_render_mode=trail_mode,
+            bonus_render_mode=str(raw_bonus_mode) if raw_bonus_mode else None,
+        )
+        _require_policy_surface(
+            trail_render_mode=trail_mode,
+            bonus_render_mode=bonus_mode,
+            context=f"game seat {player['seat']}",
+        )
+        backend = str(
+            player.get("policy_observation_backend")
+            or load.get("policy_observation_backend")
+            or DEFAULT_TOURNAMENT_POLICY_OBSERVATION_BACKEND
+        )
+        _require_policy_observation_backend(
+            backend=backend,
+            context=f"game seat {player['seat']}",
+        )
+        policy_trail_render_modes.append(trail_mode)
+        policy_bonus_render_modes.append(bonus_mode)
+        policy_observation_backends.append(backend)
+        policy_render_surfaces.append((trail_mode, bonus_mode))
     gif_trail_render_mode = TRAIL_RENDER_MODE_BROWSER_LINES
     runtime_settings = _source_frame_runtime_settings(
         game,
@@ -3074,17 +3540,18 @@ def run_checkpoint_game(
         natural_bonus_spawn=bool(game.get("natural_bonus_spawn", pair["natural_bonus_spawn"])),
     )
     visual_stacks = {
-        mode: SourceStateGray64Stack4(
+        surface: SourceStateGray64Stack4(
             batch_size=1,
             player_count=2,
-            trail_render_mode=mode,
+            trail_render_mode=surface[0],
+            bonus_render_mode=surface[1],
         )
-        for mode in sorted(set(policy_trail_render_modes))
+        for surface in sorted(set(policy_render_surfaces))
     }
     batch = env.reset(seed=seed)
-    observations_by_mode = {
-        mode: stack.update(env, copy=False)
-        for mode, stack in visual_stacks.items()
+    observations_by_surface = {
+        surface: stack.update(env, copy=False)
+        for surface, stack in visual_stacks.items()
     }
     frames = []
     if capture_frames:
@@ -3112,11 +3579,11 @@ def run_checkpoint_game(
         step_policy: list[dict[str, Any]] = []
         try:
             for seat in (0, 1):
-                observation = observations_by_mode[policy_trail_render_modes[seat]]
+                observation = observations_by_surface[policy_render_surfaces[seat]]
                 obs = {
                     "observation": np.asarray(observation[0, seat], dtype=np.float32),
                     "action_mask": np.asarray(batch.action_mask[0, seat], dtype=np.float32),
-                    "to_play": seat,
+                    "to_play": -1,
                 }
                 result = _policy_action(
                     policy=policies[seat],
@@ -3143,9 +3610,9 @@ def run_checkpoint_game(
             done = bool(batch.done[0])
             truncated = bool(batch.truncated[0])
             last_info = _to_plain(batch.info)
-            observations_by_mode = {
-                mode: stack.update(env, copy=False)
-                for mode, stack in visual_stacks.items()
+            observations_by_surface = {
+                surface: stack.update(env, copy=False)
+                for surface, stack in visual_stacks.items()
             }
             if capture_frames and (physical_steps % frame_stride == 0 or done):
                 frames.append(
@@ -3211,6 +3678,9 @@ def run_checkpoint_game(
         "game_index": int(game.get("game_index", 0)),
         "seed": seed,
         "players": pair["players"],
+        "battle_players": game.get("battle_players"),
+        "seat_order": game.get("seat_order"),
+        "seat_order_mode": game.get("seat_order_mode", pair["seat_order_mode"]),
         "policy_mode": policy_mode,
         "collect_temperature": float(game.get("collect_temperature", pair["collect_temperature"])),
         "collect_epsilon": float(game.get("collect_epsilon", pair["collect_epsilon"])),
@@ -3235,11 +3705,43 @@ def run_checkpoint_game(
         "policy_trail_render_modes": {
             f"seat_{seat}": mode for seat, mode in enumerate(policy_trail_render_modes)
         },
+        "policy_bonus_render_modes": {
+            f"seat_{seat}": mode for seat, mode in enumerate(policy_bonus_render_modes)
+        },
+        "policy_observation_backends": {
+            f"seat_{seat}": backend
+            for seat, backend in enumerate(policy_observation_backends)
+        },
         "policy_trail_render_mode": (
             policy_trail_render_modes[0]
             if policy_trail_render_modes[0] == policy_trail_render_modes[1]
             else "mixed"
         ),
+        "policy_bonus_render_mode": (
+            policy_bonus_render_modes[0]
+            if policy_bonus_render_modes[0] == policy_bonus_render_modes[1]
+            else "mixed"
+        ),
+        "policy_observation_backend": (
+            policy_observation_backends[0]
+            if policy_observation_backends[0] == policy_observation_backends[1]
+            else "mixed"
+        ),
+        "policy_observation_contract_id": DEFAULT_POLICY_OBSERVATION_CONTRACT_ID,
+        "policy_observation_perspective": {
+            "schema_id": POLICY_OBSERVATION_PERSPECTIVE_SCHEMA_ID,
+            "perspective": POLICY_OBSERVATION_PERSPECTIVE,
+            "seat_mapping": "seat N receives observation[0,N] and controls player N",
+            "player_axis": POLICY_OBSERVATION_PERSPECTIVE_PLAYER_AXIS,
+        },
+        "policy_observation_contracts": {
+            f"seat_{seat}": _policy_surface_contract(
+                policy_trail_render_modes[seat],
+                policy_bonus_render_modes[seat],
+                backend=policy_observation_backends[seat],
+            )
+            for seat in range(len(policy_render_surfaces))
+        },
         "gif_trail_render_mode": gif_trail_render_mode,
         "trail_render_mode": (
             policy_trail_render_modes[0]
@@ -3249,7 +3751,25 @@ def run_checkpoint_game(
         "render_contract": {
             "policy_observation": (
                 "per-seat SourceStateGray64Stack4, using the checkpoint's "
-                "policy_trail_render_mode when supplied"
+                "policy_trail_render_mode and policy_bonus_render_mode when supplied"
+            ),
+            "policy_bonus_render_mode": (
+                policy_bonus_render_modes[0]
+                if policy_bonus_render_modes[0] == policy_bonus_render_modes[1]
+                else "mixed"
+            ),
+            "policy_observation_contract_id": DEFAULT_POLICY_OBSERVATION_CONTRACT_ID,
+            "policy_observation_backend": (
+                policy_observation_backends[0]
+                if policy_observation_backends[0] == policy_observation_backends[1]
+                else "mixed"
+            ),
+            "policy_observation_perspective_schema_id": (
+                POLICY_OBSERVATION_PERSPECTIVE_SCHEMA_ID
+            ),
+            "policy_observation_perspective": POLICY_OBSERVATION_PERSPECTIVE,
+            "policy_observation_seat_mapping": (
+                "seat N receives observation[0,N] and controls player N"
             ),
             "gif": "full_704_rgb_canvas_like_browser_lines",
             "gif_frame_size": frame_size,
@@ -3290,6 +3810,9 @@ def failure_game_summary(
         "game_id": game_id,
         "game_index": int(game.get("game_index", 0)),
         "players": pair["players"],
+        "battle_players": game.get("battle_players"),
+        "seat_order": game.get("seat_order"),
+        "seat_order_mode": game.get("seat_order_mode", pair["seat_order_mode"]),
         "summary_ref": summary_ref.as_posix(),
         **exception_payload(exc),
     }

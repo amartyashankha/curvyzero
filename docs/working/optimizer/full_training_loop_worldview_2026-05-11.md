@@ -9,20 +9,21 @@ spikes produce harder evidence.
 Related replication-control backlog:
 `docs/working/optimizer/framework_replication_controls_2026-05-11.md`.
 
-2026-05-12 postmortem correction: the line below is historical. The custom
+2026-05-15 correction: this file is a historical architecture map. Current
+trusted guidance is stock LightZero `--mode train` with
+`env_variant=source_state_fixed_opponent`, the frozen-opponent route, and CPU
+`cpu_oracle` `browser_lines + simple_symbols` policy observations. The custom
 `--mode two-seat-selfplay` path should not be treated as the trusted Coach
-learning baseline until native replay/target semantics are restored or tested.
-See `docs/working/training/curvytron_architecture_research_2026-05-12/`.
+learning baseline.
 
 ## One-Line Goal
 
-Current Coach baseline:
-`src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py --mode two-seat-selfplay`.
-Stock LightZero `train_muzero` on `source_state_fixed_opponent`, source-state
-`[4,64,64]`, and fixed/frozen opponents is controls/profiling only. Future
-goal: if the stock/control loop is too slow, test coarse synchronous fanout of
-searched trajectory collection before designing any continuous actor/replay
-service.
+Current optimizer baseline:
+`src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py --mode train`
+on `source_state_fixed_opponent`, source-state `[4,64,64]`, and fixed/frozen
+opponents. Future goal: if the stock loop is too slow, test coarse synchronous
+fanout of searched trajectory collection before designing any continuous
+actor/replay service.
 
 Plain English: we need actors to play games, search to choose good actions,
 replay to store those games, a learner to update the model, checkpoints to move

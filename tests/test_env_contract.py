@@ -2,6 +2,8 @@ import numpy as np
 import pytest
 
 from curvyzero.env import CurvyTronConfig, CurvyTronEnv
+from curvyzero.env.trainer_contract import ACTION_ID_TO_SOURCE_MOVE
+from curvyzero.env.trainer_contract import ACTION_NAMES
 
 
 def test_observe_returns_copied_current_debug_observation():
@@ -24,6 +26,13 @@ def test_legal_action_mask_uses_turn3_order_for_live_player():
     assert mask.dtype == np.bool_
     assert mask.shape == (3,)
     np.testing.assert_array_equal(mask, np.array([True, True, True], dtype=np.bool_))
+
+
+def test_action_one_is_the_explicit_no_turn_noop_action():
+    assert ACTION_NAMES == ("left", "straight", "right")
+    assert ACTION_ID_TO_SOURCE_MOVE == (-1, 0, 1)
+    assert ACTION_NAMES[1] == "straight"
+    assert ACTION_ID_TO_SOURCE_MOVE[1] == 0
 
 
 def test_dead_player_does_not_need_action_and_has_empty_mask():

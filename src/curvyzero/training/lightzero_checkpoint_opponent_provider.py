@@ -372,6 +372,7 @@ def _policy_eval_forward(
     player_id: int,
     device: Any,
 ) -> Any:
+    del player_id
     import torch
 
     obs_tensor = torch.as_tensor(
@@ -384,7 +385,7 @@ def _policy_eval_forward(
         return policy.eval_mode.forward(
             obs_tensor,
             action_mask=action_mask,
-            to_play=[int(player_id)],
+            to_play=[-1],
             ready_env_id=np.asarray([0]),
         )
 

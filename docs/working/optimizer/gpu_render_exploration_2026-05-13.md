@@ -6,10 +6,21 @@ Scope: isolated optimizer experiments for CurvyTron visual rendering. Do not
 touch live training runs. The current trusted training lane remains stock
 LightZero `source_state_fixed_opponent`.
 
-Current target: full-fidelity `browser_lines` only. That means source-state RGB
-on the 704-style canvas, BT.601 luma, then 11x11 downsample to 64x64.
-`body_circles_fast` rows below are historical/control measurements, not a
-current GPU optimization lane.
+Current target update, 2026-05-15: production policy observations are CPU
+`cpu_oracle` `browser_lines + simple_symbols` as `[4,64,64]`. The practical GPU
+work is a lab/profiling target: faithful `browser_lines` trail/head geometry
+plus `simple_symbols` bonus encoding, eventually batched at the trainer
+boundary. The older full-fidelity target also included original browser
+sprites; that remains a harder reference/parity lane, but it should not block
+the simpler GPU+symbols lab work. `body_circles_fast` rows below are
+historical/control measurements, not the current optimization lane.
+
+Plain shape correction: training still consumes a final `64x64` grayscale
+stack. The GPU benchmark named `block_704_gray64` does **not** mean sending
+704x704 images to LightZero. It means a fused GPU kernel computes each final
+64x64 output pixel using the same 11x11 high-resolution sampling rule as the
+CPU oracle. A future `direct_gray64` backend could draw straight to 64x64 if we
+explicitly choose that as a new observation contract.
 
 Current parity gap summary:
 [GPU render parity gap](gpu_render_parity_gap_2026-05-13.md).
@@ -119,9 +130,10 @@ trail slots, heads, bonuses, and a `browser_lines` approximation. It now has
 two surfaces:
 
 - `direct_gray64`: samples one point per 64x64 cell. Fast economics probe.
-- `block_704_gray64`: samples all 11x11 source pixels per 64x64 cell and
-  averages luma. This is closer to the active 704->64 cost, but it still does
-  not materialize a full RGB canvas or claim browser parity.
+- `block_704_gray64`: outputs final 64x64, but computes each pixel from all
+  11x11 high-resolution sample positions that correspond to that cell. This is
+  closer to the active CPU oracle, but it still does not materialize a full RGB
+  canvas or claim browser parity.
 
 The `body_circles_fast` entries in these tables are retained only as controls.
 Do not use them for recommendations.
@@ -172,12 +184,11 @@ not seconds. The likely production answer is not a naive full batch redraw for
 every step; it is either dirty 11x11 block updates or a fused exact-ish renderer
 that avoids rechecking old unchanged trails.
 
-Fresh H100 read: the H100 changes the prototype economics. Naive full block
-redraw is roughly `9x-10x` faster than the matching L4 rows above, while
-host-to-device and readback stay in the same few-millisecond range. That makes
-GPU rendering worth continuing, but only if parity and training integration are
-solved. The current benchmark still has small production-reference mismatches
-because bonus sprites and exact draw semantics are not complete.
+Fresh H100 read: the H100 changes the prototype economics. The fused 704-style
+64x64 output path is much faster on H100 than L4, while host-to-device transfer
+stays in the same few-millisecond range. That makes GPU rendering worth
+continuing, but only if real-state feed, parity, and training integration are
+solved.
 
 The benchmark now has a tiny production-render comparison for
 `block_704_gray64`. It maps synthetic rows into production source-state keys and
@@ -192,13 +203,51 @@ and fixed trail radius, the no-bonus line/head path is close but not exact:
 | 1 | 64 | 8 | 51 / 4096 pixels (1.25%) | 90 | 0.402 | 208ms |
 | 2 | 256 | 0 | 0 / 8192 pixels (exact) | 0 | 0.0000 | 216ms |
 | 2 | 500 | 0 | 5 / 8192 pixels (0.061%) | 14 | 0.0034 | 332ms |
+| 2 | 64 | 8 simple-symbols | 0 / 8192 pixels (exact) | 0 | 0.0000 | 369ms |
+| 1 | 64 | 8 simple-symbols | 0 / 4096 pixels (exact) | 0 | 0.0000 | 245ms |
+| 1 | 256 | 8 simple-symbols | 0 / 4096 pixels (exact) | 0 | 0.0000 | 204ms |
 
-Plain read: the no-bonus line/head path can now hit byte-exact parity on this
-tiny oracle. The renderer is still not a trusted replacement because the bonus
-row is worse: the prototype still uses simple scalar circles while production
-uses sprite stamps. At longer trail counts, naive full redraw also becomes
-expensive enough that dirty/incremental rendering remains the likely production
-shape.
+Plain read: for the current target, `browser_lines + simple_symbols`, the
+synthetic GPU benchmark can now hit byte-exact parity on tiny CPU-oracle rows.
+It is still not a trusted training replacement because it does not yet consume
+live env state, produce player-perspective stacks, or plug into LightZero's env
+boundary.
+
+Fresh 2026-05-15 timing rows, all exact on the checked CPU-oracle row:
+
+| GPU | B | trail slots | device render | host->device | end-to-end | device frames/sec |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| L4 | 64 | 64 | 81.7ms | 3.87ms | 85.6ms | 783 |
+| L4 | 64 | 256 | 291.0ms | 3.64ms | 294.9ms | 220 |
+| H100 | 64 | 64 | 9.85ms | 3.09ms | 12.9ms | 6495 |
+| H100 | 64 | 256 | 31.0ms | 3.10ms | 34.1ms | 2061 |
+
+Fresh real-env rollout rows, checked against production CPU
+`browser_lines + simple_symbols` with controlled-player self/other luma:
+
+| GPU | B | trail slots | real env steps | controlled player | device render | host->device | end-to-end | parity |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| L4 | 8 | 64 | 32 | 0 | 2.78ms | 4.16ms | 7.32ms | 8 / 4096 pixels off, max 1 |
+| L4 | 64 | 64 | 64 | 0 | 74.18ms | 3.90ms | 78.75ms | 6 / 4096 pixels off, max 1 |
+| H100 | 64 | 64 | 64 | 0 | 7.87ms | 2.74ms | 10.88ms | 6 / 4096 pixels off, max 1 |
+| H100 | 64 | 256 | 128 | 1 | 28.74ms | 2.89ms | 31.92ms | 25 / 4096 pixels off, max 2 |
+
+Plain read: the GPU renderer can now consume actual `VectorMultiplayerEnv`
+state, not only synthetic rows. The parity gap on checked real rows is tiny and
+localized to low-gray trail-edge rounding. That is good enough to continue the
+backend work, but not good enough to silently call it exact.
+
+Scalar warning: H100 B1, trail_slots128, one controlled-player view took
+`1.32ms` device and `3.84ms` end-to-end with host copies/readback. A local CPU
+dirty-cache env-only profile of the current scalar wrapper took about
+`2.1ms-2.2ms` render/step for the two player-perspective frames. So scalar
+per-env GPU calls are not the target. Batched GPU rendering is the target.
+
+Plain Amdahl read: H100 makes the fused GPU renderer compelling for large
+batches and longer trail histories. The remaining bottleneck is integration:
+copying live source-state arrays to the GPU, returning a host NumPy observation
+through stock LightZero, and subprocess env-manager CUDA behavior can erase a
+large part of the kernel win unless the backend is wired carefully.
 
 ## Decision Gates
 

@@ -7,6 +7,7 @@ from curvyzero.env.vector_visual_observation import (
     BONUS_RENDER_MODE_CIRCLES_FAST,
     BONUS_RENDER_MODE_SIMPLE_SYMBOLS,
     BONUS_SYMBOL_INNER_LUMA,
+    BONUS_SYMBOL_INNER_LUMA_BY_SHAPE,
     BONUS_SYMBOL_OUTER_LUMA_BY_SHAPE,
     SOURCE_STATE_BONUS64_STACK4_BONUS_MASK_CHANNEL,
     SOURCE_STATE_BONUS64_STACK4_BONUS_TYPE_CHANNEL,
@@ -39,6 +40,7 @@ from curvyzero.env.vector_visual_observation import (
     SourceStateGray64Renderer,
     VectorVisualObservationError,
     _bonus_sprite_index,
+    _simple_bonus_symbol_base,
     _source_bonus_sprite_sheet_path,
     normalize_source_state_gray64,
     render_source_state_bonus64_stack4_player_perspective_v1,
@@ -508,6 +510,84 @@ def test_source_state_rgb_canvas_like_browser_lines_breaks_visual_trail_segments
     np.testing.assert_array_equal(frame[32, 40], player_rgb)
 
 
+def test_cpu_oracle_browser_lines_connect_interleaved_same_owner_trails_and_pin_crossing_order():
+    state = _trail_only_source_state([(0.0, 0.0)])
+    state["body_active"][:, :] = False
+    _with_visual_trail_points(
+        state,
+        [(16.0, 32.0), (32.0, 16.0), (48.0, 32.0), (32.0, 48.0)],
+        radii=0.6,
+        owners=[0, 1, 0, 1],
+    )
+    player_0_rgb = _rgb_triplet(SOURCE_STATE_RGB_CANVAS_LIKE_PLAYER_RGB[0])
+    player_1_rgb = _rgb_triplet(SOURCE_STATE_RGB_CANVAS_LIKE_PLAYER_RGB[1])
+
+    frame = render_source_state_rgb_canvas_like(
+        state,
+        frame_size=64,
+        trail_render_mode=TRAIL_RENDER_MODE_BROWSER_LINES,
+    )
+
+    np.testing.assert_array_equal(frame[32, 24], player_0_rgb)
+    np.testing.assert_array_equal(frame[24, 32], player_1_rgb)
+    np.testing.assert_array_equal(frame[32, 32], player_0_rgb)
+
+
+def test_cpu_oracle_visual_trail_write_cursor_ignores_active_stale_tail_slots():
+    state = _trail_only_source_state([(0.0, 0.0)])
+    state["body_active"][:, :] = False
+    _with_visual_trail_points(
+        state,
+        [(16.0, 16.0), (32.0, 16.0), (48.0, 48.0)],
+        radii=0.6,
+        owners=0,
+    )
+    state["visual_trail_write_cursor"][0] = 2
+    player_rgb = _rgb_triplet(SOURCE_STATE_RGB_CANVAS_LIKE_PLAYER_RGB[0])
+    background_rgb = _rgb_triplet(SOURCE_STATE_RGB_CANVAS_LIKE_BACKGROUND_RGB)
+
+    frame = render_source_state_rgb_canvas_like(
+        state,
+        frame_size=64,
+        trail_render_mode=TRAIL_RENDER_MODE_BROWSER_LINES,
+    )
+
+    np.testing.assert_array_equal(frame[16, 24], player_rgb)
+    np.testing.assert_array_equal(frame[48, 48], background_rgb)
+
+
+def test_cpu_oracle_live_heads_draw_over_bonus_symbols():
+    state = _small_source_state()
+    state["body_active"][:, :] = False
+    state["body_write_cursor"][0] = 0
+    state["present"][0, :] = [True, False]
+    state["alive"][0, :] = [True, False]
+    state["pos"][0, 0] = [32.0, 32.0]
+    state["radius"][0, 0] = 1.0
+    state.update(
+        {
+            "bonus_active": np.asarray([[True]], dtype=bool),
+            "bonus_type": np.asarray([[vector_runtime.BONUS_TYPE_SELF_FAST]], dtype=np.int16),
+            "bonus_pos": np.asarray([[[32.0, 32.0]]], dtype=np.float64),
+            "bonus_radius": np.asarray([[6.0]], dtype=np.float64),
+        }
+    )
+    player_rgb = _rgb_triplet(SOURCE_STATE_RGB_CANVAS_LIKE_PLAYER_RGB[0])
+    background_rgb = _rgb_triplet(SOURCE_STATE_RGB_CANVAS_LIKE_BACKGROUND_RGB)
+
+    frame = render_source_state_rgb_canvas_like(
+        state,
+        frame_size=64,
+        bonus_render_mode=BONUS_RENDER_MODE_SIMPLE_SYMBOLS,
+    )
+
+    np.testing.assert_array_equal(frame[32, 32], player_rgb)
+    crop = frame[26:39, 26:39]
+    non_background = np.any(crop != background_rgb[None, None, :], axis=2)
+    non_head = ~np.all(crop == player_rgb[None, None, :], axis=2)
+    assert bool(np.any(non_background & non_head))
+
+
 def test_source_state_canvas_gray64_is_downsampled_luminance_of_browser_like_rgb_for_both_trail_modes():
     state = _small_source_state()
     state["avatar_color"] = np.asarray([[1, 0]], dtype=np.int16)
@@ -520,13 +600,13 @@ def test_source_state_canvas_gray64_is_downsampled_luminance_of_browser_like_rgb
     assert schema["downsample_target_frame_size"] == 64
     assert schema["downsample_method"] == "integer_area_average_after_luma"
     assert schema["downsample_ratio"] == 11
-    assert schema["default_bonus_render_mode"] == BONUS_RENDER_MODE_BROWSER_SPRITES
+    assert schema["default_bonus_render_mode"] == BONUS_RENDER_MODE_SIMPLE_SYMBOLS
     assert schema["supported_bonus_render_modes"] == [
+        BONUS_RENDER_MODE_SIMPLE_SYMBOLS,
         BONUS_RENDER_MODE_BROWSER_SPRITES,
         BONUS_RENDER_MODE_CIRCLES_FAST,
-        BONUS_RENDER_MODE_SIMPLE_SYMBOLS,
     ]
-    assert schema["bonus_renderer_kind"] == "source_sprite_atlas_tiles"
+    assert schema["bonus_renderer_kind"] == "simple_symbol_masks"
     assert (
         schema["bonus_sprite_missing_fallback"]
         == "deterministic_type_coded_placeholder_stamp"
@@ -775,6 +855,7 @@ def test_direct_fast_simple_bonus_symbols_are_distinct_and_not_remapped():
     allowed_symbol_values = {
         int(BONUS_SYMBOL_INNER_LUMA),
         *(int(value) for value in BONUS_SYMBOL_OUTER_LUMA_BY_SHAPE),
+        *(int(value) for value in BONUS_SYMBOL_INNER_LUMA_BY_SHAPE),
     }
     forbidden_remap_values = {80, 96, 128, 160, 192, 208, 224, 232, 240, 248}
     hashes = []
@@ -803,6 +884,28 @@ def test_direct_fast_simple_bonus_symbols_are_distinct_and_not_remapped():
 
     assert len(set(hashes)) == len(vector_runtime.SOURCE_DEFAULT_BONUS_TYPE_CODES)
     assert len(set(crop_hashes)) == len(vector_runtime.SOURCE_DEFAULT_BONUS_TYPE_CODES)
+
+
+def test_direct_fast_simple_bonus_symbol_base_masks_keep_margin():
+    stamps = [
+        _simple_bonus_symbol_base(code).astype(np.int16)
+        for code in vector_runtime.SOURCE_DEFAULT_BONUS_TYPE_CODES
+    ]
+    assert len({stamp.tobytes() for stamp in stamps}) == len(stamps)
+
+    min_l1 = None
+    min_mismatch = None
+    for left_index, left in enumerate(stamps):
+        for right in stamps[left_index + 1 :]:
+            diff = np.abs(left - right)
+            l1 = int(diff.sum())
+            mismatch = int((diff > 0).sum())
+            min_l1 = l1 if min_l1 is None else min(min_l1, l1)
+            min_mismatch = mismatch if min_mismatch is None else min(min_mismatch, mismatch)
+
+    assert min_l1 is not None
+    assert min_l1 >= 1300
+    assert min_mismatch >= 10
 
 
 def test_direct_fast_simple_bonus_symbols_stay_distinct_across_offsets_and_radii():
@@ -841,6 +944,130 @@ def test_direct_fast_simple_bonus_symbols_stay_distinct_across_offsets_and_radii
             hashes.append(frames[0].tobytes())
 
         assert len(set(hashes)) == len(vector_runtime.SOURCE_DEFAULT_BONUS_TYPE_CODES)
+
+
+def test_direct_fast_simple_bonus_symbols_overwrite_underlying_trails():
+    background_luma = int(
+        np.rint(
+            0.299 * SOURCE_STATE_RGB_CANVAS_LIKE_BACKGROUND_RGB[0]
+            + 0.587 * SOURCE_STATE_RGB_CANVAS_LIKE_BACKGROUND_RGB[1]
+            + 0.114 * SOURCE_STATE_RGB_CANVAS_LIKE_BACKGROUND_RGB[2]
+        )
+    )
+
+    for use_visual_trail in (False, True):
+        hashes = []
+        for code in vector_runtime.SOURCE_DEFAULT_BONUS_TYPE_CODES:
+            state = _small_source_state()
+            state["present"][:, :] = False
+            state["alive"][:, :] = False
+            state["body_active"][:, :] = False
+            state["body_write_cursor"][0] = 0
+            state.update(
+                {
+                    "bonus_active": np.asarray([[True]], dtype=bool),
+                    "bonus_type": np.asarray([[int(code)]], dtype=np.int16),
+                    "bonus_pos": np.asarray([[[32.0, 32.0]]], dtype=np.float64),
+                    "bonus_radius": np.asarray([[3.0]], dtype=np.float64),
+                }
+            )
+            bonus_only = render_source_state_gray64_fast_player_perspectives(
+                state,
+                player_count=2,
+                bonus_render_mode=BONUS_RENDER_MODE_SIMPLE_SYMBOLS,
+            )[0, 0]
+
+            if use_visual_trail:
+                _with_visual_trail_points(
+                    state,
+                    [(32.0, 32.0)],
+                    radii=5.0,
+                    owners=3,
+                )
+            else:
+                state["body_active"][0, 0] = True
+                state["body_pos"][0, 0] = (32.0, 32.0)
+                state["body_radius"][0, 0] = 5.0
+                state["body_owner"][0, 0] = 3
+                state["body_write_cursor"][0] = 1
+            with_trail = render_source_state_gray64_fast_player_perspectives(
+                state,
+                player_count=2,
+                bonus_render_mode=BONUS_RENDER_MODE_SIMPLE_SYMBOLS,
+            )[0, 0]
+
+            bonus_crop = bonus_only[29:36, 29:36]
+            trail_crop = with_trail[29:36, 29:36]
+            symbol_mask = bonus_crop != background_luma
+            assert symbol_mask.any()
+            np.testing.assert_array_equal(trail_crop[symbol_mask], bonus_crop[symbol_mask])
+            if (~symbol_mask).any():
+                assert np.any(trail_crop[~symbol_mask] != background_luma)
+            hashes.append(trail_crop.tobytes())
+
+        assert len(set(hashes)) == len(vector_runtime.SOURCE_DEFAULT_BONUS_TYPE_CODES)
+
+
+def test_cpu_oracle_simple_bonus_symbols_overlay_browser_line_trails():
+    state = _small_source_state()
+    state["present"][:, :] = False
+    state["alive"][:, :] = False
+    state["body_active"][:, :] = False
+    state["body_write_cursor"][0] = 0
+    state.update(
+        {
+            "bonus_active": np.asarray([[True]], dtype=bool),
+            "bonus_type": np.asarray([[vector_runtime.BONUS_TYPE_SELF_FAST]], dtype=np.int16),
+            "bonus_pos": np.asarray([[[32.0, 32.0]]], dtype=np.float64),
+            "bonus_radius": np.asarray([[4.0]], dtype=np.float64),
+        }
+    )
+    bonus_only = render_source_state_rgb_canvas_like(
+        state,
+        trail_render_mode=TRAIL_RENDER_MODE_BROWSER_LINES,
+        bonus_render_mode=BONUS_RENDER_MODE_SIMPLE_SYMBOLS,
+    )
+
+    _with_visual_trail_points(
+        state,
+        [(30.0, 32.0), (32.0, 32.0), (34.0, 32.0)],
+        radii=6.0,
+        owners=1,
+    )
+    with_trail = render_source_state_rgb_canvas_like(
+        state,
+        trail_render_mode=TRAIL_RENDER_MODE_BROWSER_LINES,
+        bonus_render_mode=BONUS_RENDER_MODE_SIMPLE_SYMBOLS,
+    )
+
+    background = np.asarray(SOURCE_STATE_RGB_CANVAS_LIKE_BACKGROUND_RGB, dtype=np.uint8)
+    symbol_mask = np.any(bonus_only != background[None, None, :], axis=2)
+    assert symbol_mask.any()
+    np.testing.assert_array_equal(with_trail[symbol_mask], bonus_only[symbol_mask])
+
+
+def test_cpu_oracle_simple_bonus_symbols_rgb_avoids_full_canvas_scratch(monkeypatch):
+    background = np.asarray(SOURCE_STATE_RGB_CANVAS_LIKE_BACKGROUND_RGB, dtype=np.uint8)
+    canvas = np.empty((SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,) * 2 + (3,), dtype=np.uint8)
+    canvas[:, :] = background
+    original_zeros = np.zeros
+
+    def guarded_zeros(shape, *args, **kwargs):
+        if tuple(shape) == canvas.shape[:2]:
+            raise AssertionError("unexpected full-frame simple-symbol scratch")
+        return original_zeros(shape, *args, **kwargs)
+
+    monkeypatch.setattr(visual_observation.np, "zeros", guarded_zeros)
+
+    visual_observation._draw_bonus_simple_symbols_rgb(
+        canvas,
+        np.asarray([[32.0, 32.0]], dtype=np.float64),
+        np.asarray([3.0], dtype=np.float64),
+        64.0,
+        bonus_types=np.asarray([vector_runtime.BONUS_TYPE_SELF_FAST], dtype=np.int16),
+    )
+
+    assert bool(np.any(canvas != background[None, None, :]))
 
 
 def test_direct_fast_legacy_luma_circle_mode_is_still_available():

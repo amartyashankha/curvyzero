@@ -144,6 +144,24 @@ def _load_progress_rows(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def _load_jsonl_rows(path: Path) -> list[dict[str, Any]]:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            rows.append(value)
+    return rows
+
+
 def _safe_float(value: Any) -> float | None:
     if value is None:
         return None
@@ -695,6 +713,38 @@ def _poller_rollup(run_id: str, attempt_id: str) -> dict[str, Any]:
     }
 
 
+def _assignment_refresh_rollup(run_id: str, attempt_id: str) -> dict[str, Any]:
+    train_ref = runs.attempt_train_ref(TASK_ID, run_id, attempt_id)
+    refresh_ref = train_ref / "opponent_assignment_refresh_events.jsonl"
+    events = _load_jsonl_rows(runs.volume_path(RUNS_MOUNT, refresh_ref))
+    if not events:
+        return {
+            "assignment_refresh_event_count": 0,
+            "assignment_refresh_events_ref": refresh_ref.as_posix(),
+            "assignment_refresh_latest_decision": None,
+            "assignment_refresh_latest_sha256": None,
+            "assignment_refresh_applied_count": 0,
+            "assignment_refresh_latest_applied_sha256": None,
+        }
+    applied = [event for event in events if event.get("decision") == "applied"]
+    latest = events[-1]
+    latest_applied = applied[-1] if applied else {}
+    return {
+        "assignment_refresh_event_count": len(events),
+        "assignment_refresh_events_ref": refresh_ref.as_posix(),
+        "assignment_refresh_latest_decision": latest.get("decision"),
+        "assignment_refresh_latest_reason": latest.get("reason"),
+        "assignment_refresh_latest_train_iter": latest.get("train_iter"),
+        "assignment_refresh_latest_sha256": (
+            latest.get("assignment_sha256") or latest.get("pending_assignment_sha256")
+        ),
+        "assignment_refresh_applied_count": len(applied),
+        "assignment_refresh_latest_applied_train_iter": latest_applied.get("train_iter"),
+        "assignment_refresh_latest_applied_sha256": latest_applied.get("assignment_sha256"),
+        "assignment_refresh_latest_applied_ref": latest_applied.get("assignment_ref"),
+    }
+
+
 def _gif_rollup(
     run_id: str,
     attempt_id: str,
@@ -797,6 +847,7 @@ def _train_artifact_rollup(
         "train_status": heartbeat.get("status") if isinstance(heartbeat, dict) else None,
         "train_stage": heartbeat.get("stage") if isinstance(heartbeat, dict) else None,
         "progress_missing_reason": missing_reason,
+        **_assignment_refresh_rollup(run_id, attempt_id),
         **_action_observability_rollup(run_id, attempt_id),
         **_poller_rollup(run_id, attempt_id),
         **_gif_rollup(

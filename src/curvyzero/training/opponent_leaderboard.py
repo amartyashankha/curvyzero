@@ -70,6 +70,71 @@ def canonical_json_sha256(value: Any) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def validate_rating_snapshot_source(
+    rating_snapshot: Mapping[str, Any],
+    *,
+    expected_round_id: str | None = None,
+    expected_round_index: int | None = None,
+    expected_rating_context_hash: str | None = None,
+    expected_roster_hash: str | None = None,
+    expected_rating_snapshot_sha256: str | None = None,
+) -> dict[str, Any]:
+    """Validate that a rating snapshot is the exact source the caller expects."""
+
+    actual_round_id = str(rating_snapshot.get("round_id") or "")
+    if expected_round_id and actual_round_id != str(expected_round_id):
+        raise ValueError(
+            "rating snapshot round_id mismatch: "
+            f"expected {expected_round_id!r}, got {actual_round_id!r}"
+        )
+    actual_round_index_raw = rating_snapshot.get("round_index")
+    actual_round_index = (
+        int(actual_round_index_raw) if actual_round_index_raw is not None else None
+    )
+    if (
+        expected_round_index is not None
+        and actual_round_index != int(expected_round_index)
+    ):
+        raise ValueError(
+            "rating snapshot round_index mismatch: "
+            f"expected {int(expected_round_index)}, got {actual_round_index!r}"
+        )
+    actual_context_hash = str(rating_snapshot.get("context_hash") or "")
+    if (
+        expected_rating_context_hash
+        and actual_context_hash != str(expected_rating_context_hash)
+    ):
+        raise ValueError(
+            "rating snapshot context_hash mismatch: "
+            f"expected {expected_rating_context_hash!r}, "
+            f"got {actual_context_hash!r}"
+        )
+    actual_roster_hash = str(
+        rating_snapshot.get("roster_hash") or rating_snapshot.get("pool_hash") or ""
+    )
+    if expected_roster_hash and actual_roster_hash != str(expected_roster_hash):
+        raise ValueError(
+            "rating snapshot roster_hash mismatch: "
+            f"expected {expected_roster_hash!r}, got {actual_roster_hash!r}"
+        )
+    actual_sha256 = canonical_json_sha256(rating_snapshot)
+    if (
+        expected_rating_snapshot_sha256
+        and actual_sha256 != str(expected_rating_snapshot_sha256)
+    ):
+        raise ValueError(
+            "rating snapshot sha256 mismatch: "
+            f"expected {expected_rating_snapshot_sha256!r}, got {actual_sha256!r}"
+        )
+    return {
+        "round_id": actual_round_id,
+        "round_index": actual_round_index,
+        "rating_context_hash": actual_context_hash,
+        "roster_hash": actual_roster_hash,
+        "rating_snapshot_sha256": actual_sha256,
+    }
+
+
 def build_leaderboard_snapshot_from_rating_snapshot(
     rating_snapshot: Mapping[str, Any],
     *,
@@ -273,6 +338,7 @@ def select_opponent_assignment_from_leaderboard(
                 "tags": ["slot:sentinel", "scripted", "blank"],
                 "opponent_policy_kind": OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
                 "opponent_runtime_mode": OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP,
+                "opponent_immortal": True,
             }
         )
         sentinel_added = True
@@ -400,8 +466,9 @@ def select_stable_slots_v1_assignment(
             row,
             weight=float(weights.get(slot_name, 1.0)),
         )
-        if checkpoint_death_mode == OPPONENT_DEATH_MODE_IMMORTAL:
-            entry["opponent_death_mode"] = OPPONENT_DEATH_MODE_IMMORTAL
+        entry["opponent_immortal"] = (
+            checkpoint_death_mode == OPPONENT_DEATH_MODE_IMMORTAL
+        )
         entry["tags"] = [
             *entry.get("tags", []),
             "strategy:stable_slots_v1",
@@ -753,7 +820,7 @@ def _stable_sentinel_entry(
             "tags": ["slot:sentinel", "scripted", "blank", "strategy:stable_slots_v1"],
             "opponent_policy_kind": OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
             "opponent_runtime_mode": OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP,
-            "opponent_death_mode": OPPONENT_DEATH_MODE_NORMAL,
+            "opponent_immortal": True,
         }
         return entry, {
             "source": "hardcoded",
@@ -775,7 +842,7 @@ def _stable_sentinel_entry(
             ],
             "opponent_policy_kind": OPPONENT_POLICY_KIND_PROACTIVE_WALL_AVOIDANT,
             "opponent_runtime_mode": OPPONENT_RUNTIME_MODE_NORMAL,
-            "opponent_death_mode": OPPONENT_DEATH_MODE_IMMORTAL,
+            "opponent_immortal": True,
         }
         return entry, {
             "source": "hardcoded",
@@ -932,7 +999,10 @@ def _checkpoint_iteration(checkpoint_ref: str, fallback: Any = None) -> int | No
 
 
 def _validate_immutable_checkpoint_ref(checkpoint_ref: str) -> None:
-    filename = Path(str(checkpoint_ref)).name
+    ref_text = str(checkpoint_ref)
+    if ref_text.startswith(("runs:", "control:")):
+        ref_text = ref_text.split(":", 1)[1]
+    filename = Path(ref_text).name
     if lightzero_iteration_from_checkpoint_name(filename) is None:
         raise ValueError(
             "leaderboard checkpoint refs must be immutable exact iteration_N.pth.tar files; "

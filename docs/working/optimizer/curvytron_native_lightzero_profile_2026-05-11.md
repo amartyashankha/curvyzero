@@ -6,23 +6,21 @@ Status: optimizer evidence note. This is about speed/setup, not learning
 quality. Timers below are debug profiler timers and can be nested; do not add
 phase buckets together as exclusive wall time.
 
-Current launcher truth, added after this profile was written: Coach canonical
-CurvyZero training uses
-`src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py --mode two-seat-selfplay`.
-The fixed/frozen-opponent stock `train_muzero` path described here is a
-controls/profiling lane only. Stock LightZero in-loop eval is separate from
-CurvyZero checkpoint eval/inspection/GIF.
+2026-05-15 correction: the paragraph below was overtaken by the stock/frozen
+route. Current trusted guidance is stock LightZero
+`src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py --mode train`
+with `env_variant=source_state_fixed_opponent` and the frozen-opponent route.
+The old custom `--mode two-seat-selfplay` path is historical/custom-adapter
+evidence only.
 
-Current render truth, 2026-05-12: the canonical two-seat lane has its own
-render-mode knob. Default `browser_lines` now goes through source-state
-RGB-to-gray rendering before the `[B,2,4,64,64]` stack. `body_circles_fast` is
-an explicit comparison mode. Any profiles below this note that predate the
-change may have measured a different visual stack.
+Current render truth, 2026-05-15: production policy observations are
+`browser_lines + simple_symbols` through CPU `cpu_oracle` as `[4,64,64]`.
+`body_circles_fast` is an explicit historical/control comparison mode, not a
+recommendation. GPU rendering is lab/profiling only, not trainer plumbing.
 
 ## Plain Read
 
-This CurvyTron native LightZero path is the fixed/frozen-opponent
-stock-control/profile path:
+This CurvyTron native LightZero path is the fixed/frozen-opponent stock path:
 
 ```text
 source_state_fixed_opponent
@@ -31,9 +29,8 @@ source_state_fixed_opponent
 -> collector/search, replay, learner, evaluator, checkpoint hooks
 ```
 
-It is fixed-opponent single-ego stock training for controls/profiles, not the
-Coach main lane and not simultaneous current-policy self-play. The env metadata
-says that explicitly.
+It is fixed-opponent single-ego stock training/profiling, not simultaneous
+current-policy self-play. The env metadata says that explicitly.
 
 `source_state_turn_commit` should be read as stock LightZero plumbing
 smoke/profile only,

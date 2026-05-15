@@ -25,12 +25,13 @@ def test_opponent_mixture_parse_validates_supported_entry_shapes():
                 "weight": 2,
                 "opponent_policy_kind": "fixed_straight",
                 "opponent_runtime_mode": "blank_canvas_noop",
+                "opponent_immortal": True,
             },
             {
                 "name": "passive",
                 "weight": 1,
                 "opponent_policy_kind": "fixed_straight",
-                "opponent_death_mode": "immortal",
+                "opponent_immortal": True,
             },
             {
                 "name": "wall",
@@ -63,6 +64,12 @@ def test_opponent_mixture_parse_validates_supported_entry_shapes():
         "wall",
         "recent_001",
     ]
+    passive = next(entry for entry in parsed["entries"] if entry["name"] == "passive")
+    assert passive["opponent_immortal"] is True
+    assert "opponent_death_mode" not in passive
+    frozen = next(entry for entry in parsed["entries"] if entry["name"] == "recent_001")
+    assert frozen["opponent_immortal"] is False
+    assert "opponent_death_mode" not in frozen
 
 
 @pytest.mark.parametrize(
@@ -88,6 +95,34 @@ def test_opponent_mixture_parse_validates_supported_entry_shapes():
             },
             "unknown keys",
         ),
+        (
+            {
+                "name": "death_mode",
+                "weight": 1,
+                "opponent_policy_kind": "fixed_straight",
+                "opponent_death_mode": "normal",
+            },
+            "must use opponent_immortal",
+        ),
+        (
+            {
+                "name": "death_mode_even_when_matching",
+                "weight": 1,
+                "opponent_policy_kind": "fixed_straight",
+                "opponent_immortal": True,
+                "opponent_death_mode": "immortal",
+            },
+            "must use opponent_immortal",
+        ),
+        (
+            {
+                "name": "blank_without_immortal_intent",
+                "weight": 1,
+                "opponent_policy_kind": "fixed_straight",
+                "opponent_runtime_mode": "blank_canvas_noop",
+            },
+            "must set opponent_immortal=true",
+        ),
     ],
 )
 def test_opponent_mixture_rejects_ambiguous_or_invalid_entries(entry, match):
@@ -105,6 +140,7 @@ def test_opponent_mixture_selection_is_deterministic_and_episode_scoped():
                     "weight": 1,
                     "opponent_policy_kind": "fixed_straight",
                     "opponent_runtime_mode": "blank_canvas_noop",
+                    "opponent_immortal": True,
                 },
                 {
                     "name": "wall",
@@ -121,6 +157,7 @@ def test_opponent_mixture_selection_is_deterministic_and_episode_scoped():
 
     assert repeated == first
     assert first["selection_unit"] == OPPONENT_MIXTURE_SELECTION_UNIT
+    assert first["opponent_death_mode"] in {"immortal", "normal"}
     assert later["selection_unit"] == OPPONENT_MIXTURE_SELECTION_UNIT
     assert {first["name"], later["name"]} <= {"blank", "wall"}
 
@@ -184,16 +221,12 @@ def test_top_level_frozen_opponent_resolution_rejects_mutable_or_non_iteration_r
 
 
 def test_modal_mixture_resolution_keeps_static_frozen_refs(monkeypatch, tmp_path):
-    checkpoint_path = tmp_path / "iteration_123.pth.tar"
+    runs_mount = tmp_path / "runs"
+    checkpoint_ref = "training/run/checkpoints/lightzero/iteration_123.pth.tar"
+    checkpoint_path = runs_mount / checkpoint_ref
+    checkpoint_path.parent.mkdir(parents=True)
     checkpoint_path.write_bytes(b"fake-checkpoint")
-
-    def fake_resolve(ref, *, mount, remote_root):
-        assert ref == "training/run/checkpoints/lightzero/iteration_123.pth.tar"
-        assert mount == train_mod.RUNS_MOUNT
-        assert remote_root == train_mod.REMOTE_ROOT
-        return checkpoint_path, {"source_ref": ref, "mount": str(mount)}
-
-    monkeypatch.setattr(train_mod.runs, "resolve_mounted_ref_or_path", fake_resolve)
+    monkeypatch.setattr(train_mod, "RUNS_MOUNT", runs_mount)
 
     resolved = train_mod._resolve_opponent_mixture_for_env(
         opponent_mixture_spec={
@@ -203,9 +236,7 @@ def test_modal_mixture_resolution_keeps_static_frozen_refs(monkeypatch, tmp_path
                     "weight": 1,
                     "age_label": "somewhat_recent",
                     "opponent_policy_kind": "frozen_lightzero_checkpoint",
-                    "opponent_checkpoint_ref": (
-                        "training/run/checkpoints/lightzero/iteration_123.pth.tar"
-                    ),
+                    "opponent_checkpoint_ref": checkpoint_ref,
                 }
             ]
         }
@@ -214,9 +245,7 @@ def test_modal_mixture_resolution_keeps_static_frozen_refs(monkeypatch, tmp_path
     assert resolved is not None
     entry = resolved["entries"][0]
     assert entry["age_label"] == "somewhat_recent"
-    assert entry["opponent_checkpoint_ref"] == (
-        "training/run/checkpoints/lightzero/iteration_123.pth.tar"
-    )
+    assert entry["opponent_checkpoint_ref"] == checkpoint_ref
     assert entry["opponent_checkpoint_path"] == str(checkpoint_path)
 
 
@@ -229,6 +258,7 @@ def test_background_eval_config_threads_opponent_mixture_to_eval_and_gif():
                     "weight": 1,
                     "opponent_policy_kind": "fixed_straight",
                     "opponent_runtime_mode": "blank_canvas_noop",
+                    "opponent_immortal": True,
                 }
             ]
         }
@@ -299,6 +329,7 @@ def test_checkpoint_gif_summary_records_selected_opponent_mixture_component(
                     "weight": 1,
                     "opponent_policy_kind": "fixed_straight",
                     "opponent_runtime_mode": "blank_canvas_noop",
+                    "opponent_immortal": True,
                 }
             ]
         }

@@ -51,9 +51,23 @@ public leaderboard snapshot -> stable_slots_v1 assignment -> trainer launch
 This has been proven manually in tiny remote smokes. It is not production
 automation yet.
 
+Launch lifetime caveat:
+
+```text
+intake/drain command returns
+-> non-detached modal run app stops
+-> child game workers can be killed
+-> progress exists but latest.json/summaries do not advance
+```
+
+For child tournament work that must continue after the command returns, use
+`modal run --detach`, use a deployed path that keeps work alive correctly, or
+wait for child completion.
+
 ## Remaining Flow Gaps
 
 - rerun the smoke after the checkpoint-recency metadata fix;
-- remote-smoke pointer repair and queue/stale-claim repair;
+- write the production pointer-repair runbook; a tiny remote pointer-repair
+  smoke passed, but queue/stale-claim repair still needs remote proof;
 - prove continuation at bounded scale;
 - add safe assignment refresh policy for long-running trainers.

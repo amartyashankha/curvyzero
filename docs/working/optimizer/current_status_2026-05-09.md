@@ -11,6 +11,14 @@ The standing rule is to keep measuring and optimizing: reorient, state the
 Amdahl picture, run isolated experiments, integrate only when a whole-loop win
 is plausible, reprofile, and update docs.
 
+2026-05-15 correction: this file is an archive with many old two-seat and
+fast-render notes. Current production policy observations are CPU `cpu_oracle`
+`browser_lines + simple_symbols` as `[4,64,64]`. The GPU renderer is
+lab/profiling only; scalar `jax_gpu` is diagnostic only; `body_circles_fast` and
+`fast_gray64_direct` are historical/control names, not launch recommendations.
+Use stock LightZero `--mode train` with `env_variant=source_state_fixed_opponent`
+and the frozen-opponent route for current guidance.
+
 Render-mode cleanup, 2026-05-13: current trusted profiling/training evidence is
 the stock LightZero `--mode train` path with
 `env_variant=source_state_fixed_opponent`. In this path, compare

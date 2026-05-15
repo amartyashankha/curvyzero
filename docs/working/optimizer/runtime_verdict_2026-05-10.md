@@ -10,11 +10,14 @@ searched self-play actor throughput feeding replay and a learner, not from a
 single local trainer loop. See
 `docs/working/optimizer/distributed_muzero_architecture_research_2026-05-11.md`.
 
-Current launcher truth, 2026-05-11 late: Coach canonical CurvyZero launcher is
-`src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py --mode two-seat-selfplay`.
-The older two-seat smoke wrappers below are historical optimizer evidence, not
-the live launcher. Fixed/frozen-opponent stock `train_muzero` is
-controls/profiling only.
+2026-05-15 correction: this file is older than the stock/frozen route. Current
+trusted optimizer guidance is stock LightZero
+`src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py --mode train`
+with `env_variant=source_state_fixed_opponent` and frozen-opponent route docs.
+Production policy observations are CPU `cpu_oracle`
+`browser_lines + simple_symbols` as `[4,64,64]`. The old custom
+`--mode two-seat-selfplay` path and debug/fast render notes below are
+historical evidence only.
 
 ## Scope Boundary
 
@@ -84,9 +87,8 @@ trainer frame-stack consumption, policy/search, replay, learner, and eval.
 
 ## Two-Seat LightZero Runtime Update - 2026-05-11
 
-Archived context: this section describes old two-seat smoke-wrapper work. The
-live Coach launcher is now
-`lightzero_curvyzero_stacked_debug_visual_survival_train.py --mode two-seat-selfplay`.
+Archived context: this section describes old two-seat smoke-wrapper work. It is
+not current launch guidance.
 
 The custom two-seat CurvyTron path exists because LightZero has current-policy
 self-play for normal/alternating collector shapes, but stock `train_muzero`
@@ -94,7 +96,7 @@ does not expose a simultaneous `joint_action[B,P]` collector boundary. The
 right fix is a thin custom CurvyTron collector/adapter that reuses LightZero
 policy/MCTS/learner pieces, not a slow private reinvention.
 
-Current code state:
+Historical code state at the time:
 
 - The current two-seat self-play bridge is launched through
   `src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py --mode two-seat-selfplay`.

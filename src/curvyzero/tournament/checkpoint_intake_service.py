@@ -31,6 +31,7 @@ SUBMIT_FORBIDDEN_PAYLOAD_KEYS = frozenset(
         "placement_min_games",
         "placement_min_opponents",
         "policy_mode",
+        "policy_bonus_render_mode",
         "policy_trail_render_mode",
         "reuse_policies_per_shard",
         "round_count",
@@ -63,6 +64,7 @@ RATING_PAYLOAD_OVERRIDE_KEYS = frozenset(
         "placement_min_games",
         "placement_min_opponents",
         "policy_mode",
+        "policy_bonus_render_mode",
         "policy_trail_render_mode",
         "reuse_policies_per_shard",
         "round_count",
@@ -112,7 +114,6 @@ def merge_submit_scan_spec(
     if not submitted_run_ids and not submitted_prefix:
         return merged
 
-    merged.pop("checkpoint_refs", None)
     if submitted_run_ids:
         existing_run_ids = parse_run_ids_value(merged.get("run_ids"))
         merged["run_ids"] = ",".join(sorted({*existing_run_ids, *submitted_run_ids}))

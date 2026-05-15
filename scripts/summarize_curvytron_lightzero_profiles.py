@@ -20,9 +20,13 @@ import time
 from pathlib import Path
 from typing import Any
 
+from curvyzero.contracts.curvytron import (
+    CURVYTRON_TRAINING_TASK_ID,
+    DEFAULT_CURVYTRON_RUNS_VOLUME_NAME,
+)
 
-DEFAULT_VOLUME = "curvyzero-runs"
-DEFAULT_TASK_ID = "lightzero-curvytron-visual-survival"
+DEFAULT_VOLUME = DEFAULT_CURVYTRON_RUNS_VOLUME_NAME
+DEFAULT_TASK_ID = CURVYTRON_TRAINING_TASK_ID
 DEFAULT_DOWNLOAD_DIR = Path("/private/tmp/curvytron_lightzero_profile_summaries")
 
 

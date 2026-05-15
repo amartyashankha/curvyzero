@@ -32,11 +32,16 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from curvyzero.infra.modal import run_management as runs  # noqa: E402
+from curvyzero.contracts.curvytron import (  # noqa: E402
+    CURVYTRON_TRAINING_TASK_ID,
+    curvytron_runs_volume_name,
+    modal_volume_kwargs_for_name,
+)
 
 
 APP_NAME = "curvyzero-cleanup-curvytron-modal-runs"
-TASK_ID = "lightzero-curvytron-visual-survival"
-VOLUME_NAME = "curvyzero-runs"
+TASK_ID = CURVYTRON_TRAINING_TASK_ID
+VOLUME_NAME = curvytron_runs_volume_name()
 REMOTE_ROOT = Path("/repo")
 RUNS_MOUNT = Path("/runs")
 BASE_REF = PurePosixPath("training") / TASK_ID
@@ -67,7 +72,10 @@ image = (
     .env({"PYTHONPATH": str(REMOTE_ROOT / "src")})
     .add_local_dir(Path.cwd() / "src", remote_path=str(REMOTE_ROOT / "src"), copy=True)
 )
-runs_volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
+runs_volume = modal.Volume.from_name(
+    VOLUME_NAME,
+    **modal_volume_kwargs_for_name(VOLUME_NAME),
+)
 app = modal.App(APP_NAME)
 
 

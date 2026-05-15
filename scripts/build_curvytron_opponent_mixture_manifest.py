@@ -9,6 +9,7 @@ goes through ``submit_curvytron_survivaldiag_manifest.py``.
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import re
@@ -18,7 +19,17 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Sequence
 
-from curvyzero.env.vector_multiplayer_env import SOURCE_PHYSICS_STEP_MS
+from curvyzero.contracts.curvytron import (
+    CURVYTRON_DECISION_MS as DECISION_MS,
+    CURVYTRON_POLICY_BONUS_RENDER_MODE as BONUS_RENDER_SIMPLE_SYMBOLS,
+    CURVYTRON_POLICY_TRAIL_RENDER_MODE as RENDER_BROWSER,
+    CURVYTRON_SAVE_CKPT_AFTER_ITER as SAVE_CKPT_AFTER_ITER,
+    CURVYTRON_SOURCE_MAX_STEPS as SOURCE_MAX_STEPS,
+    CURVYTRON_TRAINING_TASK_ID,
+    DEFAULT_CURVYTRON_TRAIN_APP_NAME,
+    LEARNER_SEAT_MODE_RANDOM_PER_EPISODE,
+    REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME as REWARD_SURVIVAL_PLUS_BONUS_NO_OUTCOME,
+)
 from curvyzero.training.opponent_mixture import (
     OPPONENT_MIXTURE_SCHEMA_ID,
     parse_opponent_mixture_spec,
@@ -26,18 +37,14 @@ from curvyzero.training.opponent_mixture import (
 
 
 MODULE = "curvyzero.infra.modal.lightzero_curvyzero_stacked_debug_visual_survival_train"
-APP_NAME = "curvyzero-lightzero-curvytron-visual-survival-train"
-TASK_ID = "lightzero-curvytron-visual-survival"
+APP_NAME = DEFAULT_CURVYTRON_TRAIN_APP_NAME
+TASK_ID = CURVYTRON_TRAINING_TASK_ID
 SCHEMA_ID = "curvyzero_curvytron_opponent_mixture_manifest/v0"
 ROW_SCHEMA_ID = "curvyzero_curvytron_opponent_mixture_manifest_row/v0"
 
 MODE_TRAIN = "train"
 ENV_SOURCE_STATE_FIXED_OPPONENT = "source_state_fixed_opponent"
-REWARD_SURVIVAL_PLUS_BONUS_NO_OUTCOME = "survival_plus_bonus_no_outcome"
-RENDER_FAST = "body_circles_fast"
-RENDER_BROWSER = "browser_lines"
-SOURCE_MAX_STEPS = 65_536
-DECISION_MS = SOURCE_PHYSICS_STEP_MS
+RENDER_FAST = RENDER_BROWSER
 DEFAULT_MATRIX_NAME = "curvy-mix2-20260513a"
 DEFAULT_RUN_PREFIX = "curvy-mix2"
 DEFAULT_ATTEMPT_PREFIX = "try-mix2"
@@ -45,7 +52,6 @@ DEFAULT_NEXT_WAVE_MATRIX_NAME = "curvy-mix3-nextwave-20260513a"
 DEFAULT_NEXT_WAVE_RUN_PREFIX = "curvy-mix3nw"
 DEFAULT_NEXT_WAVE_ATTEMPT_PREFIX = "try-mix3nw"
 DEFAULT_OUTPUT_ROOT = Path("artifacts/local/curvytron_opponent_mixture_manifests")
-SAVE_CKPT_AFTER_ITER = 10_000
 MAIN_CORE_COPY_COUNT = 3
 MAIN_SENTINEL_COPY_COUNT = 1
 CONTROL_COPY_COUNT = 1
@@ -343,7 +349,7 @@ def _component_entry(
             "weight": weight,
             "opponent_policy_kind": "fixed_straight",
             "opponent_runtime_mode": "blank_canvas_noop",
-            "opponent_death_mode": "normal",
+            "opponent_immortal": True,
         }
     if component == "passive":
         return {
@@ -352,7 +358,7 @@ def _component_entry(
             "weight": weight,
             "opponent_policy_kind": "fixed_straight",
             "opponent_runtime_mode": "normal",
-            "opponent_death_mode": "immortal",
+            "opponent_immortal": True,
         }
     if component == "scripted":
         return {
@@ -361,7 +367,7 @@ def _component_entry(
             "weight": weight,
             "opponent_policy_kind": "proactive_wall_avoidant",
             "opponent_runtime_mode": "normal",
-            "opponent_death_mode": "immortal",
+            "opponent_immortal": True,
             "opponent_policy_seed": _derived_seed("scripted_opponent", seed),
             "opponent_wall_avoidant_safe_margin": 96.0,
         }
@@ -372,7 +378,7 @@ def _component_entry(
             "weight": weight,
             "opponent_policy_kind": "frozen_lightzero_checkpoint",
             "opponent_runtime_mode": "normal",
-            "opponent_death_mode": "immortal",
+            "opponent_immortal": True,
             "opponent_checkpoint_ref": refs[component],
             "opponent_snapshot_ref": f"curvy_mix_{component}_{Path(refs[component]).stem}",
             "opponent_policy_seed": _derived_seed(f"{component}_opponent", seed),
@@ -393,7 +399,15 @@ def _mixture_spec(recipe: Recipe, *, refs: dict[str, str], seed: int) -> dict[st
     parsed = parse_opponent_mixture_spec(spec)
     if parsed is None:
         raise ValueError(f"recipe {recipe.recipe_id} produced an empty mixture")
-    return parsed
+    return _public_mixture_spec(parsed)
+
+
+def _public_mixture_spec(parsed: dict[str, Any]) -> dict[str, Any]:
+    public = copy.deepcopy(parsed)
+    for entry in public.get("entries", []):
+        if isinstance(entry, dict):
+            entry.pop("opponent_death_mode", None)
+    return public
 
 
 def _train_function_name(compute: str) -> str:
@@ -454,6 +468,8 @@ def _command_for_row(
             json.dumps(mixture_spec, sort_keys=True, separators=(",", ":")),
             "--source-state-trail-render-mode",
             base.render_mode,
+            "--source-state-bonus-render-mode",
+            BONUS_RENDER_SIMPLE_SYMBOLS,
             "--ego-action-straight-override-probability",
             "0.0",
             "--control-noise-profile-id",
@@ -545,6 +561,7 @@ def _train_kwargs(
     attempt_id: str,
     seed: int,
     mixture_spec: dict[str, Any],
+    initial_policy_checkpoint_ref: str,
 ) -> dict[str, Any]:
     return {
         "mode": MODE_TRAIN,
@@ -568,10 +585,13 @@ def _train_kwargs(
         "profile_volume_commit": False,
         "lightzero_multi_gpu": False,
         "save_ckpt_after_iter": base.save_ckpt_after_iter,
+        "commit_on_checkpoint": True,
         "stop_after_learner_train_calls": args.stop_after_learner_train_calls,
         "env_variant": ENV_SOURCE_STATE_FIXED_OPPONENT,
         "reward_variant": REWARD_SURVIVAL_PLUS_BONUS_NO_OUTCOME,
         "source_state_trail_render_mode": base.render_mode,
+        "source_state_bonus_render_mode": BONUS_RENDER_SIMPLE_SYMBOLS,
+        "learner_seat_mode": LEARNER_SEAT_MODE_RANDOM_PER_EPISODE,
         "ego_action_straight_override_probability": 0.0,
         "policy_action_repeat_min": base.policy_action_repeat_min,
         "policy_action_repeat_max": base.policy_action_repeat_max,
@@ -588,6 +608,9 @@ def _train_kwargs(
         "opponent_snapshot_ref": None,
         "opponent_checkpoint_report_ref": None,
         "opponent_checkpoint_state_key": None,
+        "initial_policy_checkpoint_ref": initial_policy_checkpoint_ref,
+        "initial_policy_checkpoint_state_key": None,
+        "initial_policy_checkpoint_load_mode": "matching_shape",
         "opponent_mixture_spec": mixture_spec,
         "background_eval_enabled": True,
         "background_eval_launch_kind": "poller",
@@ -707,6 +730,7 @@ def _row(
         attempt_id=attempt_id,
         seed=seed,
         mixture_spec=mixture_spec,
+        initial_policy_checkpoint_ref=refs["recent"],
     )
     poller_kwargs = _poller_kwargs(
         args=args,
@@ -743,7 +767,8 @@ def _row(
         "reward_variant": REWARD_SURVIVAL_PLUS_BONUS_NO_OUTCOME,
         "source_max_steps": SOURCE_MAX_STEPS,
         "source_state_trail_render_mode": base.render_mode,
-        "render_role": "browser" if base.render_mode == RENDER_BROWSER else "fast",
+        "source_state_bonus_render_mode": BONUS_RENDER_SIMPLE_SYMBOLS,
+        "render_role": "target_a" if base.render_token == "rf" else "target_b",
         "training_seed": seed,
         "mixture_seed": mixture_spec["seed"],
         "eval_seed": _derived_seed("eval", seed),
@@ -760,6 +785,7 @@ def _row(
             "token": base.token,
             "render_token": base.render_token,
             "source_state_trail_render_mode": base.render_mode,
+            "source_state_bonus_render_mode": BONUS_RENDER_SIMPLE_SYMBOLS,
             "num_simulations": base.num_simulations,
             "collector_env_num": base.collector_env_num,
             "n_episode": base.n_episode,
@@ -890,8 +916,8 @@ def _append_next_wave_pair(
         f"s{rf_base.num_simulations}:c{rf_base.collector_env_num}:"
         f"l{rf_base.batch_size}:{rf_base.repeat_token}:c{copy_index}"
     )
-    lead_render = "fast" if pair_number % 2 else "browser"
-    bases = (rf_base, rb_base) if lead_render == "fast" else (rb_base, rf_base)
+    lead_render = "target_a" if pair_number % 2 else "target_b"
+    bases = (rf_base, rb_base) if lead_render == "target_a" else (rb_base, rf_base)
     for position, base in enumerate(bases, start=1):
         row = _row(
             args=args,
@@ -910,13 +936,13 @@ def _append_next_wave_pair(
             {
                 "next_wave_block": block,
                 "launch_order_index": len(rows) + 1,
-                "launch_order_strategy": "matched_render_pairs_alternating_lead",
+                "launch_order_strategy": "paired_target_replicates_alternating_lead",
                 "launch_pair_id": pair_id,
                 "launch_pair_key": pair_key,
                 "launch_pair_render_lead": lead_render,
                 "launch_pair_position": position,
                 "render_pairing_note": (
-                    "Render pairs are kept for learning/fidelity readouts; "
+                    "Paired target-render rows are kept as matched replicates; "
                     "alternating launch lead keeps startup timing measurements clean."
                 ),
             }
@@ -1165,9 +1191,9 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
     selected_recipe_ids = {recipe.recipe_id for recipe in recipes}
     if args.profile == "next-wave":
         shape = (
-            "6 main recipes x 2 renders x 3 repeat levels x 5 seeds"
-            " + 5 controls x 2 renders x 3 repeat levels x 2 seeds"
-            " + 5 selected recipes x 2 renders x 2 repeat levels x "
+            "6 main recipes x 2 target replicate tokens x 3 repeat levels x 5 seeds"
+            " + 5 controls x 2 target replicate tokens x 3 repeat levels x 2 seeds"
+            " + 5 selected recipes x 2 target replicate tokens x 2 repeat levels x "
             "3 compute probes x 1 seed = 300 rows"
         )
     elif args.profile == "batch":
@@ -1214,15 +1240,14 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
         ),
         "shape": shape,
         "launch_order_strategy": (
-            "matched_render_pairs_alternating_lead"
+            "paired_target_replicates_alternating_lead"
             if args.profile == "next-wave"
             else "recipe_then_base"
         ),
         "render_pairing_rationale": (
-            "Paired fast/browser rows are retained for learning and fidelity "
-            "comparisons. Current matched-pair status does not make browser a "
-            "checkpoint-speed blocker; alternating launch lead keeps timing "
-            "measurement clean."
+            "Paired target-render rows are retained as matched replicates. "
+            "Both tokens now use browser_lines + simple_symbols; alternating "
+            "launch lead keeps timing measurement clean."
             if args.profile == "next-wave"
             else None
         ),
@@ -1238,6 +1263,7 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
                 "rf": RENDER_FAST,
                 "rb": RENDER_BROWSER,
             },
+            "source_state_bonus_render_mode": BONUS_RENDER_SIMPLE_SYMBOLS,
             "num_simulations_values": sorted(
                 {profile.num_simulations for profile in active_base_profiles}
             ),
@@ -1286,7 +1312,7 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
             ),
             "scripted": "proactive wall-avoidant hand-coded opponent, immortal",
             "passive": "fixed-straight immortal trail source",
-            "blank": "hidden no-op opponent, no trail and no collision pressure",
+            "blank": "hidden no-op immortal opponent, no trail and no collision pressure",
         },
         "guards": {
             "deployed_app_grouped_submitter_required": True,
@@ -1369,6 +1395,7 @@ def _validate_row_base_settings(row: dict[str, Any], base: BaseProfile) -> None:
         "token": base.token,
         "render_token": base.render_token,
         "source_state_trail_render_mode": base.render_mode,
+        "source_state_bonus_render_mode": BONUS_RENDER_SIMPLE_SYMBOLS,
         "num_simulations": base.num_simulations,
         "collector_env_num": base.collector_env_num,
         "n_episode": base.n_episode,
@@ -1386,6 +1413,7 @@ def _validate_row_base_settings(row: dict[str, Any], base: BaseProfile) -> None:
     train_kwargs = row["train_kwargs"]
     for key in (
         "source_state_trail_render_mode",
+        "source_state_bonus_render_mode",
         "num_simulations",
         "collector_env_num",
         "n_episode",

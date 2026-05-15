@@ -7,14 +7,28 @@ import json
 from pathlib import PurePosixPath
 from typing import Any, Mapping, Sequence
 
-from curvyzero.env.vector_multiplayer_env import (
-    DEFAULT_DECISION_SOURCE_FRAMES,
-    SOURCE_PHYSICS_STEP_MS,
+from curvyzero.env.vector_multiplayer_env import SOURCE_PHYSICS_STEP_MS
+from curvyzero.contracts.curvytron import (
+    CURVYTRON_BACKGROUND_GIF_FPS,
+    CURVYTRON_DEFAULT_NUM_SIMULATIONS,
+    CURVYTRON_DEFAULT_POLICY_BATCH_SIZE,
+    CURVYTRON_DECISION_MS,
+    CURVYTRON_SOURCE_MAX_STEPS,
+    CURVYTRON_TOURNAMENT_TASK_ID,
+)
+from curvyzero.env.observation_surface_contract import (
+    DEFAULT_POLICY_OBSERVATION_BACKEND,
+    POLICY_BONUS_RENDER_MODE,
+    POLICY_OBSERVATION_CONTRACT_ID,
+    POLICY_RENDER_SURFACE_LABEL,
+    POLICY_TRAIL_RENDER_MODE,
+    REFERENCE_ARTIFACT_TRAIL_RENDER_MODE,
+    policy_observation_surface,
 )
 from curvyzero.infra.modal import run_management as runs
 
 
-TOURNAMENT_TASK_ID = "curvytron-checkpoint-tournament"
+TOURNAMENT_TASK_ID = CURVYTRON_TOURNAMENT_TASK_ID
 TOURNAMENT_BASE_REF = PurePosixPath("tournaments") / "curvytron"
 TOURNAMENT_RUN_MARKER_FILENAME = "show_in_tournament_browser.flag"
 CHECKPOINT_SELECTION_LATEST = "latest"
@@ -48,24 +62,35 @@ POLICY_MODE_CHOICES = (POLICY_MODE_EVAL, POLICY_MODE_COLLECT)
 DEFAULT_GAMES_PER_PAIR = 21
 DEFAULT_GAMES_PER_SHARD = 1
 DEFAULT_REUSE_POLICIES_PER_SHARD = True
-DEFAULT_MAX_STEPS = 8_000
+DEFAULT_MAX_STEPS = CURVYTRON_SOURCE_MAX_STEPS
 DEFAULT_SOURCE_PHYSICS_STEP_MS = float(SOURCE_PHYSICS_STEP_MS)
-DEFAULT_DECISION_MS = float(DEFAULT_DECISION_SOURCE_FRAMES * DEFAULT_SOURCE_PHYSICS_STEP_MS)
-DEFAULT_NUM_SIMULATIONS = 8
-DEFAULT_POLICY_BATCH_SIZE = 8
+DEFAULT_DECISION_MS = CURVYTRON_DECISION_MS
+DEFAULT_NUM_SIMULATIONS = CURVYTRON_DEFAULT_NUM_SIMULATIONS
+DEFAULT_POLICY_BATCH_SIZE = CURVYTRON_DEFAULT_POLICY_BATCH_SIZE
+DEFAULT_POLICY_TRAIL_RENDER_MODE = POLICY_TRAIL_RENDER_MODE
+DEFAULT_POLICY_BONUS_RENDER_MODE = POLICY_BONUS_RENDER_MODE
+DEFAULT_TOURNAMENT_POLICY_OBSERVATION_BACKEND = DEFAULT_POLICY_OBSERVATION_BACKEND
+DEFAULT_POLICY_OBSERVATION_CONTRACT_ID = POLICY_OBSERVATION_CONTRACT_ID
+DEFAULT_POLICY_RENDER_SURFACE_LABEL = POLICY_RENDER_SURFACE_LABEL
+DEFAULT_POLICY_OBSERVATION_SURFACE = policy_observation_surface()
 DEFAULT_COLLECT_TEMPERATURE = 1.0
 DEFAULT_COLLECT_EPSILON = 0.25
 DEFAULT_FRAME_STRIDE = 1
-DEFAULT_GIF_FPS = 8.0
+DEFAULT_GIF_FPS = CURVYTRON_BACKGROUND_GIF_FPS
+DEFAULT_GIF_MIN_FRAME_DURATION_MS = 10
 DEFAULT_FRAME_SIZE = 704
-DEFAULT_GIF_TRAIL_RENDER_MODE = "browser_lines"
-DEFAULT_SAVE_GIF = False
-DEFAULT_GIF_SAMPLE_GAMES_PER_PAIR = 1
+DEFAULT_GIF_TRAIL_RENDER_MODE = REFERENCE_ARTIFACT_TRAIL_RENDER_MODE
+DEFAULT_SAVE_GIF = True
+DEFAULT_GIF_SAMPLE_GAMES_PER_PAIR = 5
 DEFAULT_GIF_SAMPLE_STRATEGY = "evenly_spaced"
 GIF_SAMPLE_STRATEGY_CHOICES = ("first_n", "evenly_spaced")
 DEFAULT_SAVE_FRAMES_NPZ = False
 DEFAULT_ORDERED_PAIRS = False
 DEFAULT_INCLUDE_SELF_PAIRS = False
+SEAT_ORDER_FIXED = "fixed"
+SEAT_ORDER_BALANCED_RANDOM = "balanced_random"
+SEAT_ORDER_CHOICES = (SEAT_ORDER_FIXED, SEAT_ORDER_BALANCED_RANDOM)
+DEFAULT_SEAT_ORDER_MODE = SEAT_ORDER_BALANCED_RANDOM
 DEFAULT_RATING_RUN_ID = "elo"
 DEFAULT_RATING_ROUND_COUNT = 1
 RATING_PAIR_SELECTION_ALL_PAIRS = "all_pairs"
@@ -189,6 +214,10 @@ def rating_pool_hash(checkpoints: Sequence[Mapping[str, Any]]) -> str:
                 "model_env_variant": checkpoint.get("model_env_variant"),
                 "model_reward_variant": checkpoint.get("model_reward_variant"),
                 "policy_trail_render_mode": checkpoint.get("policy_trail_render_mode"),
+                "policy_bonus_render_mode": checkpoint.get("policy_bonus_render_mode"),
+                "policy_observation_backend": checkpoint.get(
+                    "policy_observation_backend"
+                ),
             }
         )
     rows.sort(key=lambda row: (row["checkpoint_id"], row["checkpoint_ref"]))
@@ -212,6 +241,10 @@ def rating_roster_by_checkpoint(checkpoints: Sequence[Mapping[str, Any]]) -> dic
             "model_env_variant": checkpoint.get("model_env_variant"),
             "model_reward_variant": checkpoint.get("model_reward_variant"),
             "policy_trail_render_mode": checkpoint.get("policy_trail_render_mode"),
+            "policy_bonus_render_mode": checkpoint.get("policy_bonus_render_mode"),
+            "policy_observation_backend": checkpoint.get(
+                "policy_observation_backend"
+            ),
         }
     return dict(sorted(roster.items()))
 
@@ -451,6 +484,7 @@ __all__ = [
     "DEFAULT_GAMES_PER_PAIR",
     "DEFAULT_GAMES_PER_SHARD",
     "DEFAULT_GIF_FPS",
+    "DEFAULT_GIF_MIN_FRAME_DURATION_MS",
     "DEFAULT_GIF_SAMPLE_GAMES_PER_PAIR",
     "DEFAULT_GIF_SAMPLE_STRATEGY",
     "DEFAULT_GIF_TRAIL_RENDER_MODE",
@@ -459,6 +493,11 @@ __all__ = [
     "DEFAULT_NUM_SIMULATIONS",
     "DEFAULT_ORDERED_PAIRS",
     "DEFAULT_POLICY_BATCH_SIZE",
+    "DEFAULT_POLICY_BONUS_RENDER_MODE",
+    "DEFAULT_POLICY_OBSERVATION_CONTRACT_ID",
+    "DEFAULT_POLICY_OBSERVATION_SURFACE",
+    "DEFAULT_POLICY_RENDER_SURFACE_LABEL",
+    "DEFAULT_POLICY_TRAIL_RENDER_MODE",
     "DEFAULT_RATING_BASE_K",
     "DEFAULT_RATING_DELTA_CLAMP",
     "DEFAULT_RATING_DRAW_SCORE",
@@ -475,6 +514,7 @@ __all__ = [
     "DEFAULT_REUSE_POLICIES_PER_SHARD",
     "DEFAULT_SAVE_FRAMES_NPZ",
     "DEFAULT_SAVE_GIF",
+    "DEFAULT_SEAT_ORDER_MODE",
     "DEFAULT_SOURCE_PHYSICS_STEP_MS",
     "GAME_SCHEMA_ID",
     "GAME_SHARD_SCHEMA_ID",
@@ -499,6 +539,9 @@ __all__ = [
     "SCHEDULE_REASON_PLACEMENT",
     "SCHEDULE_REASON_RANDOM_BRIDGE",
     "SCHEDULE_REASON_UNCERTAIN",
+    "SEAT_ORDER_BALANCED_RANDOM",
+    "SEAT_ORDER_CHOICES",
+    "SEAT_ORDER_FIXED",
     "TOURNAMENT_BASE_REF",
     "TOURNAMENT_RUN_MARKER_FILENAME",
     "TOURNAMENT_SCHEMA_ID",

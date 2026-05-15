@@ -7,8 +7,6 @@ from curvyzero.env.vector_visual_observation import SOURCE_STATE_CANVAS_GRAY64_S
 from curvyzero.env.vector_visual_observation import (
     SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
 )
-from curvyzero.env.vector_visual_observation import BONUS_SYMBOL_INNER_LUMA
-from curvyzero.env.vector_visual_observation import BONUS_SYMBOL_OUTER_LUMA_BY_SHAPE
 from curvyzero.env.vector_visual_observation import SourceStateBrowserLineTrailLayerCache
 from curvyzero.env.vector_visual_observation import SourceStateCanvasGray64DirtyRenderCache
 from curvyzero.env.vector_visual_observation import SourceStateGray64DownsampleScratch
@@ -23,7 +21,6 @@ from curvyzero.env.vector_visual_observation import render_source_state_rgb_canv
 from curvyzero.env.vector_visual_observation import rgb_canvas_like_to_gray64
 from curvyzero.training import curvytron_two_seat_lightzero_train_smoke as train_smoke
 from curvyzero.training.curvytron_current_policy_selfplay_smoke import (
-    STACK_RENDER_MODE_FAST_GRAY64_DIRECT,
     SourceStateGray64Stack4,
     player_perspective_rgb_palette,
 )
@@ -149,8 +146,8 @@ def test_two_seat_stack_defaults_to_browser_lines_rgb_to_gray_player_perspective
         "render_source_state_canvas_gray64_player_perspectives"
     )
     assert stack.render_metadata()["two_seat_optimized_render_is_equivalence_cache"] is True
-    assert stack.render_metadata()["bonus_renderer_kind"] == "browser_sprites"
-    assert stack.render_metadata()["bonus_renderer_is_approximation"] is False
+    assert stack.render_metadata()["bonus_renderer_kind"] == "simple_symbol_masks"
+    assert stack.render_metadata()["bonus_renderer_is_approximation"] is True
     assert (
         stack.render_metadata()["rgb_source_frame_size"]
         == SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE
@@ -162,133 +159,13 @@ def test_two_seat_stack_defaults_to_browser_lines_rgb_to_gray_player_perspective
     assert float(np.max(np.abs(observation[0, 0] - observation[0, 1]))) > 0.0
 
 
-def test_two_seat_fast_gray64_direct_uses_visual_trail_and_player_perspective():
-    state = _small_source_state()
-    state["visual_trail_active"] = np.asarray([[True, True]], dtype=bool)
-    state["visual_trail_write_cursor"] = np.asarray([2], dtype=np.int32)
-    state["visual_trail_pos"] = np.asarray([[[48.0, 8.0], [48.0, 24.0]]], dtype=np.float64)
-    state["visual_trail_radius"] = np.asarray([[1.0, 1.0]], dtype=np.float64)
-    state["visual_trail_owner"] = np.asarray([[0, 0]], dtype=np.int16)
-    state["visual_trail_break_before"] = np.asarray([[True, False]], dtype=bool)
-    state["bonus_active"] = np.asarray([[True, True]], dtype=bool)
-    state["bonus_pos"] = np.asarray([[[24.0, 24.0], [30.0, 30.0]]], dtype=np.float64)
-    state["bonus_radius"] = np.asarray([[1.0, 1.0]], dtype=np.float64)
-    state["bonus_type"] = np.asarray([[3, 11]], dtype=np.int16)
-    env = SimpleNamespace(batch_size=1, player_count=2, state=state)
-    stack = SourceStateGray64Stack4(
-        batch_size=1,
-        player_count=2,
-        trail_render_mode=STACK_RENDER_MODE_FAST_GRAY64_DIRECT,
-    )
-
-    observation = stack.update(env)
-
-    def cell(x: float, y: float) -> tuple[int, int]:
-        return (
-            int(np.clip(np.rint((y / 64.0) * 63.0), 0, 63)),
-            int(np.clip(np.rint((x / 64.0) * 63.0), 0, 63)),
+def test_two_seat_stack_rejects_old_direct_fast_policy_surface():
+    with pytest.raises(ValueError, match="trail_render_mode must be one of"):
+        SourceStateGray64Stack4(
+            batch_size=1,
+            player_count=2,
+            trail_render_mode="fast_gray64_direct",
         )
-
-    trail_y, trail_x = cell(48.0, 8.0)
-    self_head_y, self_head_x = cell(10.0, 10.0)
-    other_head_y, other_head_x = cell(42.0, 18.0)
-    bonus_a_y, bonus_a_x = cell(24.0, 24.0)
-    bonus_b_y, bonus_b_x = cell(30.0, 30.0)
-
-    assert stack.render_metadata()["trail_render_mode"] == STACK_RENDER_MODE_FAST_GRAY64_DIRECT
-    assert stack.render_metadata()["rgb_to_gray64"] is False
-    assert stack.render_metadata()["trail_renderer_is_approximation"] is True
-    assert stack.render_metadata()["bonus_renderer_kind"] == "simple_symbol_masks"
-    assert observation.shape == (1, 2, 4, 64, 64)
-    assert observation[0, 0, -1, trail_y, trail_x] == pytest.approx(96.0 / 255.0)
-    assert observation[0, 1, -1, trail_y, trail_x] == pytest.approx(128.0 / 255.0)
-    assert observation[0, 0, -1, self_head_y, self_head_x] == pytest.approx(96.0 / 255.0)
-    assert observation[0, 1, -1, self_head_y, self_head_x] == pytest.approx(128.0 / 255.0)
-    assert observation[0, 0, -1, other_head_y, other_head_x] == pytest.approx(128.0 / 255.0)
-    assert observation[0, 1, -1, other_head_y, other_head_x] == pytest.approx(96.0 / 255.0)
-    bonus_a_patch = np.rint(
-        observation[0, 0, -1, bonus_a_y - 3 : bonus_a_y + 4, bonus_a_x - 3 : bonus_a_x + 4]
-        * 255.0
-    ).astype(np.uint8)
-    bonus_b_patch = np.rint(
-        observation[0, 0, -1, bonus_b_y - 3 : bonus_b_y + 4, bonus_b_x - 3 : bonus_b_x + 4]
-        * 255.0
-    ).astype(np.uint8)
-    np.testing.assert_array_equal(
-        bonus_a_patch,
-        np.rint(
-            observation[0, 1, -1, bonus_a_y - 3 : bonus_a_y + 4, bonus_a_x - 3 : bonus_a_x + 4]
-            * 255.0
-        ).astype(np.uint8),
-    )
-    np.testing.assert_array_equal(
-        bonus_b_patch,
-        np.rint(
-            observation[0, 1, -1, bonus_b_y - 3 : bonus_b_y + 4, bonus_b_x - 3 : bonus_b_x + 4]
-            * 255.0
-        ).astype(np.uint8),
-    )
-    assert int(BONUS_SYMBOL_INNER_LUMA) in bonus_a_patch
-    assert int(BONUS_SYMBOL_INNER_LUMA) in bonus_b_patch
-    assert int(BONUS_SYMBOL_OUTER_LUMA_BY_SHAPE[0]) in bonus_a_patch
-    assert int(BONUS_SYMBOL_OUTER_LUMA_BY_SHAPE[2]) in bonus_b_patch
-    assert not np.array_equal(bonus_a_patch, bonus_b_patch)
-    assert float(np.max(np.abs(observation[0, 0] - observation[0, 1]))) > 0.0
-
-
-def test_two_seat_fast_gray64_direct_semantic_mask_approximates_browser_reference():
-    state = _small_source_state()
-    state["visual_trail_active"] = np.asarray([[True, True, True, True, True, True]], dtype=bool)
-    state["visual_trail_write_cursor"] = np.asarray([6], dtype=np.int32)
-    state["visual_trail_pos"] = np.asarray(
-        [[[8.0, 10.0], [12.0, 10.0], [16.0, 10.0], [40.0, 18.0], [44.0, 18.0], [48.0, 18.0]]],
-        dtype=np.float64,
-    )
-    state["visual_trail_radius"] = np.asarray([[1.0, 1.0, 1.0, 1.0, 1.0, 1.0]], dtype=np.float64)
-    state["visual_trail_owner"] = np.asarray([[0, 0, 0, 1, 1, 1]], dtype=np.int16)
-    state["visual_trail_break_before"] = np.asarray(
-        [[True, False, False, True, False, False]],
-        dtype=bool,
-    )
-    state["bonus_active"] = np.asarray([[True]], dtype=bool)
-    state["bonus_pos"] = np.asarray([[[24.0, 24.0]]], dtype=np.float64)
-    state["bonus_radius"] = np.asarray([[1.0]], dtype=np.float64)
-    state["bonus_type"] = np.asarray([[7]], dtype=np.int16)
-    env = SimpleNamespace(batch_size=1, player_count=2, state=state)
-
-    browser = SourceStateGray64Stack4(
-        batch_size=1,
-        player_count=2,
-        trail_render_mode=TRAIL_RENDER_MODE_BROWSER_LINES,
-    ).update(env)
-    fast = SourceStateGray64Stack4(
-        batch_size=1,
-        player_count=2,
-        trail_render_mode=STACK_RENDER_MODE_FAST_GRAY64_DIRECT,
-    ).update(env)
-
-    threshold = 40.0 / 255.0
-    browser_mask = browser[0, 0, -1] > threshold
-    fast_mask = fast[0, 0, -1] > threshold
-    assert int(browser_mask.sum()) > 0
-    assert int(fast_mask.sum()) > 0
-
-    def dilate(mask: np.ndarray) -> np.ndarray:
-        padded = np.pad(mask, 1, mode="constant", constant_values=False)
-        result = np.zeros_like(mask, dtype=bool)
-        for y_offset in range(3):
-            for x_offset in range(3):
-                result |= padded[y_offset : y_offset + 64, x_offset : x_offset + 64]
-        return result
-
-    fast_near = dilate(fast_mask)
-    browser_near = dilate(browser_mask)
-    browser_recall = float((browser_mask & fast_near).sum()) / float(browser_mask.sum())
-    fast_recall = float((fast_mask & browser_near).sum()) / float(fast_mask.sum())
-    foreground_ratio = float(fast_mask.sum()) / float(browser_mask.sum())
-    assert browser_recall > 0.35
-    assert fast_recall > 0.35
-    assert 0.25 < foreground_ratio < 2.5
 
 
 @pytest.mark.parametrize(
@@ -687,6 +564,7 @@ def test_two_seat_dirty_render_cache_invalidates_trail_and_body_clear():
 
     np.testing.assert_array_equal(cached, direct)
     assert dirty_cache.stats.fallbacks >= 1
+    assert dirty_cache.stats.fallback_reasons["trail_cache_rebuild:prefix_mutation"] >= 1
     assert not dirty_cache.initialized
 
 
@@ -841,43 +719,29 @@ def test_rgb_canvas_like_to_gray64_downsample_scratch_matches_baseline():
     assert np.array_equal(optimized, baseline)
 
 
-def test_two_seat_stack_accepts_fast_render_mode_and_rejects_unknown_mode():
-    stack = SourceStateGray64Stack4(
-        batch_size=1,
-        player_count=2,
-        trail_render_mode=TRAIL_RENDER_MODE_BODY_CIRCLES_FAST,
-    )
-
-    assert stack.render_metadata()["trail_render_mode"] == TRAIL_RENDER_MODE_BODY_CIRCLES_FAST
-    assert stack.render_metadata()["trail_renderer_is_approximation"] is True
+def test_two_seat_stack_rejects_old_body_circle_and_unknown_modes():
+    with pytest.raises(ValueError, match="trail_render_mode"):
+        SourceStateGray64Stack4(
+            batch_size=1,
+            player_count=2,
+            trail_render_mode=TRAIL_RENDER_MODE_BODY_CIRCLES_FAST,
+        )
     with pytest.raises(ValueError, match="trail_render_mode"):
         SourceStateGray64Stack4(batch_size=1, player_count=2, trail_render_mode="mystery")
 
 
-def test_two_seat_stack_render_mode_changes_trail_geometry():
-    state = _small_source_state()
-    state["present"][:, :] = False
-    state["alive"][:, :] = False
-    state["body_active"][:, :] = False
-    state["body_active"][0, :2] = True
-    state["body_pos"][0, :2] = np.asarray([[8.0, 10.0], [18.0, 10.0]])
-    state["body_radius"][0, :2] = np.asarray([0.5, 0.5])
-    state["body_owner"][0, :2] = np.asarray([0, 0], dtype=np.int16)
-    state["body_write_cursor"][0] = 2
-    env = SimpleNamespace(batch_size=1, player_count=2, state=state)
-
-    browser_observation = SourceStateGray64Stack4(
+def test_two_seat_stack_uses_browser_line_policy_geometry():
+    env = SimpleNamespace(batch_size=1, player_count=2, state=_small_source_state())
+    stack = SourceStateGray64Stack4(
         batch_size=1,
         player_count=2,
         trail_render_mode=TRAIL_RENDER_MODE_BROWSER_LINES,
-    ).update(env)
-    fast_observation = SourceStateGray64Stack4(
-        batch_size=1,
-        player_count=2,
-        trail_render_mode=TRAIL_RENDER_MODE_BODY_CIRCLES_FAST,
-    ).update(env)
+    )
 
-    assert float(np.max(np.abs(browser_observation - fast_observation))) > 0.0
+    observation = stack.update(env)
+    assert stack.render_metadata()["trail_render_mode"] == TRAIL_RENDER_MODE_BROWSER_LINES
+    assert stack.render_metadata()["trail_renderer_is_approximation"] is False
+    assert observation.shape == (1, 2, 4, 64, 64)
 
 
 def test_two_seat_runner_records_render_mode_when_lightzero_is_blocked(monkeypatch):
@@ -892,19 +756,19 @@ def test_two_seat_runner_records_render_mode_when_lightzero_is_blocked(monkeypat
         steps=1,
         outer_iterations=1,
         death_mode="profile_no_death",
-        trail_render_mode=TRAIL_RENDER_MODE_BODY_CIRCLES_FAST,
+        trail_render_mode=TRAIL_RENDER_MODE_BROWSER_LINES,
         require_installed_lightzero=False,
     )
 
     assert result["ok"] is False
-    assert result["inputs"]["trail_render_mode"] == TRAIL_RENDER_MODE_BODY_CIRCLES_FAST
+    assert result["inputs"]["trail_render_mode"] == TRAIL_RENDER_MODE_BROWSER_LINES
     assert result["inputs"]["death_mode"] == "profile_no_death"
     assert result["inputs"]["death_suppression_for_profile"] is True
     assert result["surface"]["single_frame_schema_id"] == (
         SOURCE_STATE_CANVAS_GRAY64_SCHEMA_ID
     )
     assert result["surface"]["render"]["trail_render_mode"] == (
-        TRAIL_RENDER_MODE_BODY_CIRCLES_FAST
+        TRAIL_RENDER_MODE_BROWSER_LINES
     )
 
 
@@ -1445,10 +1309,7 @@ def test_two_seat_observation_noise_is_float32_bounded_and_non_mutating():
 
 @pytest.mark.parametrize(
     "trail_render_mode",
-    [
-        STACK_RENDER_MODE_FAST_GRAY64_DIRECT,
-        "browser_lines",
-    ],
+    ["browser_lines"],
 )
 def test_two_seat_stack_reset_rows_renders_only_reset_rows(trail_render_mode: str):
     env = train_smoke.VectorMultiplayerEnv(

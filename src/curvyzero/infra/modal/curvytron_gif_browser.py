@@ -19,6 +19,12 @@ from typing import Any
 from urllib.parse import quote, urlencode
 
 from curvyzero.infra.modal import run_management as run_mgmt
+from curvyzero.contracts.curvytron import (
+    CURVYTRON_TRAINING_TASK_ID,
+    curvytron_gif_browser_app_name,
+    curvytron_runs_volume_name,
+    modal_volume_kwargs_for_name,
+)
 
 try:
     import modal
@@ -26,14 +32,25 @@ except ModuleNotFoundError:  # pragma: no cover - lets helper tests run without 
     modal = None  # type: ignore[assignment]
 
 
-APP_NAME = "curvyzero-curvytron-gif-browser"
-TASK_ID = "lightzero-curvytron-visual-survival"
-VOLUME_NAME = "curvyzero-runs"
+APP_NAME = curvytron_gif_browser_app_name()
+TASK_ID = CURVYTRON_TRAINING_TASK_ID
+VOLUME_NAME = curvytron_runs_volume_name()
 RUNS_MOUNT = Path("/runs")
+REMOTE_ROOT = Path("/repo")
 BASE_REF = PurePosixPath("training") / TASK_ID
-DEFAULT_LIMIT = 8
+DEFAULT_LIMIT = 50
 MAX_LIMIT = 500
 DEFAULT_OK_FILTER = "ok"
+RUN_CATEGORY_CURRENT = "current"
+RUN_CATEGORY_ARCHIVE = "archive"
+RUN_CATEGORY_ALL = "all"
+RUN_CATEGORY_CHOICES = (RUN_CATEGORY_CURRENT, RUN_CATEGORY_ARCHIVE, RUN_CATEGORY_ALL)
+RUN_CATEGORY_LABELS = {
+    RUN_CATEGORY_CURRENT: "Current batch",
+    RUN_CATEGORY_ARCHIVE: "Archive",
+    RUN_CATEGORY_ALL: "All runs",
+}
+CURRENT_BATCH_RUN_PREFIXES = ("curvy-r18v2-",)
 LISTING_CACHE_TTL_SECONDS = 10.0
 VOLUME_RELOAD_TTL_SECONDS = 30.0
 GIF_CACHE_MAX_AGE_SECONDS = 86_400
@@ -67,8 +84,16 @@ RUN_RECENCY_PATTERNS = (
 )
 
 if modal is not None:
-    image = modal.Image.debian_slim(python_version="3.11").uv_pip_install("fastapi>=0.115")
-    runs_volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
+    image = (
+        modal.Image.debian_slim(python_version="3.11")
+        .uv_pip_install("fastapi>=0.115")
+        .env({"PYTHONPATH": str(REMOTE_ROOT / "src")})
+        .add_local_dir(Path.cwd() / "src", remote_path=str(REMOTE_ROOT / "src"), copy=True)
+    )
+    runs_volume = modal.Volume.from_name(
+        VOLUME_NAME,
+        **modal_volume_kwargs_for_name(VOLUME_NAME),
+    )
     app = modal.App(APP_NAME)
 else:  # pragma: no cover - test/import convenience only.
     image = None
@@ -270,6 +295,61 @@ def _matches_ok(row: dict[str, Any], ok_filter: str) -> bool:
     return True
 
 
+def _run_category_id(run_id: str) -> str:
+    if any(run_id.startswith(prefix) for prefix in CURRENT_BATCH_RUN_PREFIXES):
+        return RUN_CATEGORY_CURRENT
+    return RUN_CATEGORY_ARCHIVE
+
+
+def _run_category_counts(runs: list[dict[str, Any]]) -> dict[str, int]:
+    counts = {category: 0 for category in RUN_CATEGORY_CHOICES}
+    for run in runs:
+        category = _run_category_id(str(run.get("run_id") or ""))
+        counts[category] = counts.get(category, 0) + 1
+        counts[RUN_CATEGORY_ALL] += 1
+    return counts
+
+
+def _normalize_run_category(category: str) -> str:
+    normalized = category.strip().lower()
+    if normalized in RUN_CATEGORY_CHOICES:
+        return normalized
+    return RUN_CATEGORY_ALL
+
+
+def _runs_for_category(
+    runs: list[dict[str, Any]],
+    category: str,
+) -> list[dict[str, Any]]:
+    normalized = category if category in RUN_CATEGORY_CHOICES else RUN_CATEGORY_ALL
+    if normalized == RUN_CATEGORY_ALL:
+        return runs
+    return [
+        run
+        for run in runs
+        if _run_category_id(str(run.get("run_id") or "")) == normalized
+    ]
+
+
+def _resolve_run_category_selection(
+    mount: Path,
+    *,
+    requested_category: str,
+) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]] | None]:
+    normalized = requested_category.strip().lower()
+    if normalized == RUN_CATEGORY_CURRENT:
+        return RUN_CATEGORY_CURRENT, _list_current_batch_runs(mount), None
+    if normalized in {RUN_CATEGORY_ARCHIVE, RUN_CATEGORY_ALL}:
+        all_runs = _list_runs(mount)
+        return normalized, _runs_for_category(all_runs, normalized), all_runs
+
+    current_runs = _list_current_batch_runs(mount)
+    if current_runs:
+        return RUN_CATEGORY_CURRENT, current_runs, None
+    all_runs = _list_runs(mount)
+    return RUN_CATEGORY_ALL, all_runs, all_runs
+
+
 def _coerce_limit(limit: int) -> int:
     return min(max(1, int(limit)), MAX_LIMIT)
 
@@ -406,18 +486,30 @@ def _etag_matches(header_value: str, etag: str) -> bool:
     return any(value.strip() == etag for value in header_value.split(","))
 
 
-def _list_runs(mount: Path) -> list[dict[str, Any]]:
+def _list_runs(
+    mount: Path,
+    *,
+    include_prefixes: tuple[str, ...] = (),
+) -> list[dict[str, Any]]:
     base_path = _path_for_ref(mount, BASE_REF)
     if not _safe_is_dir(base_path):
         return []
 
-    cache_key = ("runs", mount.as_posix())
+    cache_key = ("runs", mount.as_posix(), include_prefixes)
     cached = _cache_get(_RUNS_CACHE, cache_key)
     if cached is not None:
         return cached
 
     runs: list[dict[str, Any]] = []
-    for run_path in _safe_iterdir(base_path):
+    if include_prefixes:
+        run_paths_by_name: dict[str, Path] = {}
+        for prefix in include_prefixes:
+            for run_path in _safe_glob(base_path, f"{prefix}*"):
+                run_paths_by_name.setdefault(run_path.name, run_path)
+        run_paths = list(run_paths_by_name.values())
+    else:
+        run_paths = _safe_iterdir(base_path)
+    for run_path in run_paths:
         if not _safe_is_dir(run_path) or not _run_has_picker_flag(run_path):
             continue
         artifact_count = 0
@@ -458,6 +550,10 @@ def _list_runs(mount: Path) -> list[dict[str, Any]]:
 
     runs.sort(key=lambda item: (item["updated_ts"], item["run_id"]), reverse=True)
     return _cache_set(_RUNS_CACHE, cache_key, runs)
+
+
+def _list_current_batch_runs(mount: Path) -> list[dict[str, Any]]:
+    return _list_runs(mount, include_prefixes=CURRENT_BATCH_RUN_PREFIXES)
 
 
 def _checkpoint_iteration(row: dict[str, Any]) -> int | None:
@@ -876,6 +972,7 @@ def _link(path: str, ref: str, **params: Any) -> str:
 
 def _next_url_without_selected_run(
     *,
+    category: str,
     run_filter: str,
     attempt_filter: str,
     eval_filter: str,
@@ -884,6 +981,8 @@ def _next_url_without_selected_run(
     offset: int = 0,
 ) -> str:
     params: dict[str, Any] = {"limit": int(limit)}
+    if category and category != RUN_CATEGORY_ALL:
+        params["category"] = category
     if offset:
         params["offset"] = int(offset)
     if run_filter:
@@ -900,6 +999,7 @@ def _next_url_without_selected_run(
 def _filter_url(
     *,
     run_id: str,
+    category: str,
     run_filter: str,
     attempt_filter: str,
     eval_filter: str,
@@ -908,6 +1008,8 @@ def _filter_url(
     offset: int = 0,
 ) -> str:
     params: dict[str, Any] = {"limit": int(limit)}
+    if category and category != RUN_CATEGORY_ALL:
+        params["category"] = category
     if offset:
         params["offset"] = int(offset)
     if run_id:
@@ -1056,6 +1158,8 @@ def _render_training_progress(progress: dict[str, Any] | None) -> str:
 def _render_filters(
     *,
     runs: list[dict[str, Any]],
+    all_runs: list[dict[str, Any]] | None,
+    selected_category: str,
     selected_run_id: str,
     training_progress: dict[str, Any] | None,
     run_filter: str,
@@ -1074,6 +1178,21 @@ def _render_filters(
     for value in (5, 8, 12, 24, 50):
         selected = " selected" if int(limit) == value else ""
         limit_options.append(f'<option value="{value}"{selected}>{value}</option>')
+
+    category_counts = (
+        _run_category_counts(all_runs)
+        if all_runs is not None
+        else {selected_category: len(runs)}
+    )
+    category_options = []
+    for value in RUN_CATEGORY_CHOICES:
+        selected = " selected" if selected_category == value else ""
+        label = RUN_CATEGORY_LABELS[value]
+        count = category_counts.get(value)
+        count_label = f" ({count})" if count is not None else ""
+        category_options.append(
+            f'<option value="{value}"{selected}>{_html_attr(label)}{count_label}</option>'
+        )
 
     preserved_filters = []
     for name, value in (
@@ -1100,6 +1219,7 @@ def _render_filters(
         run_id = str(run["run_id"])
         select_url = _filter_url(
             run_id=run_id,
+            category=selected_category,
             run_filter=run_filter,
             attempt_filter=attempt_filter,
             eval_filter=eval_filter,
@@ -1110,6 +1230,7 @@ def _render_filters(
         next_run_id = "" if run_id == selected_run_id else selected_run_id
         next_url = _filter_url(
             run_id=next_run_id,
+            category=selected_category,
             run_filter=run_filter,
             attempt_filter=attempt_filter,
             eval_filter=eval_filter,
@@ -1140,6 +1261,7 @@ def _render_filters(
         )
     refresh_url = _filter_url(
         run_id=selected_run_id,
+        category=selected_category,
         run_filter=run_filter,
         attempt_filter=attempt_filter,
         eval_filter=eval_filter,
@@ -1163,6 +1285,7 @@ def _render_filters(
                 {_render_training_progress(training_progress)}
             </div>
             <div class="toolbar-actions">
+                <label>Batch <select name="category" form="filters-form">{''.join(category_options)}</select></label>
                 <label>Status <select name="ok" form="filters-form">{''.join(status_options)}</select></label>
                 <label>Show <select name="limit" form="filters-form">{''.join(limit_options)}</select></label>
                 <button type="submit" form="filters-form">Apply</button>
@@ -1262,6 +1385,7 @@ def _render_pager(
     offset: int,
     limit: int,
     selected_run_id: str,
+    selected_category: str,
     run_filter: str,
     attempt_filter: str,
     eval_filter: str,
@@ -1276,6 +1400,7 @@ def _render_pager(
     if offset > 0:
         newer_url = _filter_url(
             run_id=selected_run_id,
+            category=selected_category,
             run_filter=run_filter,
             attempt_filter=attempt_filter,
             eval_filter=eval_filter,
@@ -1287,6 +1412,7 @@ def _render_pager(
     if offset + limit < total_rows:
         older_url = _filter_url(
             run_id=selected_run_id,
+            category=selected_category,
             run_filter=run_filter,
             attempt_filter=attempt_filter,
             eval_filter=eval_filter,
@@ -1305,6 +1431,8 @@ def _render_page(
     rows: list[dict[str, Any]],
     *,
     runs: list[dict[str, Any]],
+    all_runs: list[dict[str, Any]] | None,
+    selected_category: str,
     selected_run_id: str,
     run_filter: str,
     attempt_filter: str,
@@ -1325,6 +1453,8 @@ def _render_page(
     )
     filters = _render_filters(
         runs=runs,
+        all_runs=all_runs,
+        selected_category=selected_category,
         selected_run_id=selected_run_id,
         training_progress=training_progress,
         run_filter=run_filter,
@@ -1341,6 +1471,7 @@ def _render_page(
         offset=offset,
         limit=limit,
         selected_run_id=selected_run_id,
+        selected_category=selected_category,
         run_filter=run_filter,
         attempt_filter=attempt_filter,
         eval_filter=eval_filter,
@@ -1904,7 +2035,7 @@ def _render_page(
             headUrl.searchParams.set("run_id", selectedRunId);
             summariesUrl.searchParams.set("run_id", selectedRunId);
         }}
-        for (const key of ["run_id", "run", "attempt", "eval", "ok", "limit"]) {{
+        for (const key of ["run_id", "category", "run", "attempt", "eval", "ok", "limit"]) {{
             const value = currentParams.get(key);
             if (value) {{
                 headUrl.searchParams.set(key, value);
@@ -1962,6 +2093,7 @@ def _build_fastapi_app(volume: Any) -> Any:
     @web_app.get("/", response_class=HTMLResponse)
     def index(
         run_id: str = "",
+        category: str = "",
         run: str = "",
         attempt: str = "",
         eval: str = "",
@@ -1974,7 +2106,27 @@ def _build_fastapi_app(volume: Any) -> Any:
         reload_error = None
         if fresh:
             reload_error = _maybe_reload_volume(volume, force=True)
-        runs = _list_runs(RUNS_MOUNT)
+        selected_category, runs, all_runs = _resolve_run_category_selection(
+            RUNS_MOUNT,
+            requested_category=category,
+        )
+        requested_category = category.strip().lower()
+        should_redirect_to_category = (
+            requested_category != selected_category
+            and bool(category or selected_category == RUN_CATEGORY_CURRENT)
+        )
+        if should_redirect_to_category:
+            redirect_url = _filter_url(
+                run_id=run_id,
+                category=selected_category,
+                run_filter=run,
+                attempt_filter=attempt,
+                eval_filter=eval,
+                ok_filter=ok,
+                limit=_coerce_limit(limit),
+                offset=_coerce_offset(offset),
+            )
+            return RedirectResponse(redirect_url, status_code=307)
         selected_run_id = _default_selected_run_id(runs, run_id)
         page = _list_selfplay_summary_page(
             RUNS_MOUNT,
@@ -2004,6 +2156,8 @@ def _build_fastapi_app(volume: Any) -> Any:
             _render_page(
                 page["rows"],
                 runs=runs,
+                all_runs=all_runs,
+                selected_category=selected_category,
                 selected_run_id=selected_run_id,
                 run_filter=run,
                 attempt_filter=attempt,
@@ -2023,6 +2177,7 @@ def _build_fastapi_app(volume: Any) -> Any:
     @web_app.get("/api/summaries")
     def summaries(
         run_id: str = "",
+        category: str = "",
         run: str = "",
         attempt: str = "",
         eval: str = "",
@@ -2034,7 +2189,10 @@ def _build_fastapi_app(volume: Any) -> Any:
         reload_error = None
         if fresh:
             reload_error = _maybe_reload_volume(volume, force=True)
-        runs = _list_runs(RUNS_MOUNT)
+        selected_category, runs, all_runs = _resolve_run_category_selection(
+            RUNS_MOUNT,
+            requested_category=category,
+        )
         selected_run_id = _default_selected_run_id(runs, run_id)
         page = _list_selfplay_summary_page(
             RUNS_MOUNT,
@@ -2050,6 +2208,13 @@ def _build_fastapi_app(volume: Any) -> Any:
             {
                 "rows": page["rows"],
                 "runs": runs,
+                "all_run_count": len(all_runs) if all_runs is not None else None,
+                "category": selected_category,
+                "categories": (
+                    _run_category_counts(all_runs)
+                    if all_runs is not None
+                    else {selected_category: len(runs)}
+                ),
                 "selected_run_id": selected_run_id,
                 "total_rows": page["total_rows"],
                 "total_rows_exact": page.get("total_rows_exact", True),
@@ -2066,6 +2231,7 @@ def _build_fastapi_app(volume: Any) -> Any:
     @web_app.get("/api/head")
     def head(
         run_id: str = "",
+        category: str = "",
         run: str = "",
         attempt: str = "",
         eval: str = "",
@@ -2081,8 +2247,12 @@ def _build_fastapi_app(volume: Any) -> Any:
                 selected_run_id = run_mgmt.clean_id(run_id, label="run_id")
             except ValueError:
                 selected_run_id = ""
+            selected_category = _normalize_run_category(category)
         else:
-            runs = _list_runs(RUNS_MOUNT)
+            selected_category, runs, _all_runs = _resolve_run_category_selection(
+                RUNS_MOUNT,
+                requested_category=category,
+            )
             selected_run_id = _default_selected_run_id(runs, run_id)
         page = _list_selfplay_summary_page(
             RUNS_MOUNT,
@@ -2102,6 +2272,7 @@ def _build_fastapi_app(volume: Any) -> Any:
                 "head_token": head_token,
                 "head": rows[0] if rows else None,
                 "runs": runs,
+                "category": selected_category,
                 "selected_run_id": selected_run_id,
                 "total_rows": page["total_rows"],
                 "total_rows_exact": page.get("total_rows_exact", True),

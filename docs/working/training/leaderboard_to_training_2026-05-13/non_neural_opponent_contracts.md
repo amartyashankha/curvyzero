@@ -78,7 +78,9 @@ Future tournament participants should be a tagged union.
 Do not conflate:
 
 - **source bonus invincibility**: in-game state/effect;
-- **opponent death immunity**: `opponent_death_mode=immortal`;
+- **opponent death immunity**: public slot intent is
+  `opponent_immortal=true`; `opponent_death_mode=immortal` is derived env
+  metadata;
 - **invincible policy identity**: a policy that cannot die by construction;
 - **training pressure modifier**: a wrapper applied to an opponent in some
   percentage of episodes.
@@ -100,7 +102,7 @@ Example assignment entry:
   "weight": 2,
   "opponent_policy_kind": "frozen_lightzero_checkpoint",
   "opponent_checkpoint_ref": "training/.../iteration_170000.pth.tar",
-  "opponent_death_mode": "immortal",
+  "opponent_immortal": true,
   "tags": ["leaderboard", "champion", "immortal_pressure"]
 }
 ```

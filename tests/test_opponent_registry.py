@@ -34,6 +34,7 @@ def test_opponent_assignment_snapshot_parses_to_existing_mixture_contract():
                     "weight": 50,
                     "opponent_policy_kind": "fixed_straight",
                     "opponent_runtime_mode": "blank_canvas_noop",
+                    "opponent_immortal": True,
                 },
             ],
         }

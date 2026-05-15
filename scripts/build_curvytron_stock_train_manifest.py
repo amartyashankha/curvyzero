@@ -19,9 +19,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from curvyzero.env.observation_surface_contract import POLICY_TRAIL_RENDER_MODE
+from curvyzero.contracts.curvytron import CURVYTRON_TRAINING_TASK_ID
 
 MODULE = "curvyzero.infra.modal.lightzero_curvyzero_stacked_debug_visual_survival_train"
-TASK_ID = "lightzero-curvytron-visual-survival"
+TASK_ID = CURVYTRON_TRAINING_TASK_ID
 SCHEMA_ID = "curvyzero_curvytron_stock_train_dry_run_manifest/v0"
 HISTORICAL_MATRIX_WARNING = (
     "historical_only: this generator emits May 12 fixed/frozen control rows, "
@@ -37,8 +39,7 @@ OPPONENT_NONE_CENTRALIZED = "none_centralized_joint_action"
 REWARD_SPARSE_OUTCOME = "sparse_outcome"
 REWARD_DENSE_SURVIVAL_PLUS_OUTCOME = "dense_survival_plus_outcome"
 REWARD_ALL_PLAYERS_ALIVE_DIAGNOSTIC = "all_players_alive_diagnostic"
-SOURCE_STATE_RENDER_BROWSER_LINES = "browser_lines"
-SOURCE_STATE_RENDER_BODY_CIRCLES_FAST = "body_circles_fast"
+SOURCE_STATE_RENDER_BROWSER_LINES = POLICY_TRAIL_RENDER_MODE
 
 DEFAULT_RECENT_OPPONENT_CHECKPOINT_REF = (
     "training/lightzero-curvytron-visual-survival/"
@@ -344,7 +345,7 @@ def _long_stock_rows(
     recent_opponent_checkpoint_ref: str,
     old_opponent_checkpoint_ref: str,
 ) -> list[Row]:
-    body_common: dict[str, Any] = {
+    common: dict[str, Any] = {
         "compute": compute,
         "max_train_iter": max_train_iter,
         "save_ckpt_after_iter": save_ckpt_after_iter,
@@ -367,7 +368,7 @@ def _long_stock_rows(
         "env_manager_type": "subprocess",
     }
     browser_common = {
-        **body_common,
+        **common,
         "collector_env_num": 16,
         "n_episode": 16,
         "source_state_trail_render_mode": SOURCE_STATE_RENDER_BROWSER_LINES,
@@ -380,60 +381,60 @@ def _long_stock_rows(
     return [
         Row(
             row_id="01",
-            label="c32-fast-fixed-sparse-b32-sim8",
+            label="c32-browser-fixed-sparse-b32-sim8",
             env_variant=ENV_SOURCE_STATE_FIXED_OPPONENT,
             reward_variant=REWARD_SPARSE_OUTCOME,
             opponent_policy_kind=OPPONENT_FIXED_STRAIGHT,
             seed=510,
-            **body_common,
+            **common,
         ),
         Row(
             row_id="02",
-            label="c32-fast-fixed-dense-b32-sim8",
+            label="c32-browser-fixed-dense-b32-sim8",
             env_variant=ENV_SOURCE_STATE_FIXED_OPPONENT,
             reward_variant=REWARD_DENSE_SURVIVAL_PLUS_OUTCOME,
             opponent_policy_kind=OPPONENT_FIXED_STRAIGHT,
             seed=511,
-            **body_common,
+            **common,
         ),
         Row(
             row_id="03",
-            label="c32-fast-frozen-recent-dense-b32-sim8",
+            label="c32-browser-frozen-recent-dense-b32-sim8",
             env_variant=ENV_SOURCE_STATE_FIXED_OPPONENT,
             reward_variant=REWARD_DENSE_SURVIVAL_PLUS_OUTCOME,
             seed=512,
             **frozen_recent,
-            **body_common,
+            **common,
         ),
         Row(
             row_id="04",
-            label="c32-fast-frozen-recent-sparse-b32-sim8",
+            label="c32-browser-frozen-recent-sparse-b32-sim8",
             env_variant=ENV_SOURCE_STATE_FIXED_OPPONENT,
             reward_variant=REWARD_SPARSE_OUTCOME,
             seed=513,
             **frozen_recent,
-            **body_common,
+            **common,
         ),
         Row(
             row_id="05",
-            label="c32-fast-frozen-old-dense-b32-sim8",
+            label="c32-browser-frozen-old-dense-b32-sim8",
             env_variant=ENV_SOURCE_STATE_FIXED_OPPONENT,
             reward_variant=REWARD_DENSE_SURVIVAL_PLUS_OUTCOME,
             opponent_policy_kind=OPPONENT_FROZEN_LIGHTZERO_CHECKPOINT,
             opponent_checkpoint_ref=old_opponent_checkpoint_ref,
             opponent_snapshot_ref=_frozen_snapshot_ref("old_iteration_0"),
             seed=514,
-            **body_common,
+            **common,
         ),
         Row(
             row_id="06",
-            label="c32-fast-frozen-recent-dense-b32-sim16",
+            label="c32-browser-frozen-recent-dense-b32-sim16",
             env_variant=ENV_SOURCE_STATE_FIXED_OPPONENT,
             reward_variant=REWARD_DENSE_SURVIVAL_PLUS_OUTCOME,
             seed=515,
             num_simulations=16,
             **frozen_recent,
-            **{key: value for key, value in body_common.items() if key != "num_simulations"},
+            **{key: value for key, value in common.items() if key != "num_simulations"},
         ),
         Row(
             row_id="07",
@@ -543,7 +544,7 @@ def _stock_tensor_rows(
     for opponent in ("fixed", "recent", "mid", "old"):
         for reward in ("sparse", "dense"):
             add(
-                f"c32-fast-{opponent}-{reward}-b32-sim8",
+                f"c32-browser-{opponent}-{reward}-b32-sim8",
                 opponent=opponent,
                 reward=reward,
                 seed=seed,
@@ -552,7 +553,7 @@ def _stock_tensor_rows(
 
     for opponent in ("fixed", "recent", "mid", "old"):
         add(
-            f"c32-fast-{opponent}-dense-b32-sim16",
+            f"c32-browser-{opponent}-dense-b32-sim16",
             opponent=opponent,
             reward="dense",
             seed=seed,
@@ -562,7 +563,7 @@ def _stock_tensor_rows(
 
     for opponent in ("fixed", "recent", "mid", "old"):
         add(
-            f"c64-fast-{opponent}-dense-b32-sim8",
+            f"c64-browser-{opponent}-dense-b32-sim8",
             opponent=opponent,
             reward="dense",
             seed=seed,
@@ -573,7 +574,7 @@ def _stock_tensor_rows(
 
     for opponent in ("fixed", "recent", "mid", "old"):
         add(
-            f"c32-fast-{opponent}-dense-b64-sim8",
+            f"c32-browser-{opponent}-dense-b64-sim8",
             opponent=opponent,
             reward="dense",
             seed=seed,
@@ -607,7 +608,7 @@ def _stock_tensor_rows(
         ("old", "dense"),
     ):
         add(
-            f"c32-fast-{opponent}-{reward}-max1024-b32-sim8",
+            f"c32-browser-{opponent}-{reward}-max1024-b32-sim8",
             opponent=opponent,
             reward=reward,
             seed=seed,
@@ -619,7 +620,7 @@ def _stock_tensor_rows(
 
     for opponent, reward in (("fixed", "sparse"), ("recent", "dense")):
         add(
-            f"c32-fast-{opponent}-{reward}-straight005-b32-sim8",
+            f"c32-browser-{opponent}-{reward}-straight005-b32-sim8",
             opponent=opponent,
             reward=reward,
             seed=seed,
@@ -1048,9 +1049,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--save-ckpt-after-iter", type=int, default=100)
     parser.add_argument(
         "--source-state-trail-render-mode",
-        default=SOURCE_STATE_RENDER_BODY_CIRCLES_FAST,
-        choices=(SOURCE_STATE_RENDER_BROWSER_LINES, SOURCE_STATE_RENDER_BODY_CIRCLES_FAST),
-        help="Stock source-state render surface; body_circles_fast is the fast approximation.",
+        default=SOURCE_STATE_RENDER_BROWSER_LINES,
+        choices=(SOURCE_STATE_RENDER_BROWSER_LINES,),
+        help="Stock source-state render surface. Current policy surface is browser_lines only.",
     )
     parser.add_argument(
         "--recent-opponent-checkpoint-ref",

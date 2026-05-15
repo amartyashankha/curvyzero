@@ -6,14 +6,15 @@ Status: archived optimizer handoff. This file records the fixed/frozen-opponent
 stock `train_muzero` profiling lane. It is not the current Coach launch
 instruction.
 
-Current truth: Coach canonical launcher is
-`src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py --mode two-seat-selfplay`.
-Fixed/frozen-opponent native stock `train_muzero` runs are controls/profiling
-only. Stock LightZero in-loop eval is separate from CurvyZero checkpoint
-eval/inspection/GIF.
+2026-05-15 correction: this handoff is historical. Current trusted guidance is
+stock LightZero
+`src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py --mode train`
+with `env_variant=source_state_fixed_opponent`, the frozen-opponent route, and
+CPU `cpu_oracle` `browser_lines + simple_symbols` policy observations. The old
+custom `--mode two-seat-selfplay` launcher is not current Coach launch guidance.
 
-Current 2026-05-12 addition: Optimizer wired the canonical two-seat path to the
-new visual render surface. Use
+Historical 2026-05-12 addition: Optimizer wired the old two-seat path to the
+then-new visual render surface. Use
 `--two-seat-trail-render-mode browser_lines` for the default full-ish
 source-state RGB-to-gray path. Use `body_circles_fast` only for an explicit
 speed comparison. The old direct gray renderer should no longer be the silent

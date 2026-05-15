@@ -4564,10 +4564,7 @@ def main() -> None:
         "--trail-render-mode",
         choices=STACK_RENDER_MODE_ORDER,
         default=STACK_RENDER_MODE_DEFAULT,
-        help=(
-            "Visual stack renderer. browser_lines is the reference RGB-to-gray "
-            "path; fast_gray64_direct is the approximate speed path."
-        ),
+        help="Visual stack renderer. Current policy surface is browser_lines only.",
     )
     parser.add_argument(
         "--learning-rate",

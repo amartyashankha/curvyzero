@@ -31,6 +31,25 @@ For the next clean checkpoint-only leaderboard:
 6. Do not include scripted policies until the tournament runner supports
    non-checkpoint players.
 
+## May 14 Live Tournament Seed Decision
+
+Use the latest-212 public leaderboard as seed material:
+
+```text
+tournaments/curvytron/leaderboards/curvytron-latest212-smoke-20260513/snapshots/latest212-smoke-20260513.json
+```
+
+Take the top 100 active rows by rank and extract exact `checkpoint_ref` values.
+
+Important caveat:
+
+- This old leaderboard is evidence for choosing seed players, not the new public
+  one-frame leaderboard truth.
+- The 100 checkpoint players must be re-rated under the current one-frame
+  tournament settings before publication.
+- Do not use live Dict pointers, browser state, provisional snapshots, CSV
+  projections, or materialized tiny assignment files as the 100-player source.
+
 ## Candidate Neural Seeds
 
 From the latest-212 leaderboard:

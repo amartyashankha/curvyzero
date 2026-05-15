@@ -26,6 +26,75 @@ The main thread should not:
 5. Run the launch-readiness checklist.
 6. Ask for explicit approval before launching or changing code.
 
+Use the plain-language glossary in `README.md` when writing operator summaries.
+Do not assume readers know terms like queue-loss repair, stale-claim repair, or
+safe refresh.
+
+## Modal Operating Notes
+
+Local Modal skill notes are available at:
+
+```text
+/Users/shankha/Downloads/skills-main/modal/SKILL.md
+/private/tmp/modal-auto-research-skills/README.md
+```
+
+Use them when Modal behavior is part of the task. See
+`modal_skills_pointers.md` for the short local index of the larger packet.
+
+Important rules:
+
+- Prefer `modal --help` and command-specific `--help` before guessing.
+- Most Modal CLI commands can emit JSON with `--json`; prefer parseable output
+  for tools.
+- `modal run` creates an ephemeral App. A non-detached `modal run` is not a
+  safe parent for background tournament game/rating workers after the local
+  command exits.
+- If a command spawns child tournament workers and those workers must continue
+  after the command returns, use `modal run --detach` or keep the parent command
+  alive until the child work finishes.
+- Do not treat "round scheduled" or "rating call id returned" as success.
+  Verify `latest.json` advanced and completed game summaries exist.
+- Production-like fanout should use one deployed App with many function calls,
+  not one App per training row.
+- Global Modal app code runs locally and in remote containers; keep it light and
+  avoid fragile file/env reads at import time.
+
+## Debug Bundle First
+
+Before diagnosing tournament/intake failures by hand, collect the same four
+artifacts every time:
+
+- intake manifest;
+- latest intake tick/progress;
+- rating config;
+- rating latest/progress/results.
+
+Then compare the counts:
+
+```text
+manifest seen checkpoints -> rating config checkpoints -> rating latest rows
+```
+
+If the manifest sees many checkpoint players but rating config/latest sees only
+a few, the bug is in intake/continuation before game scheduling. Do not spend
+time debugging pair scheduling or game workers until that count mismatch is
+understood.
+
+If progress says a round was written but `latest.json` did not advance, game
+directories are empty, or no completed summaries exist, check the launch
+lifetime first. Logs containing `RemoteError`, `KeyboardInterrupt`, or
+`Runner terminated` after a non-detached `modal run` usually mean the local
+entrypoint stopped and Modal killed child work.
+
+The helper script is:
+
+```text
+scripts/curvytron_tournament_debug_bundle.py
+```
+
+Run it on fetched local artifacts before opening raw JSON by hand.
+
 ## Evidence Hygiene
 
 Every claim should identify one of:
@@ -66,6 +135,44 @@ Update in this order:
 3. `overnight_run_decision.md` if recommendations changed;
 4. `launch_readiness_checklists.md` if preconditions changed;
 5. final user summary.
+
+## Repair A Missing Leaderboard Pointer
+
+Use this when the immutable public leaderboard snapshot exists on the tournament
+Volume, but the compact Modal Dict pointer is missing or stale.
+
+Command shape:
+
+```text
+uv run --extra modal modal run -m curvyzero.infra.modal.curvyzero_checkpoint_tournament \
+  --mode leaderboard-pointer-repair \
+  --leaderboard-id <leaderboard_id>
+```
+
+Expected result:
+
+- `pointer_published=true`;
+- `pointer_key=current:<leaderboard_id>`;
+- `snapshot_ref` points at an immutable snapshot under
+  `tournaments/curvytron/leaderboards/<leaderboard_id>/snapshots/...`;
+- compact summary reports `active_count`, `provisional_count`, and
+  `retired_count`.
+
+What this does:
+
+- rebuilds the live Dict pointer from durable Volume snapshots;
+- does not create ratings;
+- does not select training assignments;
+- does not change trainer state.
+
+Tiny remote smoke already passed for:
+
+```text
+leaderboard_id=curvytron-latest212-smoke-20260513
+```
+
+Do not treat this as queue/intake repair proof. Queue-loss, stale-claim, and
+rating-continuation repair still need their own remote smokes.
 
 ## Before Any Overnight Launch
 

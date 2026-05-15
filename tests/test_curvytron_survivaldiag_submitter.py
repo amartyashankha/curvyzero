@@ -40,6 +40,7 @@ def test_grouped_submitter_dry_run_selects_rows_and_preserves_two_call_shape(tmp
         submit._launch_row(
             row,
             app_name=loaded["guards"]["deployed_app_name"],
+            modal_env=None,
             dry_run=True,
         )
         for row in rows
@@ -48,7 +49,7 @@ def test_grouped_submitter_dry_run_selects_rows_and_preserves_two_call_shape(tmp
     assert len(records) == 3
     assert all(record["status"] == "dry_run" for record in records)
     assert all(
-        record["app_name"] == "curvyzero-lightzero-curvytron-visual-survival-train"
+        record["app_name"] == "curvyzero-lightzero-curvytron-visual-survival-train-v2"
         for record in records
     )
     assert all(
@@ -73,6 +74,7 @@ def test_grouped_submitter_rejects_incomplete_train_kwargs():
         submit._launch_row(
             row,
             app_name=manifest["guards"]["deployed_app_name"],
+            modal_env=None,
             dry_run=True,
         )
     except ValueError as exc:

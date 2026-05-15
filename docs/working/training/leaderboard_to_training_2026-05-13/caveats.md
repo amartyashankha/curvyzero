@@ -36,8 +36,9 @@
 
 ## Scripted / Invincible Opponents
 
-- `opponent_death_mode=immortal` is a dirty diagnostic control, not clean source
-  fidelity.
+- Public manifests and slot recipes should use `opponent_immortal`; the
+  lower-level `opponent_death_mode` is derived runtime plumbing at the env
+  boundary.
 - Invincibility as an episode modifier is not the same as an invincible policy.
 - Scripted policies need explicit identity if included in tournaments.
 - Blank/no-op can be a training opponent without being a leaderboard player.

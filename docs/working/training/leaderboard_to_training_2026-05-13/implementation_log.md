@@ -1,5 +1,22 @@
 # Implementation Log
 
+## 2026-05-14 Reward Control Design
+
+Docs-only update:
+
+- Added `run_reward_control_design.md`.
+- Captured the desired run-scoped control shape for reward settings:
+  `survival`, `bonus`, and `final_outcome`.
+- Recorded the current mapping from plain reward profiles to existing reward
+  variants:
+  - `sparse_outcome`;
+  - `dense_survival_plus_outcome`;
+  - `survival_plus_bonus_no_outcome`.
+- Clarified that a Modal Dict can hold mutable operator intent, but the trainer
+  should consume a frozen reward recipe recorded in launch/new-attempt
+  artifacts.
+- No code was changed for this slice.
+
 ## 2026-05-14 stable_slots_v1 Slice
 
 Implemented:
@@ -75,14 +92,16 @@ Found during reorientation:
 
 Implemented locally:
 
-- checkpoint refs now produce `run_id`, `attempt_id`, and `iteration` metadata;
-- normalized checkpoint lists mark exactly the latest iteration per run as
-  `latest_for_run`;
-- rating rows preserve checkpoint recency metadata so public leaderboard rows
-  can expose it to `stable_slots_v1`.
-- intake manifests that contain only checkpoint refs, with no discovery `rows`,
-  still build rating specs correctly; metadata rows are optional enrichment, not
-  a required field.
+- checkpoint refs now produce `run_id`, `attempt_id`, `iteration`, and mtime
+  metadata when available;
+- normalized checkpoint lists mark exactly the latest checkpoint per run as
+  `latest_for_run`, using mtime to break same-iteration ties;
+- intake explicit refs and intake continuation preserve discovery row metadata
+  instead of thinning old checkpoints back to bare refs;
+- rating roster and rating rows keep checkpoint recency metadata so public
+  leaderboard rows can expose it to `stable_slots_v1`;
+- roster compatibility still compares only core checkpoint identity fields, so
+  old snapshots do not fail just because they lack the newer metadata fields.
 
 Focused check:
 
@@ -90,15 +109,23 @@ Focused check:
 uv run pytest \
   tests/test_curvytron_checkpoint_tournament.py::test_checkpoint_spec_extracts_assignment_slot_metadata_from_ref \
   tests/test_curvytron_checkpoint_tournament.py::test_checkpoint_specs_mark_only_latest_iteration_per_run \
+  tests/test_curvytron_checkpoint_tournament.py::test_checkpoint_specs_use_mtime_to_break_same_iteration_latest_ties \
+  tests/test_curvytron_checkpoint_tournament.py::test_rating_snapshot_carries_checkpoint_metadata_into_rows \
+  tests/test_curvytron_checkpoint_tournament.py::test_rating_spec_with_latest_roster_restores_checkpoint_ids \
+  tests/test_curvytron_checkpoint_tournament.py::test_intake_rating_spec_preserves_discovery_metadata \
+  tests/test_curvytron_checkpoint_tournament.py::test_intake_manifest_merges_previous_discovery_rows_for_continuation \
+  tests/test_curvytron_checkpoint_tournament.py::test_explicit_ref_discovery_stats_checkpoint_metadata \
   tests/test_opponent_leaderboard.py::test_stable_slots_v1_uses_nested_recency_latest_for_run -q
-3 passed
+9 passed
 
 uv run pytest tests/test_curvytron_checkpoint_tournament.py \
   tests/test_opponent_leaderboard.py \
-  tests/test_materialize_curvytron_leaderboard_assignment.py -q
-170 passed, 12 skipped
+  tests/test_materialize_curvytron_leaderboard_assignment.py \
+  tests/test_curvytron_opponent_leaderboard_pointer_repair.py -q
+178 passed, 12 skipped
 
-uv run ruff check src/curvyzero/infra/modal/curvyzero_checkpoint_tournament.py \
+uv run ruff check src/curvyzero/tournament/curvytron/contracts.py \
+  src/curvyzero/infra/modal/curvyzero_checkpoint_tournament.py \
   src/curvyzero/tournament/curvytron_checkpoint_tournament.py \
   src/curvyzero/training/opponent_leaderboard.py \
   scripts/materialize_curvytron_leaderboard_assignment.py \
@@ -247,8 +274,6 @@ Remaining caveat:
 
 ## Still Not Done
 
-- Production runbook for Modal Dict pointer repair. Tiny remote smoke passed,
-  but operator flow is not documented enough yet.
 - Production runbook for the `stable_slots_v1` operator workflow.
 - Automatic `stable_slots_v1` workflow that writes assignments on a schedule.
 - Periodic safe assignment refresh during long training.
@@ -399,9 +424,49 @@ uv run python -B -m pytest \
 
 Remaining caveat:
 
-- This is local contract coverage. Remote smokes are still needed for pointer
-  repair, one-frame public publish, queue/stale-claim repair, and a bounded
-  closed-loop run.
+- This is local contract coverage. Tiny remote smokes cover pointer repair and
+  one-frame publish below, but queue/stale-claim repair and a bounded closed-loop
+  run still need Modal proof.
+
+## 2026-05-14 New-Checkpoint Placement Pass
+
+Problem found:
+
+- The adaptive scheduler could spend first placement games on new-vs-new pairs
+  when many fresh checkpoints arrived together.
+- That is not the desired first signal. A fresh checkpoint should first prove
+  itself against established active checkpoints.
+
+Implemented:
+
+- Placement scheduling now tries established active opponents before other
+  undercovered/new opponents.
+- The change is local to `select_adaptive_v0_pair_slots`.
+
+Checks:
+
+```text
+uv run python -B -m pytest \
+  tests/test_curvytron_tournament_scheduler_fairness.py::test_adaptive_v0_new_batch_gets_existing_opponents_in_first_round \
+  tests/test_curvytron_tournament_scheduler_fairness.py::test_adaptive_v0_gives_new_checkpoints_many_parallel_placement_pairs \
+  tests/test_curvytron_tournament_scheduler_fairness.py::test_adaptive_v0_reaches_placement_floors_across_rounds_before_repeats -q
+3 passed
+
+uv run python -B -m pytest \
+  tests/test_curvytron_tournament_scheduler_fairness.py \
+  tests/test_curvytron_checkpoint_intake_repair.py -q
+8 passed
+
+uv run ruff check \
+  src/curvyzero/tournament/curvytron_checkpoint_tournament.py \
+  tests/test_curvytron_tournament_scheduler_fairness.py
+All checks passed
+```
+
+Remaining caveat:
+
+- This proves the generated pair list locally. The next proof is a bounded Modal
+  run showing those pairs are actually fanned out and rated remotely.
 
 Remote smoke evidence added:
 
@@ -467,3 +532,200 @@ pointer_key=current:curvytron-oneframe-public-smoke-20260514b
 snapshot_ref=tournaments/curvytron/leaderboards/curvytron-oneframe-public-smoke-20260514b/snapshots/oneframe-public-smoke-20260514b.json
 compact_summary.retired_count=0
 ```
+
+## 2026-05-14 Bounded Online Continuation Proof
+
+Goal:
+
+- Prove the small online path on Modal: old checkpoint refs already have a
+  rating, new checkpoint refs arrive through intake, the drain starts a
+  continuation, and the next rating keeps old evidence instead of starting over.
+
+Remote proof:
+
+```text
+tournament_id=inspector-online-continuation-proof-20260514c
+rating_run_id=elo-oneframe-online-continuation-proof
+```
+
+What happened:
+
+- Round 0 rated 3 old checkpoint refs.
+- Intake was seeded for continuation.
+- 3 new checkpoint refs were submitted.
+- The Queue was empty before the drain, so the drain rebuilt the missing events
+  from the durable manifest.
+- The proof forced stale-claim takeover with `--intake-claim-stale-after-seconds
+  0`, then waited for the spawned rating call.
+- The rating continued from `latest.json` and wrote `round-000001`.
+
+Remote artifact checks:
+
+```text
+latest.round_index=1
+latest.round_id=round-000001
+latest.checkpoint_count=6
+latest.pair_count=9
+latest.game_count=9
+latest.rated_pair_count=9
+latest.rating_spec.continue_from_latest=true
+latest.rating_spec.decision_source_frames=1
+round_1_input.pair_count=9
+round_1_input.game_count=9
+pair_history.row_count=12
+```
+
+Bugs found and fixed locally:
+
+- `round_index=0` was treated as falsy, so continuation could restart at round
+  0. The start-state helper now turns round 0 into next round 1.
+- Explicit continuation specs regenerated old checkpoint ids from list position
+  when new refs were added. The helper now reuses old ids from `latest.json`
+  for any matching `checkpoint_ref`.
+
+Focused checks:
+
+```text
+uv run python -B -m pytest \
+  tests/test_curvytron_checkpoint_tournament.py::test_rating_spec_with_latest_roster_restores_checkpoint_ids \
+  tests/test_curvytron_checkpoint_tournament.py::test_rating_spec_with_latest_roster_preserves_ids_for_explicit_expansion \
+  tests/test_curvytron_checkpoint_tournament.py::test_rating_loop_start_state_round_zero_continues_to_round_one -q
+3 passed
+
+uv run ruff check \
+  src/curvyzero/infra/modal/curvyzero_checkpoint_tournament.py \
+  tests/test_curvytron_checkpoint_tournament.py
+All checks passed
+```
+
+Remaining caveat:
+
+- This proves the bounded data path, not the final always-on production shape.
+  The proof used manual `modal run` commands and forced stale-claim takeover.
+  Next proof should use the deployed app path, avoid overlapping scheduled and
+  manual drains, and run with one active rating claim per
+  `(tournament_id, rating_run_id)`.
+
+## 2026-05-14 Modal Control-Plane Repair Pass
+
+Problem:
+
+- The bounded proof and Modal critique both showed the same failure shape:
+  Dict/Queue state can go stale or disappear while the Volume manifest remains
+  correct.
+- A claim for a smaller pool can block work for a later larger pool if the
+  claim is scoped too broadly.
+- The tournament website could mark a reload attempt as recent even when Modal
+  rejected the reload because files were open.
+
+Implemented locally:
+
+- Added `_load_intake_manifest`: it checks Modal Dict first, then falls back to
+  the durable Volume manifest and repairs Dict/active-key state.
+- Rating claims now include claim mode and desired checkpoint-pool hash.
+- `_web_reload_volume` updates the reload throttle only after a successful
+  reload.
+
+Checks:
+
+```text
+uv run python -B -m pytest \
+  tests/test_curvytron_checkpoint_intake_repair.py::test_intake_drain_rebuilds_missing_dict_manifest_from_volume \
+  tests/test_curvytron_checkpoint_intake_repair.py::test_expanded_pool_claim_is_not_blocked_by_partial_pool_claim \
+  tests/test_curvytron_checkpoint_tournament.py::test_web_reload_volume_does_not_throttle_after_reload_error -q
+3 passed
+
+uv run ruff check \
+  src/curvyzero/infra/modal/curvyzero_checkpoint_tournament.py \
+  tests/test_curvytron_checkpoint_intake_repair.py \
+  tests/test_curvytron_checkpoint_tournament.py
+All checks passed
+```
+
+Broader local gate after claim-mode fix:
+
+```text
+uv run python -B -m pytest \
+  tests/test_curvytron_checkpoint_tournament.py \
+  tests/test_curvytron_tournament_scheduler_fairness.py \
+  tests/test_curvytron_checkpoint_intake_repair.py -q
+165 passed, 12 skipped
+
+uv run ruff check \
+  src/curvyzero/infra/modal/curvyzero_checkpoint_tournament.py \
+  src/curvyzero/tournament/curvytron_checkpoint_tournament.py \
+  tests/test_curvytron_checkpoint_tournament.py \
+  tests/test_curvytron_tournament_scheduler_fairness.py \
+  tests/test_curvytron_checkpoint_intake_repair.py
+All checks passed
+
+git diff --check
+passed
+```
+
+Remaining caveat:
+
+- This does not yet rebuild active manifest keys by scanning all Volume
+  manifests when no tournament/rating id is supplied. That is a later service
+  reconciler feature.
+- This does not yet make the website a fast shell or remove progress-writer work
+  from web requests.
+
+## 2026-05-14 Modal Launch-Lifetime Finding
+
+Plain finding:
+
+- A non-detached `modal run` ephemeral app is not a safe parent for background
+  tournament game/rating workers.
+- We saw round input/progress get written, but child game workers were killed
+  when the local entrypoint/app stopped.
+- Logs showed `RemoteError`, `KeyboardInterrupt`, and `Runner terminated`.
+- The tournament Volume had empty game directories and no completed summaries.
+
+Operator rule:
+
+- Anything that spawns child tournament workers and is expected to continue
+  after the command returns must use `modal run --detach`, or must wait for the
+  child work to finish.
+- Scheduled deployed functions are fine only if they keep the work alive
+  correctly.
+- Do not treat "round scheduled" as success. Verify `latest.json` advanced and
+  completed game summaries exist.
+
+Concrete proof after fixing the launch shape:
+
+- Tournament id: `inspector-detached-online-proof-20260514b`.
+- Rating run id: `elo-oneframe-detached-proof`.
+- Baseline round 0 used three old checkpoints and completed 3/3 games.
+- Intake then accepted three new checkpoints, expanding the pool to six.
+- The intake drain was launched with `modal run --detach`.
+- Round 1 completed 9/9 games and wrote ratings.
+- Final `latest.json` check:
+  - `round_index=1`;
+  - `checkpoint_count=6`;
+  - `pair_count=9`;
+  - `game_count=9`;
+  - `rated_pair_count=9`;
+  - `rating_spec.continue_from_latest=true`;
+  - `rating_spec.decision_source_frames=1`.
+
+This proves the small online path works when launched with the right lifetime:
+seed old checkpoints, submit new checkpoints, drain intake, run games, and
+publish the next rating snapshot.
+
+Public leaderboard publish from that snapshot also passed:
+
+- Leaderboard id: `inspector-detached-proof-leaderboard-20260514b`.
+- Snapshot id: `snapshot-1bc0e9f8a1a8`.
+- Snapshot ref:
+  `tournaments/curvytron/leaderboards/inspector-detached-proof-leaderboard-20260514b/snapshots/snapshot-1bc0e9f8a1a8.json`.
+- Latest ref:
+  `tournaments/curvytron/leaderboards/inspector-detached-proof-leaderboard-20260514b/latest.json`.
+- Dict pointer key:
+  `current:inspector-detached-proof-leaderboard-20260514b`.
+- Result: `row_count=6`, `active_count=6`, `pointer_published=true`,
+  `commit_error=null`.
+
+For this tiny proof only, the active thresholds were lowered to one distinct
+opponent and one valid game so the publish path could be tested. Do not read the
+ratings as meaningful strength estimates.

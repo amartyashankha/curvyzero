@@ -5,6 +5,16 @@ Date: 2026-05-14
 Scope: standalone visual preview and critique only. No production code, Modal
 jobs, or live runs were changed.
 
+## Status
+
+Historical preview. The production `simple_symbols` mode now exists in
+`src/curvyzero/env/vector_visual_observation.py`, but it does not use this
+exact preview design. Use the actual implementation notes instead:
+
+- [bonus symbol render plan](bonus_symbol_render_plan_2026-05-14.md)
+- [actual visual critique](bonus_symbol_actual_visual_critique_2026-05-14.md)
+- [actual numeric separability](bonus_symbol_actual_separability_2026-05-14.md)
+
 ## Artifact
 
 Preview image:
@@ -16,11 +26,13 @@ The preview uses the requested `simple_symbols` direction: 12 classes from
 and as a centered `64x64` patch, plus a bottom strip of actual 1x `64x64`
 patches.
 
-Current local code state checked before making the artifact:
-`src/curvyzero/env/vector_visual_observation.py` still exposes
-`browser_sprites` and `circles_fast`; I did not find a production
-`simple_symbols` mode in this worktree yet. This preview is therefore a design
-artifact keyed to the main-thread contract, not an implementation parity claim.
+Current local code state checked before making the original artifact had no
+production `simple_symbols` mode yet. That is now stale. The current actual
+artifact is:
+
+```text
+artifacts/local/curvytron_render_profiles/bonus_simple_symbols_actual_v8_20260514.png
+```
 
 ## Mapping Previewed
 

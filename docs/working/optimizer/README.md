@@ -8,6 +8,29 @@ Active working memory:
 [optimizer active working memory](active_working_memory_2026-05-14.md). Read
 this first for the current optimizer plates, to-do list, and operating pattern.
 
+2026-05-15 strict correction: the target launch policy observation surface is
+`browser_lines + simple_symbols`. That is the semantic surface, not a hardware
+claim. The current reliable backend is CPU `cpu_oracle`. The scalar
+`jax_gpu` backend now reaches stock `train_muzero`, but it is slower than CPU
+and fails in subprocess workers, so it is a canary only. The production
+direction is a **batched** GPU observation backend or render service for this
+same surface. The only deliberate policy-observation approximation is replacing
+original bonus sprite art with the 12 designed simple symbols.
+`body_circles_fast`, `fast_gray64_direct`, `browser_sprites`, and legacy
+policy-surface bypasses are not current training/tournament surfaces. H100
+learner/search compute is not the same thing as GPU rendering.
+
+Current GPU-observation promotion gates:
+[GPU observation next gates](gpu_observation_next_gates_2026-05-15.md). Plain
+read: the isolated H100 renderer has exact smoke-row parity now, but stock
+training stays on `cpu_oracle` until adversarial parity and the profile-only
+batched observation facade prove the whole trainer-visible contract.
+
+Current Coach-facing stock-path recommendation:
+[fast stock recommendation](coach_handoff_fast_stock_recommendation_2026-05-14.md).
+Superseded read: keep this as historical compute-speed advice only. Do not copy
+its `body_circles_fast` launch commands into new runs.
+
 Current plate map:
 [current optimizer plate map](current_plate_map_2026-05-13.md). Read this
 first when old docs disagree; it pins the current stock LightZero lane,
@@ -37,19 +60,20 @@ The paired sim32 rows were L4/T4 `255.6` steps/sec and H100 `370.2`, so H100
 helps once search is heavy, but sim32 is slower overall than sim16 in the rows
 we have.
 Render work remains important for long trajectories, but current full-loop
-Amdahl points at collection/search/process overhead first. The trusted renderer
-is still CPU; GPU-render work is a serious prototype lane, not current training
-plumbing.
+Amdahl points at collection/search/process overhead first. The CPU renderer is
+the production oracle today; the intended replacement is a future batched GPU
+renderer once it matches the same `browser_lines + simple_symbols` contract in
+the trainer.
 
-2026-05-13 render profiling truth: optimizer recommendations now target only
-the full source-state CPU-reference stock LightZero renderer: `browser_lines`
-source-state RGB at the 704-style canvas, browser-sprite bonuses, BT.601 luma,
-then 11x11 downsample to 64x64. This is not a browser-canvas pixel claim. The
-optimizer parity oracle is the CPU reference render; dirty-cache/GPU paths must
-match it exactly before they can replace it. The trusted Coach lane is stock
+2026-05-15 render target truth: optimizer recommendations now target
+`browser_lines + simple_symbols` policy observations in the stock LightZero
+path. The current reliable backend is CPU. The GPU path worth building is
+batched, not the measured scalar `jax_gpu` hook. This is not a browser-canvas
+pixel claim. Browser sprites are display/reference artifacts unless a test
+explicitly asks for original-sprite parity. The trusted Coach lane is stock
 LightZero `--mode train` with
 `env_variant=source_state_fixed_opponent`. `body_circles_fast` is historical
-control/ablation evidence only, not a current optimization lane. The old
+control/ablation evidence only, not the current target. The old
 `fast_gray64_direct` name belongs to the superseded custom `two-seat-selfplay`
 adapter and should not be copied into current stock-path commands. For
 fixed-length local no-death render tables, use
@@ -61,7 +85,8 @@ dirty/incremental cache is now wired into the stock fixed-opponent
 `browser_lines` improved from `39.1s -> 10.5s` at 500 steps and
 `175.9s -> 46.9s` at 2000 steps. Keep `body_circles_fast` numbers only to
 explain old comparisons or controls; do not recommend new body-circles work
-unless the target explicitly changes away from full fidelity.
+unless the production policy contract explicitly changes away from
+`browser_lines + simple_symbols`.
 Current downsample and parity contract:
 [downsample/reference fidelity](downsample_reference_fidelity_2026-05-13.md).
 Plain read: the 704 RGB -> BT.601 luma -> 11x11 area average is a sane
@@ -103,6 +128,8 @@ GPU remains research until device-resident policy handoff or dirty GPU rendering
 is proven.
 Current GPU notes live in
 [GPU render exploration](gpu_render_exploration_2026-05-13.md).
+Current GPU backend implementation plan lives in
+[GPU observation backend plan](gpu_observation_backend_plan_2026-05-15.md).
 Current GPU parity-gap notes live in
 [GPU render parity gap](gpu_render_parity_gap_2026-05-13.md).
 Current dirty-cache component notes live in
@@ -111,10 +138,11 @@ Current GPU sprite research lives in
 [GPU sprite render research](gpu_sprite_render_research_2026-05-13.md).
 
 2026-05-14 bonus-symbol lane: there are exactly 12 active source-game bonus
-sprites, all roughly diamond-framed icons with one internal mark. A simplified
-symbol renderer is plausible as an opt-in training/GPU speed experiment if it
-keeps type, self/enemy/game grouping, position, footprint, and grayscale
-visibility. Keep `browser_sprites` as the CPU reference/default. Current plan:
+sprites, all roughly diamond-framed icons with one internal mark. The current
+policy surface uses the simplified `simple_symbols` renderer for those bonuses;
+that is the one deliberate visual approximation. Keep original
+`browser_sprites` for display/reference checks, not as the policy default.
+Current plan:
 [bonus symbol render plan](bonus_symbol_render_plan_2026-05-14.md).
 
 2026-05-13 moving-target warning: Environment Reconstruction is still landing
@@ -237,8 +265,8 @@ direct-64 numbers are stale shape evidence only. Reprofile this active surface
 before choosing render optimizations.
 
 Fresh render optimization landing, 2026-05-12: the two-seat stack now reuses
-one shared trail render for safe `P=2` player perspectives and falls back to
-independent renders for unsafe palettes. Focused tests pass. The new granular
+one shared trail render for safe `P=2` controlled-player views and falls back
+to independent renders for unsafe palettes. Focused tests pass. The new granular
 microbench says stack copy and downsample are small compared with long trail
 redraw; next renderer work should target incremental/static trail rendering or
 direct-luma drawing.

@@ -14,21 +14,22 @@ from typing import Any
 import numpy as np
 
 from curvyzero.env import vector_lifecycle
+from curvyzero.env.observation_surface_contract import (
+    POLICY_OBSERVATION_PERSPECTIVE,
+    POLICY_OBSERVATION_PERSPECTIVE_PLAYER_AXIS,
+    POLICY_OBSERVATION_PERSPECTIVE_SCHEMA_ID,
+    policy_observation_surface,
+)
 from curvyzero.env.trainer_contract import stable_contract_hash
 from curvyzero.env.vector_multiplayer_env import JOINT_ACTION_SCHEMA_ID
 from curvyzero.env.vector_multiplayer_env import VectorMultiplayerEnv
-from curvyzero.env.vector_visual_observation import BONUS_RENDER_MODE_BROWSER_SPRITES
 from curvyzero.env.vector_visual_observation import BONUS_RENDER_MODE_DEFAULT
 from curvyzero.env.vector_visual_observation import SOURCE_STATE_CANVAS_GRAY64_SCHEMA_HASH
 from curvyzero.env.vector_visual_observation import SOURCE_STATE_CANVAS_GRAY64_SCHEMA_ID
 from curvyzero.env.vector_visual_observation import SOURCE_STATE_CANVAS_GRAY64_USES_ALE
 from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_NORMALIZED_DTYPE
 from curvyzero.env.vector_visual_observation import SOURCE_STATE_GRAY64_NORMALIZED_VALUE_RANGE
-from curvyzero.env.vector_visual_observation import TRAIL_RENDER_MODE_BODY_CIRCLES_FAST
 from curvyzero.env.vector_visual_observation import TRAIL_RENDER_MODE_BROWSER_LINES
-from curvyzero.training.curvytron_current_policy_selfplay_smoke import (
-    STACK_RENDER_MODE_FAST_GRAY64_DIRECT,
-)
 from curvyzero.training.curvytron_current_policy_selfplay_smoke import (
     STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID,
 )
@@ -63,10 +64,7 @@ FRAME_STACK_OWNER = "SourceStateMultiplayerTrainerSurface"
 NATIVE_SOURCE_CONTROL_MODEL = "real_time_control_state_plus_elapsed_ms_source_frames"
 JOINT_ACTION_LABEL = "wrapper-facing player-major control action"
 TRAINER_OBSERVATION_SOURCE = "SourceStateGray64Stack4"
-TRAINER_ALLOWED_TRAIL_RENDER_MODES = (
-    TRAIL_RENDER_MODE_BROWSER_LINES,
-    TRAIL_RENDER_MODE_BODY_CIRCLES_FAST,
-)
+TRAINER_ALLOWED_TRAIL_RENDER_MODES = (TRAIL_RENDER_MODE_BROWSER_LINES,)
 
 MULTIPLAYER_TRAINER_SURFACE_SCHEMA = {
     "schema_id": MULTIPLAYER_TRAINER_SURFACE_SCHEMA_ID,
@@ -76,6 +74,9 @@ MULTIPLAYER_TRAINER_SURFACE_SCHEMA = {
     "shape": ["batch", "player", 4, 64, 64],
     "dtype": SOURCE_STATE_GRAY64_NORMALIZED_DTYPE,
     "value_range": list(SOURCE_STATE_GRAY64_NORMALIZED_VALUE_RANGE),
+    "perspective_schema_id": POLICY_OBSERVATION_PERSPECTIVE_SCHEMA_ID,
+    "perspective": POLICY_OBSERVATION_PERSPECTIVE,
+    "perspective_player_axis": POLICY_OBSERVATION_PERSPECTIVE_PLAYER_AXIS,
     "reward_schema_id": SURVIVAL_PLUS_BONUS_NO_OUTCOME_REWARD_SCHEMA_ID,
     "joint_action_schema_id": JOINT_ACTION_SCHEMA_ID,
 }
@@ -121,11 +122,6 @@ class SourceStateMultiplayerTrainerSurface:
         **env_kwargs: Any,
     ) -> None:
         mode = validate_stack_trail_render_mode(trail_render_mode)
-        if mode == STACK_RENDER_MODE_FAST_GRAY64_DIRECT:
-            raise ValueError(
-                "fast_gray64_direct is profile-only and is rejected by the trainer "
-                "surface; use browser_lines or explicit body_circles_fast"
-            )
 
         if env is not None and env_kwargs:
             raise ValueError("env_kwargs cannot be supplied when env is provided")
@@ -383,7 +379,7 @@ class SourceStateMultiplayerTrainerSurface:
     ) -> dict[str, Any]:
         rows = np.flatnonzero(final_observation_row_mask).astype(np.int32)
         render_metadata = self.stack.render_metadata()
-        approximate = self.trail_render_mode == TRAIL_RENDER_MODE_BODY_CIRCLES_FAST
+        approximate = False
         info = dict(batch_info)
         info.update(
             {
@@ -422,15 +418,33 @@ class SourceStateMultiplayerTrainerSurface:
                 "trainer_supported_trail_render_modes": list(
                     TRAINER_ALLOWED_TRAIL_RENDER_MODES
                 ),
-                "bonus_render_mode": BONUS_RENDER_MODE_BROWSER_SPRITES,
-                "default_bonus_render_mode": BONUS_RENDER_MODE_DEFAULT,
-                "browser_sprites_bonus_render_claim": True,
+                "bonus_render_mode": render_metadata.get("bonus_render_mode"),
+                "default_bonus_render_mode": render_metadata.get(
+                    "default_bonus_render_mode",
+                    BONUS_RENDER_MODE_DEFAULT,
+                ),
+                "browser_sprites_bonus_render_claim": False,
                 "single_frame_schema_id": SOURCE_STATE_CANVAS_GRAY64_SCHEMA_ID,
                 "single_frame_schema_hash": SOURCE_STATE_CANVAS_GRAY64_SCHEMA_HASH,
                 "frame_stack_owner": FRAME_STACK_OWNER,
                 "visual_stack_dirty_render_stats": self.stack.dirty_render_stats(),
                 "observation_schema_id": STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID,
                 "trainer_observation_schema_id": STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID,
+                "policy_observation_contract": policy_observation_surface(
+                    trail_render_mode=self.trail_render_mode,
+                    bonus_render_mode=str(
+                        render_metadata.get("bonus_render_mode", BONUS_RENDER_MODE_DEFAULT)
+                    ),
+                ),
+                "policy_observation_perspective_schema_id": (
+                    POLICY_OBSERVATION_PERSPECTIVE_SCHEMA_ID
+                ),
+                "policy_observation_perspective": POLICY_OBSERVATION_PERSPECTIVE,
+                "policy_observation_perspective_player_axis": (
+                    POLICY_OBSERVATION_PERSPECTIVE_PLAYER_AXIS
+                ),
+                "source_state_player_perspective": True,
+                "policy_observation_perspective_player": policy_player.copy(),
                 "reward_variant": REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME,
                 "reward_schema_id": SURVIVAL_PLUS_BONUS_NO_OUTCOME_REWARD_SCHEMA_ID,
                 "reward_schema_hash": SURVIVAL_PLUS_BONUS_NO_OUTCOME_REWARD_SCHEMA_HASH,
@@ -502,11 +516,6 @@ class SourceStateMultiplayerTrainerSurface:
                 "approximate_trail_render_mode": bool(approximate),
             }
         )
-        if approximate:
-            info["approximation_reason"] = (
-                "body_circles_fast uses circle-per-body trail rendering and is an "
-                "explicit approximate mode"
-            )
         return info
 
     def _survival_plus_bonus_reward(

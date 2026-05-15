@@ -11,6 +11,13 @@ What can run fast enough at scale without changing the learning/evaluator contra
 
 This doc keeps speed advice separate from policy-quality advice.
 
+2026-05-15 correction: the policy observation surface is
+`browser_lines + simple_symbols`. The current reliable backend is CPU
+`cpu_oracle`. The scalar `jax_gpu` backend now reaches stock `train_muzero`, but
+it is slower than CPU and fails in subprocess workers. The optimizer
+implementation target is a batched GPU backend or render service for the same
+surface. H100 learner/search compute is not GPU rendering.
+
 ## Current Trusted Optimizer Context
 
 Source docs:
@@ -29,10 +36,10 @@ input=[4,64,64] grayscale stack
 ```
 
 Do not use old `fast_gray64_direct`; that belongs to the superseded custom
-two-seat adapter. `body_circles_fast` is different: it is the current stock-path
-fast approximation. The 212-run matched evidence did not show a meaningful
-learning gap versus `browser_lines`, so it is a legitimate speed/fidelity
-candidate, not automatically a bad surface.
+two-seat adapter. The target policy observation surface is
+`browser_lines + simple_symbols`; the current reliable backend is
+`cpu_oracle`. `body_circles_fast + simple_symbols` is historical CPU
+ablation/control evidence only.
 
 ## Current Speed Read
 
@@ -49,10 +56,12 @@ Other reads:
 
 - C64 L4/T4 sim16 costs only about 10% throughput vs sim8 in one profile shape.
 - H100 was worse at sim8 C64 but may matter at higher search pressure.
+- H100 rows measure learner/search compute placement, not GPU rendering.
 - Render remains important for long-survival/no-death regimes, but full-loop
   bottleneck is not only render.
-- GPU render is promising research, not trusted training plumbing yet.
-- CPU dirty/cache browser-lines path is the current trusted fidelity target.
+- GPU render is the implementation target only for faithful
+  `browser_lines` trails/heads/downsample plus `simple_symbols` bonuses.
+- CPU browser-lines plus symbols is the trusted parity oracle/fallback.
 
 ## Interaction With Training Recommendations
 
@@ -61,8 +70,8 @@ Other reads:
 | `batch32` | better than `batch64` in matched learning/leaderboard evidence | no conflict | default |
 | `sim8` | default; `sim16` not earning quality cost | sim16 may be affordable | keep sim16 sentinel only |
 | `collector32` | clean baseline | C64/C96 improve throughput | consider C64 probe separately |
-| browser render | same-checkpoint quality tied with fast | current trusted visual surface | promote if speed is now acceptable |
-| body-circles/fast render | matched 212-run evidence roughly tied with browser | may be cheaper in some short regimes; not always faster after dirty-cache | valid approximation candidate; keep paired until Coach decides visual contract |
+| browser-lines render | target semantics | CPU path is current reliable backend; batched GPU path is target architecture | use `cpu_oracle` now; use batched GPU only after it is wired and profiled |
+| body-circles/fast render | historical/current CPU evidence only | ablation/control surface, not the renderer target | keep only when explicitly labeled ablation/control/fallback |
 
 ## Safe Speed Constraints
 
@@ -82,11 +91,9 @@ For the next static overnight manifest:
 - keep learning defaults from survival/leaderboard evidence;
 - consider collector-width probes separately from quality probes;
 - do not scale `batch64`;
-- do not switch visual surface away from CPU-reference `browser_lines` without
-  a separate fidelity decision, but treat that decision as open rather than
-  forbidden;
-- if browser render is now fast enough, use browser more freely but keep matched
-  fast controls where needed.
+- do not confuse H100 compute probes with GPU renderer work;
+- keep `cpu_oracle` until a batched GPU backend exists; do not use scalar
+  `jax_gpu` for overnight training.
 
 ## Next Optimizer Checks Before Scale
 
@@ -100,5 +107,6 @@ For the next static overnight manifest:
 ## Non-Goals
 
 - Do not redesign the model input from this lane.
-- Do not use GPU render in production until parity and handoff are proven.
+- Do not treat CPU `body_circles_fast + simple_symbols` as the GPU renderer
+  implementation target.
 - Do not let speed-only settings override survival/leaderboard evidence.

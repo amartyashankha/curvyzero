@@ -2,9 +2,15 @@
 
 Date: 2026-05-12
 
-Scope: optimizer sidecar for the canonical two-seat path:
+Scope: historical optimizer sidecar for the old custom two-seat path:
 `src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py --mode two-seat-selfplay`.
-This is a speed/profiling note, not a learning-quality recommendation.
+This is a speed/profiling note, not current launch guidance or a
+learning-quality recommendation.
+
+2026-05-15 correction: current guidance uses stock LightZero `--mode train`
+with `env_variant=source_state_fixed_opponent`, frozen-opponent route docs, and
+CPU `cpu_oracle` `browser_lines + simple_symbols` policy observations. Treat
+the two-seat and render-mode notes below as historical evidence only.
 
 ## Current Read
 

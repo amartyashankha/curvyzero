@@ -29,10 +29,6 @@ SUPPORTED_OPPONENT_RUNTIME_MODES = (
     OPPONENT_RUNTIME_MODE_NORMAL,
     OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP,
 )
-SUPPORTED_OPPONENT_DEATH_MODES = (
-    OPPONENT_DEATH_MODE_NORMAL,
-    OPPONENT_DEATH_MODE_IMMORTAL,
-)
 ALLOWED_ENTRY_KEYS = {
     "name",
     "weight",
@@ -40,7 +36,7 @@ ALLOWED_ENTRY_KEYS = {
     "tags",
     "opponent_policy_kind",
     "opponent_runtime_mode",
-    "opponent_death_mode",
+    "opponent_immortal",
     "opponent_checkpoint_ref",
     "opponent_checkpoint_path",
     "opponent_checkpoint_resolution",
@@ -146,6 +142,12 @@ def select_opponent_mixture_entry(
 def _validate_entry(raw_entry: Any, *, index: int) -> dict[str, Any]:
     if not isinstance(raw_entry, dict):
         raise ValueError(f"opponent mixture entry {index} must be an object")
+    if "opponent_death_mode" in raw_entry:
+        name = raw_entry.get("name", index)
+        raise ValueError(
+            f"opponent mixture entry {name!r} must use opponent_immortal; "
+            "opponent_death_mode is derived runtime metadata"
+        )
     unknown = set(raw_entry) - ALLOWED_ENTRY_KEYS
     if unknown:
         raise ValueError(
@@ -175,16 +177,23 @@ def _validate_entry(raw_entry: Any, *, index: int) -> dict[str, Any]:
             f"opponent mixture entry {name!r} has unsupported opponent_runtime_mode "
             f"{runtime_mode!r}"
         )
-    death_mode = str(raw_entry.get("opponent_death_mode", OPPONENT_DEATH_MODE_NORMAL))
-    if death_mode not in SUPPORTED_OPPONENT_DEATH_MODES:
+    raw_immortal = raw_entry.get("opponent_immortal", False)
+    if isinstance(raw_immortal, bool):
+        immortal = bool(raw_immortal)
+    else:
         raise ValueError(
-            f"opponent mixture entry {name!r} has unsupported opponent_death_mode "
-            f"{death_mode!r}"
+            f"opponent mixture entry {name!r} opponent_immortal must be a boolean"
         )
+    death_mode = OPPONENT_DEATH_MODE_IMMORTAL if immortal else OPPONENT_DEATH_MODE_NORMAL
     if runtime_mode == OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP:
         if policy_kind != OPPONENT_POLICY_KIND_FIXED_STRAIGHT:
             raise ValueError(
                 f"blank_canvas_noop mixture entry {name!r} must use fixed_straight"
+            )
+        if not immortal:
+            raise ValueError(
+                f"blank_canvas_noop mixture entry {name!r} must set "
+                "opponent_immortal=true"
             )
     has_checkpoint_ref = bool(raw_entry.get("opponent_checkpoint_ref"))
     has_checkpoint_path = bool(raw_entry.get("opponent_checkpoint_path"))
@@ -207,7 +216,7 @@ def _validate_entry(raw_entry: Any, *, index: int) -> dict[str, Any]:
     entry["weight"] = weight
     entry["opponent_policy_kind"] = policy_kind
     entry["opponent_runtime_mode"] = runtime_mode
-    entry["opponent_death_mode"] = death_mode
+    entry["opponent_immortal"] = death_mode == OPPONENT_DEATH_MODE_IMMORTAL
     return entry
 
 
@@ -218,6 +227,11 @@ def _selected_entry_payload(
     mixture: dict[str, Any],
 ) -> dict[str, Any]:
     selected = dict(entry)
+    selected["opponent_death_mode"] = (
+        OPPONENT_DEATH_MODE_IMMORTAL
+        if bool(selected.get("opponent_immortal", False))
+        else OPPONENT_DEATH_MODE_NORMAL
+    )
     selected["selection_index"] = int(index)
     selected["selection_unit"] = OPPONENT_MIXTURE_SELECTION_UNIT
     selected["mixture_schema_id"] = OPPONENT_MIXTURE_SCHEMA_ID

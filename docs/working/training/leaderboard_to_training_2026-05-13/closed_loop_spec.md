@@ -45,8 +45,7 @@ Implemented:
 Not yet proven at production scale or automated:
 
 - Modal Dict pointer repair/fallback for public leaderboard snapshots. Local
-  repair coverage and a tiny remote smoke exist; production runbook coverage is
-  still needed.
+  repair coverage, a tiny remote smoke, and a minimal operator runbook exist.
 - Periodic safe assignment refresh during long training.
 - Online Elo continuation from existing `latest.json` at production scale.
   Local continuation coverage exists.
@@ -56,6 +55,16 @@ Not yet proven at production scale or automated:
   tiny two-checkpoint remote smoke exist.
 - Automated end-to-end test from checkpoint emission to tournament promotion to
   trainer refresh.
+
+Launch lifetime rule:
+
+- Non-detached `modal run` is not a safe parent for background tournament
+  game/rating workers after the local command exits.
+- If an intake/drain command spawns child workers and should return before they
+  finish, use `modal run --detach` or a deployed function that keeps the work
+  alive correctly.
+- Do not treat scheduling as success. Verify `latest.json` advanced and
+  completed game summaries exist.
 
 ## Target Architecture
 

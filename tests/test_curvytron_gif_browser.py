@@ -471,6 +471,27 @@ def test_default_browser_lists_only_runs_with_picker_flag(tmp_path) -> None:
     assert [row["run_id"] for row in exact_unmarked_rows] == ["run-unmarked"]
 
 
+def test_run_category_helpers_split_current_batch_from_archive() -> None:
+    runs = [
+        {"run_id": "curvy-r18v2-row-a"},
+        {"run_id": "curvy-loop18-old-row"},
+    ]
+
+    assert browser._run_category_id("curvy-r18v2-row-a") == "current"
+    assert browser._run_category_id("curvy-loop18-old-row") == "archive"
+    assert browser._run_category_counts(runs) == {
+        "current": 1,
+        "archive": 1,
+        "all": 2,
+    }
+    assert [
+        run["run_id"] for run in browser._runs_for_category(runs, "current")
+    ] == ["curvy-r18v2-row-a"]
+    assert [
+        run["run_id"] for run in browser._runs_for_category(runs, "archive")
+    ] == ["curvy-loop18-old-row"]
+
+
 def test_list_runs_uses_known_paths_without_recursive_rglob(tmp_path, monkeypatch) -> None:
     _write_picker_flag(tmp_path, run_id="run-known-old", mtime=100)
     _write_picker_flag(tmp_path, run_id="run-known-new", mtime=200)
@@ -881,6 +902,66 @@ def test_fastapi_index_and_api_accept_run_id_picker_selection(
     ]
 
 
+def test_fastapi_defaults_to_current_batch_category_and_reflects_it_in_url(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(browser, "RUNS_MOUNT", tmp_path)
+    current_run = "curvy-v2real18-current-row"
+    archive_run = "curvy-loop18-archive-row"
+    _write_picker_flag(tmp_path, run_id=current_run, mtime=200)
+    _write_picker_flag(tmp_path, run_id=archive_run, mtime=300)
+    _write_summary(
+        tmp_path,
+        run_id=current_run,
+        attempt_id="attempt-current",
+        eval_id="eval-current",
+        ok=True,
+        frame_count=5,
+        mtime=200,
+    )
+    _write_summary(
+        tmp_path,
+        run_id=archive_run,
+        attempt_id="attempt-archive",
+        eval_id="eval-archive",
+        ok=True,
+        frame_count=7,
+        mtime=300,
+    )
+    app = browser._build_fastapi_app(None)
+    client = TestClient(app)
+
+    redirect_response = client.get("/", follow_redirects=False)
+    current_page = client.get("/")
+    current_api = client.get("/api/summaries")
+    archive_api = client.get("/api/summaries", params={"category": "archive"})
+    all_api = client.get("/api/summaries", params={"category": "all"})
+
+    assert redirect_response.status_code == 307
+    assert "category=current" in redirect_response.headers["location"]
+    assert current_page.status_code == 200
+    assert '<option value="current" selected>Current batch (1)</option>' in (
+        current_page.text
+    )
+    assert '<option value="archive">Archive</option>' in current_page.text
+    assert "curvy-loop18-archive-row" not in current_page.text
+    assert current_api.json()["category"] == "current"
+    assert [row["run_id"] for row in current_api.json()["rows"]] == [current_run]
+    assert [run["run_id"] for run in current_api.json()["runs"]] == [current_run]
+    assert archive_api.json()["category"] == "archive"
+    assert [row["run_id"] for row in archive_api.json()["rows"]] == [archive_run]
+    assert all_api.json()["category"] == "all"
+    assert {run["run_id"] for run in all_api.json()["runs"]} == {
+        current_run,
+        archive_run,
+    }
+
+
 def test_fastapi_defaults_to_newest_run_and_successful_gifs(
     tmp_path, monkeypatch
 ) -> None:
@@ -931,9 +1012,11 @@ def test_fastapi_defaults_to_newest_run_and_successful_gifs(
 
     assert page_response.status_code == 200
     assert "<summary>run-new</summary>" in page_response.text
+    assert '<option value="50" selected>50</option>' in page_response.text
     assert "live_checkpoint_iteration_15" not in page_response.text
     assert api_response.status_code == 200
     assert api_response.json()["selected_run_id"] == "run-new"
+    assert api_response.json()["limit"] == 50
     assert [row["eval_id"] for row in api_response.json()["rows"]] == [
         "live_checkpoint_iteration_16"
     ]

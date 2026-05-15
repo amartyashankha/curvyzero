@@ -5,12 +5,13 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import numpy as np
 
 from curvyzero.env import vector_runtime
 from curvyzero.env.vector_multiplayer_env import ACTION_COUNT
+from curvyzero.env.vector_multiplayer_env import DEFAULT_BODY_CAPACITY as VECTOR_DEFAULT_BODY_CAPACITY
 from curvyzero.env.vector_multiplayer_env import JOINT_ACTION_SCHEMA_ID
 from curvyzero.env.vector_multiplayer_env import NATURAL_BONUS_ENV_IMPL_ID
 from curvyzero.env.vector_multiplayer_env import NATURAL_BONUS_RULESET_ID
@@ -58,9 +59,12 @@ from curvyzero.env.vector_visual_observation import (
 from curvyzero.env.vector_visual_observation import SOURCE_STATE_RGB_CANVAS_LIKE_PLAYER_RGB
 from curvyzero.env.vector_visual_observation import SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID
 from curvyzero.env.vector_visual_observation import (
+    BONUS_RENDER_MODE_CIRCLES_FAST,
     BONUS_RENDER_MODE_BROWSER_SPRITES,
     BONUS_RENDER_MODE_SIMPLE_SYMBOLS,
     SOURCE_STATE_RGB_CANVAS_LIKE_TRUTH_LEVEL,
+    TRAIL_RENDER_MODE_BODY_CIRCLES_FAST,
+    TRAIL_RENDER_MODE_BROWSER_LINES,
 )
 from curvyzero.env.vector_visual_observation import SourceStateBrowserLineTrailLayerCache
 from curvyzero.env.vector_visual_observation import SourceStateCanvasGray64DirtyRenderCache
@@ -69,30 +73,34 @@ from curvyzero.env.vector_visual_observation import render_source_state_canvas_g
 from curvyzero.env.vector_visual_observation import (
     render_source_state_canvas_gray64_player_perspectives,
 )
-from curvyzero.env.vector_visual_observation import (
-    render_source_state_gray64_fast_player_perspectives,
-)
 from curvyzero.env.vector_visual_observation import render_source_state_rgb_canvas_like
+from curvyzero.env.observation_surface_contract import (
+    DEFAULT_POLICY_OBSERVATION_BACKEND,
+    POLICY_BONUS_RENDER_MODE,
+    POLICY_OBSERVATION_BACKEND_CPU,
+    POLICY_OBSERVATION_BACKEND_GPU,
+    POLICY_OBSERVATION_BACKENDS,
+    POLICY_OBSERVATION_CONTRACT_ID,
+    POLICY_OBSERVATION_PERSPECTIVE,
+    POLICY_OBSERVATION_PERSPECTIVE_OWNER,
+    POLICY_OBSERVATION_PERSPECTIVE_SCHEMA_ID,
+    POLICY_STACK_SHAPE,
+    POLICY_TRAIL_RENDER_MODE,
+    policy_observation_surface,
+)
+from curvyzero.contracts.curvytron import (
+    DEFAULT_LEARNER_SEAT_MODE,
+    LEARNER_SEAT_MODE_CHOICES,
+    LEARNER_SEAT_MODE_FIXED_PLAYER_0,
+    LEARNER_SEAT_MODE_FIXED_PLAYER_1,
+    LEARNER_SEAT_MODE_RANDOM_PER_EPISODE as _LEARNER_SEAT_MODE_RANDOM_PER_EPISODE,
+    REWARD_VARIANT_ALL_PLAYERS_ALIVE_DIAGNOSTIC,
+    REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME,
+    REWARD_VARIANT_SPARSE_OUTCOME,
+    REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME,
+    REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME,
+)
 
-try:
-    from curvyzero.env.vector_visual_observation import (
-        TRAIL_RENDER_MODE_BODY_CIRCLES_FAST,
-    )
-    from curvyzero.env.vector_visual_observation import (
-        TRAIL_RENDER_MODE_BROWSER_LINES,
-    )
-    from curvyzero.env.vector_visual_observation import TRAIL_RENDER_MODE_ORDER
-except ImportError:  # Renderer trail-mode API may land in a sibling patch.
-    SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES = "browser_lines"
-    SOURCE_STATE_TRAIL_RENDER_MODE_BODY_CIRCLES_FAST = "body_circles_fast"
-    SOURCE_STATE_SUPPORTED_TRAIL_RENDER_MODES = (
-        SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES,
-        SOURCE_STATE_TRAIL_RENDER_MODE_BODY_CIRCLES_FAST,
-    )
-else:
-    SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES = TRAIL_RENDER_MODE_BROWSER_LINES
-    SOURCE_STATE_TRAIL_RENDER_MODE_BODY_CIRCLES_FAST = TRAIL_RENDER_MODE_BODY_CIRCLES_FAST
-    SOURCE_STATE_SUPPORTED_TRAIL_RENDER_MODES = TRAIL_RENDER_MODE_ORDER
 from curvyzero.training.curvyzero_debug_visual_lightzero_smoke import (
     LocalDebugVisualLightZeroTimestep,
 )
@@ -185,7 +193,7 @@ JOINT_ACTION_COUNT = ACTION_COUNT * ACTION_COUNT
 STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID = (
     "curvyzero_source_state_rgb_canvas_like_gray64_stack4/v0"
 )
-STACKED_SOURCE_STATE_GRAY64_SHAPE = (4, 64, 64)
+STACKED_SOURCE_STATE_GRAY64_SHAPE = POLICY_STACK_SHAPE
 SOURCE_STATE_CANVAS_LIKE_RAW_CANVAS_SHAPE = (
     SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
     SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
@@ -193,7 +201,15 @@ SOURCE_STATE_CANVAS_LIKE_RAW_CANVAS_SHAPE = (
 )
 SOURCE_STATE_CANVAS_LIKE_RAW_CANVAS_DTYPE = "uint8"
 SOURCE_STATE_CANVAS_LIKE_RAW_CANVAS_VALUE_RANGE = (0, 255)
-SOURCE_STATE_DEFAULT_TRAIL_RENDER_MODE = SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES
+SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES = TRAIL_RENDER_MODE_BROWSER_LINES
+SOURCE_STATE_TRAIL_RENDER_MODE_BODY_CIRCLES_FAST = TRAIL_RENDER_MODE_BODY_CIRCLES_FAST
+SOURCE_STATE_DEFAULT_TRAIL_RENDER_MODE = POLICY_TRAIL_RENDER_MODE
+SOURCE_STATE_SUPPORTED_TRAIL_RENDER_MODES = (POLICY_TRAIL_RENDER_MODE,)
+SOURCE_STATE_BONUS_RENDER_MODE_AUTO = "auto"
+SOURCE_STATE_DEFAULT_BONUS_RENDER_MODE = POLICY_BONUS_RENDER_MODE
+SOURCE_STATE_SUPPORTED_BONUS_RENDER_MODES = (POLICY_BONUS_RENDER_MODE,)
+SOURCE_STATE_RAW_BONUS_RENDER_MODE = BONUS_RENDER_MODE_SIMPLE_SYMBOLS
+SOURCE_STATE_POLICY_OBSERVATION_BACKENDS = POLICY_OBSERVATION_BACKENDS
 SOURCE_STATE_BROWSER_TRAIL_SEMANTICS = "persistent_background_canvas_round_line_caps"
 SOURCE_STATE_BROWSER_CLIENT_TRAIL_POINT_CAVEAT = (
     "vector/source snapshots expose persisted body points, not all client "
@@ -239,6 +255,10 @@ SOURCE_HEAD_VALUE_STEP = 8
 DEFAULT_DECISION_SOURCE_FRAMES = 1
 DEFAULT_DECISION_MS = SOURCE_PHYSICS_STEP_MS * DEFAULT_DECISION_SOURCE_FRAMES
 DEFAULT_MAX_TICKS = 2_000
+DEFAULT_POLICY_OBSERVATION_GPU_TRAIL_SLOT_SAFETY_FACTOR = 2
+LEARNER_SEAT_ASSIGNMENT_SCHEMA_ID = "curvyzero_learner_seat_assignment/v0"
+LEARNER_SEAT_MODE_RANDOM_PER_EPISODE = _LEARNER_SEAT_MODE_RANDOM_PER_EPISODE
+LEARNER_SEAT_MODES = LEARNER_SEAT_MODE_CHOICES
 OPPONENT_DEATH_MODE_NORMAL = "normal"
 OPPONENT_DEATH_MODE_IMMORTAL = "immortal"
 OPPONENT_DEATH_MODES = (
@@ -268,16 +288,11 @@ PROACTIVE_WALL_AVOIDANT_OPPONENT_POLICY_ID = (
 )
 PROACTIVE_WALL_AVOIDANT_OPPONENT_POLICY_VERSION = "v0.2026-05-13"
 DEFAULT_OPPONENT_WALL_AVOIDANT_SAFE_MARGIN = 20.0
-REWARD_VARIANT_SPARSE_OUTCOME = "sparse_outcome"
-REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME = "dense_survival_plus_outcome"
-REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME = (
-    "survival_plus_bonus_no_outcome"
-)
-REWARD_VARIANT_ALL_PLAYERS_ALIVE_DIAGNOSTIC = "all_players_alive_diagnostic"
 SOURCE_STATE_FIXED_OPPONENT_REWARD_VARIANTS = (
     REWARD_VARIANT_SPARSE_OUTCOME,
     REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME,
     REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME,
+    REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME,
 )
 SOURCE_STATE_OPPONENT_POLICY_KINDS = (
     OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
@@ -353,6 +368,42 @@ SURVIVAL_PLUS_BONUS_NO_OUTCOME_REWARD_SCHEMA = {
 SURVIVAL_PLUS_BONUS_NO_OUTCOME_REWARD_SCHEMA_HASH = stable_contract_hash(
     SURVIVAL_PLUS_BONUS_NO_OUTCOME_REWARD_SCHEMA
 )
+SURVIVAL_PLUS_BONUS_PLUS_OUTCOME_REWARD_SCHEMA_ID = (
+    "curvyzero_survival_plus_bonus_plus_outcome/v0"
+)
+SURVIVAL_PLUS_BONUS_PLUS_OUTCOME_REWARD_SCHEMA = {
+    "schema_id": SURVIVAL_PLUS_BONUS_PLUS_OUTCOME_REWARD_SCHEMA_ID,
+    "dtype": "float32",
+    "episode_unit": "one_round",
+    "perspective": "ego_player",
+    "alignment": "reward_t_plus_1_after_one_source_tick",
+    "trainer_reward_terms": [
+        "dense_alive_helper_for_ego_player",
+        "same_step_bonus_pickup_helper_for_ego_player",
+        "terminal_sparse_outcome_scaled_by_episode_source_step_count",
+    ],
+    "dense_alive_helper": 1.0,
+    "bonus_pickup_reward_per_catch": SURVIVAL_PLUS_BONUS_NO_OUTCOME_BONUS_REWARD,
+    "bonus_pickup_source": "bonus_catch_count_step[0, ego_player_index]",
+    "sparse_round_outcome_schema_id": SPARSE_ROUND_OUTCOME_REWARD_SCHEMA_ID,
+    "sparse_round_outcome_is_telemetry_only": False,
+    "terminal_outcome_scale": "episode_source_step_count",
+    "terminal_outcome_reward": "sparse_round_outcome * episode_source_step_count",
+    "terminal_outcome_bonus": 1.0,
+    "loser_penalty": -1.0,
+    "winner_bonus": 1.0,
+    "draw_bonus": 0.0,
+    "truncation_bonus": 0.0,
+    "survival_length_metric_is_telemetry": True,
+    "non_claims": [
+        "not_zero_sum_after_dense_helper_and_bonus",
+        "not_two_seat_self_play",
+        "not_a_learning_claim",
+    ],
+}
+SURVIVAL_PLUS_BONUS_PLUS_OUTCOME_REWARD_SCHEMA_HASH = stable_contract_hash(
+    SURVIVAL_PLUS_BONUS_PLUS_OUTCOME_REWARD_SCHEMA
+)
 ALL_PLAYERS_ALIVE_DIAGNOSTIC_REWARD_SCHEMA_ID = (
     "curvyzero_all_players_alive_diagnostic/v0"
 )
@@ -390,6 +441,8 @@ STACKED_SOURCE_STATE_GRAY64_SCHEMA_HASH = stable_contract_hash(
         "raw_observation_schema_hash": SOURCE_STATE_CANVAS_LIKE_RAW_CANVAS_SCHEMA_HASH,
         "default_trail_render_mode": SOURCE_STATE_DEFAULT_TRAIL_RENDER_MODE,
         "supported_trail_render_modes": list(SOURCE_STATE_SUPPORTED_TRAIL_RENDER_MODES),
+        "default_bonus_render_mode": SOURCE_STATE_DEFAULT_BONUS_RENDER_MODE,
+        "supported_bonus_render_modes": list(SOURCE_STATE_SUPPORTED_BONUS_RENDER_MODES),
         "shape": list(STACKED_SOURCE_STATE_GRAY64_SHAPE),
         "dtype": SOURCE_STATE_CANVAS_GRAY64_NORMALIZED_DTYPE,
         "range": list(SOURCE_STATE_CANVAS_GRAY64_NORMALIZED_VALUE_RANGE),
@@ -440,9 +493,18 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         "control_stochasticity_schema_id": CONTROL_STOCHASTICITY_SCHEMA_ID,
         "reward_variant": REWARD_VARIANT_SPARSE_OUTCOME,
         "source_state_trail_render_mode": SOURCE_STATE_DEFAULT_TRAIL_RENDER_MODE,
+        "source_state_bonus_render_mode": SOURCE_STATE_DEFAULT_BONUS_RENDER_MODE,
+        "policy_observation_backend": DEFAULT_POLICY_OBSERVATION_BACKEND,
+        "supported_policy_observation_backends": SOURCE_STATE_POLICY_OBSERVATION_BACKENDS,
         "source_state_scalar_dirty_render_enabled": True,
         "default_trail_render_mode": SOURCE_STATE_DEFAULT_TRAIL_RENDER_MODE,
         "supported_trail_render_modes": SOURCE_STATE_SUPPORTED_TRAIL_RENDER_MODES,
+        "default_bonus_render_mode": SOURCE_STATE_DEFAULT_BONUS_RENDER_MODE,
+        "supported_bonus_render_modes": SOURCE_STATE_SUPPORTED_BONUS_RENDER_MODES,
+        "raw_observation_bonus_render_mode": SOURCE_STATE_RAW_BONUS_RENDER_MODE,
+        "learner_seat_assignment_schema_id": LEARNER_SEAT_ASSIGNMENT_SCHEMA_ID,
+        "learner_seat_mode": DEFAULT_LEARNER_SEAT_MODE,
+        "supported_learner_seat_modes": LEARNER_SEAT_MODES,
         "policy_action_repeat_min": DEFAULT_POLICY_ACTION_REPEAT_MIN,
         "policy_action_repeat_max": DEFAULT_POLICY_ACTION_REPEAT_MAX,
         "policy_action_repeat_extra_probability": (
@@ -459,12 +521,11 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         self.env_id = str(
             _cfg_get(cfg, "env_id", LIGHTZERO_SOURCE_STATE_VISUAL_SURVIVAL_ENV_ID)
         )
-        self.ego_player_index = int(_cfg_get(cfg, "ego_player_index", 0))
-        if self.ego_player_index != 0:
-            raise ValueError("source-state native survival env currently supports ego_player_index=0")
-        self.opponent_player_index = 1
-        self.ego_player_id = "player_0"
-        self.opponent_player_id = "player_1"
+        (
+            self._learner_seat_mode,
+            initial_ego_player_index,
+        ) = _learner_seat_mode_from_cfg(cfg)
+        self._set_learner_seat(initial_ego_player_index)
         self._opponent_policy_kind = str(
             _cfg_get(cfg, "opponent_policy_kind", OPPONENT_POLICY_KIND_FIXED_STRAIGHT)
         )
@@ -511,6 +572,9 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
                     )
         self._episode_opponent_mixture_entry: dict[str, Any] | None = None
         self._opponent_policy_cache: dict[str, Any] = {}
+        self._opponent_assignment_context = _normalize_opponent_assignment_context(
+            _cfg_get(cfg, "opponent_assignment_context", None)
+        )
         self.opponent_policy = None
         if (
             self._opponent_mixture is None
@@ -542,6 +606,36 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
                 SOURCE_STATE_DEFAULT_TRAIL_RENDER_MODE,
             )
         )
+        self._source_state_bonus_render_mode = _validate_bonus_render_mode(
+            _cfg_get(
+                cfg,
+                "source_state_bonus_render_mode",
+                SOURCE_STATE_DEFAULT_BONUS_RENDER_MODE,
+            )
+        )
+        self._model_bonus_render_mode = _resolve_model_bonus_render_mode(
+            trail_render_mode=self._source_state_trail_render_mode,
+            bonus_render_mode=self._source_state_bonus_render_mode,
+        )
+        self._policy_observation_backend = _validate_policy_observation_backend(
+            _cfg_get(cfg, "policy_observation_backend", DEFAULT_POLICY_OBSERVATION_BACKEND)
+        )
+        self._jax_scalar_observation_renderer: _JaxScalarPolicyObservationRenderer | None = None
+        if self._policy_observation_backend == POLICY_OBSERVATION_BACKEND_GPU:
+            if (
+                self._source_state_trail_render_mode
+                != SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES
+                or self._model_bonus_render_mode != BONUS_RENDER_MODE_SIMPLE_SYMBOLS
+            ):
+                raise ValueError(
+                    "policy_observation_backend='jax_gpu' currently supports only "
+                    "browser_lines + simple_symbols"
+                )
+            self._jax_scalar_observation_renderer = _JaxScalarPolicyObservationRenderer(
+                player_count=2,
+                min_trail_slots=self._policy_observation_gpu_min_trail_slots(cfg),
+            )
+        self._raw_observation_bonus_render_mode = SOURCE_STATE_RAW_BONUS_RENDER_MODE
         disable_death_for_profile = bool(_cfg_get(cfg, "disable_death_for_profile", False))
         configured_death_mode = str(
             _cfg_get(cfg, "death_mode", vector_runtime.DEATH_MODE_NORMAL)
@@ -738,9 +832,21 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             f"extra={self._policy_action_repeat_extra_probability:g}"
         )
 
-    def reset(self, seed: int | None = None) -> dict[str, Any]:
+    def reset(
+        self,
+        seed: int | None = None,
+        opponent_mixture: Any | None = None,
+        opponent_assignment_context: Any | None = None,
+    ) -> dict[str, Any]:
+        if opponent_mixture is not None:
+            self.set_opponent_mixture_for_next_reset(opponent_mixture)
+        if opponent_assignment_context is not None:
+            self._opponent_assignment_context = _normalize_opponent_assignment_context(
+                opponent_assignment_context
+            )
         reset_seed = self._next_seed(seed)
         self._episode_seed = reset_seed
+        self._select_learner_seat_for_reset(reset_seed=reset_seed)
         self._select_episode_opponent(reset_seed=reset_seed)
         self._override_seed = self._override_seed_for(reset_seed)
         self._override_rng = np.random.default_rng(self._override_seed)
@@ -761,6 +867,70 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         self._last_batch = self._env.reset(seed=reset_seed)
         self._scrub_blank_canvas_opponent()
         return self._lightzero_observation(needs_reset=False)
+
+    def set_opponent_mixture_for_next_reset(self, mixture_spec: Any) -> None:
+        mixture = parse_opponent_mixture_spec(mixture_spec)
+        if mixture is None:
+            raise ValueError("opponent mixture refresh requires a non-empty mixture")
+        allowed_opponent_policy_kinds = tuple(
+            getattr(
+                self,
+                "_allowed_opponent_policy_kinds",
+                SOURCE_STATE_OPPONENT_POLICY_KINDS,
+            )
+        )
+        for entry in mixture["entries"]:
+            if entry["opponent_policy_kind"] not in allowed_opponent_policy_kinds:
+                raise ValueError(
+                    "opponent mixture entry uses unsupported opponent_policy_kind "
+                    f"{entry['opponent_policy_kind']!r}; expected one of "
+                    f"{allowed_opponent_policy_kinds!r}"
+                )
+            if (
+                entry["opponent_policy_kind"]
+                == OPPONENT_POLICY_KIND_FROZEN_LIGHTZERO_CHECKPOINT
+                and not entry.get("opponent_checkpoint_path")
+            ):
+                raise ValueError(
+                    "refreshed frozen opponent mixture entries require "
+                    "resolved opponent_checkpoint_path"
+                )
+
+        self._opponent_mixture = mixture
+        self._episode_opponent_mixture_entry = None
+        self._opponent_policy_cache.clear()
+        self.opponent_policy = None
+        self._last_opponent_policy_sidecar = None
+
+    def _set_learner_seat(self, ego_player_index: int) -> None:
+        ego = int(ego_player_index)
+        if ego not in (0, 1):
+            raise ValueError("ego_player_index must be 0 or 1")
+        self.ego_player_index = ego
+        self.opponent_player_index = 1 - ego
+        self.ego_player_id = f"player_{self.ego_player_index}"
+        self.opponent_player_id = f"player_{self.opponent_player_index}"
+
+    def _select_learner_seat_for_reset(self, *, reset_seed: int) -> None:
+        if self._learner_seat_mode == LEARNER_SEAT_MODE_FIXED_PLAYER_1:
+            self._set_learner_seat(1)
+            return
+        if self._learner_seat_mode == LEARNER_SEAT_MODE_FIXED_PLAYER_0:
+            self._set_learner_seat(0)
+            return
+        reset_index = int(max(0, self._reset_index - 1))
+        seed_sequence = np.random.SeedSequence(
+            [
+                int(reset_seed) & 0xFFFFFFFF,
+                (int(reset_seed) >> 32) & 0xFFFFFFFF,
+                reset_index & 0xFFFFFFFF,
+                (reset_index >> 32) & 0xFFFFFFFF,
+                0x51EA7,
+            ]
+        )
+        rng = np.random.default_rng(seed_sequence)
+        offset = int(rng.integers(0, 2, dtype=np.int64))
+        self._set_learner_seat((offset + reset_index) % 2)
 
     def _select_episode_opponent(self, *, reset_seed: int) -> None:
         if self._opponent_mixture is None:
@@ -812,7 +982,9 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         opponent_action = self._opponent_action()
         if timing_sec is not None:
             timing_sec["opponent_action_sec"] = time.perf_counter() - opponent_started
-        joint_action = np.array([[executed_action, opponent_action]], dtype=np.int16)
+        joint_action = np.full((1, 2), STRAIGHT_ACTION_ID, dtype=np.int16)
+        joint_action[0, self.ego_player_index] = executed_action
+        joint_action[0, self.opponent_player_index] = opponent_action
         action_repeat_requested = self._sample_policy_action_repeat()
         action_repeat_executed = 0
         reward = 0.0
@@ -820,6 +992,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         dense_survival_helper_sum = 0.0
         bonus_catch_count_step_sum = 0
         bonus_pickup_reward_sum = 0.0
+        terminal_outcome_reward_sum = 0.0
         done = False
         terminated = False
         truncated = False
@@ -850,6 +1023,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             dense_survival_helper_sum += components["dense_survival_helper"]
             bonus_catch_count_step_sum += int(components["bonus_catch_count_step"])
             bonus_pickup_reward_sum += components["bonus_pickup_reward"]
+            terminal_outcome_reward_sum += components["terminal_outcome_reward"]
             reward += components["trainer_reward"]
             done = bool(batch.done[0])
             terminated = bool(batch.terminated[0])
@@ -890,6 +1064,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             dense_survival_helper_sum=dense_survival_helper_sum,
             bonus_catch_count_step_sum=bonus_catch_count_step_sum,
             bonus_pickup_reward_sum=bonus_pickup_reward_sum,
+            terminal_outcome_reward_sum=terminal_outcome_reward_sum,
             profile_env_timing_sec=timing_sec,
         )
         timestep = LocalDebugVisualLightZeroTimestep(next_obs, reward, done, info)
@@ -950,6 +1125,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
                 row=0,
                 out=self._raw_frame,
                 trail_render_mode=self._source_state_trail_render_mode,
+                bonus_render_mode=self._raw_observation_bonus_render_mode,
             )
             self._raw_frame_dirty = False
         return self._raw_frame.copy()
@@ -966,6 +1142,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             row=0,
             frame_size=frame_size,
             trail_render_mode=self._source_state_trail_render_mode,
+            bonus_render_mode=self._raw_observation_bonus_render_mode,
         )
 
     def __repr__(self) -> str:
@@ -989,6 +1166,21 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             death_mode=self._death_mode,
             death_immunity_player_ids=self._death_immunity_player_ids(),
             natural_bonus_spawn=self._natural_bonus_spawn,
+        )
+
+    def _policy_observation_gpu_min_trail_slots(self, cfg: Any) -> int:
+        configured = _cfg_get(cfg, "policy_observation_gpu_min_trail_slots", None)
+        if configured is not None:
+            value = int(configured)
+            if value < 1:
+                raise ValueError("policy_observation_gpu_min_trail_slots must be positive")
+            return value
+        expected_visual_points = (
+            DEFAULT_POLICY_OBSERVATION_GPU_TRAIL_SLOT_SAFETY_FACTOR
+            * self._max_source_ticks
+        )
+        return _ceil_power_of_two(
+            min(int(VECTOR_DEFAULT_BODY_CAPACITY), max(1, int(expected_visual_points)))
         )
 
     def _death_immunity_player_ids(self) -> tuple[int, ...]:
@@ -1165,7 +1357,21 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
 
     def _update_stack(self) -> np.ndarray:
         state_view = self._render_state_view()
-        if self._should_use_scalar_dirty_render_cache():
+        if self._policy_observation_backend == POLICY_OBSERVATION_BACKEND_GPU:
+            if self._jax_scalar_observation_renderer is None:
+                raise RuntimeError("jax_gpu observation backend was not initialized")
+            raw_frames = self._jax_scalar_observation_renderer.render_player_perspectives(
+                state_view,
+                out=self._gray64_perspective_frames,
+            )
+            np.copyto(self._gray64_frame, raw_frames[self.ego_player_index])
+            np.copyto(
+                self._opponent_gray64_frame,
+                raw_frames[self.opponent_player_index],
+            )
+            self._raw_frame_dirty = True
+            gray64 = self._gray64_frame
+        elif self._should_use_scalar_dirty_render_cache():
             raw_frames = render_source_state_canvas_gray64_player_perspectives(
                 state_view,
                 row=0,
@@ -1175,24 +1381,30 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
                 trail_cache=self._scalar_trail_layer_cache,
                 dirty_render_cache=self._scalar_dirty_render_cache,
                 downsample_scratch=self._downsample_scratch,
-                player_rgbs=self._scalar_global_player_rgbs,
+                player_rgbs=(
+                    _player_perspective_rgb_palette(
+                        state_view,
+                        row=0,
+                        controlled_player=0,
+                        player_count=2,
+                    ),
+                    _player_perspective_rgb_palette(
+                        state_view,
+                        row=0,
+                        controlled_player=1,
+                        player_count=2,
+                    ),
+                ),
                 trail_render_mode=self._source_state_trail_render_mode,
+                bonus_render_mode=self._model_bonus_render_mode,
             )
-            np.copyto(self._gray64_frame, raw_frames[0])
+            np.copyto(self._gray64_frame, raw_frames[self.ego_player_index])
+            np.copyto(
+                self._opponent_gray64_frame,
+                raw_frames[self.opponent_player_index],
+            )
             if self._scalar_dirty_render_cache.initialized:
-                np.copyto(self._raw_frame, self._scalar_dirty_render_cache.rgb_frames[0])
-                self._raw_frame_dirty = False
-            gray64 = self._gray64_frame
-        elif self._should_use_direct_fast_gray64_render():
-            raw_frames = render_source_state_gray64_fast_player_perspectives(
-                state_view,
-                row=0,
-                player_count=2,
-                out=self._gray64_perspective_frames,
-                bonus_render_mode=BONUS_RENDER_MODE_SIMPLE_SYMBOLS,
-            )
-            np.copyto(self._gray64_frame, raw_frames[0])
-            self._raw_frame_dirty = True
+                self._raw_frame_dirty = True
             gray64 = self._gray64_frame
         else:
             gray64 = render_source_state_canvas_gray64(
@@ -1201,9 +1413,33 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
                 out=self._gray64_frame,
                 rgb_out=self._raw_frame,
                 downsample_scratch=self._downsample_scratch,
+                player_rgb=_player_perspective_rgb_palette(
+                    state_view,
+                    row=0,
+                    controlled_player=self.ego_player_index,
+                    player_count=2,
+                ),
                 trail_render_mode=self._source_state_trail_render_mode,
+                bonus_render_mode=self._model_bonus_render_mode,
             )
-            self._raw_frame_dirty = False
+            render_source_state_canvas_gray64(
+                state_view,
+                row=0,
+                out=self._opponent_gray64_frame,
+                rgb_out=self._raw_frame_work,
+                downsample_scratch=self._downsample_scratch,
+                player_rgb=_player_perspective_rgb_palette(
+                    state_view,
+                    row=0,
+                    controlled_player=self.opponent_player_index,
+                    player_count=2,
+                ),
+                trail_render_mode=self._source_state_trail_render_mode,
+                bonus_render_mode=self._model_bonus_render_mode,
+            )
+            self._raw_frame_dirty = (
+                self._model_bonus_render_mode != self._raw_observation_bonus_render_mode
+            )
         np.multiply(
             gray64,
             np.float32(1.0 / 255.0),
@@ -1212,11 +1448,6 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         )
         self._stack[:-1] = self._stack[1:]
         self._stack[-1] = self._normalized_frame[0]
-        _normalize_player_perspective(
-            gray64,
-            controlled_player=self.opponent_player_index,
-            out=self._opponent_gray64_frame,
-        )
         np.multiply(
             self._opponent_gray64_frame,
             np.float32(1.0 / 255.0),
@@ -1232,12 +1463,6 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             self._scalar_dirty_render_enabled
             and self._source_state_trail_render_mode
             == SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES
-        )
-
-    def _should_use_direct_fast_gray64_render(self) -> bool:
-        return (
-            self._source_state_trail_render_mode
-            == SOURCE_STATE_TRAIL_RENDER_MODE_BODY_CIRCLES_FAST
         )
 
     def _reset_scalar_render_cache(self) -> None:
@@ -1267,7 +1492,8 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         if self.opponent_policy is None:
             raise RuntimeError("frozen LightZero opponent policy was not initialized")
         legal = self._env._action_mask()[:, :2].astype(bool, copy=True)
-        opponent_mask = np.array([[False, True]], dtype=bool)
+        opponent_mask = np.zeros((1, 2), dtype=bool)
+        opponent_mask[0, self.opponent_player_index] = True
         observation = np.zeros((1, 2, *STACKED_SOURCE_STATE_GRAY64_SHAPE), dtype=np.float32)
         observation[0, self.ego_player_index] = self._stack
         observation[0, self.opponent_player_index] = self._opponent_stack
@@ -1511,6 +1737,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         dense_helper = 0.0
         bonus_catch_count = 0
         bonus_pickup_reward = 0.0
+        terminal_outcome_reward = 0.0
         if self._reward_variant == REWARD_VARIANT_SPARSE_OUTCOME:
             trainer_reward = sparse_outcome
         elif self._reward_variant == REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME:
@@ -1530,6 +1757,26 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
                 * SURVIVAL_PLUS_BONUS_NO_OUTCOME_BONUS_REWARD
             )
             trainer_reward = dense_helper + bonus_pickup_reward
+        elif (
+            self._reward_variant
+            == REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME
+        ):
+            dense_helper = self._survival_reward_for_player(player_index)
+            bonus_catch_count = self._bonus_catch_count_for_player(
+                batch=batch,
+                player_index=player_index,
+            )
+            bonus_pickup_reward = (
+                float(bonus_catch_count)
+                * SURVIVAL_PLUS_BONUS_NO_OUTCOME_BONUS_REWARD
+            )
+            if bool(batch.done[0]) and sparse_outcome != 0.0:
+                terminal_outcome_reward = sparse_outcome * float(
+                    self._physical_step_index
+                )
+            trainer_reward = (
+                dense_helper + bonus_pickup_reward + terminal_outcome_reward
+            )
         elif self._reward_variant == REWARD_VARIANT_ALL_PLAYERS_ALIVE_DIAGNOSTIC:
             alive = self._env.state["alive"][0, :2].astype(bool)
             trainer_reward = 1.0 if bool(np.all(alive)) else 0.0
@@ -1541,6 +1788,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             "dense_survival_helper": float(dense_helper),
             "bonus_catch_count_step": float(bonus_catch_count),
             "bonus_pickup_reward": float(bonus_pickup_reward),
+            "terminal_outcome_reward": float(terminal_outcome_reward),
         }
 
     def _scalar_reward_for_player(self, *, batch: Any, player_index: int) -> float:
@@ -1556,6 +1804,8 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             return DENSE_SURVIVAL_PLUS_OUTCOME_REWARD_SCHEMA_ID
         if self._reward_variant == REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME:
             return SURVIVAL_PLUS_BONUS_NO_OUTCOME_REWARD_SCHEMA_ID
+        if self._reward_variant == REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME:
+            return SURVIVAL_PLUS_BONUS_PLUS_OUTCOME_REWARD_SCHEMA_ID
         if self._reward_variant == REWARD_VARIANT_ALL_PLAYERS_ALIVE_DIAGNOSTIC:
             return ALL_PLAYERS_ALIVE_DIAGNOSTIC_REWARD_SCHEMA_ID
         raise RuntimeError(f"unsupported reward_variant {self._reward_variant!r}")
@@ -1567,6 +1817,8 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             return DENSE_SURVIVAL_PLUS_OUTCOME_REWARD_SCHEMA_HASH
         if self._reward_variant == REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME:
             return SURVIVAL_PLUS_BONUS_NO_OUTCOME_REWARD_SCHEMA_HASH
+        if self._reward_variant == REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME:
+            return SURVIVAL_PLUS_BONUS_PLUS_OUTCOME_REWARD_SCHEMA_HASH
         if self._reward_variant == REWARD_VARIANT_ALL_PLAYERS_ALIVE_DIAGNOSTIC:
             return ALL_PLAYERS_ALIVE_DIAGNOSTIC_REWARD_SCHEMA_HASH
         raise RuntimeError(f"unsupported reward_variant {self._reward_variant!r}")
@@ -1578,6 +1830,8 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             return "ego_player_dense_survival_helper_plus_sparse_outcome"
         if self._reward_variant == REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME:
             return "ego_player_dense_survival_plus_same_step_bonus_no_outcome"
+        if self._reward_variant == REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME:
+            return "ego_player_dense_survival_plus_same_step_bonus_plus_scaled_outcome"
         if self._reward_variant == REWARD_VARIANT_ALL_PLAYERS_ALIVE_DIAGNOSTIC:
             return "diagnostic_all_players_alive_after_one_source_tick"
         raise RuntimeError(f"unsupported reward_variant {self._reward_variant!r}")
@@ -1596,6 +1850,16 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             low = 0.0
             high = float(
                 self._policy_action_repeat_max
+                * (1.0 + SURVIVAL_PLUS_BONUS_NO_OUTCOME_BONUS_REWARD)
+            )
+        elif (
+            self._reward_variant
+            == REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME
+        ):
+            low = -float(self._max_source_ticks)
+            high = float(
+                self._max_source_ticks
+                + self._policy_action_repeat_max
                 * (1.0 + SURVIVAL_PLUS_BONUS_NO_OUTCOME_BONUS_REWARD)
             )
         elif self._reward_variant == REWARD_VARIANT_ALL_PLAYERS_ALIVE_DIAGNOSTIC:
@@ -1631,6 +1895,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         dense_survival_helper_sum: float,
         bonus_catch_count_step_sum: int,
         bonus_pickup_reward_sum: float,
+        terminal_outcome_reward_sum: float,
         profile_env_timing_sec: dict[str, float] | None = None,
     ) -> dict[str, Any]:
         info = self._base_info()
@@ -1660,6 +1925,12 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
                 "adapter_timestep": int(self._step_index),
                 "physical_step_index": int(self._physical_step_index),
                 "source_tick_index": int(self._physical_step_index),
+                "learner_seat_assignment_schema_id": LEARNER_SEAT_ASSIGNMENT_SCHEMA_ID,
+                "learner_seat_mode": self._learner_seat_mode,
+                "ego_player_index": int(self.ego_player_index),
+                "opponent_player_index": int(self.opponent_player_index),
+                "learner_player_index": int(self.ego_player_index),
+                "learner_player_id": self.ego_player_id,
                 "acting_player_id": self.ego_player_id,
                 "active_player_id": self.ego_player_id,
                 "next_active_player_id": self.ego_player_id,
@@ -1700,10 +1971,14 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
                 "dense_survival_helper_for_ego": float(dense_survival_helper_sum),
                 "bonus_catch_count_step_for_ego": int(bonus_catch_count_step_sum),
                 "bonus_pickup_reward_for_ego": float(bonus_pickup_reward_sum),
+                "terminal_outcome_reward_for_ego": float(terminal_outcome_reward_sum),
                 "bonus_pickup_reward_per_catch": (
                     SURVIVAL_PLUS_BONUS_NO_OUTCOME_BONUS_REWARD
                     if self._reward_variant
-                    == REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME
+                    in (
+                        REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME,
+                        REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME,
+                    )
                     else 0.0
                 ),
                 "reward_player_id": self.ego_player_id,
@@ -1764,12 +2039,38 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             "source_frame_decision": True,
             "max_ticks": int(self._max_ticks),
             "max_source_ticks": int(self._max_source_ticks),
+            "body_capacity": int(self._env.body_capacity),
+            "visual_trail_capacity": int(self._env.state["visual_trail_active"].shape[1]),
+            "visual_trail_write_cursor": int(
+                self._env.state["visual_trail_write_cursor"][0]
+            ),
+            "visual_trail_active_count": int(
+                self._env.state["visual_trail_active"].sum()
+            ),
+            "visual_trail_overflow": bool(self._env.state["visual_trail_overflow"][0]),
+            "body_write_cursor": int(self._env.state["body_write_cursor"][0]),
+            "body_active_count": int(self._env.state["body_active"].sum()),
+            "body_overflow": bool(self._env.state["body_overflow"][0]),
             "player_count": 2,
             "player_ids": ("player_0", "player_1"),
+            "learner_seat_assignment_schema_id": LEARNER_SEAT_ASSIGNMENT_SCHEMA_ID,
+            "learner_seat_mode": self._learner_seat_mode,
+            "supported_learner_seat_modes": list(LEARNER_SEAT_MODES),
+            "ego_player_index": int(self.ego_player_index),
+            "opponent_player_index": int(self.opponent_player_index),
+            "learner_player_index": int(self.ego_player_index),
+            "learner_player_id": self.ego_player_id,
+            "opponent_player_id": self.opponent_player_id,
             "observation_schema_id": STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID,
             "observation_schema_hash": STACKED_SOURCE_STATE_GRAY64_SCHEMA_HASH,
             "single_frame_schema_id": SOURCE_STATE_CANVAS_LIKE_GRAY64_SCHEMA_ID,
             "single_frame_schema_hash": SOURCE_STATE_CANVAS_LIKE_GRAY64_SCHEMA_HASH,
+            "observation_contract_id": POLICY_OBSERVATION_CONTRACT_ID,
+            "observation_contract": policy_observation_surface(
+                trail_render_mode=self._source_state_trail_render_mode,
+                bonus_render_mode=self._model_bonus_render_mode,
+                backend=self._policy_observation_backend,
+            ),
             "raw_observation_schema_id": SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID,
             "raw_observation_schema_hash": SOURCE_STATE_CANVAS_LIKE_RAW_CANVAS_SCHEMA_HASH,
             "raw_observation_available": True,
@@ -1784,32 +2085,68 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
                 "render_source_state_rgb_canvas_like("
                 "frame_size="
                 f"{SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE}, "
-                f"trail_render_mode={self._source_state_trail_render_mode!r})"
+                f"trail_render_mode={self._source_state_trail_render_mode!r}, "
+                f"bonus_render_mode={self._raw_observation_bonus_render_mode!r})"
             ),
             "grayscale_observation_source": (
-                "render_source_state_gray64_fast_player_perspectives(out=gray64_buffer)"
-                if self._should_use_direct_fast_gray64_render()
+                "jax_gpu_scalar_block_704_gray64_experimental("
+                "browser_lines, simple_symbols)"
+                if self._policy_observation_backend == POLICY_OBSERVATION_BACKEND_GPU
                 else (
                     "render_source_state_canvas_gray64("
                     "rgb_out=raw_observation_buffer, "
-                    f"trail_render_mode={self._source_state_trail_render_mode!r})"
+                    f"trail_render_mode={self._source_state_trail_render_mode!r}, "
+                    f"bonus_render_mode={self._model_bonus_render_mode!r})"
                 )
             ),
-            "player_perspective_schema_id": None,
+            "policy_observation_backend": self._policy_observation_backend,
+            "default_policy_observation_backend": DEFAULT_POLICY_OBSERVATION_BACKEND,
+            "supported_policy_observation_backends": list(
+                SOURCE_STATE_POLICY_OBSERVATION_BACKENDS
+            ),
+            "policy_observation_backend_kind": (
+                "experimental_scalar_jax_gpu"
+                if self._policy_observation_backend == POLICY_OBSERVATION_BACKEND_GPU
+                else "cpu_oracle"
+            ),
+            "policy_observation_gpu_min_trail_slots": (
+                int(self._jax_scalar_observation_renderer.min_trail_slots)
+                if self._jax_scalar_observation_renderer is not None
+                else None
+            ),
+            "policy_observation_gpu_last_profile": (
+                dict(self._jax_scalar_observation_renderer.last_profile)
+                if self._jax_scalar_observation_renderer is not None
+                else None
+            ),
+            "player_perspective_schema_id": POLICY_OBSERVATION_PERSPECTIVE_SCHEMA_ID,
+            "observation_perspective": POLICY_OBSERVATION_PERSPECTIVE,
+            "observation_perspective_owner": POLICY_OBSERVATION_PERSPECTIVE_OWNER,
+            "source_state_player_perspective": True,
+            "observation_perspective_player_index": int(self.ego_player_index),
+            "observation_perspective_player_id": self.ego_player_id,
+            "opponent_observation_perspective_player_index": int(
+                self.opponent_player_index
+            ),
+            "opponent_observation_perspective_player_id": self.opponent_player_id,
             "renderer_impl_id": SOURCE_STATE_CANVAS_LIKE_GRAY64_RENDERER_IMPL_ID,
             "raw_renderer_impl_id": SOURCE_STATE_RGB_CANVAS_LIKE_RENDERER_IMPL_ID,
-            "bonus_render_mode": (
-                BONUS_RENDER_MODE_SIMPLE_SYMBOLS
-                if self._should_use_direct_fast_gray64_render()
-                else BONUS_RENDER_MODE_BROWSER_SPRITES
-            ),
+            "source_state_trail_render_mode": self._source_state_trail_render_mode,
+            "source_state_bonus_render_mode": self._source_state_bonus_render_mode,
+            "default_bonus_render_mode": SOURCE_STATE_DEFAULT_BONUS_RENDER_MODE,
+            "supported_bonus_render_modes": list(SOURCE_STATE_SUPPORTED_BONUS_RENDER_MODES),
+            "model_observation_bonus_render_mode": self._model_bonus_render_mode,
+            "raw_observation_bonus_render_mode": self._raw_observation_bonus_render_mode,
+            "bonus_render_mode": self._model_bonus_render_mode,
             "bonus_renderer_kind": (
                 "simple_symbol_masks"
-                if self._should_use_direct_fast_gray64_render()
+                if self._model_bonus_render_mode == BONUS_RENDER_MODE_SIMPLE_SYMBOLS
+                else "typed_luma_circles"
+                if self._model_bonus_render_mode == BONUS_RENDER_MODE_CIRCLES_FAST
                 else "source_sprite_atlas_tiles"
             ),
             "bonus_renderer_is_approximation": bool(
-                self._should_use_direct_fast_gray64_render()
+                self._model_bonus_render_mode != BONUS_RENDER_MODE_BROWSER_SPRITES
             ),
             "source_state_scalar_dirty_render_enabled": bool(
                 self._scalar_dirty_render_enabled
@@ -1820,8 +2157,9 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             "source_state_scalar_dirty_render_kind": (
                 "exact_browser_lines_dirty_cache"
                 if self._should_use_scalar_dirty_render_cache()
-                else "direct_gray64_fast_approximation"
-                if self._should_use_direct_fast_gray64_render()
+                and self._policy_observation_backend == POLICY_OBSERVATION_BACKEND_CPU
+                else "jax_gpu_scalar_experimental"
+                if self._policy_observation_backend == POLICY_OBSERVATION_BACKEND_GPU
                 else "scalar_full_render"
             ),
             "truth_level": SOURCE_STATE_CANVAS_GRAY64_TRUTH_LEVEL,
@@ -1863,16 +2201,23 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
                 in (
                     REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME,
                     REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME,
+                    REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME,
                 )
             ),
             "bonus_pickup_reward_enabled": (
                 self._reward_variant
-                == REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME
+                in (
+                    REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME,
+                    REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME,
+                )
             ),
             "bonus_pickup_reward_per_catch": (
                 SURVIVAL_PLUS_BONUS_NO_OUTCOME_BONUS_REWARD
                 if self._reward_variant
-                == REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME
+                in (
+                    REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME,
+                    REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME,
+                )
                 else 0.0
             ),
             "survival_length_is_eval_metric": True,
@@ -1906,7 +2251,10 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             ),
             "opponent_runtime_mode": self._opponent_runtime_mode,
             "opponent_runtime_mode_claim": (
-                "blank_canvas_noop_player_1_inert_hidden_no_trail_no_collision_no_bonus"
+                (
+                    "blank_canvas_noop_"
+                    f"{self.opponent_player_id}_inert_hidden_no_trail_no_collision_no_bonus"
+                )
                 if self._blank_canvas_noop_enabled()
                 else "normal_opponent_runtime"
             ),
@@ -1932,10 +2280,18 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
                 else None
             ),
             "blank_canvas_noop_uses_remove_player": False,
-            "blank_canvas_noop_public_player_1_present_alive": (
+            "blank_canvas_noop_public_opponent_present_alive": (
                 bool(
                     self._env.state["present"][0, self.opponent_player_index]
                     and self._env.state["alive"][0, self.opponent_player_index]
+                )
+                if self._blank_canvas_noop_enabled()
+                else None
+            ),
+            "blank_canvas_noop_public_player_1_present_alive": (
+                bool(
+                    self._env.state["present"][0, 1]
+                    and self._env.state["alive"][0, 1]
                 )
                 if self._blank_canvas_noop_enabled()
                 else None
@@ -1953,8 +2309,29 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
                 in (
                     REWARD_VARIANT_SPARSE_OUTCOME,
                     REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME,
+                    REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME,
                 )
                 else 0.0
+            ),
+            "terminal_outcome_reward_enabled": (
+                self._reward_variant
+                in (
+                    REWARD_VARIANT_SPARSE_OUTCOME,
+                    REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME,
+                    REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME,
+                )
+            ),
+            "terminal_outcome_scale": (
+                "episode_source_step_count"
+                if self._reward_variant
+                == REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME
+                else "unit_sparse_outcome"
+                if self._reward_variant
+                in (
+                    REWARD_VARIANT_SPARSE_OUTCOME,
+                    REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME,
+                )
+                else "none"
             ),
             "loser_penalty": (
                 -1.0
@@ -1962,6 +2339,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
                 in (
                     REWARD_VARIANT_SPARSE_OUTCOME,
                     REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME,
+                    REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME,
                 )
                 else 0.0
             ),
@@ -1971,6 +2349,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
                 in (
                     REWARD_VARIANT_SPARSE_OUTCOME,
                     REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME,
+                    REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME,
                 )
                 else 0.0
             ),
@@ -2009,6 +2388,26 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             "opponent_mixture_age_label": (
                 self._episode_opponent_mixture_entry.get("age_label")
                 if self._episode_opponent_mixture_entry is not None
+                else None
+            ),
+            "opponent_assignment_id": (
+                self._opponent_assignment_context.get("assignment_id")
+                if self._opponent_assignment_context is not None
+                else None
+            ),
+            "opponent_assignment_ref": (
+                self._opponent_assignment_context.get("assignment_ref")
+                if self._opponent_assignment_context is not None
+                else None
+            ),
+            "opponent_assignment_sha256": (
+                self._opponent_assignment_context.get("assignment_sha256")
+                if self._opponent_assignment_context is not None
+                else None
+            ),
+            "opponent_assignment_refresh_index": (
+                self._opponent_assignment_context.get("refresh_index")
+                if self._opponent_assignment_context is not None
                 else None
             ),
             "opponent_wall_avoidant_safe_margin": (
@@ -2071,6 +2470,12 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             == OPPONENT_POLICY_KIND_PROACTIVE_WALL_AVOIDANT
         ):
             return PROACTIVE_WALL_AVOIDANT_OPPONENT_POLICY_ID
+        if (
+            self._opponent_policy_kind
+            == OPPONENT_POLICY_KIND_FROZEN_LIGHTZERO_CHECKPOINT
+            and self.opponent_policy is not None
+        ):
+            return str(getattr(self.opponent_policy, "policy_id", "frozen_lightzero_checkpoint"))
         return "curvyzero_source_state_fixed_straight_opponent"
 
     def _opponent_policy_version(self) -> str:
@@ -2079,6 +2484,12 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             == OPPONENT_POLICY_KIND_PROACTIVE_WALL_AVOIDANT
         ):
             return PROACTIVE_WALL_AVOIDANT_OPPONENT_POLICY_VERSION
+        if (
+            self._opponent_policy_kind
+            == OPPONENT_POLICY_KIND_FROZEN_LIGHTZERO_CHECKPOINT
+            and self.opponent_policy is not None
+        ):
+            return str(getattr(self.opponent_policy, "policy_version", "unknown"))
         return "v0.2026-05-11"
 
     def _write_telemetry_row(self, *, timestep: LocalDebugVisualLightZeroTimestep) -> None:
@@ -2186,6 +2597,12 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             "opponent_mixture_entry_weight": info.get("opponent_mixture_entry_weight"),
             "opponent_mixture_entry_index": info.get("opponent_mixture_entry_index"),
             "opponent_mixture_age_label": info.get("opponent_mixture_age_label"),
+            "opponent_assignment_id": info.get("opponent_assignment_id"),
+            "opponent_assignment_ref": info.get("opponent_assignment_ref"),
+            "opponent_assignment_sha256": info.get("opponent_assignment_sha256"),
+            "opponent_assignment_refresh_index": info.get(
+                "opponent_assignment_refresh_index"
+            ),
             "opponent_checkpoint_ref": opponent_metadata.get("checkpoint_ref"),
             "opponent_snapshot_ref": opponent_metadata.get("snapshot_ref"),
             "opponent_provider_id": opponent_metadata.get("provider_id"),
@@ -2256,6 +2673,18 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             "browser_trail_semantics": info.get("browser_trail_semantics"),
             "browser_client_trail_point_caveat": info.get(
                 "browser_client_trail_point_caveat"
+            ),
+            "source_state_bonus_render_mode": info.get("source_state_bonus_render_mode"),
+            "default_bonus_render_mode": info.get("default_bonus_render_mode"),
+            "supported_bonus_render_modes": info.get("supported_bonus_render_modes"),
+            "model_observation_bonus_render_mode": info.get(
+                "model_observation_bonus_render_mode"
+            ),
+            "raw_observation_bonus_render_mode": info.get("raw_observation_bonus_render_mode"),
+            "bonus_render_mode": info.get("bonus_render_mode"),
+            "bonus_renderer_kind": info.get("bonus_renderer_kind"),
+            "bonus_renderer_is_approximation": info.get(
+                "bonus_renderer_is_approximation"
             ),
             "browser_pixel_fidelity_claim": info.get("browser_pixel_fidelity_claim"),
             "source_fidelity_claim": info.get("source_fidelity_claim"),
@@ -2487,6 +2916,7 @@ class CurvyZeroSourceStateVisualJointActionLightZeroLocalEnv(
             dense_survival_helper_sum=0.0,
             bonus_catch_count_step_sum=0,
             bonus_pickup_reward_sum=0.0,
+            terminal_outcome_reward_sum=0.0,
         )
         info.update(
             {
@@ -2664,6 +3094,49 @@ def _opponent_policy_metadata(sidecar: Any) -> dict[str, Any]:
     return dict(metadata) if isinstance(metadata, dict) else {}
 
 
+def _learner_seat_mode_from_cfg(cfg: Any) -> tuple[str, int]:
+    if _cfg_get(cfg, "ego_player_index", None) is not None:
+        raise ValueError("ego_player_index config is removed; use learner_seat_mode")
+    mode = str(_cfg_get(cfg, "learner_seat_mode", DEFAULT_LEARNER_SEAT_MODE))
+    if mode not in LEARNER_SEAT_MODES:
+        raise ValueError(
+            "learner_seat_mode must be one of "
+            f"{LEARNER_SEAT_MODES!r}; got {mode!r}"
+        )
+    if mode == LEARNER_SEAT_MODE_FIXED_PLAYER_1:
+        return mode, 1
+    return mode, 0
+
+
+def _player_perspective_rgb_palette(
+    state: dict[str, np.ndarray] | Any,
+    *,
+    row: int,
+    controlled_player: int,
+    player_count: int,
+) -> tuple[tuple[int, int, int], ...]:
+    player = int(controlled_player)
+    total_players = int(player_count)
+    if player < 0 or player >= total_players:
+        raise ValueError("controlled_player must be in [0, player_count)")
+    color_indices = np.arange(total_players, dtype=np.int64)
+    if "avatar_color" in state:
+        avatar_color = np.asarray(state["avatar_color"])
+        if avatar_color.ndim >= 2:
+            color_indices = np.asarray(
+                avatar_color[int(row), :total_players],
+                dtype=np.int64,
+            )
+    if bool((color_indices < 0).any()):
+        raise ValueError("avatar_color indices must be non-negative")
+    max_color_index = int(color_indices.max()) if color_indices.size else total_players - 1
+    self_rgb = (SELF_BODY_VALUE, SELF_BODY_VALUE, SELF_BODY_VALUE)
+    other_rgb = (OTHER_BODY_VALUE, OTHER_BODY_VALUE, OTHER_BODY_VALUE)
+    palette = [other_rgb for _ in range(max(total_players, max_color_index + 1))]
+    palette[int(color_indices[player])] = self_rgb
+    return tuple(palette)
+
+
 def _normalize_player_perspective(
     frame: np.ndarray,
     *,
@@ -2721,35 +3194,250 @@ def _copy_lightzero_observation(observation: dict[str, Any]) -> dict[str, Any]:
     return copied
 
 
+class _JaxScalarPolicyObservationRenderer:
+    """Experimental scalar JAX renderer for proving trainer integration.
+
+    This is not the final fast design. It renders one env row at a time and
+    copies results back to NumPy because the stock LightZero env API expects
+    NumPy observations. The point is to make the GPU observation path real
+    enough to profile.
+    """
+
+    def __init__(self, *, player_count: int, min_trail_slots: int):
+        self.player_count = int(player_count)
+        self.min_trail_slots = int(min_trail_slots)
+        self._jax: Any | None = None
+        self._jnp: Any | None = None
+        self._bench: Any | None = None
+        self._render_fns: dict[tuple[int, int, int, int, int, float, int], Any] = {}
+        self.last_profile: dict[str, Any] = {}
+
+    def render_player_perspectives(
+        self,
+        state: Mapping[str, np.ndarray],
+        *,
+        out: np.ndarray | None = None,
+    ) -> np.ndarray:
+        self._ensure_loaded()
+        if self._jax is None or self._bench is None:
+            raise RuntimeError("JAX renderer imports were not initialized")
+        player_count = int(np.asarray(state["pos"]).shape[1])
+        if player_count != self.player_count:
+            raise ValueError(
+                f"jax_gpu scalar backend expected {self.player_count} players, got {player_count}"
+            )
+        expected_shape = (player_count, *SOURCE_STATE_CANVAS_GRAY64_SHAPE)
+        if out is None:
+            frames = np.empty(expected_shape, dtype=np.uint8)
+        else:
+            frames = np.asarray(out)
+            if frames.shape != expected_shape or frames.dtype != np.uint8:
+                raise ValueError(
+                    f"jax_gpu scalar backend out must be uint8 {expected_shape}, "
+                    f"got {frames.dtype} {frames.shape}"
+                )
+        render_started = time.perf_counter()
+        slot_profile = self._trail_slot_profile(state)
+        trail_slots = int(slot_profile["render_trail_slots"])
+        bonus_count = int(np.asarray(state.get("bonus_active", np.zeros((1, 0)))).shape[1])
+        map_size = float(np.asarray(state["map_size"])[0])
+        config = {
+            "batch_size": 1,
+            "player_count": player_count,
+            "trail_slots": trail_slots,
+            "bonus_count": bonus_count,
+            "frame_size": SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
+            "target_size": SOURCE_STATE_CANVAS_GRAY64_SHAPE[1],
+            "map_size": map_size,
+            "render_surface": self._bench.RENDER_SURFACE_BLOCK_704_GRAY64,
+            "render_mode": self._bench.RENDER_MODE_BROWSER_LINES,
+            "bonus_render_mode": self._bench.BONUS_RENDER_MODE_SIMPLE_SYMBOLS,
+        }
+        compact_started = time.perf_counter()
+        compact_state = self._bench._production_to_benchmark_source_state(
+            np=np,
+            production_state=state,
+            config=config,
+        )
+        compact_sec = time.perf_counter() - compact_started
+        device_started = time.perf_counter()
+        device_state = self._bench._copy_state_to_device(
+            jax=self._jax,
+            state=compact_state,
+        )
+        device_sec = time.perf_counter() - device_started
+        render_secs: list[float] = []
+        readback_secs: list[float] = []
+        cache_misses = 0
+        for controlled_player in range(player_count):
+            render_fn, cache_miss = self._render_fn(
+                config=config,
+                controlled_player=controlled_player,
+            )
+            cache_misses += int(cache_miss)
+            player_render_started = time.perf_counter()
+            rendered = render_fn(device_state)
+            rendered.block_until_ready()
+            render_secs.append(time.perf_counter() - player_render_started)
+            readback_started = time.perf_counter()
+            frames[controlled_player] = np.asarray(rendered)[0]
+            readback_secs.append(time.perf_counter() - readback_started)
+        self.last_profile = {
+            **slot_profile,
+            "bonus_slots": int(bonus_count),
+            "cache_misses": int(cache_misses),
+            "cache_size": int(len(self._render_fns)),
+            "compact_sec": float(compact_sec),
+            "device_put_sec": float(device_sec),
+            "render_sec_by_player": [float(value) for value in render_secs],
+            "readback_sec_by_player": [float(value) for value in readback_secs],
+            "render_total_sec": float(sum(render_secs)),
+            "readback_total_sec": float(sum(readback_secs)),
+            "total_sec": float(time.perf_counter() - render_started),
+        }
+        return frames
+
+    def _trail_slot_profile(self, state: Mapping[str, np.ndarray]) -> dict[str, Any]:
+        active = np.asarray(state["visual_trail_active"])
+        if active.ndim != 2 or active.shape[0] != 1:
+            raise ValueError(
+                "jax_gpu scalar backend expects visual_trail_active with shape [1,C]"
+            )
+        capacity = int(active.shape[1])
+        cursor = int(
+            np.asarray(state.get("visual_trail_write_cursor", np.asarray([capacity])))[0]
+        )
+        if cursor < 0 or cursor > capacity:
+            raise ValueError(
+                "jax_gpu scalar backend received invalid visual_trail_write_cursor "
+                f"{cursor}; expected [0, {capacity}]"
+            )
+        active_row = active[0].astype(bool, copy=False).copy()
+        active_row[cursor:] = False
+        active_indices = np.flatnonzero(active_row)
+        last_active_exclusive = int(active_indices[-1] + 1) if active_indices.size else 1
+        needed_slots = max(1, last_active_exclusive)
+        min_slots = min(capacity, max(1, int(self.min_trail_slots)))
+        render_slots = min(capacity, _ceil_power_of_two(max(min_slots, needed_slots)))
+        if needed_slots > render_slots:
+            raise RuntimeError(
+                "jax_gpu scalar backend would truncate active visual trail slots: "
+                f"needed {needed_slots}, render slots {render_slots}, capacity {capacity}"
+            )
+        return {
+            "visual_trail_capacity": int(capacity),
+            "visual_trail_write_cursor": int(cursor),
+            "visual_trail_active_count": int(active_indices.size),
+            "visual_trail_last_active_exclusive": int(last_active_exclusive),
+            "min_render_trail_slots": int(self.min_trail_slots),
+            "render_trail_slots": int(render_slots),
+            "render_trail_slots_reduced_from_capacity": bool(render_slots < capacity),
+        }
+
+    def _ensure_loaded(self) -> None:
+        if self._jax is not None:
+            return
+        import jax
+        import jax.numpy as jnp
+
+        from curvyzero.infra.modal import source_state_gpu_render_benchmark as bench
+
+        backend = str(jax.default_backend())
+        if backend != "gpu":
+            raise RuntimeError(
+                "policy_observation_backend='jax_gpu' requires a JAX GPU backend; "
+                f"got {backend!r}"
+            )
+        self._jax = jax
+        self._jnp = jnp
+        self._bench = bench
+
+    def _render_fn(
+        self,
+        *,
+        config: dict[str, Any],
+        controlled_player: int,
+    ) -> tuple[Any, bool]:
+        self._ensure_loaded()
+        if self._jax is None or self._jnp is None or self._bench is None:
+            raise RuntimeError("JAX renderer imports were not initialized")
+        key = (
+            int(config["player_count"]),
+            int(config["trail_slots"]),
+            int(config["bonus_count"]),
+            int(config["frame_size"]),
+            int(config["target_size"]),
+            float(config["map_size"]),
+            int(controlled_player),
+        )
+        cache_miss = key not in self._render_fns
+        if key not in self._render_fns:
+            render_config = {**config, "controlled_player": int(controlled_player)}
+            self._render_fns[key] = self._bench._make_jax_render_fn(
+                jax=self._jax,
+                jnp=self._jnp,
+                config=render_config,
+                render_mode_id=self._bench.RENDER_MODE_IDS[
+                    self._bench.RENDER_MODE_BROWSER_LINES
+                ],
+                bonus_render_mode_id=self._bench.BONUS_RENDER_MODE_IDS[
+                    self._bench.BONUS_RENDER_MODE_SIMPLE_SYMBOLS
+                ],
+            )
+        return self._render_fns[key], cache_miss
+
+
 def _trail_render_metadata(trail_render_mode: str) -> dict[str, Any]:
-    if trail_render_mode == SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES:
-        return {
-            "trail_render_mode": trail_render_mode,
-            "trail_renderer_kind": "connected_rounded_lines",
-            "trail_renderer_truth_level": (
-                "source_state_browser_style_lines_non_pixel_parity"
-            ),
-            "trail_renderer_is_approximation": False,
-            "browser_style_trail_renderer": True,
-        }
-    if trail_render_mode == SOURCE_STATE_TRAIL_RENDER_MODE_BODY_CIRCLES_FAST:
-        return {
-            "trail_render_mode": trail_render_mode,
-            "trail_renderer_kind": "circle_per_body",
-            "trail_renderer_truth_level": "source_state_fast_body_circle_approximation",
-            "trail_renderer_is_approximation": True,
-            "browser_style_trail_renderer": False,
-        }
-    raise ValueError(
-        "source_state_trail_render_mode must be one of "
-        f"{SOURCE_STATE_SUPPORTED_TRAIL_RENDER_MODES!r}; got {trail_render_mode!r}"
-    )
+    if trail_render_mode not in SOURCE_STATE_SUPPORTED_TRAIL_RENDER_MODES:
+        raise ValueError(
+            "source_state_trail_render_mode must be one of "
+            f"{SOURCE_STATE_SUPPORTED_TRAIL_RENDER_MODES!r}; got {trail_render_mode!r}"
+        )
+    return {
+        "trail_render_mode": trail_render_mode,
+        "trail_renderer_kind": "connected_rounded_lines",
+        "trail_renderer_truth_level": (
+            "source_state_browser_style_lines_non_pixel_parity"
+        ),
+        "trail_renderer_is_approximation": False,
+        "browser_style_trail_renderer": True,
+    }
 
 
 def _validate_trail_render_mode(value: Any) -> str:
     trail_render_mode = str(value)
     _trail_render_metadata(trail_render_mode)
     return trail_render_mode
+
+
+def _validate_bonus_render_mode(value: Any) -> str:
+    mode = str(value)
+    if mode not in SOURCE_STATE_SUPPORTED_BONUS_RENDER_MODES:
+        raise ValueError(
+            "source_state_bonus_render_mode must be one of "
+            f"{SOURCE_STATE_SUPPORTED_BONUS_RENDER_MODES!r}; got {mode!r}"
+        )
+    return mode
+
+
+def _validate_policy_observation_backend(value: Any) -> str:
+    backend = str(value)
+    if backend not in SOURCE_STATE_POLICY_OBSERVATION_BACKENDS:
+        raise ValueError(
+            "policy_observation_backend must be one of "
+            f"{SOURCE_STATE_POLICY_OBSERVATION_BACKENDS!r}; got {backend!r}"
+        )
+    return backend
+
+
+def _resolve_model_bonus_render_mode(
+    *,
+    trail_render_mode: str,
+    bonus_render_mode: str,
+) -> str:
+    if bonus_render_mode != SOURCE_STATE_BONUS_RENDER_MODE_AUTO:
+        return bonus_render_mode
+    return BONUS_RENDER_MODE_SIMPLE_SYMBOLS
 
 
 def _source_frame_decision_config(cfg: Any) -> tuple[int, float, float]:
@@ -2780,10 +3468,52 @@ def _source_frame_decision_config(cfg: Any) -> tuple[int, float, float]:
     return frames, source_physics_step_ms, frames * source_physics_step_ms
 
 
+def _ceil_power_of_two(value: int) -> int:
+    value = int(value)
+    if value <= 1:
+        return 1
+    return 1 << (value - 1).bit_length()
+
+
 def _cfg_get(cfg: Any, key: str, default: Any) -> Any:
     if isinstance(cfg, dict):
         return cfg.get(key, default)
     return getattr(cfg, key, default)
+
+
+def _normalize_opponent_assignment_context(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("opponent_assignment_context must be a JSON object")
+    allowed = {
+        "schema_id",
+        "assignment_id",
+        "assignment_ref",
+        "assignment_sha256",
+        "refresh_index",
+        "source_epoch",
+        "source_ref",
+    }
+    unknown = set(value) - allowed
+    if unknown:
+        raise ValueError(
+            "opponent_assignment_context has unknown keys "
+            f"{sorted(unknown)!r}"
+        )
+    context = dict(value)
+    assignment_id = context.get("assignment_id")
+    if assignment_id is not None:
+        context["assignment_id"] = str(assignment_id)
+    assignment_ref = context.get("assignment_ref")
+    if assignment_ref is not None:
+        context["assignment_ref"] = str(assignment_ref)
+    assignment_sha256 = context.get("assignment_sha256")
+    if assignment_sha256 is not None:
+        context["assignment_sha256"] = str(assignment_sha256)
+    if context.get("refresh_index") is not None:
+        context["refresh_index"] = int(context["refresh_index"])
+    return context
 
 
 def _with_default_env_id(cfg: Any | None, env_id: str) -> Any:
@@ -2821,6 +3551,7 @@ __all__ = [
     "OPPONENT_POLICY_KIND_NONE_CENTRALIZED_JOINT_ACTION",
     "OPPONENT_POLICY_KIND_PROACTIVE_WALL_AVOIDANT",
     "OPPONENT_TRAINING_RELATION_PROACTIVE_WALL_AVOIDANT",
+    "REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME",
     "REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME",
     "SOURCE_STATE_JOINT_ACTION_ADAPTER_IMPL_ID",
     "SOURCE_STATE_JOINT_ACTION_ENV_VARIANT",
@@ -2838,7 +3569,11 @@ __all__ = [
     "SOURCE_STATE_CANVAS_LIKE_RAW_CANVAS_SCHEMA_HASH",
     "SOURCE_STATE_CANVAS_LIKE_RAW_CANVAS_SHAPE",
     "SOURCE_STATE_CANVAS_LIKE_RAW_CANVAS_VALUE_RANGE",
+    "SOURCE_STATE_BONUS_RENDER_MODE_AUTO",
+    "SOURCE_STATE_DEFAULT_BONUS_RENDER_MODE",
     "SOURCE_STATE_DEFAULT_TRAIL_RENDER_MODE",
+    "SOURCE_STATE_RAW_BONUS_RENDER_MODE",
+    "SOURCE_STATE_SUPPORTED_BONUS_RENDER_MODES",
     "SOURCE_STATE_SUPPORTED_TRAIL_RENDER_MODES",
     "SOURCE_STATE_TRAIL_RENDER_MODE_BODY_CIRCLES_FAST",
     "SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES",
@@ -2847,4 +3582,6 @@ __all__ = [
     "SURVIVAL_PLUS_BONUS_NO_OUTCOME_BONUS_REWARD",
     "SURVIVAL_PLUS_BONUS_NO_OUTCOME_REWARD_SCHEMA_HASH",
     "SURVIVAL_PLUS_BONUS_NO_OUTCOME_REWARD_SCHEMA_ID",
+    "SURVIVAL_PLUS_BONUS_PLUS_OUTCOME_REWARD_SCHEMA_HASH",
+    "SURVIVAL_PLUS_BONUS_PLUS_OUTCOME_REWARD_SCHEMA_ID",
 ]

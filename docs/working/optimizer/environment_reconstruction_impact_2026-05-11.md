@@ -5,11 +5,10 @@ Date: 2026-05-11
 Status: optimizer working note after reviewing the live Environment docs and
 the current CurvyTron LightZero trainer imports.
 
-Current launcher correction, 2026-05-11 late: Coach canonical CurvyZero
-training uses
-`src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py --mode two-seat-selfplay`.
-The fixed/frozen-opponent source-state stock `train_muzero` path described here
-is controls/profiling evidence only.
+2026-05-15 correction: current trusted guidance is stock LightZero
+`src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py --mode train`
+with `env_variant=source_state_fixed_opponent` and frozen-opponent route docs.
+The old custom `--mode two-seat-selfplay` launcher is historical evidence only.
 
 ## Plain Answer
 

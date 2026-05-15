@@ -21,7 +21,7 @@ leaderboard hard to interpret.
 | Neural checkpoint | exact `iteration_N.pth.tar` | Yes | Yes |
 | Scripted wall-avoidant policy | `proactive_force_field` | Maybe, with explicit schema | Yes, after canary |
 | Blank/no-op opponent | `blank_canvas_noop` | Probably as sentinel, if represented clearly | Yes |
-| Passive immortal dirty control | `opponent_death_mode=immortal` | Maybe diagnostic only | Maybe small dirty-control share |
+| Passive immortal diagnostic | `opponent_immortal=true` | Maybe diagnostic only | Maybe small pressure share |
 | Global invincible modifier | "make opponent invincible X% of episodes" | No, modifier not player | Yes as training/eval condition |
 | Source bonus invincibility | SelfMaster/Godzilla-like source effect | No, unless modeled as environment mode | Maybe later |
 
@@ -133,30 +133,28 @@ Important distinction:
 - An **invincible policy** is a player identity.
 - An **invincible modifier** is an environment/opponent condition.
 
-For training, the cleaner design is usually a modifier:
+For training, the clean near-term design is a separate weighted slot entry:
 
 ```json
 {
-  "name": "leaderboard_champion_invincible_10pct",
+  "name": "leaderboard_champion_immortal_pressure",
   "weight": 10,
   "opponent_policy_kind": "frozen_lightzero_checkpoint",
   "opponent_checkpoint_ref": "training/.../iteration_270000.pth.tar",
-  "opponent_modifiers": {
-    "death_mode": "immortal",
-    "trail_mode": "normal",
-    "applies_to": "opponent",
-    "episode_probability": 0.10
-  }
+  "opponent_immortal": true,
+  "tags": ["leaderboard", "champion", "immortal_pressure"]
 }
 ```
 
-Current caveat: existing `opponent_death_mode=immortal` is documented as a dirty
-control. It suppresses opponent death but does not make a clean source-faithful
-opponent; the opponent can still move out of bounds and leave trails.
+Current caveat: `opponent_immortal=true` suppresses opponent death but does not
+make a clean source-faithful opponent; the opponent can still move out of
+bounds and leave trails. The lower-level env may report derived
+`opponent_death_mode=immortal` telemetry, but slot specs should not use that as
+their public intent field.
 
 There is no clean global "invincible fraction regardless of policy" knob today.
 To approximate it now, duplicate mixture entries with different
-`opponent_death_mode` values and weights. That is semantically workable but can
+`opponent_immortal` values and weights. That is semantically workable but can
 duplicate frozen policy loading because mixture cache keys are entry names.
 
 ## Recommended Near-Term Plan
@@ -170,7 +168,7 @@ For the next overnight run:
 4. Include explicit metadata in assignment audit:
    - `opponent_policy_kind`;
    - `opponent_runtime_mode`;
-   - `opponent_death_mode`;
+   - `opponent_immortal`;
    - `opponent_trail_mode`;
    - probability/weight;
    - whether the entry is leaderboard-rated or scripted.

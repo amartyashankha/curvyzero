@@ -101,7 +101,7 @@ def test_opponent_mixture_batch_shape_and_readable_names():
     assert manifest["core_profile_count"] == 6
     assert manifest["sentinel_profile_count"] == 6
     assert manifest["guards"]["deployed_app_name"] == (
-        "curvyzero-lightzero-curvytron-visual-survival-train"
+        "curvyzero-lightzero-curvytron-visual-survival-train-v2"
     )
 
     run_ids = [row["run_id"] for row in manifest["rows"]]
@@ -128,7 +128,7 @@ def test_opponent_mixture_batch_shape_and_readable_names():
         assert row["calls_stock_train_muzero"] is True
         assert row["env_variant"] == "source_state_fixed_opponent"
         assert row["reward_variant"] == "survival_plus_bonus_no_outcome"
-        assert row["source_max_steps"] == 65536
+        assert row["source_max_steps"] == module.SOURCE_MAX_STEPS
         assert row["train_kwargs"]["decision_ms"] == module.DECISION_MS
         assert row["train_kwargs"]["decision_ms"] < 20.0
         assert row["train_kwargs"]["background_eval_enabled"] is True
@@ -211,9 +211,7 @@ def test_opponent_mixture_base_tokens_match_trainer_settings_and_cadence():
         base = base_profiles[row["base_token"]]
         assert row["base_settings"]["save_ckpt_after_iter"] == 10000
         assert row["train_kwargs"]["save_ckpt_after_iter"] == 10000
-        assert row["base_settings"]["source_state_trail_render_mode"] == (
-            "body_circles_fast" if base["render_token"] == "rf" else "browser_lines"
-        )
+        assert row["base_settings"]["source_state_trail_render_mode"] == "browser_lines"
         assert (
             row["source_state_trail_render_mode"]
             == (row["base_settings"]["source_state_trail_render_mode"])
@@ -248,16 +246,18 @@ def test_opponent_mixture_batch_recipes_keep_immutable_checkpoint_refs():
         assert mixture["selection_unit"] == "episode_reset"
         assert mixture["total_weight"] == 100.0
         for entry in mixture["entries"]:
+            assert "opponent_death_mode" not in entry
             if entry["opponent_policy_kind"] == "frozen_lightzero_checkpoint":
-                assert entry["opponent_death_mode"] == "immortal"
+                assert entry["opponent_immortal"] is True
                 assert entry["opponent_checkpoint_ref"].endswith(".pth.tar")
                 assert "latest" not in entry["opponent_checkpoint_ref"]
                 assert "ckpt_best" not in entry["opponent_checkpoint_ref"]
                 assert re.search(r"/iteration_\d+\.pth\.tar$", entry["opponent_checkpoint_ref"])
             elif entry["name"] == "blank":
                 assert entry["opponent_runtime_mode"] == "blank_canvas_noop"
+                assert entry["opponent_immortal"] is True
             elif entry["name"] in {"scripted", "passive"}:
-                assert entry["opponent_death_mode"] == "immortal"
+                assert entry["opponent_immortal"] is True
 
 
 def test_opponent_mixture_canary_shape_is_six_rows_and_launchable_by_grouped_submitter(
@@ -285,6 +285,7 @@ def test_opponent_mixture_canary_shape_is_six_rows_and_launchable_by_grouped_sub
         submit._launch_row(
             row,
             app_name=manifest["guards"]["deployed_app_name"],
+            modal_env=args.modal_env,
             dry_run=True,
         )
         for row in rows
@@ -448,7 +449,7 @@ def test_opponent_mixture_next_wave_render_pairing_is_complete():
     assert len(pairs) == 150
     assert all(len(rows) == 2 for rows in pairs.values())
     for rows in pairs.values():
-        assert {row["render_role"] for row in rows} == {"fast", "browser"}
+        assert {row["render_role"] for row in rows} == {"target_a", "target_b"}
         assert len({row["launch_pair_key"] for row in rows}) == 1
         assert len({row["recipe_id"] for row in rows}) == 1
         assert len({row["copy_index"] for row in rows}) == 1
@@ -476,15 +477,16 @@ def test_opponent_mixture_next_wave_render_pairing_is_complete():
 def test_opponent_mixture_next_wave_balances_launch_order():
     manifest = _manifest(["--profile", "next-wave"])
 
-    assert manifest["launch_order_strategy"] == "matched_render_pairs_alternating_lead"
+    assert manifest["launch_order_strategy"] == "paired_target_replicates_alternating_lead"
     assert (
-        "does not make browser a checkpoint-speed blocker" in manifest["render_pairing_rationale"]
+        "Both tokens now use browser_lines + simple_symbols"
+        in manifest["render_pairing_rationale"]
     )
 
     running = Counter()
     for row in manifest["rows"]:
         running[row["render_role"]] += 1
-        assert abs(running["fast"] - running["browser"]) <= 1
+        assert abs(running["target_a"] - running["target_b"]) <= 1
 
     pair_leads = [
         rows[0]["render_role"]
@@ -503,5 +505,12 @@ def test_opponent_mixture_next_wave_balances_launch_order():
             key=lambda item: item[1][0]["launch_order_index"],
         )
     ]
-    assert pair_leads[:6] == ["fast", "browser", "fast", "browser", "fast", "browser"]
-    assert Counter(pair_leads) == {"fast": 75, "browser": 75}
+    assert pair_leads[:6] == [
+        "target_a",
+        "target_b",
+        "target_a",
+        "target_b",
+        "target_a",
+        "target_b",
+    ]
+    assert Counter(pair_leads) == {"target_a": 75, "target_b": 75}

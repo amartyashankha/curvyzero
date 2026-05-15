@@ -4,128 +4,99 @@ One app owns the whole tournament lane. The lowest-level function runs one game.
 Higher functions fan out over games and checkpoint pairs.
 
 Checkpoint files are read from the training Volume. Tournament summaries and
-GIFs are written to a separate v2 Volume.
+GIFs are written to a separate tournament Volume.
 """
 
 from __future__ import annotations
 
 import json
+import sys
 import time
 from collections import Counter, defaultdict
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Sequence
-from urllib.parse import urlencode
 
 import modal
 
 from curvyzero.infra.modal import run_management as runs
+from curvyzero.infra.modal.curvyzero_checkpoint_tournament_browser_render import (
+    _battle_href as _battle_href,
+    _battle_opponent_for_checkpoint as _battle_opponent_for_checkpoint,
+    _battle_player_for_checkpoint as _battle_player_for_checkpoint,
+    _checkpoint_battle_sort_key as _checkpoint_battle_sort_key,
+    _friendly_progress_label as _friendly_progress_label,
+    _href as _href,
+    _page_href as _page_href,
+    _rating_rank_by_checkpoint as _rating_rank_by_checkpoint,
+    _rating_row_by_checkpoint as _rating_row_by_checkpoint,
+    _rating_rows as _rating_rows,
+    _render_battle_detail_section as _render_battle_detail_section,
+    _render_battle_page as _render_battle_page,
+    _render_page as _render_page,
+    _review_battle_row as _review_battle_row,
+    _short_battle_label as _short_battle_label,
+    _sort_checkpoint_battle_rows as _sort_checkpoint_battle_rows,
+    _wins_for_checkpoint as _wins_for_checkpoint,
+)
+from curvyzero.infra.modal.curvyzero_checkpoint_tournament_runtime import (
+    LOW_LEVEL_WORKER_RETRIES,
+    app,
+    checkpoint_intake_queue,
+    checkpoint_intake_state,
+    checkpoint_volume,
+    checkpoint_volumes as _checkpoint_volumes,
+    game_volumes as _game_volumes,
+    image,
+    opponent_leaderboard_state,
+    tournament_volume,
+    tournament_volumes as _tournament_volumes,
+)
+from curvyzero.infra.modal.curvyzero_checkpoint_tournament_settings import (
+    APP_NAME,
+    CHECKPOINT_INTAKE_ACTIVE_KEYS,
+    CHECKPOINT_INTAKE_DICT_NAME,
+    CHECKPOINT_INTAKE_QUEUE_NAME,
+    CHECKPOINT_VOLUME_NAME,
+    CURRENT_RATING_RUN_ID,
+    CURRENT_TOURNAMENT_ID,
+    DEFAULT_BATTLE_GAME_LIMIT,
+    DEFAULT_CHECKPOINT_INTAKE_CLAIM_STALE_SECONDS,
+    DEFAULT_CHECKPOINT_INTAKE_SCAN_SECONDS,
+    DEFAULT_CHECKPOINT_INTAKE_QUEUE_TTL_SECONDS,
+    DEFAULT_LIMIT,
+    DEFAULT_PROVISIONAL_RATING_INTERVAL_SECONDS,
+    DEFAULT_PROVISIONAL_RATING_MAX_SECONDS,
+    DYNAMIC_HEADERS,
+    GIF_CACHE_MAX_AGE_SECONDS,
+    MAX_LIMIT,
+    OPPONENT_LEADERBOARD_DICT_NAME,
+    REMOTE_ROOT,
+    RUNS_MOUNT,
+    TOURNAMENT_MOUNT,
+    TOURNAMENT_VOLUME_NAME,
+    TRAINING_TASK_ID,
+    WEB_BATTLE_DETAIL_CACHE_TTL_SECONDS,
+    WEB_BATTLE_DETAIL_CACHE_VERSION,
+    WEB_GIF_BYTES_CACHE_MAX_ITEM_BYTES,
+    WEB_GIF_BYTES_CACHE_TTL_SECONDS,
+    WEB_PAGE_RELOAD_MIN_INTERVAL_SECONDS,
+    WEB_PROGRESS_CACHE_TTL_SECONDS,
+    WEB_PROGRESS_RELOAD_MIN_INTERVAL_SECONDS,
+    WEB_PROVISIONAL_RATING_CACHE_TTL_SECONDS,
+)
 from curvyzero.training.opponent_leaderboard import (
     build_leaderboard_pointer,
     build_leaderboard_snapshot_from_rating_snapshot,
     validate_leaderboard_snapshot,
+    validate_rating_snapshot_source,
 )
 from curvyzero.tournament import checkpoint_intake_service as intake_service
 from curvyzero.tournament import curvytron_checkpoint_tournament as arena
 
 
-APP_NAME = "curvyzero-checkpoint-tournament"
-CHECKPOINT_VOLUME_NAME = "curvyzero-runs"
-TOURNAMENT_VOLUME_NAME = "curvyzero-curvytron-tournaments"
-LIGHTZERO_VERSION = "0.2.0"
-REMOTE_ROOT = Path("/repo")
-RUNS_MOUNT = Path("/runs")
-TOURNAMENT_MOUNT = Path("/tournament-runs")
-CURVYTRON_BONUS_SPRITE_SHEET_RELATIVE_PATH = (
-    "third_party/curvytron-reference/web/images/bonus.png"
-)
-DEFAULT_LIMIT = 50
-MAX_LIMIT = 500
-DEFAULT_BATTLE_GAME_LIMIT = 50
-GIF_CACHE_MAX_AGE_SECONDS = 86_400
-DYNAMIC_HEADERS = {
-    "Cache-Control": "no-store, max-age=0",
-    "Pragma": "no-cache",
-    "Expires": "0",
-}
-WEB_PAGE_RELOAD_MIN_INTERVAL_SECONDS = 30.0
-WEB_PROGRESS_RELOAD_MIN_INTERVAL_SECONDS = 60.0
-WEB_PROGRESS_CACHE_TTL_SECONDS = 5.0
-WEB_BATTLE_DETAIL_CACHE_TTL_SECONDS = 30.0
-WEB_BATTLE_DETAIL_CACHE_VERSION = "games-page-v2"
-WEB_PROVISIONAL_RATING_CACHE_TTL_SECONDS = 30.0
-WEB_GIF_BYTES_CACHE_TTL_SECONDS = 300.0
-WEB_GIF_BYTES_CACHE_MAX_ITEM_BYTES = 24 * 1024 * 1024
-DEFAULT_PROVISIONAL_RATING_INTERVAL_SECONDS = 60.0
-DEFAULT_PROVISIONAL_RATING_MAX_SECONDS = 23 * 60 * 60
-TRAINING_TASK_ID = "lightzero-curvytron-visual-survival"
-CHECKPOINT_INTAKE_DICT_NAME = "curvyzero-curvytron-checkpoint-intake-v0"
-CHECKPOINT_INTAKE_QUEUE_NAME = "curvyzero-curvytron-checkpoint-events-v0"
-CHECKPOINT_INTAKE_ACTIVE_KEYS = "active_manifest_keys"
-OPPONENT_LEADERBOARD_DICT_NAME = "curvyzero-curvytron-opponent-leaderboard-live"
-DEFAULT_CHECKPOINT_INTAKE_SCAN_SECONDS = 60
-DEFAULT_CHECKPOINT_INTAKE_QUEUE_TTL_SECONDS = 24 * 60 * 60
-DEFAULT_CHECKPOINT_INTAKE_CLAIM_STALE_SECONDS = 24 * 60 * 60
-LOW_LEVEL_WORKER_RETRIES = modal.Retries(
-    max_retries=2,
-    initial_delay=5.0,
-    backoff_coefficient=2.0,
-    max_delay=60.0,
-)
-
-image = (
-    modal.Image.debian_slim(python_version="3.11")
-    .uv_pip_install(
-        f"LightZero=={LIGHTZERO_VERSION}",
-        "numpy>=1.26",
-        "cloudpickle>=3",
-        "pillow>=10",
-        "fastapi>=0.110",
-    )
-    .env({"PYTHONPATH": str(REMOTE_ROOT / "src")})
-    .add_local_dir(Path.cwd() / "src", remote_path=str(REMOTE_ROOT / "src"), copy=True)
-    .add_local_file(
-        Path.cwd() / CURVYTRON_BONUS_SPRITE_SHEET_RELATIVE_PATH,
-        remote_path=str(REMOTE_ROOT / CURVYTRON_BONUS_SPRITE_SHEET_RELATIVE_PATH),
-        copy=True,
-    )
-)
-checkpoint_volume = modal.Volume.from_name(
-    CHECKPOINT_VOLUME_NAME,
-    create_if_missing=True,
-).read_only()
-tournament_volume = modal.Volume.from_name(
-    TOURNAMENT_VOLUME_NAME,
-    create_if_missing=True,
-    version=2,
-)
-checkpoint_intake_state = modal.Dict.from_name(
-    CHECKPOINT_INTAKE_DICT_NAME,
-    create_if_missing=True,
-)
-checkpoint_intake_queue = modal.Queue.from_name(
-    CHECKPOINT_INTAKE_QUEUE_NAME,
-    create_if_missing=True,
-)
-opponent_leaderboard_state = modal.Dict.from_name(
-    OPPONENT_LEADERBOARD_DICT_NAME,
-    create_if_missing=True,
-)
-app = modal.App(APP_NAME)
 _LAST_WEB_VOLUME_RELOAD_TS = 0.0
 _WEB_CACHE: dict[str, tuple[float, Any]] = {}
-
-
-def _checkpoint_volumes() -> dict[str, Any]:
-    return {RUNS_MOUNT.as_posix(): checkpoint_volume}
-
-
-def _tournament_volumes() -> dict[str, Any]:
-    return {TOURNAMENT_MOUNT.as_posix(): tournament_volume}
-
-
-def _game_volumes() -> dict[str, Any]:
-    return {**_checkpoint_volumes(), **_tournament_volumes()}
 
 
 def _commit_volume(volume: Any = tournament_volume) -> str | None:
@@ -160,8 +131,8 @@ def _web_reload_volume(
     now = time.monotonic()
     if not force and now - _LAST_WEB_VOLUME_RELOAD_TS < float(min_interval_sec):
         return None
-    _LAST_WEB_VOLUME_RELOAD_TS = now
     error = _reload_volume(volume, force=force)
+    _LAST_WEB_VOLUME_RELOAD_TS = now
     if error is None:
         _WEB_CACHE.clear()
     return error
@@ -549,6 +520,12 @@ def _clean_ref_set(refs: Any) -> set[str]:
     return {str(ref).strip() for ref in values if str(ref).strip()}
 
 
+def _checkpoint_ref_pool_hash(refs: Any) -> str:
+    cleaned_refs = sorted(_clean_ref_set(refs))
+    encoded = json.dumps(cleaned_refs, separators=(",", ":"), sort_keys=True)
+    return arena._short_hash(encoded, length=16)
+
+
 def _parse_run_ids(run_ids: Any) -> list[str]:
     return intake_service.parse_run_ids_value(run_ids)
 
@@ -566,6 +543,24 @@ def _parse_checkpoint_refs_value(checkpoint_refs: Any) -> list[str]:
     return []
 
 
+def _intake_scan_spec_is_live_watch(scan_spec: Mapping[str, Any]) -> bool:
+    return bool(
+        _parse_run_ids(scan_spec.get("run_ids"))
+        or str(scan_spec.get("run_id_prefix") or "").strip()
+    )
+
+
+def _explicit_checkpoint_refs_scan_spec(checkpoint_refs: Sequence[str]) -> dict[str, Any]:
+    return {
+        "checkpoint_refs": sorted(_clean_ref_set(checkpoint_refs)),
+        "run_ids": "",
+        "run_id_prefix": "",
+        "max_runs": 0,
+        "checkpoint_iteration": None,
+        "checkpoint_selection": arena.CHECKPOINT_SELECTION_LATEST,
+    }
+
+
 def _checkpoint_iteration_from_raw(raw: Any) -> int | None:
     if raw in (None, "", -1, "-1"):
         return None
@@ -579,6 +574,62 @@ def _discover_checkpoint_refs_from_scan_spec(
 ) -> dict[str, Any]:
     explicit_refs = _parse_checkpoint_refs_value(scan_spec.get("checkpoint_refs"))
     if explicit_refs:
+        if _intake_scan_spec_is_live_watch(scan_spec):
+            live = _discover_checkpoint_refs(
+                mount,
+                run_ids=_parse_run_ids(scan_spec.get("run_ids")),
+                run_id_prefix=str(scan_spec.get("run_id_prefix") or ""),
+                max_runs=int(scan_spec.get("max_runs") or 0),
+                checkpoint_iteration=_checkpoint_iteration_from_raw(
+                    scan_spec.get("checkpoint_iteration")
+                ),
+                checkpoint_selection=str(
+                    scan_spec.get("checkpoint_selection")
+                    or arena.CHECKPOINT_SELECTION_LATEST
+                ),
+            )
+            checkpoint_refs = []
+            seen_refs: set[str] = set()
+            for ref in [
+                *explicit_refs,
+                *[
+                    str(ref)
+                    for ref in live.get("checkpoint_refs", [])
+                    if str(ref).strip()
+                ],
+            ]:
+                clean_ref = runs.require_relative_ref(str(ref)).as_posix()
+                if clean_ref in seen_refs:
+                    continue
+                seen_refs.add(clean_ref)
+                checkpoint_refs.append(clean_ref)
+            rows = [
+                _checkpoint_discovery_row_from_ref(ref, mount=mount, found=True)
+                for ref in explicit_refs
+            ]
+            rows.extend(
+                dict(row)
+                for row in live.get("rows", [])
+                if isinstance(row, Mapping)
+            )
+            deduped_rows = []
+            seen_row_refs: set[str] = set()
+            for row in rows:
+                ref = str(row.get("checkpoint_ref") or "")
+                if ref and ref in seen_row_refs:
+                    continue
+                if ref:
+                    seen_row_refs.add(ref)
+                deduped_rows.append(row)
+            return {
+                **live,
+                "checkpoint_selection": "explicit_refs_plus_run_watch",
+                "selection": "explicit_refs_plus_run_watch",
+                "checkpoint_refs": checkpoint_refs,
+                "rows": deduped_rows,
+                "found_checkpoint_count": len(checkpoint_refs),
+                "found_count": len(checkpoint_refs),
+            }
         return {
             "schema_id": "curvyzero_curvytron_checkpoint_discovery/v0",
             "checkpoint_volume_name": CHECKPOINT_VOLUME_NAME,
@@ -708,7 +759,7 @@ def _intake_rating_spec_from_manifest(
                 "pair_selection",
                 rating_defaults.get(
                     "pair_selection",
-                    arena.RATING_PAIR_SELECTION_ADAPTIVE_V0,
+                    arena.DEFAULT_RATING_PAIR_SELECTION,
                 ),
             ),
             "games_per_pair": extra.get(
@@ -717,7 +768,7 @@ def _intake_rating_spec_from_manifest(
             ),
             "games_per_shard": extra.get(
                 "games_per_shard",
-                rating_defaults.get("games_per_shard", arena.DEFAULT_GAMES_PER_PAIR),
+                rating_defaults.get("games_per_shard", arena.DEFAULT_GAMES_PER_SHARD),
             ),
             "reuse_policies_per_shard": extra.get(
                 "reuse_policies_per_shard",
@@ -725,6 +776,10 @@ def _intake_rating_spec_from_manifest(
                     "reuse_policies_per_shard",
                     arena.DEFAULT_REUSE_POLICIES_PER_SHARD,
                 ),
+            ),
+            "seat_order_mode": extra.get(
+                "seat_order_mode",
+                rating_defaults.get("seat_order_mode", arena.DEFAULT_SEAT_ORDER_MODE),
             ),
             "seed": extra.get("seed", rating_defaults.get("seed", 0)),
             "max_steps": extra.get(
@@ -765,13 +820,17 @@ def _intake_rating_spec_from_manifest(
                 "policy_trail_render_mode",
                 rating_defaults.get("policy_trail_render_mode"),
             ),
+            "policy_bonus_render_mode": extra.get(
+                "policy_bonus_render_mode",
+                rating_defaults.get("policy_bonus_render_mode"),
+            ),
             "num_simulations": extra.get(
                 "num_simulations",
                 rating_defaults.get("num_simulations", arena.DEFAULT_NUM_SIMULATIONS),
             ),
             "save_gif": extra.get(
                 "save_gif",
-                rating_defaults.get("save_gif", False),
+                rating_defaults.get("save_gif", arena.DEFAULT_SAVE_GIF),
             ),
             "gif_sample_games_per_pair": extra.get(
                 "gif_sample_games_per_pair",
@@ -805,6 +864,86 @@ def _intake_rating_spec_from_manifest(
                 "stop_when_stable",
                 rating_defaults.get("stop_when_stable", False),
             ),
+        }
+    )
+
+
+def _validate_intake_rating_defaults(
+    rating_defaults: Mapping[str, Any],
+    *,
+    tournament_id: str,
+    rating_run_id: str,
+) -> dict[str, Any]:
+    return arena.normalize_rating_spec(
+        {
+            "tournament_id": tournament_id,
+            "rating_run_id": rating_run_id,
+            "checkpoints": [],
+            "round_count": rating_defaults.get(
+                "round_count",
+                arena.DEFAULT_RATING_ROUND_COUNT,
+            ),
+            "continue_from_latest": rating_defaults.get("continue_from_latest", False),
+            "pairs_per_round": rating_defaults.get("pairs_per_round"),
+            "placement_min_games": rating_defaults.get("placement_min_games"),
+            "placement_min_opponents": rating_defaults.get("placement_min_opponents", 20),
+            "pair_selection": rating_defaults.get(
+                "pair_selection",
+                arena.DEFAULT_RATING_PAIR_SELECTION,
+            ),
+            "games_per_pair": rating_defaults.get(
+                "games_per_pair",
+                arena.DEFAULT_GAMES_PER_PAIR,
+            ),
+            "games_per_shard": rating_defaults.get(
+                "games_per_shard",
+                arena.DEFAULT_GAMES_PER_SHARD,
+            ),
+            "reuse_policies_per_shard": rating_defaults.get(
+                "reuse_policies_per_shard",
+                arena.DEFAULT_REUSE_POLICIES_PER_SHARD,
+            ),
+            "seed": rating_defaults.get("seed", 0),
+            "max_steps": rating_defaults.get("max_steps", arena.DEFAULT_MAX_STEPS),
+            "decision_ms": rating_defaults.get("decision_ms", arena.DEFAULT_DECISION_MS),
+            "decision_source_frames": rating_defaults.get("decision_source_frames"),
+            "source_physics_step_ms": rating_defaults.get(
+                "source_physics_step_ms",
+                arena.DEFAULT_SOURCE_PHYSICS_STEP_MS,
+            ),
+            "policy_mode": rating_defaults.get("policy_mode", arena.POLICY_MODE_EVAL),
+            "collect_temperature": rating_defaults.get(
+                "collect_temperature",
+                arena.DEFAULT_COLLECT_TEMPERATURE,
+            ),
+            "collect_epsilon": rating_defaults.get(
+                "collect_epsilon",
+                arena.DEFAULT_COLLECT_EPSILON,
+            ),
+            "policy_trail_render_mode": rating_defaults.get("policy_trail_render_mode"),
+            "policy_bonus_render_mode": rating_defaults.get("policy_bonus_render_mode"),
+            "num_simulations": rating_defaults.get(
+                "num_simulations",
+                arena.DEFAULT_NUM_SIMULATIONS,
+            ),
+            "save_gif": rating_defaults.get("save_gif", arena.DEFAULT_SAVE_GIF),
+            "gif_sample_games_per_pair": rating_defaults.get(
+                "gif_sample_games_per_pair",
+                arena.DEFAULT_GIF_SAMPLE_GAMES_PER_PAIR,
+            ),
+            "gif_sample_strategy": rating_defaults.get(
+                "gif_sample_strategy",
+                arena.DEFAULT_GIF_SAMPLE_STRATEGY,
+            ),
+            "initial_rating": rating_defaults.get(
+                "initial_rating",
+                arena.DEFAULT_RATING_INITIAL_RATING,
+            ),
+            "active_pool_limit": rating_defaults.get(
+                "active_pool_limit",
+                arena.DEFAULT_RATING_ACTIVE_POOL_LIMIT,
+            ),
+            "stop_when_stable": rating_defaults.get("stop_when_stable", False),
         }
     )
 
@@ -902,6 +1041,8 @@ def _intake_manifest_from_discovery(
         if str(ref).strip()
     ]
     seen_refs = sorted(set(existing_refs).union(checkpoint_refs))
+    checkpoint_pool_hash = _checkpoint_ref_pool_hash(checkpoint_refs)
+    seen_checkpoint_pool_hash = _checkpoint_ref_pool_hash(seen_refs)
     merged_rows_by_ref: dict[str, dict[str, Any]] = {}
     existing_discovery = existing.get("discovery") if isinstance(existing, Mapping) else {}
     for source in (existing_discovery, discovery):
@@ -940,6 +1081,8 @@ def _intake_manifest_from_discovery(
         "checkpoint_count": len(checkpoint_refs),
         "seen_checkpoint_count": len(seen_refs),
         "queued_checkpoint_count": len(queued_refs.intersection(seen_refs)),
+        "checkpoint_pool_hash": checkpoint_pool_hash,
+        "seen_checkpoint_pool_hash": seen_checkpoint_pool_hash,
         "discovery": arena._to_plain(merged_discovery),
     }
 
@@ -959,14 +1102,91 @@ def _mark_intake_manifest_queued(
     return updated
 
 
+def _discovery_rows_by_ref(discovery: Any) -> dict[str, dict[str, Any]]:
+    if not isinstance(discovery, Mapping):
+        return {}
+    rows = discovery.get("rows")
+    if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
+        return {}
+    rows_by_ref: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, Mapping) or not row.get("checkpoint_ref"):
+            continue
+        rows_by_ref[str(row["checkpoint_ref"])] = dict(row)
+    return rows_by_ref
+
+
+def _intake_manifest_with_merged_pool(
+    candidate: Mapping[str, Any],
+    current: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Merge a stale intake write without shrinking the durable checkpoint pool."""
+
+    updated = dict(candidate)
+    if not isinstance(current, Mapping):
+        return updated
+    if current.get("manifest_key") != candidate.get("manifest_key"):
+        return updated
+
+    candidate_refs = _clean_ref_set(candidate.get("checkpoint_refs", []))
+    current_refs = _clean_ref_set(current.get("checkpoint_refs", []))
+    merged_refs = sorted(candidate_refs.union(current_refs))
+
+    candidate_seen_refs = _clean_ref_set(candidate.get("seen_checkpoint_refs", []))
+    current_seen_refs = _clean_ref_set(current.get("seen_checkpoint_refs", []))
+    merged_seen_refs = sorted(candidate_seen_refs.union(current_seen_refs).union(merged_refs))
+
+    candidate_queued_refs = _clean_ref_set(candidate.get("queued_checkpoint_refs", []))
+    current_queued_refs = _clean_ref_set(current.get("queued_checkpoint_refs", []))
+    merged_queued_refs = sorted(
+        candidate_queued_refs.union(current_queued_refs).intersection(set(merged_seen_refs))
+    )
+
+    current_has_wider_pool = bool(current_refs - candidate_refs)
+    if current_has_wider_pool:
+        updated["scan_spec"] = _explicit_checkpoint_refs_scan_spec(merged_refs)
+        if isinstance(current.get("rating_defaults"), Mapping):
+            updated["rating_defaults"] = arena._to_plain(dict(current["rating_defaults"]))
+
+    rows_by_ref: dict[str, dict[str, Any]] = {}
+    rows_by_ref.update(_discovery_rows_by_ref(current.get("discovery")))
+    rows_by_ref.update(_discovery_rows_by_ref(candidate.get("discovery")))
+    discovery = (
+        dict(candidate.get("discovery"))
+        if isinstance(candidate.get("discovery"), Mapping)
+        else {}
+    )
+    discovery["checkpoint_refs"] = merged_refs
+    discovery["found_count"] = len(merged_refs)
+    discovery["found_checkpoint_count"] = len(merged_refs)
+    discovery["rows"] = [
+        rows_by_ref.get(ref)
+        or _checkpoint_discovery_row_from_ref(ref, mount=RUNS_MOUNT, found=True)
+        for ref in merged_refs
+    ]
+
+    updated["checkpoint_refs"] = merged_refs
+    updated["seen_checkpoint_refs"] = merged_seen_refs
+    updated["queued_checkpoint_refs"] = merged_queued_refs
+    updated["checkpoint_count"] = len(merged_refs)
+    updated["seen_checkpoint_count"] = len(merged_seen_refs)
+    updated["queued_checkpoint_count"] = len(merged_queued_refs)
+    updated["checkpoint_pool_hash"] = _checkpoint_ref_pool_hash(merged_refs)
+    updated["seen_checkpoint_pool_hash"] = _checkpoint_ref_pool_hash(merged_seen_refs)
+    updated["discovery"] = arena._to_plain(discovery)
+    return updated
+
+
 def _put_intake_manifest(manifest: Mapping[str, Any]) -> dict[str, Any]:
     key = str(manifest["manifest_key"])
-    checkpoint_intake_state.put(key, arena._to_plain(dict(manifest)))
+    current = checkpoint_intake_state.get(key, None)
+    merged_manifest = _intake_manifest_with_merged_pool(manifest, current)
+    checkpoint_intake_state.put(key, arena._to_plain(merged_manifest))
     active_keys = checkpoint_intake_state.get(CHECKPOINT_INTAKE_ACTIVE_KEYS, []) or []
     if not isinstance(active_keys, list):
         active_keys = []
     active_set = {str(item) for item in active_keys}
-    if manifest.get("active"):
+    if merged_manifest.get("active"):
         active_set.add(key)
     else:
         active_set.discard(key)
@@ -983,6 +1203,61 @@ def _write_intake_manifest_artifact(manifest: Mapping[str, Any]) -> dict[str, An
         ),
         manifest,
     )
+
+
+def _load_intake_manifest(
+    tournament_id: str,
+    rating_run_id: str,
+    *,
+    repair_state: bool = True,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    manifest_key = _intake_manifest_key(tournament_id, rating_run_id)
+    manifest = checkpoint_intake_state.get(manifest_key, None)
+    if isinstance(manifest, Mapping) and (
+        manifest.get("tournament_id")
+        and manifest.get("rating_run_id")
+        and manifest.get("queue_partition")
+    ):
+        return dict(manifest), {
+            "manifest_key": manifest_key,
+            "manifest_source": "dict",
+            "manifest_state_repaired": False,
+        }
+    volume_manifest = _read_json(
+        runs.volume_path(
+            TOURNAMENT_MOUNT,
+            arena.tournament_intake_manifest_ref(tournament_id, rating_run_id),
+        )
+    )
+    if not isinstance(volume_manifest, Mapping):
+        return None, {
+            "manifest_key": manifest_key,
+            "manifest_source": "missing",
+            "manifest_state_repaired": False,
+        }
+    loaded = dict(volume_manifest)
+    if not (
+        loaded.get("tournament_id")
+        and loaded.get("rating_run_id")
+        and loaded.get("queue_partition")
+    ):
+        return None, {
+            "manifest_key": manifest_key,
+            "manifest_source": "missing",
+            "manifest_state_repaired": False,
+        }
+    loaded["manifest_key"] = str(loaded.get("manifest_key") or manifest_key)
+    if str(loaded["manifest_key"]) != manifest_key:
+        raise ValueError("intake manifest key does not match requested tournament/rating")
+    repaired = False
+    if repair_state:
+        _put_intake_manifest(loaded)
+        repaired = True
+    return loaded, {
+        "manifest_key": manifest_key,
+        "manifest_source": "volume",
+        "manifest_state_repaired": repaired,
+    }
 
 
 def _write_intake_tick_artifact(tick: Mapping[str, Any]) -> dict[str, Any]:
@@ -1008,6 +1283,167 @@ def _rating_run_has_existing_output(
         arena.rating_latest_ref(tournament_id, rating_run_id),
     )
     return any(runs.volume_path(mount, ref).exists() for ref in refs)
+
+
+def _round_index_from_round_id(round_id: Any) -> int | None:
+    text = str(round_id or "")
+    prefix = "round-"
+    if not text.startswith(prefix):
+        return None
+    try:
+        return int(text[len(prefix):])
+    except ValueError:
+        return None
+
+
+def _rating_writer_has_finished(
+    mount: Path,
+    *,
+    tournament_id: str,
+    rating_run_id: str,
+) -> bool:
+    clean_tournament_id = runs.clean_id(tournament_id, label="tournament_id")
+    clean_rating_run_id = runs.clean_id(rating_run_id, label="rating_run_id")
+    latest = _read_json(
+        runs.volume_path(
+            mount,
+            arena.rating_latest_ref(clean_tournament_id, clean_rating_run_id),
+        )
+    )
+    latest_round_index = _round_index_from_round_id(latest.get("round_id"))
+    if latest_round_index is None and latest.get("round_index") not in (None, ""):
+        latest_round_index = int(latest["round_index"])
+    latest_round_index = -1 if latest_round_index is None else latest_round_index
+    rating_root = runs.volume_path(
+        mount,
+        arena.rating_root_ref(clean_tournament_id, clean_rating_run_id),
+    )
+    rounds_root = rating_root / "rounds"
+    if rounds_root.exists():
+        for input_path in rounds_root.glob("round-*/input.json"):
+            round_id = input_path.parent.name
+            round_index = _round_index_from_round_id(round_id)
+            if round_index is None or round_index <= latest_round_index:
+                continue
+            ratings_path = runs.volume_path(
+                mount,
+                arena.rating_round_ratings_ref(
+                    clean_tournament_id,
+                    clean_rating_run_id,
+                    round_id,
+                ),
+            )
+            if not ratings_path.is_file():
+                return False
+    progress = _read_json(
+        runs.volume_path(
+            mount,
+            arena.rating_progress_ref(clean_tournament_id, clean_rating_run_id),
+        )
+    )
+    if progress:
+        return bool(progress.get("ratings_written") or progress.get("status") == "complete")
+    return bool(latest)
+
+
+def _rating_latest_checkpoint_refs(
+    mount: Path,
+    *,
+    tournament_id: str,
+    rating_run_id: str,
+) -> list[str]:
+    latest = _read_json(
+        runs.volume_path(
+            mount,
+            arena.rating_latest_ref(tournament_id, rating_run_id),
+        )
+    )
+    ratings = latest.get("ratings")
+    if not isinstance(ratings, Sequence) or isinstance(ratings, (str, bytes)):
+        return []
+    refs: list[str] = []
+    for row in ratings:
+        if not isinstance(row, Mapping):
+            continue
+        ref = str(row.get("checkpoint_ref") or "").strip()
+        if ref:
+            refs.append(ref)
+    return refs
+
+
+def _assert_rating_round_input_still_matches(
+    mount: Path,
+    input_payload: Mapping[str, Any],
+) -> None:
+    ref = arena.rating_round_input_ref(
+        str(input_payload["tournament_id"]),
+        str(input_payload["rating_run_id"]),
+        str(input_payload["round_id"]),
+    )
+    path = runs.volume_path(mount, ref)
+    if not path.exists():
+        return
+    current = _read_json(path)
+    watched_keys = (
+        "pool_hash",
+        "roster_hash",
+        "context_hash",
+        "pair_count",
+        "game_count",
+    )
+    changed = [
+        key
+        for key in watched_keys
+        if current.get(key) != input_payload.get(key)
+    ]
+    if changed:
+        raise RuntimeError(
+            "rating round input was replaced while work was running: "
+            f"{', '.join(changed)}"
+        )
+
+
+def _drop_default_intake_drain_rating_overrides(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    defaults: dict[str, Any] = {
+        "continue_from_latest": False,
+        "games_per_pair": arena.DEFAULT_GAMES_PER_PAIR,
+        "games_per_shard": arena.DEFAULT_GAMES_PER_SHARD,
+        "reuse_policies_per_shard": arena.DEFAULT_REUSE_POLICIES_PER_SHARD,
+        "round_count": arena.DEFAULT_RATING_ROUND_COUNT,
+        "pairs_per_round": None,
+        "placement_min_games": None,
+        "placement_min_opponents": 20,
+        "pair_selection": arena.DEFAULT_RATING_PAIR_SELECTION,
+        "initial_rating": arena.DEFAULT_RATING_INITIAL_RATING,
+        "active_pool_limit": arena.DEFAULT_RATING_ACTIVE_POOL_LIMIT,
+        "stop_when_stable": False,
+        "seed": 0,
+        "max_steps": arena.DEFAULT_MAX_STEPS,
+        "decision_ms": arena.DEFAULT_DECISION_MS,
+        "decision_source_frames": None,
+        "source_physics_step_ms": arena.DEFAULT_SOURCE_PHYSICS_STEP_MS,
+        "policy_mode": arena.POLICY_MODE_EVAL,
+        "collect_temperature": arena.DEFAULT_COLLECT_TEMPERATURE,
+        "collect_epsilon": arena.DEFAULT_COLLECT_EPSILON,
+        "policy_trail_render_mode": None,
+        "policy_bonus_render_mode": None,
+        "num_simulations": arena.DEFAULT_NUM_SIMULATIONS,
+        "save_gif": arena.DEFAULT_SAVE_GIF,
+        "gif_sample_games_per_pair": arena.DEFAULT_GIF_SAMPLE_GAMES_PER_PAIR,
+        "gif_sample_strategy": arena.DEFAULT_GIF_SAMPLE_STRATEGY,
+    }
+    cleaned = dict(payload)
+    for key, default in defaults.items():
+        if key not in cleaned:
+            continue
+        value = cleaned[key]
+        if value in (None, "", 0, "0") and default is None:
+            cleaned.pop(key, None)
+        elif value == default:
+            cleaned.pop(key, None)
+    return cleaned
 
 
 def _enqueue_checkpoint_events(
@@ -1049,14 +1485,15 @@ def _intake_rating_claim_key(
     continue_from_latest: bool = False,
 ) -> str:
     manifest_key = str(manifest["manifest_key"])
-    if not continue_from_latest:
-        return f"rating_claim:{manifest_key}"
-    queued_refs = sorted(_clean_ref_set(manifest.get("queued_checkpoint_refs", [])))
-    queued_digest = arena._short_hash(
-        json.dumps(queued_refs, separators=(",", ":"), sort_keys=True),
-        length=16,
+    rating_refs = _intake_manifest_rating_checkpoint_refs(
+        manifest,
+        continue_from_latest=continue_from_latest,
     )
-    return f"rating_claim:{manifest_key}:{queued_digest}"
+    claim_mode = "continue" if continue_from_latest else "fresh"
+    return (
+        f"rating_claim:{manifest_key}:mode-{claim_mode}:"
+        f"pool-{_checkpoint_ref_pool_hash(rating_refs)}"
+    )
 
 
 def _parse_intake_timestamp(value: Any) -> datetime | None:
@@ -1091,6 +1528,26 @@ def _intake_rating_claim_is_stale(
         now = now.replace(tzinfo=UTC)
     age_seconds = (now.astimezone(UTC) - created_at).total_seconds()
     return age_seconds >= max(0, int(stale_after_seconds))
+
+
+def _intake_rating_claim_needs_pool_repair(
+    claim: Any,
+    *,
+    pool_hash: str,
+    checkpoint_count: int,
+) -> bool:
+    if not isinstance(claim, Mapping):
+        return False
+    claim_pool_hash = str(claim.get("pool_hash") or "").strip()
+    if claim_pool_hash and claim_pool_hash != pool_hash:
+        return True
+    claim_checkpoint_count = claim.get("checkpoint_count")
+    if claim_checkpoint_count in (None, ""):
+        return True
+    try:
+        return int(claim_checkpoint_count) != int(checkpoint_count)
+    except (TypeError, ValueError):
+        return True
 
 
 def _intake_queue_repair_refs(manifest: Mapping[str, Any]) -> list[str]:
@@ -1325,7 +1782,12 @@ def _rating_loop_start_state(
                 label="latest snapshot",
             )
             latest_snapshot = dict(latest)
-            start_round_index = int(latest_snapshot.get("round_index", -1) or -1) + 1
+            latest_round_index = latest_snapshot.get("round_index")
+            start_round_index = (
+                int(latest_round_index)
+                if latest_round_index not in (None, "")
+                else -1
+            ) + 1
 
     previous_pair_history = _read_json(
         runs.volume_path(
@@ -1623,6 +2085,7 @@ def _rating_round_progress_payload(
     }
     seen_pair_dir_ids: set[str] = set()
     seen_shard_game_counts: dict[str, int] = {}
+    counted_game_summary_files = False
     if pair_only and game_results is None:
         root = runs.volume_path(mount, arena.tournament_root_ref(clean_tournament_id)) / "battles"
         if root.exists():
@@ -1659,6 +2122,7 @@ def _rating_round_progress_payload(
                             int(game_summary_count),
                         ),
                     )
+                counted_game_summary_files = True
         summaries = []
     elif game_results is None:
         summaries: Sequence[tuple[Path | None, dict[str, Any]]] = _iter_rating_game_summaries(
@@ -1805,6 +2269,7 @@ def _rating_round_progress_payload(
         "unknown_result_count": unknown_result_count,
         "result_counts_known": bool((not pair_only) and unknown_result_count == 0),
         "count_basis": "shard_summary_files" if pair_only else "summary_files",
+        "counted_game_summary_files": counted_game_summary_files,
         "started_pair_count": started_pairs,
         "partial_pair_count": partial_pairs,
         "completed_pair_count": completed_pairs,
@@ -2649,7 +3114,7 @@ def _rating_spec_with_latest_roster(
 ) -> dict[str, Any]:
     raw = dict(raw_spec)
     checkpoints = raw.get("checkpoints") or raw.get("checkpoint_refs") or []
-    if checkpoints or not bool(raw.get("continue_from_latest", False)):
+    if not bool(raw.get("continue_from_latest", False)):
         return arena.normalize_rating_spec(raw)
 
     tournament_id = runs.clean_id(
@@ -2678,13 +3143,14 @@ def _rating_spec_with_latest_roster(
         for row in latest.get("ratings", [])
         if isinstance(row, Mapping) and row.get("checkpoint_id")
     ]
+    seen_ordered_ids = set(ordered_ids)
     ordered_ids.extend(
         checkpoint_id
         for checkpoint_id in sorted(str(item) for item in roster)
-        if checkpoint_id not in set(ordered_ids)
+        if checkpoint_id not in seen_ordered_ids
     )
 
-    restored_checkpoints = []
+    restored_checkpoints: list[dict[str, Any]] = []
     for checkpoint_id in ordered_ids:
         roster_row = roster.get(checkpoint_id, {})
         if not isinstance(roster_row, Mapping):
@@ -2723,8 +3189,49 @@ def _rating_spec_with_latest_roster(
                 "policy_trail_render_mode": roster_row.get(
                     "policy_trail_render_mode"
                 ),
+                "policy_bonus_render_mode": roster_row.get(
+                    "policy_bonus_render_mode"
+                ),
             }
         )
+    if checkpoints:
+        explicit_checkpoints = checkpoints
+        if isinstance(explicit_checkpoints, str):
+            explicit_checkpoints = arena.parse_checkpoint_refs(explicit_checkpoints)
+        normalized_checkpoints = arena.normalize_checkpoint_specs(
+            list(explicit_checkpoints)
+        )
+        restored_by_ref = {
+            str(checkpoint["checkpoint_ref"]): checkpoint
+            for checkpoint in restored_checkpoints
+            if checkpoint.get("checkpoint_ref")
+        }
+        merged_checkpoints = []
+        for checkpoint in normalized_checkpoints:
+            restored = restored_by_ref.get(str(checkpoint.get("checkpoint_ref") or ""))
+            if not restored:
+                merged_checkpoints.append(checkpoint)
+                continue
+            merged = dict(checkpoint)
+            merged["checkpoint_id"] = restored["checkpoint_id"]
+            if restored.get("label"):
+                merged["label"] = restored["label"]
+            for key in (
+                "run_id",
+                "attempt_id",
+                "iteration",
+                "checkpoint_mtime_ns",
+                "model_env_variant",
+                "model_reward_variant",
+                "policy_trail_render_mode",
+                "policy_bonus_render_mode",
+            ):
+                if merged.get(key) in (None, ""):
+                    merged[key] = restored.get(key)
+            merged_checkpoints.append(merged)
+        raw["checkpoints"] = merged_checkpoints
+        raw.pop("checkpoint_refs", None)
+        return arena.normalize_rating_spec(raw)
     raw["checkpoints"] = restored_checkpoints
     return arena.normalize_rating_spec(raw)
 
@@ -2826,6 +3333,7 @@ def curvytron_tournament_game(game_spec: dict[str, Any]) -> dict[str, Any]:
                     "battle_id": compact.get("battle_id"),
                     "game_id": compact.get("game_id"),
                     "pair_index": compact.get("pair_index"),
+                    "seat_order": compact.get("seat_order"),
                     "score": compact.get("score"),
                     "physical_steps": compact.get("physical_steps"),
                     "worker_timing": compact.get("worker_timing"),
@@ -3097,11 +3605,8 @@ def curvytron_tournament_run(tournament_spec: dict[str, Any]) -> dict[str, Any]:
         ),
         collect_epsilon=float(spec.get("collect_epsilon", arena.DEFAULT_COLLECT_EPSILON)),
         natural_bonus_spawn=bool(spec.get("natural_bonus_spawn", True)),
-        policy_trail_render_mode=(
-            spec.get("policy_trail_render_mode")
-            or spec.get("observation_trail_render_mode")
-            or spec.get("trail_render_mode")
-        ),
+        policy_trail_render_mode=spec.get("policy_trail_render_mode"),
+        policy_bonus_render_mode=spec.get("policy_bonus_render_mode"),
         trail_render_mode=spec.get("trail_render_mode"),
         frame_stride=int(spec.get("frame_stride", arena.DEFAULT_FRAME_STRIDE)),
         frame_size=int(spec.get("frame_size", arena.DEFAULT_FRAME_SIZE)),
@@ -3125,6 +3630,7 @@ def curvytron_tournament_run(tournament_spec: dict[str, Any]) -> dict[str, Any]:
                 arena.DEFAULT_REUSE_POLICIES_PER_SHARD,
             )
         ),
+        seat_order_mode=str(spec.get("seat_order_mode", arena.DEFAULT_SEAT_ORDER_MODE)),
         save_frames_npz=bool(
             spec.get("save_frames_npz", arena.DEFAULT_SAVE_FRAMES_NPZ)
         ),
@@ -3224,6 +3730,34 @@ def curvytron_rating_round(round_spec: dict[str, Any]) -> dict[str, Any]:
     spec = arena.normalize_rating_spec(round_spec)
     round_index = int(round_spec.get("round_index", 0))
     round_id = arena.rating_round_id(round_index)
+    round_ratings_ref = arena.rating_round_ratings_ref(
+        spec["tournament_id"],
+        spec["rating_run_id"],
+        round_id,
+    )
+    if runs.volume_path(TOURNAMENT_MOUNT, round_ratings_ref).exists():
+        raise FileExistsError(
+            f"refusing to overwrite completed rating round: {round_ratings_ref.as_posix()}"
+        )
+    existing_round_artifacts = [
+        ref
+        for ref in (
+            arena.rating_round_input_ref(
+                spec["tournament_id"],
+                spec["rating_run_id"],
+                round_id,
+            ),
+            arena.rating_round_progress_ref(
+                spec["tournament_id"],
+                spec["rating_run_id"],
+                round_id,
+            ),
+        )
+        if runs.volume_path(TOURNAMENT_MOUNT, ref).exists()
+    ]
+    if existing_round_artifacts:
+        refs = ", ".join(ref.as_posix() for ref in existing_round_artifacts)
+        raise FileExistsError(f"rating round already has artifacts: {refs}")
     previous_snapshot = round_spec.get("previous_snapshot")
     previous_pair_history = round_spec.get("pair_history")
     scheduler_state = round_spec.get("scheduler_state")
@@ -3914,6 +4448,7 @@ def _list_tournaments(mount: Path) -> list[dict[str, Any]]:
         rows.append(
             {
                 "tournament_id": tournament_id,
+                "is_current": tournament_id == CURRENT_TOURNAMENT_ID,
                 "status": complete.get("status") or manifest.get("status"),
                 "updated_ts": updated_path.stat().st_mtime,
                 "updated_at": complete.get("ended_at") or manifest.get("updated_at"),
@@ -4129,6 +4664,7 @@ def _list_rating_runs(mount: Path, *, tournament_id: str) -> list[dict[str, Any]
             {
                 "tournament_id": clean_id,
                 "rating_run_id": rating_run_id,
+                "is_current": rating_run_id == CURRENT_RATING_RUN_ID,
                 "updated_ts": updated_path.stat().st_mtime,
                 "updated_at": (
                     progress.get("updated_at")
@@ -4214,6 +4750,11 @@ def _default_rating_run_id(rows: list[dict[str, Any]], requested: str) -> str:
         clean = runs.clean_id(requested, label="rating_run_id")
         if any(row["rating_run_id"] == clean for row in rows):
             return clean
+    for row in rows:
+        if row.get("is_current") and row.get("rating_run_id") == CURRENT_RATING_RUN_ID:
+            return CURRENT_RATING_RUN_ID
+    if any(row.get("rating_run_id") == CURRENT_RATING_RUN_ID for row in rows):
+        return CURRENT_RATING_RUN_ID
     return str(rows[0]["rating_run_id"]) if rows else ""
 
 
@@ -4821,155 +5362,12 @@ def _default_tournament_id(rows: list[dict[str, Any]], requested: str) -> str:
         clean = runs.clean_id(requested, label="tournament_id")
         if any(row["tournament_id"] == clean for row in rows):
             return clean
-    return str(rows[0]["tournament_id"]) if rows else ""
-
-
-def _rating_row_by_checkpoint(
-    rating_snapshot: Mapping[str, Any],
-    checkpoint_id: str,
-) -> dict[str, Any]:
-    rows = rating_snapshot.get("ratings")
-    if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
-        return {}
     for row in rows:
-        if isinstance(row, Mapping) and str(row.get("checkpoint_id") or "") == checkpoint_id:
-            return dict(row)
-    return {}
-
-
-def _rating_rows(rating_snapshot: Mapping[str, Any]) -> list[dict[str, Any]]:
-    rows = rating_snapshot.get("ratings")
-    if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
-        return []
-    return [dict(row) for row in rows if isinstance(row, Mapping)]
-
-
-def _rating_rank_by_checkpoint(rating_snapshot: Mapping[str, Any]) -> dict[str, int]:
-    ranks = {}
-    for row in _rating_rows(rating_snapshot):
-        checkpoint_id = str(row.get("checkpoint_id") or "")
-        if not checkpoint_id:
-            continue
-        try:
-            ranks[checkpoint_id] = int(row.get("rank") or 0)
-        except (TypeError, ValueError):
-            continue
-    return ranks
-
-
-def _battle_player_for_checkpoint(
-    row: Mapping[str, Any],
-    checkpoint_id: str,
-) -> dict[str, Any]:
-    players = row.get("players")
-    if not isinstance(players, Sequence) or isinstance(players, (str, bytes)):
-        return {}
-    for player in players:
-        if (
-            isinstance(player, Mapping)
-            and str(player.get("checkpoint_id") or "") == checkpoint_id
-        ):
-            return dict(player)
-    return {}
-
-
-def _battle_opponent_for_checkpoint(
-    row: Mapping[str, Any],
-    checkpoint_id: str,
-) -> dict[str, Any]:
-    players = row.get("players")
-    if not isinstance(players, Sequence) or isinstance(players, (str, bytes)):
-        return {}
-    for player in players:
-        if (
-            isinstance(player, Mapping)
-            and str(player.get("checkpoint_id") or "") != checkpoint_id
-        ):
-            return dict(player)
-    return {}
-
-
-def _checkpoint_battle_sort_key(
-    row: Mapping[str, Any],
-    checkpoint_id: str,
-    rank_by_checkpoint: Mapping[str, int],
-) -> tuple[int, int, str]:
-    opponent = _battle_opponent_for_checkpoint(row, checkpoint_id)
-    opponent_id = str(opponent.get("checkpoint_id") or "")
-    try:
-        opponent_rank = int(rank_by_checkpoint.get(opponent_id) or 1_000_000)
-    except (TypeError, ValueError):
-        opponent_rank = 1_000_000
-    try:
-        pair_index = int(row.get("pair_index", 0) or 0)
-    except (TypeError, ValueError):
-        pair_index = 0
-    return opponent_rank, pair_index, str(row.get("battle_id") or "")
-
-
-def _sort_checkpoint_battle_rows(
-    rows: Sequence[Mapping[str, Any]],
-    *,
-    checkpoint_id: str,
-    rank_by_checkpoint: Mapping[str, int],
-) -> list[dict[str, Any]]:
-    return sorted(
-        [dict(row) for row in rows if isinstance(row, Mapping)],
-        key=lambda row: _checkpoint_battle_sort_key(
-            row,
-            checkpoint_id,
-            rank_by_checkpoint,
-        ),
-    )
-
-
-def _wins_for_checkpoint(row: Mapping[str, Any], checkpoint_id: str) -> int:
-    tally = row.get("tally") if isinstance(row.get("tally"), Mapping) else {}
-    wins_by_checkpoint = (
-        tally.get("wins_by_checkpoint")
-        if isinstance(tally.get("wins_by_checkpoint"), Mapping)
-        else {}
-    )
-    if checkpoint_id in wins_by_checkpoint:
-        return int(wins_by_checkpoint.get(checkpoint_id) or 0)
-    player = _battle_player_for_checkpoint(row, checkpoint_id)
-    seat = player.get("seat")
-    wins_by_seat = (
-        tally.get("wins_by_seat") if isinstance(tally.get("wins_by_seat"), Mapping) else {}
-    )
-    if seat in (0, 1):
-        return int(wins_by_seat.get(f"seat_{seat}") or 0)
-    return 0
-
-
-def _review_battle_row(
-    row: Mapping[str, Any],
-    checkpoint_id: str,
-    *,
-    rank_by_checkpoint: Mapping[str, int] | None = None,
-) -> dict[str, Any]:
-    battle = dict(row)
-    tally = battle.get("tally") if isinstance(battle.get("tally"), Mapping) else {}
-    opponent = _battle_opponent_for_checkpoint(battle, checkpoint_id)
-    opponent_id = str(opponent.get("checkpoint_id") or "")
-    rank_by_checkpoint = rank_by_checkpoint or {}
-    checkpoint_wins = _wins_for_checkpoint(battle, checkpoint_id)
-    opponent_wins = _wins_for_checkpoint(battle, opponent_id) if opponent_id else 0
-    draws = int(tally.get("draw_count") or 0)
-    battle.update(
-        {
-            "checkpoint_id": checkpoint_id,
-            "opponent": opponent,
-            "opponent_rank": rank_by_checkpoint.get(opponent_id),
-            "checkpoint_wins": checkpoint_wins,
-            "opponent_wins": opponent_wins,
-            "draws": draws,
-            "completed_count": int(tally.get("completed_count") or 0),
-            "failure_count": int(tally.get("failure_count") or 0),
-            "average_physical_steps": tally.get("average_physical_steps"),
-        }
-    )
-    return arena._to_plain(battle)
+        if row.get("is_current") and row.get("tournament_id") == CURRENT_TOURNAMENT_ID:
+            return CURRENT_TOURNAMENT_ID
+    if any(row.get("tournament_id") == CURRENT_TOURNAMENT_ID for row in rows):
+        return CURRENT_TOURNAMENT_ID
+    return str(rows[0]["tournament_id"]) if rows else ""
 
 
 def _review_rankings_payload(
@@ -5274,48 +5672,6 @@ def _review_battle_payload(
     return arena._to_plain(payload)
 
 
-def _href(path: str, **params: Any) -> str:
-    clean = {
-        key: str(value)
-        for key, value in params.items()
-        if value not in (None, "")
-    }
-    query = urlencode(clean)
-    return f"{path}?{query}" if query else path
-
-
-def _page_href(**params: Any) -> str:
-    return _href("/", **params)
-
-
-def _battle_href(**params: Any) -> str:
-    return _href("/battle", **params)
-
-
-def _friendly_progress_label(progress: Mapping[str, Any]) -> str:
-    status = str(progress.get("status") or "")
-    phase = str(progress.get("phase") or "")
-    if status == "complete":
-        return "rankings ready"
-    if phase in {"game_map_started", "games_running", "all_games_seen"}:
-        return "running games"
-    if phase in {"reduced", "ratings_written"}:
-        return "finalizing rankings"
-    if status == "pending":
-        return "starting"
-    return (status or phase or "starting").replace("_", " ")
-
-
-def _short_battle_label(battle_id: str, pair_index: Any = None) -> str:
-    if pair_index is not None:
-        return f"pair {pair_index}"
-    marker = "-pair-"
-    if marker in battle_id:
-        tail = battle_id.split(marker, 1)[1]
-        return f"pair {tail.split('-', 1)[0]}"
-    return battle_id
-
-
 def _read_tournament_json_ref(mount: Path, ref: str) -> dict[str, Any]:
     try:
         safe_ref = arena.validate_tournament_artifact_ref(ref)
@@ -5618,800 +5974,6 @@ def _dedupe_gif_samples(samples: Sequence[Mapping[str, Any]]) -> list[dict[str, 
         seen_refs.add(ref)
         deduped.append(sample)
     return arena._to_plain(deduped)
-
-
-def _render_battle_detail_section(
-    *,
-    payload: Mapping[str, Any],
-    rating_run_id: str = "latest",
-    checkpoint_id: str = "",
-) -> str:
-    import html
-
-    def fmt(value: Any, *, digits: int = 2) -> str:
-        try:
-            return f"{float(value):.{digits}f}"
-        except (TypeError, ValueError):
-            return ""
-
-    battle_id = str(payload.get("battle_id") or "")
-    if not payload:
-        return '<div class="empty">No battle detail found.</div>'
-    summary = payload.get("summary") if isinstance(payload.get("summary"), Mapping) else {}
-    battle = payload.get("battle") if isinstance(payload.get("battle"), Mapping) else {}
-    players = summary.get("players") or battle.get("players") or []
-    if isinstance(players, Sequence) and not isinstance(players, (str, bytes)):
-        matchup = " vs ".join(
-            html.escape(str(player.get("label") or player.get("checkpoint_id") or ""))
-            for player in players
-            if isinstance(player, Mapping)
-        )
-    else:
-        matchup = ""
-    tally = summary.get("tally") if isinstance(summary.get("tally"), Mapping) else {}
-    summary_ref = html.escape(str(summary.get("summary_ref") or battle.get("summary_ref") or ""))
-    summary_link = f'<a href="/meta?ref={summary_ref}">JSON</a>' if summary_ref else ""
-    samples = payload.get("sample_gifs") if isinstance(payload.get("sample_gifs"), list) else []
-    games = payload.get("games") if isinstance(payload.get("games"), list) else []
-    tournament_id = str(payload.get("selected_tournament_id") or "")
-    game_count = int(payload.get("game_count") or 0)
-    game_limit = int(payload.get("game_limit") or DEFAULT_BATTLE_GAME_LIMIT)
-    game_offset = int(payload.get("game_offset") or 0)
-    first_row = game_offset + 1 if games else 0
-    last_row = game_offset + len(games)
-    prev_href = _battle_href(
-        tournament_id=tournament_id,
-        rating_run_id=rating_run_id,
-        checkpoint_id=checkpoint_id,
-        battle_id=battle_id,
-        game_limit=game_limit,
-        game_offset=max(0, game_offset - game_limit),
-    )
-    next_href = _battle_href(
-        tournament_id=tournament_id,
-        rating_run_id=rating_run_id,
-        checkpoint_id=checkpoint_id,
-        battle_id=battle_id,
-        game_limit=game_limit,
-        game_offset=game_offset + game_limit,
-    )
-
-    sample_cards = []
-    for sample in samples:
-        if not isinstance(sample, Mapping) or not sample.get("gif_ref"):
-            continue
-        gif_ref = html.escape(str(sample["gif_ref"]))
-        caption = " ".join(
-            item
-            for item in (
-                str(sample.get("game_id") or ""),
-                str(sample.get("outcome") or ""),
-            )
-            if item
-        )
-        sample_cards.append(
-            f"""
-            <a class="gif-card" href="/gif?ref={gif_ref}">
-              <img src="/gif?ref={gif_ref}" alt="{html.escape(caption)}" loading="lazy" decoding="async">
-              <span>{html.escape(caption or "Sample")}</span>
-            </a>
-            """
-        )
-    sample_html = (
-        f"""
-        <section class="panel">
-          <div class="panel-head"><h2>GIF Samples</h2><span>{len(sample_cards)} shown</span></div>
-          <div class="gif-grid">{"".join(sample_cards)}</div>
-        </section>
-        """
-        if sample_cards
-        else '<p class="summary">No GIF samples were captured for this battle.</p>'
-    )
-
-    game_rows = []
-    for game in games:
-        if not isinstance(game, Mapping):
-            continue
-        game_summary_ref = html.escape(str(game.get("summary_ref") or ""))
-        gif_ref = html.escape(str(game.get("gif_ref") or ""))
-        gif_link = f'<a href="/gif?ref={gif_ref}">GIF</a>' if gif_ref else ""
-        json_link = f'<a href="/meta?ref={game_summary_ref}">JSON</a>' if game_summary_ref else ""
-        game_rows.append(
-            "<tr>"
-            f"<td>{html.escape(str(game.get('game_index') if game.get('game_index') is not None else ''))}</td>"
-            f"<td>{html.escape(str(game.get('game_id') or ''))}</td>"
-            f"<td>{html.escape(str(game.get('outcome') or ''))}</td>"
-            f"<td>{html.escape(str(game.get('seed') or ''))}</td>"
-            f"<td>{html.escape(str(game.get('physical_steps') or ''))}</td>"
-            f"<td>{html.escape(str(game.get('ok')))}</td>"
-            f"<td>{gif_link}</td>"
-            f"<td>{json_link}</td>"
-            "</tr>"
-        )
-    games_html = (
-        f"""
-        <section class="panel">
-          <div class="panel-head">
-            <h2>Games</h2>
-            <span>{first_row}-{last_row} of {html.escape(str(game_count))}</span>
-          </div>
-          <table>
-            <thead><tr><th>#</th><th>Game</th><th>Outcome</th><th>Seed</th><th>Steps</th><th>OK</th><th>GIF</th><th>JSON</th></tr></thead>
-            <tbody>{"".join(game_rows)}</tbody>
-          </table>
-          <div class="pager">
-            {'<a href="' + html.escape(prev_href) + '#battle-detail">Previous games</a>' if payload.get("has_newer_games") else '<span></span>'}
-            {'<a href="' + html.escape(next_href) + '#battle-detail">Next games</a>' if payload.get("has_older_games") else '<span></span>'}
-          </div>
-        </section>
-        """
-        if game_rows
-        else '<div class="empty">No game summaries found for this battle.</div>'
-    )
-
-    return f"""
-    <section class="panel selected-battle" id="battle-detail">
-      <div class="panel-head">
-        <h2>{html.escape(battle_id)}</h2>
-        <span>{matchup}</span>
-      </div>
-      <div class="progress-body">
-        <div><strong>{html.escape(str(tally.get("completed_count", 0)))}</strong><span>games</span></div>
-        <div><strong>{html.escape(str(tally.get("failure_count", 0)))}</strong><span>failures</span></div>
-        <div><strong>{html.escape(str(tally.get("draw_count", 0)))}</strong><span>draws</span></div>
-        <div><strong>{fmt(tally.get("average_physical_steps"))}</strong><span>avg steps</span></div>
-        <div><strong>{summary_link}</strong><span>battle JSON</span></div>
-      </div>
-    </section>
-    {sample_html}
-    {games_html}
-    """
-
-
-def _render_page(
-    *,
-    tournaments: list[dict[str, Any]],
-    selected_tournament_id: str,
-    selected_rating_run_id: str,
-    selected_checkpoint_id: str,
-    rating_runs: list[dict[str, Any]],
-    rating_snapshot: dict[str, Any],
-    rating_progress: dict[str, Any],
-    battles: dict[str, Any],
-    selected_battle_id: str = "",
-    battle_detail: Mapping[str, Any] | None = None,
-    volume_reload_error: str = "",
-) -> str:
-    import html
-    import math
-
-    def fmt_number(value: Any, *, digits: int = 1) -> str:
-        try:
-            return f"{float(value):.{digits}f}"
-        except (TypeError, ValueError):
-            return ""
-
-    def sort_number_attr(value: Any) -> str:
-        try:
-            number = float(value)
-        except (TypeError, ValueError):
-            return ""
-        if not math.isfinite(number):
-            return ""
-        if number.is_integer():
-            return str(int(number))
-        return f"{number:.6f}".rstrip("0").rstrip(".")
-
-    options = "\n".join(
-        f'<option value="{html.escape(row["tournament_id"])}" '
-        f'{"selected" if row["tournament_id"] == selected_tournament_id else ""}>'
-        f'{html.escape(row["tournament_id"])}</option>'
-        for row in tournaments
-    )
-    rating_options = "\n".join(
-        f'<option value="{html.escape(row["rating_run_id"])}" '
-        f'{"selected" if row["rating_run_id"] == selected_rating_run_id else ""}>'
-        f'{html.escape(row["rating_run_id"])}'
-        f'{html.escape(" (" + str(row.get("status")) + ")" if row.get("status") else "")}</option>'
-        for row in rating_runs
-    )
-    rating_rows = _rating_rows(rating_snapshot)
-    selected_rating_row = (
-        _rating_row_by_checkpoint(rating_snapshot, selected_checkpoint_id)
-        if selected_checkpoint_id
-        else {}
-    )
-    rating_html = ""
-    if rating_rows:
-        provisional = bool(rating_snapshot.get("provisional"))
-        ranking_title = "Live Rankings" if provisional else "Rankings"
-        ranking_status = (
-            "updating from finished games"
-            if provisional
-            else str(rating_snapshot.get("round_id", ""))
-        )
-        body = []
-        for row in rating_rows:
-            record = row if isinstance(row, Mapping) else {}
-            checkpoint_id = str(record.get("checkpoint_id", ""))
-            checkpoint_label = str(record.get("label") or checkpoint_id)
-            href = _page_href(
-                tournament_id=selected_tournament_id,
-                rating_run_id=selected_rating_run_id,
-                checkpoint_id=checkpoint_id,
-            )
-            selected_class = " selected-row" if checkpoint_id == selected_checkpoint_id else ""
-            body.append(
-                f"<tr class=\"{selected_class.strip()}\">"
-                f"<td>{html.escape(str(record.get('rank', '')))}</td>"
-                f"<td title=\"{html.escape(checkpoint_id)}\">"
-                f"<a href=\"{html.escape(href)}\">{html.escape(checkpoint_label)}</a></td>"
-                f"<td>{float(record.get('rating', 0.0)):.1f}</td>"
-                f"<td>{html.escape(str(record.get('games', 0)))}</td>"
-                f"<td>{html.escape(str(record.get('wins', 0)))}-"
-                f"{html.escape(str(record.get('losses', 0)))}-"
-                f"{html.escape(str(record.get('draws', 0)))}</td>"
-                f"<td>{fmt_number(record.get('win_rate'), digits=3)}</td>"
-                f"<td>{html.escape(str(record.get('distinct_opponents') or record.get('battles') or 0))}</td>"
-                f"<td>{html.escape(str(record.get('failure_count', 0)))}</td>"
-                "</tr>"
-            )
-        rating_html = f"""
-        <section class="panel">
-          <div class="panel-head">
-            <h2>{html.escape(ranking_title)}</h2>
-            <span>{html.escape(str(rating_snapshot.get("rating_run_id", "")))} / {html.escape(ranking_status)}</span>
-          </div>
-          <div class="scroll-panel rankings-scroll">
-            <table>
-              <thead><tr><th>Rank</th><th>Checkpoint</th><th>Rating</th><th>Games</th><th>W-L-D</th><th>Win rate</th><th>Opp.</th><th>Failures</th></tr></thead>
-              <tbody>{"".join(body)}</tbody>
-            </table>
-          </div>
-        </section>
-        """
-    elif rating_runs:
-        status = str(rating_progress.get("status") or "")
-        if status and status != "complete":
-            friendly_status = _friendly_progress_label(rating_progress)
-            rating_html = f"""
-            <section class="panel">
-              <div class="panel-head">
-                <h2>Rankings</h2>
-                <span>{html.escape(friendly_status)}</span>
-              </div>
-              <p class="in-panel">Rankings will appear as soon as finished games are visible. This page keeps updating while the tournament runs.</p>
-            </section>
-            """
-        else:
-            rating_html = """
-            <section class="panel">
-              <div class="panel-head"><h2>Rankings</h2><span>empty</span></div>
-              <p class="in-panel">This rating run exists, but no rating rows were found.</p>
-            </section>
-            """
-    progress_html = ""
-    if rating_progress:
-        try:
-            pct = 100.0 * float(rating_progress.get("estimated_completion_fraction") or rating_progress.get("completion_fraction") or 0.0)
-        except (TypeError, ValueError):
-            pct = 0.0
-        progress_html = f"""
-        <section class="panel" id="progress-panel" data-tournament-id="{html.escape(selected_tournament_id)}" data-rating-run-id="{html.escape(selected_rating_run_id)}" data-has-ratings="{html.escape('true' if rating_rows else 'false')}">
-          <div class="panel-head">
-            <h2>Progress</h2>
-            <span data-progress-field="updated">{html.escape(str(rating_progress.get("updated_at") or ""))}</span>
-          </div>
-          <div class="progress-body">
-            <div><strong data-progress-field="status">{html.escape(_friendly_progress_label(rating_progress))}</strong><span>state</span></div>
-            <div><strong data-progress-field="phase">{html.escape(str(rating_progress.get("phase") or ""))}</strong><span>detail</span></div>
-            <div><strong data-progress-field="pairs">{html.escape(str(rating_progress.get("started_pair_count") or 0))}/{html.escape(str(rating_progress.get("pair_count") or 0))}</strong><span>pairs started</span></div>
-            <div><strong data-progress-field="games">{html.escape(str(rating_progress.get("estimated_seen_game_count") or rating_progress.get("completed_game_count") or 0))}/{html.escape(str(rating_progress.get("game_count") or 0))}</strong><span>games seen</span></div>
-            <div><strong data-progress-field="percent">{pct:.1f}%</strong><span>estimated progress</span></div>
-          </div>
-        </section>
-        """
-    elif rating_runs:
-        progress_html = f"""
-        <section class="panel" id="progress-panel" data-tournament-id="{html.escape(selected_tournament_id)}" data-rating-run-id="{html.escape(selected_rating_run_id)}" data-has-ratings="{html.escape('true' if rating_rows else 'false')}">
-          <div class="panel-head">
-            <h2>Progress</h2>
-            <span data-progress-field="updated"></span>
-          </div>
-          <p class="in-panel">Tournament state is loading. This page will check again automatically.</p>
-        </section>
-        """
-    checkpoint_html = ""
-    if selected_checkpoint_id:
-        detail_name = str(
-            selected_rating_row.get("label")
-            or selected_rating_row.get("checkpoint_id")
-            or selected_checkpoint_id
-        )
-        if selected_rating_row:
-            checkpoint_html = f"""
-            <section class="panel selected-checkpoint">
-              <div class="panel-head">
-                <h2>{html.escape(detail_name)}</h2>
-                <a href="{html.escape(_page_href(tournament_id=selected_tournament_id, rating_run_id=selected_rating_run_id))}">Clear</a>
-              </div>
-              <div class="progress-body">
-                <div><strong>{float(selected_rating_row.get("rating", 0.0)):.1f}</strong><span>rating</span></div>
-                <div><strong>{html.escape(str(selected_rating_row.get("rank", "")))}</strong><span>rank</span></div>
-                <div><strong>{html.escape(str(selected_rating_row.get("games", 0)))}</strong><span>games</span></div>
-                <div><strong>{html.escape(str(selected_rating_row.get("wins", 0)))}-{html.escape(str(selected_rating_row.get("losses", 0)))}-{html.escape(str(selected_rating_row.get("draws", 0)))}</strong><span>W-L-D</span></div>
-                <div><strong>{html.escape(str(battles.get("total", 0)))}</strong><span>battles shown below</span></div>
-              </div>
-            </section>
-            """
-        else:
-            checkpoint_html = f"""
-            <section class="panel selected-checkpoint">
-              <div class="panel-head">
-                <h2>{html.escape(selected_checkpoint_id)}</h2>
-                <a href="{html.escape(_page_href(tournament_id=selected_tournament_id, rating_run_id=selected_rating_run_id))}">Clear</a>
-              </div>
-              <p class="in-panel">No rating row was found for this checkpoint in the selected rating run.</p>
-            </section>
-            """
-    battle_html = '<p class="summary">Select a checkpoint row to inspect its battles.</p>'
-    if selected_checkpoint_id:
-        rank_by_checkpoint = _rating_rank_by_checkpoint(rating_snapshot)
-        body = []
-        battle_rows = battles.get("rows", [])
-        sorted_battle_rows = _sort_checkpoint_battle_rows(
-            battle_rows if isinstance(battle_rows, Sequence) else [],
-            checkpoint_id=selected_checkpoint_id,
-            rank_by_checkpoint=rank_by_checkpoint,
-        )
-        for sort_index, raw_row in enumerate(sorted_battle_rows):
-            row = _review_battle_row(
-                raw_row,
-                selected_checkpoint_id,
-                rank_by_checkpoint=rank_by_checkpoint,
-            )
-            opponent = row.get("opponent") if isinstance(row.get("opponent"), Mapping) else {}
-            opponent_id = str(opponent.get("checkpoint_id") or "")
-            opponent_label = str(opponent.get("label") or opponent_id or "unknown")
-            summary_ref = html.escape(str(row.get("summary_ref") or ""))
-            summary_link = f'<a href="/meta?ref={summary_ref}">JSON</a>' if summary_ref else ""
-            gif_ref = html.escape(str(row.get("first_gif_ref") or ""))
-            gif_link = f'<a href="/gif?ref={gif_ref}">GIF</a>' if gif_ref else "No GIF"
-            battle_id = str(row.get("battle_id") or "")
-            battle_href = _page_href(
-                tournament_id=selected_tournament_id,
-                rating_run_id=selected_rating_run_id,
-                checkpoint_id=selected_checkpoint_id,
-                battle_id=battle_id,
-            )
-            if battle_id:
-                battle_href += "#battle-detail"
-            selected_battle_class = (
-                ' class="selected-row"' if battle_id and battle_id == selected_battle_id else ""
-            )
-            opponent_rank_sort = sort_number_attr(row.get("opponent_rank"))
-            avg_steps_sort = sort_number_attr(row.get("average_physical_steps"))
-            failure_count_sort = sort_number_attr(row.get("failure_count"))
-            body.append(
-                f"<tr{selected_battle_class} data-battle-row "
-                f"data-sort-index=\"{sort_index}\" "
-                f"data-sort-rank=\"{html.escape(opponent_rank_sort)}\" "
-                f"data-sort-avg-steps=\"{html.escape(avg_steps_sort)}\" "
-                f"data-sort-failures=\"{html.escape(failure_count_sort)}\">"
-                f"<td>{html.escape(str(row.get('opponent_rank') or ''))}</td>"
-                f"<td title=\"{html.escape(opponent_id)}\"><a href=\"{html.escape(battle_href)}\">{html.escape(opponent_label)}</a></td>"
-                f"<td>{html.escape(str(row.get('checkpoint_wins', 0)))}-"
-                f"{html.escape(str(row.get('opponent_wins', 0)))}-"
-                f"{html.escape(str(row.get('draws', 0)))}</td>"
-                f"<td>{html.escape(str(row.get('completed_count', 0)))}</td>"
-                f"<td>{fmt_number(row.get('average_physical_steps'), digits=2)}</td>"
-                f"<td>{html.escape(str(row.get('failure_count', 0)))}</td>"
-                f"<td>{gif_link}</td>"
-                f"<td>{summary_link}</td>"
-                f"<td><a href=\"{html.escape(battle_href)}\">Games</a></td>"
-                "</tr>"
-            )
-        if body:
-            battle_html = f"""
-            <section class="panel">
-              <div class="panel-head">
-                <h2>Battles</h2>
-                <span>{html.escape(str(battles.get("total", 0)))} total</span>
-              </div>
-              <div class="scroll-panel battles-scroll">
-                <table data-battle-table data-sort-key="rank" data-sort-direction="asc">
-                  <thead><tr><th aria-sort="ascending"><button type="button" class="sort-button" data-battle-sort="rank">Opp. rank <span class="sort-indicator" data-sort-indicator="rank">asc</span></button></th><th>Opponent</th><th>W-L-D</th><th>Games</th><th><button type="button" class="sort-button" data-battle-sort="avgSteps">Avg steps <span class="sort-indicator" data-sort-indicator="avgSteps"></span></button></th><th><button type="button" class="sort-button" data-battle-sort="failures">Failures <span class="sort-indicator" data-sort-indicator="failures"></span></button></th><th>GIF</th><th>JSON</th><th>Battle</th></tr></thead>
-                  <tbody>{"".join(body)}</tbody>
-                </table>
-              </div>
-            </section>
-            """
-        else:
-            battle_html = '<div class="empty">No battles found for this checkpoint.</div>'
-    elif rating_progress and isinstance(rating_progress.get("recent_started_pairs"), Sequence):
-        recent_rows = [
-            row
-            for row in rating_progress.get("recent_started_pairs", [])
-            if isinstance(row, Mapping) and row.get("battle_id")
-        ]
-        if recent_rows:
-            body = []
-            for row in recent_rows[:50]:
-                battle_id = str(row.get("battle_id") or "")
-                battle_label = _short_battle_label(battle_id, row.get("pair_index"))
-                battle_href = _page_href(
-                    tournament_id=selected_tournament_id,
-                    rating_run_id=selected_rating_run_id,
-                    battle_id=battle_id,
-                )
-                body.append(
-                    "<tr>"
-                    f"<td>{html.escape(str(row.get('pair_index') if row.get('pair_index') is not None else ''))}</td>"
-                    f"<td title=\"{html.escape(battle_id)}\"><a href=\"{html.escape(battle_href)}#battle-detail\">{html.escape(battle_label)}</a></td>"
-                    f"<td>{html.escape(str(row.get('expected_game_count') or ''))}</td>"
-                    f"<td>{html.escape('yes' if row.get('complete') else 'running')}</td>"
-                    f"<td><a href=\"{html.escape(battle_href)}#battle-detail\">Games</a></td>"
-                    "</tr>"
-                )
-            battle_html = f"""
-            <section class="panel">
-              <div class="panel-head">
-                <h2>Recent Battles</h2>
-                <span>live sample</span>
-              </div>
-              <div class="scroll-panel battles-scroll">
-                <table>
-                  <thead><tr><th>Pair</th><th>Battle</th><th>Games</th><th>State</th><th>Open</th></tr></thead>
-                  <tbody>{"".join(body)}</tbody>
-                </table>
-              </div>
-            </section>
-            """
-    battle_detail_html = (
-        _render_battle_detail_section(
-            payload=battle_detail or {"battle_id": selected_battle_id},
-            rating_run_id=selected_rating_run_id,
-            checkpoint_id=selected_checkpoint_id,
-        )
-        if selected_battle_id
-        else ""
-    )
-    reload_html = (
-        f"""
-        <section class="panel">
-          <div class="panel-head"><h2>Volume Refresh</h2><span>using last visible data</span></div>
-          <p class="in-panel">{html.escape(volume_reload_error)}</p>
-        </section>
-        """
-        if volume_reload_error
-        else ""
-    )
-    return f"""<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>CurvyTron Tournament</title>
-  <style>
-    body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f7f9; color: #202124; }}
-    main {{ max-width: 1320px; margin: 0 auto; padding: 18px; }}
-    header {{ display: flex; align-items: end; justify-content: space-between; gap: 12px; margin-bottom: 14px; }}
-    h1 {{ margin: 0; font-size: 22px; }}
-    form {{ display: flex; gap: 8px; align-items: end; }}
-    select, button {{ height: 36px; border: 1px solid #dadce0; border-radius: 6px; padding: 0 8px; background: white; }}
-    button {{ background: #1a73e8; border-color: #1a73e8; color: white; }}
-    .summary {{ margin: 0 0 12px; color: #5f6368; font-size: 13px; }}
-    .in-panel {{ margin: 0; padding: 12px; color: #5f6368; font-size: 13px; }}
-    .panel {{ background: white; border: 1px solid #dadce0; border-radius: 8px; margin-bottom: 12px; overflow: hidden; }}
-    .panel-head {{ display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 10px 12px; border-bottom: 1px solid #eef0f3; }}
-    .panel h2 {{ margin: 0; font-size: 15px; }}
-    .panel span {{ color: #5f6368; font-size: 12px; }}
-    a {{ color: #1557b0; text-decoration: none; }}
-    a:hover {{ text-decoration: underline; }}
-    .progress-body {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px; background: #eef0f3; }}
-    .progress-body div {{ display: grid; gap: 3px; padding: 12px; background: white; }}
-    .progress-body strong {{ font-size: 18px; }}
-    .progress-body span {{ color: #5f6368; font-size: 12px; }}
-    .gif-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; padding: 10px; }}
-    .gif-card {{ display: grid; gap: 6px; color: #202124; }}
-    .gif-card img {{ width: 100%; aspect-ratio: 1; object-fit: contain; background: #111827; }}
-    .gif-card span {{ color: #5f6368; font-size: 12px; }}
-    .scroll-panel {{ overflow: auto; }}
-    .rankings-scroll {{ max-height: min(48vh, 520px); }}
-    .battles-scroll {{ max-height: min(36vh, 380px); }}
-    table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
-    th, td {{ padding: 7px 10px; border-bottom: 1px solid #eef0f3; text-align: left; }}
-    th {{ color: #5f6368; font-weight: 600; position: sticky; top: 0; z-index: 1; background: white; }}
-    .sort-button {{ all: unset; display: inline-flex; align-items: center; gap: 4px; cursor: pointer; color: inherit; font: inherit; }}
-    .sort-button:focus-visible {{ outline: 2px solid #1a73e8; outline-offset: 2px; border-radius: 4px; }}
-    .panel .sort-indicator {{ min-width: 28px; color: #80868b; font-size: 11px; }}
-    .pager {{ display: flex; justify-content: space-between; gap: 12px; padding: 10px 12px; border-top: 1px solid #eef0f3; font-size: 13px; }}
-    .selected-row td {{ background: #eef4ff; }}
-    td:nth-child(n+3) {{ white-space: nowrap; }}
-    .empty {{ padding: 60px; text-align: center; background: white; border: 1px dashed #dadce0; border-radius: 8px; color: #80868b; }}
-  </style>
-</head>
-<body>
-<main>
-  <header>
-    <div>
-      <h1>CurvyTron Tournament</h1>
-      <p class="summary">Checkpoint battles. Score is who dies first.</p>
-    </div>
-    <form method="get" id="tournament-picker">
-      <label>Tournament<br><select name="tournament_id" data-picker="tournament">{options}</select></label>
-      <label>Rating<br><select name="rating_run_id" data-picker="rating">{rating_options}</select></label>
-      <button type="submit">Open</button>
-    </form>
-  </header>
-  {reload_html}
-  {progress_html}
-  {rating_html}
-  {checkpoint_html}
-  {battle_html}
-  {battle_detail_html}
-</main>
-<script>
-(() => {{
-  const picker = document.getElementById("tournament-picker");
-  const tournamentSelect = picker ? picker.querySelector("[name='tournament_id']") : null;
-  const ratingSelect = picker ? picker.querySelector("[name='rating_run_id']") : null;
-  const disablePicker = () => {{
-    if (!picker) return;
-    picker.querySelectorAll("select, button").forEach((node) => {{
-      node.disabled = true;
-    }});
-  }};
-  const navigatePicker = (changed) => {{
-    if (!picker) return;
-    const url = new URL(window.location.href);
-    const tournamentId = tournamentSelect ? tournamentSelect.value : "";
-    const ratingRunId = ratingSelect ? ratingSelect.value : "";
-    if (tournamentId) {{
-      url.searchParams.set("tournament_id", tournamentId);
-    }} else {{
-      url.searchParams.delete("tournament_id");
-    }}
-    if (changed === "tournament") {{
-      url.searchParams.delete("rating_run_id");
-    }} else if (ratingRunId) {{
-      url.searchParams.set("rating_run_id", ratingRunId);
-    }} else {{
-      url.searchParams.delete("rating_run_id");
-    }}
-    url.searchParams.delete("checkpoint_id");
-    url.searchParams.delete("battle_id");
-    url.searchParams.delete("fresh");
-    url.hash = "";
-    disablePicker();
-    window.location.assign(url.toString());
-  }};
-  if (tournamentSelect) {{
-    tournamentSelect.addEventListener("change", () => navigatePicker("tournament"));
-  }}
-  if (ratingSelect) {{
-    ratingSelect.addEventListener("change", () => navigatePicker("rating"));
-  }}
-  if (picker) {{
-    picker.addEventListener("submit", (event) => {{
-      event.preventDefault();
-      navigatePicker("rating");
-    }});
-  }}
-  const battleTable = document.querySelector("[data-battle-table]");
-  if (battleTable) {{
-    const tbody = battleTable.querySelector("tbody");
-    const sortButtons = battleTable.querySelectorAll("[data-battle-sort]");
-    const sortFields = {{
-      rank: "sortRank",
-      avgSteps: "sortAvgSteps",
-      failures: "sortFailures",
-    }};
-    const sortValue = (row, key) => {{
-      const field = sortFields[key];
-      const raw = field ? row.dataset[field] : "";
-      if (raw === undefined || raw === "") return null;
-      const parsed = Number(raw);
-      return Number.isFinite(parsed) ? parsed : null;
-    }};
-    const originalIndex = (row) => {{
-      const parsed = Number(row.dataset.sortIndex || "0");
-      return Number.isFinite(parsed) ? parsed : 0;
-    }};
-    const updateSortIndicators = (key, direction) => {{
-      battleTable.dataset.sortKey = key;
-      battleTable.dataset.sortDirection = direction;
-      battleTable.querySelectorAll("th[aria-sort]").forEach((cell) => {{
-        cell.removeAttribute("aria-sort");
-      }});
-      battleTable.querySelectorAll("[data-sort-indicator]").forEach((node) => {{
-        node.textContent = node.dataset.sortIndicator === key ? direction : "";
-      }});
-      const activeButton = battleTable.querySelector(`[data-battle-sort="${{key}}"]`);
-      if (activeButton && activeButton.closest("th")) {{
-        activeButton.closest("th").setAttribute(
-          "aria-sort",
-          direction === "asc" ? "ascending" : "descending",
-        );
-      }}
-    }};
-    const applyBattleSort = (key, direction) => {{
-      if (!tbody || !sortFields[key]) return;
-      const multiplier = direction === "desc" ? -1 : 1;
-      const rows = Array.from(tbody.querySelectorAll("[data-battle-row]"));
-      rows.sort((a, b) => {{
-        const left = sortValue(a, key);
-        const right = sortValue(b, key);
-        if (left === null && right === null) return originalIndex(a) - originalIndex(b);
-        if (left === null) return 1;
-        if (right === null) return -1;
-        const diff = (left - right) * multiplier;
-        if (diff !== 0) return diff;
-        return originalIndex(a) - originalIndex(b);
-      }});
-      rows.forEach((row) => tbody.appendChild(row));
-      updateSortIndicators(key, direction);
-    }};
-    sortButtons.forEach((button) => {{
-      button.addEventListener("click", () => {{
-        const key = button.dataset.battleSort || "rank";
-        const currentKey = battleTable.dataset.sortKey || "rank";
-        const currentDirection = battleTable.dataset.sortDirection || "asc";
-        const nextDirection = key === currentKey && currentDirection === "asc" ? "desc" : "asc";
-        applyBattleSort(key, nextDirection);
-      }});
-    }});
-  }}
-  const panel = document.getElementById("progress-panel");
-  if (!panel) return;
-  const fields = {{}};
-  document.querySelectorAll("[data-progress-field]").forEach((node) => {{
-    fields[node.dataset.progressField] = node;
-  }});
-  const text = (value) => value === null || value === undefined ? "" : String(value);
-  const number = (value) => {{
-    const parsed = Number(value || 0);
-    return Number.isFinite(parsed) ? parsed : 0;
-  }};
-  const set = (name, value) => {{
-    if (fields[name]) fields[name].textContent = value;
-  }};
-  const stateLabel = (progress) => {{
-    if (progress.status === "complete") return "rankings ready";
-    if (["game_map_started", "games_running", "all_games_seen"].includes(progress.phase)) return "running games";
-    if (["reduced", "ratings_written"].includes(progress.phase)) return "finalizing rankings";
-    if (progress.status === "pending") return "starting";
-    return text(progress.status || progress.phase || "starting").replaceAll("_", " ");
-  }};
-  const reloadKey = `curvyzero:tournament-ratings-reloaded:${{panel.dataset.tournamentId}}:${{panel.dataset.ratingRunId}}`;
-  let pollTimer = null;
-  let inFlight = false;
-  let failureCount = 0;
-  const scheduleNext = (delayMs) => {{
-    window.clearTimeout(pollTimer);
-    pollTimer = window.setTimeout(() => refreshProgress().catch(() => {{}}), delayMs);
-  }};
-  async function refreshProgress() {{
-    if (inFlight) {{
-      scheduleNext(10000);
-      return;
-    }}
-    inFlight = true;
-    const params = new URLSearchParams({{
-      tournament_id: panel.dataset.tournamentId || "",
-      rating_run_id: panel.dataset.ratingRunId || "",
-    }});
-    const pollCount = Number(panel.dataset.pollCount || "0") + 1;
-    panel.dataset.pollCount = String(pollCount);
-    try {{
-      const response = await fetch("/api/rating-progress?" + params.toString(), {{
-        cache: "no-store",
-      }});
-      if (!response.ok) throw new Error(`progress ${{response.status}}`);
-      const payload = await response.json();
-      const progress = payload.progress || {{}};
-      const seen = progress.estimated_seen_game_count ?? progress.completed_game_count ?? 0;
-      const fraction = progress.estimated_completion_fraction ?? progress.completion_fraction ?? 0;
-      set("status", stateLabel(progress));
-      set("phase", text(progress.phase));
-      set("pairs", `${{text(progress.started_pair_count ?? 0)}}/${{text(progress.pair_count ?? 0)}}`);
-      set("games", `${{text(seen)}}/${{text(progress.game_count ?? 0)}}`);
-      set("percent", `${{(100 * number(fraction)).toFixed(1)}}%`);
-      set("updated", text(progress.updated_at));
-      failureCount = 0;
-      if (progress.status === "complete" && panel.dataset.hasRatings !== "true" && !sessionStorage.getItem(reloadKey)) {{
-        sessionStorage.setItem(reloadKey, "1");
-        const url = new URL(window.location.href);
-        url.searchParams.set("fresh", "true");
-        window.location.href = url.toString();
-        return;
-      }}
-    }} catch (error) {{
-      failureCount += 1;
-    }} finally {{
-      inFlight = false;
-      const hiddenDelay = document.hidden ? 60000 : 10000;
-      const retryDelay = Math.min(60000, hiddenDelay * Math.max(1, failureCount));
-      scheduleNext(retryDelay);
-    }}
-  }}
-  document.addEventListener("visibilitychange", () => {{
-    if (!document.hidden) {{
-      scheduleNext(250);
-    }}
-  }});
-  scheduleNext(250);
-}})();
-</script>
-</body>
-</html>"""
-
-
-def _render_battle_page(
-    *,
-    payload: Mapping[str, Any],
-    rating_run_id: str = "latest",
-    checkpoint_id: str = "",
-) -> str:
-    import html
-
-    tournament_id = str(payload.get("selected_tournament_id") or "")
-    battle_id = str(payload.get("battle_id") or "")
-    back_href = _page_href(
-        tournament_id=tournament_id,
-        rating_run_id=rating_run_id,
-        checkpoint_id=checkpoint_id,
-    )
-    detail_html = _render_battle_detail_section(
-        payload=payload,
-        rating_run_id=rating_run_id,
-        checkpoint_id=checkpoint_id,
-    )
-
-    return f"""<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>CurvyTron Battle</title>
-  <style>
-    body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f7f9; color: #202124; }}
-    main {{ max-width: 1320px; margin: 0 auto; padding: 18px; }}
-    header {{ display: grid; gap: 8px; margin-bottom: 14px; }}
-    h1 {{ margin: 0; font-size: 20px; }}
-    a {{ color: #1557b0; text-decoration: none; }}
-    a:hover {{ text-decoration: underline; }}
-    .summary {{ margin: 0 0 12px; color: #5f6368; font-size: 13px; }}
-    .panel {{ background: white; border: 1px solid #dadce0; border-radius: 8px; margin-bottom: 12px; overflow: hidden; }}
-    .panel-head {{ display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 10px 12px; border-bottom: 1px solid #eef0f3; }}
-    .panel h2 {{ margin: 0; font-size: 15px; }}
-    .panel span {{ color: #5f6368; font-size: 12px; }}
-    .pager {{ display: flex; justify-content: space-between; gap: 12px; padding: 10px 12px; border-top: 1px solid #eef0f3; font-size: 13px; }}
-    .progress-body {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px; background: #eef0f3; }}
-    .progress-body div {{ display: grid; gap: 3px; padding: 12px; background: white; }}
-    .progress-body strong {{ font-size: 18px; }}
-    .progress-body span {{ color: #5f6368; font-size: 12px; }}
-    .gif-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; padding: 10px; }}
-    .gif-card {{ display: grid; gap: 6px; color: #202124; }}
-    .gif-card img {{ width: 100%; aspect-ratio: 1; object-fit: contain; background: #111827; }}
-    .gif-card span {{ font-size: 12px; color: #5f6368; }}
-    table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
-    th, td {{ padding: 7px 10px; border-bottom: 1px solid #eef0f3; text-align: left; }}
-    th {{ color: #5f6368; font-weight: 600; }}
-    td:nth-child(n+3) {{ white-space: nowrap; }}
-    .empty {{ padding: 60px; text-align: center; background: white; border: 1px dashed #dadce0; border-radius: 8px; color: #80868b; }}
-  </style>
-</head>
-<body>
-<main>
-  <header>
-    <a href="{html.escape(back_href)}">Back to checkpoint</a>
-    <h1>{html.escape(battle_id)}</h1>
-  </header>
-  {detail_html}
-</main>
-</body>
-</html>"""
 
 
 def _build_fastapi_app(volume: Any):
@@ -6930,6 +6492,18 @@ def curvytron_opponent_leaderboard_publish(spec: Mapping[str, Any] | None = None
                 "allow_legacy_rating_snapshot=True for a diagnostic legacy publish."
             )
         diagnostic_only = True
+    source_info = validate_rating_snapshot_source(
+        rating_snapshot,
+        expected_round_id=payload.get("expected_round_id"),
+        expected_round_index=(
+            int(payload["expected_round_index"])
+            if payload.get("expected_round_index") is not None
+            else None
+        ),
+        expected_rating_context_hash=payload.get("expected_rating_context_hash"),
+        expected_roster_hash=payload.get("expected_roster_hash"),
+        expected_rating_snapshot_sha256=payload.get("expected_rating_snapshot_sha256"),
+    )
     snapshot = build_leaderboard_snapshot_from_rating_snapshot(
         rating_snapshot,
         leaderboard_id=leaderboard_id,
@@ -6989,6 +6563,8 @@ def curvytron_opponent_leaderboard_publish(spec: Mapping[str, Any] | None = None
             "dict_name": OPPONENT_LEADERBOARD_DICT_NAME,
             "row_count": len(snapshot["rows"]),
             "active_count": active_count,
+            "rating_snapshot_sha256": source_info["rating_snapshot_sha256"],
+            "rating_source": source_info,
             "provisional_count": pointer["compact_summary"]["provisional_count"],
             "diagnostic_only": diagnostic_only,
             "commit_error": commit_error,
@@ -7072,9 +6648,11 @@ def curvytron_checkpoint_intake_seed(spec: Mapping[str, Any] | None = None) -> d
             payload.get("checkpoint_selection") or arena.CHECKPOINT_SELECTION_LATEST
         ),
     }
+    live_watch = _intake_scan_spec_is_live_watch(scan_spec)
     rating_defaults = {
         "round_count": int(payload.get("round_count") or arena.DEFAULT_RATING_ROUND_COUNT),
-        "continue_from_latest": bool(payload.get("continue_from_latest", False)),
+        "continue_from_latest": bool(payload.get("continue_from_latest", False))
+        or live_watch,
         "pairs_per_round": (
             int(payload["pairs_per_round"])
             if payload.get("pairs_per_round") not in (None, "", 0, "0")
@@ -7087,10 +6665,10 @@ def curvytron_checkpoint_intake_seed(spec: Mapping[str, Any] | None = None) -> d
         ),
         "placement_min_opponents": int(payload.get("placement_min_opponents") or 20),
         "pair_selection": str(
-            payload.get("pair_selection") or arena.RATING_PAIR_SELECTION_ADAPTIVE_V0
+            payload.get("pair_selection") or arena.DEFAULT_RATING_PAIR_SELECTION
         ),
         "games_per_pair": int(payload.get("games_per_pair") or arena.DEFAULT_GAMES_PER_PAIR),
-        "games_per_shard": int(payload.get("games_per_shard") or arena.DEFAULT_GAMES_PER_PAIR),
+        "games_per_shard": int(payload.get("games_per_shard") or arena.DEFAULT_GAMES_PER_SHARD),
         "reuse_policies_per_shard": bool(
             payload.get("reuse_policies_per_shard", arena.DEFAULT_REUSE_POLICIES_PER_SHARD)
         ),
@@ -7113,10 +6691,11 @@ def curvytron_checkpoint_intake_seed(spec: Mapping[str, Any] | None = None) -> d
             payload.get("collect_epsilon") or arena.DEFAULT_COLLECT_EPSILON
         ),
         "policy_trail_render_mode": payload.get("policy_trail_render_mode") or None,
+        "policy_bonus_render_mode": payload.get("policy_bonus_render_mode") or None,
         "num_simulations": int(
             payload.get("num_simulations") or arena.DEFAULT_NUM_SIMULATIONS
         ),
-        "save_gif": bool(payload.get("save_gif", False)),
+        "save_gif": bool(payload.get("save_gif", arena.DEFAULT_SAVE_GIF)),
         "gif_sample_games_per_pair": int(
             payload.get(
                 "gif_sample_games_per_pair",
@@ -7134,10 +6713,16 @@ def curvytron_checkpoint_intake_seed(spec: Mapping[str, Any] | None = None) -> d
         ),
         "stop_when_stable": bool(payload.get("stop_when_stable", False)),
     }
+    _validate_intake_rating_defaults(
+        rating_defaults,
+        tournament_id=tournament_id,
+        rating_run_id=rating_run_id,
+    )
     discovery = _discover_checkpoint_refs_from_scan_spec(scan_spec, mount=RUNS_MOUNT)
-    existing = checkpoint_intake_state.get(
-        _intake_manifest_key(tournament_id, rating_run_id),
-        None,
+    existing, _existing_manifest_load = _load_intake_manifest(
+        tournament_id,
+        rating_run_id,
+        repair_state=True,
     )
     manifest = _intake_manifest_from_discovery(
         tournament_id=tournament_id,
@@ -7208,7 +6793,7 @@ def curvytron_checkpoint_intake_submit(spec: Mapping[str, Any] | None = None) ->
         label="rating_run_id",
     )
     manifest_key = _intake_manifest_key(tournament_id, rating_run_id)
-    manifest = checkpoint_intake_state.get(manifest_key, None)
+    manifest, manifest_load = _load_intake_manifest(tournament_id, rating_run_id)
     if not isinstance(manifest, Mapping):
         raise ValueError("intake service is not configured; run mode=intake-seed first")
     if not bool(manifest.get("active", True)):
@@ -7227,6 +6812,10 @@ def curvytron_checkpoint_intake_submit(spec: Mapping[str, Any] | None = None) ->
         cumulative_refs = sorted(
             _clean_ref_set(manifest.get("checkpoint_refs", [])).union(submitted_refs)
         )
+        # Exact ref submissions are append-only control-plane input. Make them
+        # the durable scan source too, otherwise the scheduled subscriber can
+        # rebuild the manifest from an older run_id scan and silently drop them.
+        scan_spec = _explicit_checkpoint_refs_scan_spec(cumulative_refs)
         discovery = {
             "schema_id": "curvyzero_curvytron_checkpoint_discovery/v0",
             "checkpoint_volume_name": CHECKPOINT_VOLUME_NAME,
@@ -7311,6 +6900,8 @@ def curvytron_checkpoint_intake_submit(spec: Mapping[str, Any] | None = None) ->
                 for event in queue_write.get("events", [])
                 if event.get("event_id")
             ],
+            "manifest_source": manifest_load["manifest_source"],
+            "manifest_state_repaired": manifest_load["manifest_state_repaired"],
             "manifest_ref": manifest_write.get("ref"),
             "state_write": state_write,
             "commit_error": commit_error,
@@ -7343,7 +6934,13 @@ def curvytron_checkpoint_intake_tick(spec: Mapping[str, Any] | None = None) -> d
             requested_keys = [str(key) for key in active_keys]
     ticks = []
     for key in requested_keys:
-        manifest = checkpoint_intake_state.get(key, None)
+        key_parts = str(key).split(":", 2)
+        if len(key_parts) != 3:
+            continue
+        manifest, manifest_load = _load_intake_manifest(
+            key_parts[1],
+            key_parts[2],
+        )
         if not isinstance(manifest, Mapping):
             continue
         scan_spec = manifest.get("scan_spec")
@@ -7392,6 +6989,8 @@ def curvytron_checkpoint_intake_tick(spec: Mapping[str, Any] | None = None) -> d
             "queued_checkpoint_count": updated_manifest["queued_checkpoint_count"],
             "new_checkpoint_count": len(new_refs),
             "new_checkpoint_refs": new_refs,
+            "manifest_source": manifest_load["manifest_source"],
+            "manifest_state_repaired": manifest_load["manifest_state_repaired"],
             "queue_write": queue_write,
             "discovery": {
                 "found_count": discovery.get("found_count"),
@@ -7424,6 +7023,7 @@ def curvytron_checkpoint_intake_tick(spec: Mapping[str, Any] | None = None) -> d
     timeout=10 * 60,
     cpu=1.0,
     memory=1024,
+    max_containers=1,
 )
 def curvytron_checkpoint_intake_subscriber_tick() -> dict[str, Any]:
     return curvytron_checkpoint_intake_tick.local({})
@@ -7440,17 +7040,25 @@ def curvytron_checkpoint_intake_status(spec: Mapping[str, Any] | None = None) ->
     payload = dict(spec or {})
     key = ""
     manifest = None
+    manifest_load = {
+        "manifest_key": "",
+        "manifest_source": "unspecified",
+        "manifest_state_repaired": False,
+    }
     if payload.get("tournament_id"):
         key = _intake_manifest_key(
             str(payload["tournament_id"]),
             str(payload.get("rating_run_id") or arena.DEFAULT_RATING_RUN_ID),
         )
-        manifest = checkpoint_intake_state.get(key, None)
+        manifest, manifest_load = _load_intake_manifest(
+            str(payload["tournament_id"]),
+            str(payload.get("rating_run_id") or arena.DEFAULT_RATING_RUN_ID),
+        )
     active_keys = checkpoint_intake_state.get(CHECKPOINT_INTAKE_ACTIVE_KEYS, []) or []
     if not isinstance(active_keys, list):
         active_keys = []
     queue_len = None
-    if manifest and isinstance(manifest, Mapping):
+    if manifest and isinstance(manifest, Mapping) and manifest.get("queue_partition"):
         queue_len = checkpoint_intake_queue.len(
             partition=str(manifest.get("queue_partition") or "")
         )
@@ -7461,6 +7069,8 @@ def curvytron_checkpoint_intake_status(spec: Mapping[str, Any] | None = None) ->
             "queue_name": CHECKPOINT_INTAKE_QUEUE_NAME,
             "active_manifest_keys": active_keys,
             "manifest_key": key,
+            "manifest_source": manifest_load["manifest_source"],
+            "manifest_state_repaired": manifest_load["manifest_state_repaired"],
             "queue_len": queue_len,
             "manifest": manifest if isinstance(manifest, Mapping) else None,
         }
@@ -7483,7 +7093,7 @@ def curvytron_checkpoint_intake_drain(spec: Mapping[str, Any] | None = None) -> 
         label="rating_run_id",
     )
     manifest_key = _intake_manifest_key(tournament_id, rating_run_id)
-    manifest = checkpoint_intake_state.get(manifest_key, None)
+    manifest, manifest_load = _load_intake_manifest(tournament_id, rating_run_id)
     if not isinstance(manifest, Mapping):
         raise ValueError("intake manifest not found; run mode=intake-seed first")
     max_events = max(0, int(payload.get("max_events") or 100))
@@ -7497,16 +7107,36 @@ def curvytron_checkpoint_intake_drain(spec: Mapping[str, Any] | None = None) -> 
     rating_defaults = manifest.get("rating_defaults")
     if not isinstance(rating_defaults, Mapping):
         rating_defaults = {}
-    continue_from_latest = bool(
+    scan_spec = manifest.get("scan_spec")
+    scan_spec_is_live_watch = (
+        _intake_scan_spec_is_live_watch(scan_spec) if isinstance(scan_spec, Mapping) else False
+    )
+    requested_continue_from_latest = bool(
         payload.get(
             "continue_from_latest",
             rating_defaults.get("continue_from_latest", False),
         )
     )
+    continue_from_latest = requested_continue_from_latest or scan_spec_is_live_watch
+    continuation_reason = ""
+    if continue_from_latest and not requested_continue_from_latest and scan_spec_is_live_watch:
+        continuation_reason = "live_watch"
     allow_existing_rating = continue_from_latest
     rating_checkpoint_refs = _intake_manifest_rating_checkpoint_refs(
         manifest,
         continue_from_latest=continue_from_latest,
+    )
+    latest_rating_checkpoint_refs = (
+        _rating_latest_checkpoint_refs(
+            TOURNAMENT_MOUNT,
+            tournament_id=tournament_id,
+            rating_run_id=rating_run_id,
+        )
+        if continue_from_latest
+        else []
+    )
+    desired_pool_new_checkpoint_refs = sorted(
+        set(rating_checkpoint_refs) - set(latest_rating_checkpoint_refs)
     )
     queue_len_before = checkpoint_intake_queue.len(partition=partition)
     queue_len_after_repair = queue_len_before
@@ -7516,10 +7146,12 @@ def curvytron_checkpoint_intake_drain(spec: Mapping[str, Any] | None = None) -> 
         manifest,
         continue_from_latest=continue_from_latest,
     )
+    claim_pool_hash = _checkpoint_ref_pool_hash(rating_checkpoint_refs)
     rating_claimed = False
     rating_claim_stale = False
     rating_claim_repaired = False
     spawn_skipped_reason = ""
+    rating_result = None
     raw_claim_stale_after_seconds = payload.get(
         "claim_stale_after_seconds",
         DEFAULT_CHECKPOINT_INTAKE_CLAIM_STALE_SECONDS,
@@ -7540,10 +7172,21 @@ def curvytron_checkpoint_intake_drain(spec: Mapping[str, Any] | None = None) -> 
         else:
             existing_claim = checkpoint_intake_state.get(claim_key, None)
             repair_refs = _intake_queue_repair_refs(manifest)
+            if continue_from_latest and latest_rating_checkpoint_refs:
+                desired_pool_new_ref_set = set(desired_pool_new_checkpoint_refs)
+                repair_refs = [
+                    ref for ref in repair_refs if ref in desired_pool_new_ref_set
+                ]
             rating_claim_stale = _intake_rating_claim_is_stale(
                 existing_claim,
                 stale_after_seconds=claim_stale_after_seconds,
             )
+            if continue_from_latest and _intake_rating_claim_needs_pool_repair(
+                existing_claim,
+                pool_hash=claim_pool_hash,
+                checkpoint_count=len(rating_checkpoint_refs),
+            ):
+                rating_claim_stale = True
             if existing_claim is not None and not rating_claim_stale:
                 spawn_skipped_reason = "rating_run_claim_exists"
             elif (
@@ -7559,6 +7202,8 @@ def curvytron_checkpoint_intake_drain(spec: Mapping[str, Any] | None = None) -> 
                     "tournament_id": tournament_id,
                     "rating_run_id": rating_run_id,
                     "queue_len_before": queue_len_before,
+                    "checkpoint_count": len(rating_checkpoint_refs),
+                    "pool_hash": claim_pool_hash,
                     "stale_after_seconds": claim_stale_after_seconds,
                     "created_at": runs.utc_timestamp(),
                 }
@@ -7586,6 +7231,9 @@ def curvytron_checkpoint_intake_drain(spec: Mapping[str, Any] | None = None) -> 
             and not bool(payload.get("spawn_if_empty", False))
         ):
             repair_refs = _intake_queue_repair_refs(manifest)
+            if continue_from_latest and latest_rating_checkpoint_refs:
+                desired_pool_new_ref_set = set(desired_pool_new_checkpoint_refs)
+                repair_refs = [ref for ref in repair_refs if ref in desired_pool_new_ref_set]
             if repair_refs:
                 queue_repair = _enqueue_checkpoint_events(
                     manifest=manifest,
@@ -7618,27 +7266,35 @@ def curvytron_checkpoint_intake_drain(spec: Mapping[str, Any] | None = None) -> 
                 "queue_len_before": queue_len_before,
                 "queue_len_after_repair": queue_len_after_repair,
                 "event_count": len(events),
+                "checkpoint_count": len(rating_checkpoint_refs),
+                "pool_hash": claim_pool_hash,
                 "stale_after_seconds": claim_stale_after_seconds,
                 "repaired_stale_claim": rating_claim_repaired,
                 "created_at": runs.utc_timestamp(),
             },
         )
     if should_spawn:
+        rating_overrides = intake_service.rating_overrides_from_payload(
+            payload,
+            allow_rating_overrides=bool(payload.get("allow_rating_overrides", True)),
+        )
+        rating_overrides["continue_from_latest"] = continue_from_latest
         rating_spec = _intake_rating_spec_from_manifest(
             manifest,
-            overrides=intake_service.rating_overrides_from_payload(
-                payload,
-                allow_rating_overrides=bool(payload.get("allow_rating_overrides", False)),
-            ),
+            overrides=rating_overrides,
         )
         call = curvytron_rating_loop.spawn(rating_spec)
         rating_call_id = getattr(call, "object_id", None) or getattr(call, "id", None) or ""
+        if bool(payload.get("wait_for_rating", False)):
+            rating_result = call.get()
     return arena._to_plain(
         {
             "schema_id": "curvyzero_curvytron_checkpoint_intake_drain/v0",
             "tournament_id": tournament_id,
             "rating_run_id": rating_run_id,
             "manifest_key": manifest_key,
+            "manifest_source": manifest_load["manifest_source"],
+            "manifest_state_repaired": manifest_load["manifest_state_repaired"],
             "queue_partition": manifest["queue_partition"],
             "queue_len_before": queue_len_before,
             "queue_len_after_repair": queue_len_after_repair,
@@ -7647,14 +7303,19 @@ def curvytron_checkpoint_intake_drain(spec: Mapping[str, Any] | None = None) -> 
             "events": events,
             "checkpoint_count": len(manifest.get("checkpoint_refs") or []),
             "rating_checkpoint_count": len(rating_checkpoint_refs),
+            "latest_rating_checkpoint_count": len(latest_rating_checkpoint_refs),
+            "desired_pool_new_checkpoint_count": len(desired_pool_new_checkpoint_refs),
             "existing_rating_run": existing_rating_run,
             "continue_from_latest": continue_from_latest,
+            "requested_continue_from_latest": requested_continue_from_latest,
+            "continuation_reason": continuation_reason,
             "rating_claim_key": claim_key,
             "rating_claimed": rating_claimed,
             "rating_claim_stale": rating_claim_stale,
             "rating_claim_repaired": rating_claim_repaired,
             "spawn_skipped_reason": spawn_skipped_reason,
             "rating_call_id": rating_call_id,
+            "rating_result": rating_result,
         }
     )
 
@@ -7666,6 +7327,7 @@ def curvytron_checkpoint_intake_drain(spec: Mapping[str, Any] | None = None) -> 
     timeout=10 * 60,
     cpu=1.0,
     memory=1024,
+    max_containers=1,
 )
 def curvytron_checkpoint_intake_drain_tick() -> dict[str, Any]:
     active_keys = checkpoint_intake_state.get(CHECKPOINT_INTAKE_ACTIVE_KEYS, []) or []
@@ -7679,7 +7341,15 @@ def curvytron_checkpoint_intake_drain_tick() -> dict[str, Any]:
         rating_defaults = manifest.get("rating_defaults")
         if not isinstance(rating_defaults, Mapping):
             rating_defaults = {}
-        continue_from_latest = bool(rating_defaults.get("continue_from_latest", False))
+        scan_spec = manifest.get("scan_spec")
+        scan_spec_is_live_watch = (
+            _intake_scan_spec_is_live_watch(scan_spec)
+            if isinstance(scan_spec, Mapping)
+            else False
+        )
+        continue_from_latest = bool(
+            rating_defaults.get("continue_from_latest", False)
+        ) or scan_spec_is_live_watch
         result = curvytron_checkpoint_intake_drain.local(
             {
                 "tournament_id": str(manifest["tournament_id"]),
@@ -7731,6 +7401,7 @@ def _reject_submit_cli_scheduler_overrides(**values: Any) -> None:
         "collect_temperature": arena.DEFAULT_COLLECT_TEMPERATURE,
         "collect_epsilon": arena.DEFAULT_COLLECT_EPSILON,
         "policy_trail_render_mode": "",
+        "policy_bonus_render_mode": "",
         "num_simulations": arena.DEFAULT_NUM_SIMULATIONS,
         "save_gif": arena.DEFAULT_SAVE_GIF,
         "gif_sample_games_per_pair": arena.DEFAULT_GIF_SAMPLE_GAMES_PER_PAIR,
@@ -7740,6 +7411,7 @@ def _reject_submit_cli_scheduler_overrides(**values: Any) -> None:
         "intake_spawn_if_existing": False,
         "intake_allow_rating_overrides": False,
         "intake_max_events": 100,
+        "intake_claim_stale_after_seconds": DEFAULT_CHECKPOINT_INTAKE_CLAIM_STALE_SECONDS,
         "intake_active": True,
         "max_runs": 0,
     }
@@ -7785,7 +7457,8 @@ def main(
     policy_mode: str = arena.POLICY_MODE_EVAL,
     collect_temperature: float = arena.DEFAULT_COLLECT_TEMPERATURE,
     collect_epsilon: float = arena.DEFAULT_COLLECT_EPSILON,
-    policy_trail_render_mode: str = "",
+    policy_trail_render_mode: str = arena.DEFAULT_POLICY_TRAIL_RENDER_MODE,
+    policy_bonus_render_mode: str = arena.DEFAULT_POLICY_BONUS_RENDER_MODE,
     num_simulations: int = arena.DEFAULT_NUM_SIMULATIONS,
     save_gif: bool = arena.DEFAULT_SAVE_GIF,
     gif_sample_games_per_pair: int = arena.DEFAULT_GIF_SAMPLE_GAMES_PER_PAIR,
@@ -7807,11 +7480,17 @@ def main(
     leaderboard_active_min_valid_games: int = 300,
     leaderboard_max_failure_rate: float = 0.02,
     leaderboard_max_active_rank: int = arena.DEFAULT_RATING_ACTIVE_POOL_LIMIT,
+    leaderboard_expected_round_id: str = "",
+    leaderboard_expected_round_index: int = -1,
+    leaderboard_expected_rating_context_hash: str = "",
+    leaderboard_expected_roster_hash: str = "",
+    leaderboard_expected_rating_snapshot_sha256: str = "",
     intake_enqueue_existing: bool = False,
     intake_spawn_rating: bool = False,
     intake_spawn_if_existing: bool = False,
     intake_allow_rating_overrides: bool = False,
     intake_max_events: int = 100,
+    intake_claim_stale_after_seconds: int = DEFAULT_CHECKPOINT_INTAKE_CLAIM_STALE_SECONDS,
     intake_active: bool = True,
     wait: bool = False,
 ) -> None:
@@ -7884,6 +7563,19 @@ def main(
                 "active_min_valid_games": int(leaderboard_active_min_valid_games),
                 "max_failure_rate": float(leaderboard_max_failure_rate),
                 "max_active_rank": int(leaderboard_max_active_rank),
+                "expected_round_id": leaderboard_expected_round_id or None,
+                "expected_round_index": (
+                    int(leaderboard_expected_round_index)
+                    if int(leaderboard_expected_round_index) >= 0
+                    else None
+                ),
+                "expected_rating_context_hash": (
+                    leaderboard_expected_rating_context_hash or None
+                ),
+                "expected_roster_hash": leaderboard_expected_roster_hash or None,
+                "expected_rating_snapshot_sha256": (
+                    leaderboard_expected_rating_snapshot_sha256 or None
+                ),
             }
         )
         print(json.dumps(arena._to_plain(result), indent=2, sort_keys=True))
@@ -7960,6 +7652,7 @@ def main(
                 collect_temperature=collect_temperature,
                 collect_epsilon=collect_epsilon,
                 policy_trail_render_mode=policy_trail_render_mode,
+                policy_bonus_render_mode=policy_bonus_render_mode,
                 num_simulations=num_simulations,
                 save_gif=save_gif,
                 gif_sample_games_per_pair=gif_sample_games_per_pair,
@@ -7969,6 +7662,7 @@ def main(
                 intake_spawn_if_existing=intake_spawn_if_existing,
                 intake_allow_rating_overrides=intake_allow_rating_overrides,
                 intake_max_events=intake_max_events,
+                intake_claim_stale_after_seconds=intake_claim_stale_after_seconds,
                 intake_active=intake_active,
                 max_runs=max_runs,
             )
@@ -8009,6 +7703,7 @@ def main(
             "collect_temperature": float(collect_temperature),
             "collect_epsilon": float(collect_epsilon),
             "policy_trail_render_mode": policy_trail_render_mode or None,
+            "policy_bonus_render_mode": policy_bonus_render_mode or None,
             "num_simulations": int(num_simulations),
             "save_gif": bool(save_gif),
             "gif_sample_games_per_pair": int(gif_sample_games_per_pair),
@@ -8018,6 +7713,8 @@ def main(
             "spawn_if_existing": bool(intake_spawn_if_existing),
             "allow_rating_overrides": bool(intake_allow_rating_overrides),
             "max_events": int(intake_max_events),
+            "claim_stale_after_seconds": int(intake_claim_stale_after_seconds),
+            "wait_for_rating": bool(wait),
             "active": bool(intake_active),
         }
         if mode == "intake-seed":
@@ -8027,7 +7724,16 @@ def main(
                 intake_spec if tournament_id else {}
             )
         elif mode == "intake-drain":
-            result = curvytron_checkpoint_intake_drain.remote(intake_spec)
+            if bool(intake_spawn_rating) and not bool(wait):
+                print(
+                    "warning: intake-drain is spawning background rating work. "
+                    "Run this command with `modal run --detach`, or pass `--wait` "
+                    "so the child workers are not killed when the local app exits.",
+                    file=sys.stderr,
+                )
+            result = curvytron_checkpoint_intake_drain.remote(
+                _drop_default_intake_drain_rating_overrides(intake_spec)
+            )
         else:
             result = curvytron_checkpoint_intake_status.remote(
                 intake_spec if tournament_id else {}
@@ -8158,6 +7864,7 @@ def main(
         "collect_temperature": float(collect_temperature),
         "collect_epsilon": float(collect_epsilon),
         "policy_trail_render_mode": policy_trail_render_mode or None,
+        "policy_bonus_render_mode": policy_bonus_render_mode or None,
         "num_simulations": int(num_simulations),
         "save_gif": bool(save_gif),
         "gif_sample_games_per_pair": int(gif_sample_games_per_pair),

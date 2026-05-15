@@ -26,6 +26,47 @@ cache helpers.
 This makes it easy to add one more string or helper in the wrong place and hard
 to see the real data flow.
 
+## 2026-05-15 Modal Entrypoint Split
+
+Status: first safe split landed locally.
+
+The public Modal entrypoint stays:
+
+`src/curvyzero/infra/modal/curvyzero_checkpoint_tournament.py`
+
+New helper modules:
+
+- `curvyzero_checkpoint_tournament_settings.py`: app names, Volume names,
+  browser limits, cache timings, intake defaults, and current tournament ids.
+- `curvyzero_checkpoint_tournament_runtime.py`: Modal image, app, Volume,
+  Dict, Queue, retry, and mount helpers.
+- `curvyzero_checkpoint_tournament_browser_render.py`: pure HTML/browser
+  rendering helpers and small row-format helpers.
+
+The entrypoint still re-exports the old private render helper names so existing
+tests and local callers keep working. Modal packaging is safe for these modules
+because the tournament image copies the whole local `src/` tree into
+`/repo/src` and sets `PYTHONPATH=/repo/src`.
+
+Validation after this split:
+
+```bash
+uv run pytest tests/test_curvytron_checkpoint_tournament.py -q -k "render_page or review_battle_payload or review_checkpoint_payload or review_rankings_payload or modal_browser or web_reload"
+uv run pytest tests/test_curvytron_checkpoint_tournament.py tests/test_curvytron_checkpoint_intake_repair.py tests/test_curvytron_opponent_leaderboard_pointer_repair.py -q
+uv run ruff check src/curvyzero/infra/modal/curvyzero_checkpoint_tournament.py src/curvyzero/infra/modal/curvyzero_checkpoint_tournament_browser_render.py src/curvyzero/infra/modal/curvyzero_checkpoint_tournament_settings.py src/curvyzero/infra/modal/curvyzero_checkpoint_tournament_runtime.py
+```
+
+Results: focused browser slice `27 passed`; broader tournament/intake/leaderboard
+slice `153 passed, 11 skipped`; ruff passed.
+
+Next safe cuts:
+
+- Discovery helpers into a discovery module.
+- Intake manifest/claim helpers into an intake module, leaving Dict/Queue
+  mutation in the Modal entrypoint.
+- Rating artifact/progress helpers into an artifact module, leaving Modal `.map`
+  orchestration in the entrypoint.
+
 ## Layer Contract
 
 Keep these layers separate:

@@ -4,15 +4,16 @@ import numpy as np
 import pytest
 
 from curvyzero.env import vector_runtime
+from curvyzero.env.observation_surface_contract import (
+    POLICY_OBSERVATION_PERSPECTIVE,
+    POLICY_OBSERVATION_PERSPECTIVE_SCHEMA_ID,
+)
 from curvyzero.env.vector_multiplayer_env import DEBUG_METADATA_OBSERVATION_SCHEMA_ID
-from curvyzero.env.vector_visual_observation import BONUS_RENDER_MODE_BROWSER_SPRITES
+from curvyzero.env.vector_visual_observation import BONUS_RENDER_MODE_SIMPLE_SYMBOLS
 from curvyzero.env.vector_visual_observation import TRAIL_RENDER_MODE_BODY_CIRCLES_FAST
 from curvyzero.env.vector_visual_observation import TRAIL_RENDER_MODE_BROWSER_LINES
 from curvyzero.env.vector_visual_observation import normalize_source_state_gray64
 from curvyzero.env.vector_visual_observation import render_source_state_canvas_gray64
-from curvyzero.training.curvytron_current_policy_selfplay_smoke import (
-    STACK_RENDER_MODE_FAST_GRAY64_DIRECT,
-)
 from curvyzero.training.curvytron_current_policy_selfplay_smoke import (
     player_perspective_rgb_palette,
 )
@@ -98,14 +99,13 @@ def _assert_surface_reset_contract(step, *, batch_size: int, player_count: int) 
     assert info["default_trail_render_mode"] == TRAIL_RENDER_MODE_BROWSER_LINES
     assert info["trainer_supported_trail_render_modes"] == [
         TRAIL_RENDER_MODE_BROWSER_LINES,
-        TRAIL_RENDER_MODE_BODY_CIRCLES_FAST,
     ]
-    assert info["bonus_render_mode"] == BONUS_RENDER_MODE_BROWSER_SPRITES
-    assert info["default_bonus_render_mode"] == BONUS_RENDER_MODE_BROWSER_SPRITES
-    assert info["browser_sprites_bonus_render_claim"] is True
+    assert info["bonus_render_mode"] == BONUS_RENDER_MODE_SIMPLE_SYMBOLS
+    assert info["default_bonus_render_mode"] == BONUS_RENDER_MODE_SIMPLE_SYMBOLS
+    assert info["browser_sprites_bonus_render_claim"] is False
     assert info["frame_stack_owner"] == FRAME_STACK_OWNER
-    assert info["render_metadata"]["bonus_renderer_kind"] == "browser_sprites"
-    assert info["render_metadata"]["bonus_renderer_is_approximation"] is False
+    assert info["render_metadata"]["bonus_renderer_kind"] == "simple_symbol_masks"
+    assert info["render_metadata"]["bonus_renderer_is_approximation"] is True
     stats = info["visual_stack_dirty_render_stats"]
     assert stats["enabled"] is (player_count == 2)
     assert set(stats) == {
@@ -130,6 +130,16 @@ def _assert_surface_reset_contract(step, *, batch_size: int, player_count: int) 
     np.testing.assert_array_equal(info["policy_action_mask"], step.policy_action_mask)
     assert info["render_metadata"]["trail_renderer_is_approximation"] is False
     assert info["trainer_observation_schema_id"] is not None
+    assert (
+        info["policy_observation_perspective_schema_id"]
+        == POLICY_OBSERVATION_PERSPECTIVE_SCHEMA_ID
+    )
+    assert info["policy_observation_perspective"] == POLICY_OBSERVATION_PERSPECTIVE
+    assert info["source_state_player_perspective"] is True
+    np.testing.assert_array_equal(
+        info["policy_observation_perspective_player"],
+        step.policy_player,
+    )
     assert info["single_frame_schema_id"].startswith("curvyzero_source_state_canvas_gray64")
 
 
@@ -521,32 +531,22 @@ def test_p4_terminal_final_observation_is_visual_stack_after_three_wall_deaths()
 
 
 def test_fast_gray64_direct_is_rejected_for_trainer_surface():
-    with pytest.raises(ValueError, match="profile-only"):
+    with pytest.raises(ValueError, match="trail_render_mode"):
         SourceStateMultiplayerTrainerSurface(
             batch_size=1,
             player_count=2,
-            trail_render_mode=STACK_RENDER_MODE_FAST_GRAY64_DIRECT,
+            trail_render_mode="fast_gray64_direct",
         )
 
 
-def test_body_circles_fast_is_explicit_approximate_mode():
-    surface = SourceStateMultiplayerTrainerSurface(
-        batch_size=1,
-        player_count=2,
-        trail_render_mode=TRAIL_RENDER_MODE_BODY_CIRCLES_FAST,
-        natural_bonus_spawn=False,
-    )
-
-    step = surface.reset(seed=33)
-
-    assert step.info["trail_render_mode"] == TRAIL_RENDER_MODE_BODY_CIRCLES_FAST
-    assert step.info["bonus_render_mode"] == BONUS_RENDER_MODE_BROWSER_SPRITES
-    assert step.info["visual_observation_is_approximation"] is True
-    assert step.info["approximate_trail_render_mode"] is True
-    assert step.info["trail_renderer_is_approximation"] is True
-    assert step.info["render_metadata"]["bonus_renderer_is_approximation"] is False
-    assert step.info["visual_stack_dirty_render_stats"]["enabled"] is False
-    assert "explicit approximate mode" in step.info["approximation_reason"]
+def test_body_circles_fast_is_rejected_by_current_trainer_surface():
+    with pytest.raises(ValueError, match="trail_render_mode"):
+        SourceStateMultiplayerTrainerSurface(
+            batch_size=1,
+            player_count=2,
+            trail_render_mode=TRAIL_RENDER_MODE_BODY_CIRCLES_FAST,
+            natural_bonus_spawn=False,
+        )
 
 
 def test_profile_no_death_mode_is_preserved_and_labeled_not_source_fidelity():

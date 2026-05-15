@@ -290,3 +290,143 @@ def test_adaptive_v0_prefers_unplayed_near_rating_pair_over_played_pair() -> Non
     assert pairs[0]["pair_key"] == arena.rating_pair_key(top_id, fresh_id)
     assert pairs[0]["pair_key"] != arena.rating_pair_key(top_id, played_id)
     assert pairs[0]["schedule"]["prior_battle_count"] == 0
+
+
+def test_adaptive_v0_gives_new_checkpoints_many_parallel_placement_pairs() -> None:
+    established_count = 100
+    new_count = 2
+    placement_opponents = 20
+    rating_spec = arena.normalize_rating_spec(
+        {
+            "tournament_id": "arena-a",
+            "rating_run_id": "elo-placement-burst",
+            "checkpoints": [
+                _checkpoint(index)
+                for index in range(established_count + new_count)
+            ],
+            "pair_selection": "adaptive_v0",
+            "pairs_per_round": placement_opponents * new_count,
+            "games_per_pair": 3,
+            "placement_min_games": placement_opponents * 3,
+            "placement_min_opponents": placement_opponents,
+            "seed": 90212,
+        }
+    )
+    checkpoint_ids = [
+        str(checkpoint["checkpoint_id"]) for checkpoint in rating_spec["checkpoints"]
+    ]
+    established_ids = set(checkpoint_ids[:established_count])
+    new_ids = set(checkpoint_ids[established_count:])
+
+    previous_snapshot = _snapshot(
+        rating_spec,
+        games_by_id={checkpoint_id: 300 for checkpoint_id in checkpoint_ids},
+        opponents_by_id={
+            checkpoint_id: set(sorted(established_ids - {checkpoint_id})[:placement_opponents])
+            if checkpoint_id in established_ids
+            else set()
+            for checkpoint_id in checkpoint_ids
+        },
+        rating_by_id={
+            checkpoint_id: 1500.0 + index
+            for index, checkpoint_id in enumerate(checkpoint_ids)
+        },
+    )
+    pair_history = _pair_history(rating_spec)
+
+    pairs = arena.build_rating_round_pair_specs(
+        rating_spec,
+        previous_snapshot=previous_snapshot,
+        pair_history=pair_history,
+        round_index=0,
+    )
+
+    assert len(pairs) == placement_opponents * new_count
+    assert {pair["schedule_reason"] for pair in pairs} == {
+        arena.SCHEDULE_REASON_PLACEMENT
+    }
+
+    opponents_by_new_id = {checkpoint_id: set() for checkpoint_id in new_ids}
+    new_pair_count = {checkpoint_id: 0 for checkpoint_id in new_ids}
+    for pair in pairs:
+        left_id, right_id = _pair_ids(pair)
+        assert {left_id, right_id} & new_ids
+        for new_id in ({left_id, right_id} & new_ids):
+            opponent_id = right_id if new_id == left_id else left_id
+            opponents_by_new_id[new_id].add(opponent_id)
+            new_pair_count[new_id] += 1
+
+    for new_id in new_ids:
+        assert new_pair_count[new_id] == placement_opponents
+        assert len(opponents_by_new_id[new_id]) == placement_opponents
+        assert len(opponents_by_new_id[new_id] & established_ids) >= (
+            placement_opponents - 1
+        )
+
+
+def test_adaptive_v0_new_batch_gets_existing_opponents_in_first_round() -> None:
+    established_count = 50
+    new_count = 10
+    placement_opponents = 4
+    rating_spec = arena.normalize_rating_spec(
+        {
+            "tournament_id": "arena-a",
+            "rating_run_id": "elo-new-batch",
+            "checkpoints": [
+                _checkpoint(index)
+                for index in range(established_count + new_count)
+            ],
+            "pair_selection": "adaptive_v0",
+            "pairs_per_round": placement_opponents * new_count,
+            "games_per_pair": 1,
+            "placement_min_games": placement_opponents,
+            "placement_min_opponents": placement_opponents,
+            "seed": 90213,
+        }
+    )
+    checkpoint_ids = [
+        str(checkpoint["checkpoint_id"]) for checkpoint in rating_spec["checkpoints"]
+    ]
+    established_ids = set(checkpoint_ids[:established_count])
+    new_ids = set(checkpoint_ids[established_count:])
+
+    previous_snapshot = _snapshot(
+        rating_spec,
+        games_by_id={checkpoint_id: 100 for checkpoint_id in checkpoint_ids},
+        opponents_by_id={
+            checkpoint_id: set(sorted(established_ids - {checkpoint_id})[:placement_opponents])
+            if checkpoint_id in established_ids
+            else set()
+            for checkpoint_id in checkpoint_ids
+        },
+        rating_by_id={
+            checkpoint_id: 1500.0 + index
+            for index, checkpoint_id in enumerate(checkpoint_ids)
+        },
+    )
+
+    pairs = arena.build_rating_round_pair_specs(
+        rating_spec,
+        previous_snapshot=previous_snapshot,
+        pair_history=_pair_history(rating_spec),
+        round_index=0,
+    )
+
+    existing_opponents_by_new_id = {checkpoint_id: set() for checkpoint_id in new_ids}
+    new_vs_new_pair_count = 0
+    for pair in pairs:
+        left_id, right_id = _pair_ids(pair)
+        if left_id in new_ids and right_id in new_ids:
+            new_vs_new_pair_count += 1
+        if left_id in new_ids and right_id in established_ids:
+            existing_opponents_by_new_id[left_id].add(right_id)
+        if right_id in new_ids and left_id in established_ids:
+            existing_opponents_by_new_id[right_id].add(left_id)
+
+    assert len(pairs) == placement_opponents * new_count
+    assert {pair["schedule_reason"] for pair in pairs} == {
+        arena.SCHEDULE_REASON_PLACEMENT
+    }
+    assert new_vs_new_pair_count == 0
+    for new_id in new_ids:
+        assert len(existing_opponents_by_new_id[new_id]) >= placement_opponents

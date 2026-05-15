@@ -17,9 +17,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from curvyzero.env.observation_surface_contract import (
+    DEFAULT_POLICY_OBSERVATION_BACKEND,
+    POLICY_BONUS_RENDER_MODE,
+    POLICY_TRAIL_RENDER_MODE,
+)
+from curvyzero.contracts.curvytron import CURVYTRON_TRAINING_TASK_ID
 
 MODULE = "curvyzero.infra.modal.lightzero_curvyzero_stacked_debug_visual_survival_train"
-TASK_ID = "lightzero-curvytron-visual-survival"
+TASK_ID = CURVYTRON_TRAINING_TASK_ID
 SCHEMA_ID = "curvyzero_optimizer_profile_manifest/v0"
 
 DEFAULT_OPPONENT_CHECKPOINT_REF = (
@@ -28,6 +34,7 @@ DEFAULT_OPPONENT_CHECKPOINT_REF = (
     "checkpoints/lightzero/iteration_32.pth.tar"
 )
 DEFAULT_OUTPUT_ROOT = Path("artifacts/local/curvytron_optimizer_profile_manifests")
+DEFAULT_BONUS_RENDER_MODE = POLICY_BONUS_RENDER_MODE
 
 
 @dataclass(frozen=True)
@@ -43,6 +50,8 @@ class ProfileRow:
     sims: int
     render_mode: str
     death_mode: str
+    bonus_render_mode: str = DEFAULT_BONUS_RENDER_MODE
+    policy_observation_backend: str = DEFAULT_POLICY_OBSERVATION_BACKEND
     reward_variant: str = "sparse_outcome"
     opponent_policy_kind: str = "frozen_lightzero_checkpoint"
     seed: int = 304
@@ -84,10 +93,8 @@ def _safe_id(raw: str, *, label: str) -> str:
 
 
 def _render_tag(render_mode: str) -> str:
-    if render_mode == "browser_lines":
+    if render_mode == POLICY_TRAIL_RENDER_MODE:
         return "browser"
-    if render_mode == "body_circles_fast":
-        return "fast"
     return render_mode.replace("_", "-")
 
 
@@ -134,7 +141,7 @@ def _first_wave_rows() -> list[ProfileRow]:
             1,
             16,
             8,
-            "browser_lines",
+            POLICY_TRAIL_RENDER_MODE,
             "normal",
             env_telemetry_stride=1,
             expected_metrics=(
@@ -154,22 +161,7 @@ def _first_wave_rows() -> list[ProfileRow]:
             1,
             16,
             8,
-            "browser_lines",
-            "nodeath",
-            env_telemetry_stride=1,
-            expected_metrics=("render_sec", "stack_sec", "mcts_sec", "opponent_sec"),
-        ),
-        ProfileRow(
-            "03",
-            "anatomy_base",
-            "base-c1-nodeath-fast",
-            "gpu-l4-t4",
-            "base",
-            1,
-            1,
-            16,
-            8,
-            "body_circles_fast",
+            POLICY_TRAIL_RENDER_MODE,
             "nodeath",
             env_telemetry_stride=1,
             expected_metrics=("render_sec", "stack_sec", "mcts_sec", "opponent_sec"),
@@ -187,7 +179,7 @@ def _first_wave_rows() -> list[ProfileRow]:
                 collectors,
                 16,
                 8,
-                "browser_lines",
+                POLICY_TRAIL_RENDER_MODE,
                 "normal",
                 expected_metrics=("steps_per_sec", "collector_sec", "mcts_sec", "gpu_max_pct"),
             )
@@ -205,7 +197,7 @@ def _first_wave_rows() -> list[ProfileRow]:
                 collectors,
                 16,
                 sims,
-                "browser_lines",
+                POLICY_TRAIL_RENDER_MODE,
                 "normal",
                 expected_metrics=("steps_per_sec", "mcts_sec", "mcts_sim_budget", "gpu_max_pct"),
             )
@@ -222,22 +214,7 @@ def _first_wave_rows() -> list[ProfileRow]:
                 16,
                 16,
                 8,
-                "browser_lines",
-                "nodeath",
-                env_telemetry_stride=64,
-                expected_metrics=("telem_obs", "telem_opp", "telem_vec", "steps_per_sec"),
-            ),
-            ProfileRow(
-                "13",
-                "long_render_lens",
-                "subproc-c16-nodeath-fast",
-                "gpu-l4-t4-cpu40",
-                "subprocess",
-                16,
-                16,
-                16,
-                8,
-                "body_circles_fast",
+                POLICY_TRAIL_RENDER_MODE,
                 "nodeath",
                 env_telemetry_stride=64,
                 expected_metrics=("telem_obs", "telem_opp", "telem_vec", "steps_per_sec"),
@@ -252,7 +229,7 @@ def _first_wave_rows() -> list[ProfileRow]:
                 64,
                 16,
                 16,
-                "browser_lines",
+                POLICY_TRAIL_RENDER_MODE,
                 "normal",
                 expected_metrics=("steps_per_sec", "mcts_sec", "gpu_max_pct", "gpu_mem_mib"),
             ),
@@ -266,7 +243,7 @@ def _first_wave_rows() -> list[ProfileRow]:
                 64,
                 16,
                 16,
-                "browser_lines",
+                POLICY_TRAIL_RENDER_MODE,
                 "normal",
                 expected_metrics=("steps_per_sec", "mcts_sec", "gpu_max_pct", "gpu_mem_mib"),
             ),
@@ -280,7 +257,7 @@ def _first_wave_rows() -> list[ProfileRow]:
                 64,
                 16,
                 32,
-                "browser_lines",
+                POLICY_TRAIL_RENDER_MODE,
                 "normal",
                 expected_metrics=("steps_per_sec", "mcts_sec", "gpu_max_pct", "gpu_mem_mib"),
             ),
@@ -294,7 +271,7 @@ def _first_wave_rows() -> list[ProfileRow]:
                 32,
                 16,
                 8,
-                "browser_lines",
+                POLICY_TRAIL_RENDER_MODE,
                 "normal",
                 reward_variant="dense_survival_plus_outcome",
                 expected_metrics=("steps_per_sec", "collector_sec", "mcts_sec", "reward_variant"),
@@ -317,7 +294,7 @@ def _second_wave_rows() -> list[ProfileRow]:
             128,
             16,
             8,
-            "browser_lines",
+            POLICY_TRAIL_RENDER_MODE,
             "normal",
             expected_metrics=("steps_per_sec", "collector_sec", "worker_oversubscription"),
         ),
@@ -331,7 +308,7 @@ def _second_wave_rows() -> list[ProfileRow]:
             160,
             16,
             8,
-            "browser_lines",
+            POLICY_TRAIL_RENDER_MODE,
             "normal",
             expected_metrics=("steps_per_sec", "collector_sec", "worker_oversubscription"),
         ),
@@ -345,7 +322,7 @@ def _second_wave_rows() -> list[ProfileRow]:
             96,
             16,
             16,
-            "browser_lines",
+            POLICY_TRAIL_RENDER_MODE,
             "normal",
             expected_metrics=("steps_per_sec", "mcts_sec", "gpu_max_pct"),
         ),
@@ -359,38 +336,9 @@ def _second_wave_rows() -> list[ProfileRow]:
             32,
             16,
             8,
-            "browser_lines",
+            POLICY_TRAIL_RENDER_MODE,
             "nodeath",
             env_telemetry_stride=128,
-            expected_metrics=("steps_per_sec", "obs_sec", "collector_sec"),
-        ),
-        ProfileRow(
-            "S05",
-            "long_render_width",
-            "subproc-c32-nodeath-fast",
-            "gpu-l4-t4-cpu40",
-            "subprocess",
-            32,
-            32,
-            16,
-            8,
-            "body_circles_fast",
-            "nodeath",
-            env_telemetry_stride=128,
-            expected_metrics=("steps_per_sec", "obs_sec", "collector_sec"),
-        ),
-        ProfileRow(
-            "S06",
-            "short_render_lens",
-            "subproc-c32-normal-fast",
-            "gpu-l4-t4-cpu40",
-            "subprocess",
-            32,
-            32,
-            16,
-            8,
-            "body_circles_fast",
-            "normal",
             expected_metrics=("steps_per_sec", "obs_sec", "collector_sec"),
         ),
         ProfileRow(
@@ -403,7 +351,7 @@ def _second_wave_rows() -> list[ProfileRow]:
             32,
             16,
             8,
-            "browser_lines",
+            POLICY_TRAIL_RENDER_MODE,
             "normal",
             opponent_policy_kind="fixed_straight",
             expected_metrics=("steps_per_sec", "opponent_sec", "collector_sec"),
@@ -418,7 +366,7 @@ def _second_wave_rows() -> list[ProfileRow]:
             96,
             16,
             8,
-            "browser_lines",
+            POLICY_TRAIL_RENDER_MODE,
             "normal",
             opponent_policy_kind="fixed_straight",
             expected_metrics=("steps_per_sec", "opponent_sec", "collector_sec"),
@@ -433,7 +381,7 @@ def _second_wave_rows() -> list[ProfileRow]:
             32,
             16,
             8,
-            "browser_lines",
+            POLICY_TRAIL_RENDER_MODE,
             "normal",
             expected_metrics=("steps_per_sec", "mcts_sec", "learner_sec"),
         ),
@@ -447,7 +395,7 @@ def _second_wave_rows() -> list[ProfileRow]:
             96,
             16,
             8,
-            "browser_lines",
+            POLICY_TRAIL_RENDER_MODE,
             "normal",
             reward_variant="dense_survival_plus_outcome",
             expected_metrics=("steps_per_sec", "reward_variant"),
@@ -502,6 +450,10 @@ def _command_for_row(
             str(row.source_max_steps),
             "--source-state-trail-render-mode",
             row.render_mode,
+            "--source-state-bonus-render-mode",
+            row.bonus_render_mode,
+            "--policy-observation-backend",
+            row.policy_observation_backend,
             "--max-train-iter",
             str(row.max_train_iter),
             "--max-env-step",
@@ -599,6 +551,9 @@ def _manifest_row(
         "batch_size": row.batch_size,
         "sims": row.sims,
         "render_mode": row.render_mode,
+        "bonus_render_mode": row.bonus_render_mode,
+        "policy_observation_backend": row.policy_observation_backend,
+        "render_mode_role": "current_policy_observation",
         "death_mode": row.death_mode,
         "source_max_steps": row.source_max_steps,
         "max_train_iter": row.max_train_iter,
@@ -645,6 +600,7 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
         "guardrails": {
             "mode": "profile",
             "forbidden_mode": "two-seat-selfplay",
+            "current_policy_observation": "browser_lines + simple_symbols",
             "background_eval_enabled": False,
             "background_gif_enabled": False,
             "opponent_use_cuda": False,

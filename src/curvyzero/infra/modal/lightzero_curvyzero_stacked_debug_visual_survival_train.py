@@ -36,6 +36,7 @@ import random
 import re
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import traceback
@@ -79,6 +80,17 @@ from curvyzero.env.vector_visual_observation import (
     TRAIL_RENDER_MODE_BODY_CIRCLES_FAST as _TRAIL_RENDER_MODE_BODY_CIRCLES_FAST,
 )
 from curvyzero.env.vector_visual_observation import TRAIL_RENDER_MODE_DEFAULT
+from curvyzero.contracts.curvytron import (
+    CURVYTRON_BACKGROUND_GIF_FPS,
+    CURVYTRON_COMMIT_ON_CHECKPOINT,
+    CURVYTRON_SAVE_CKPT_AFTER_ITER,
+    CURVYTRON_SOURCE_MAX_STEPS,
+    CURVYTRON_TRAINING_TASK_ID,
+    curvytron_control_volume_name,
+    curvytron_runs_volume_name,
+    curvytron_train_app_name,
+    modal_volume_kwargs_for_name,
+)
 from curvyzero.infra.modal import run_management as runs
 from curvyzero.training import lightzero_checkpoints as lz_checkpoints
 from curvyzero.training.curvytron_current_policy_selfplay_smoke import (
@@ -201,6 +213,9 @@ from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env imp
     REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME,
 )
 from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
+    REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME,
+)
+from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
     SOURCE_STATE_FIXED_OPPONENT_REWARD_VARIANTS,
 )
 from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
@@ -208,6 +223,9 @@ from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env imp
 )
 from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
     SURVIVAL_PLUS_BONUS_NO_OUTCOME_REWARD_SCHEMA_ID,
+)
+from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
+    SURVIVAL_PLUS_BONUS_PLUS_OUTCOME_REWARD_SCHEMA_ID,
 )
 from curvyzero.training.opponent_mixture import (
     OPPONENT_MIXTURE_SCHEMA_ID,
@@ -228,7 +246,7 @@ from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env imp
     SOURCE_STATE_JOINT_ACTION_TRAINING_STATUS,
 )
 from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
-    SOURCE_STATE_DEFAULT_TRAIL_RENDER_MODE,
+    SOURCE_STATE_SUPPORTED_BONUS_RENDER_MODES,
 )
 from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
     SOURCE_STATE_SUPPORTED_TRAIL_RENDER_MODES,
@@ -236,8 +254,23 @@ from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env imp
 from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
     STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID,
 )
+from curvyzero.env.observation_surface_contract import (
+    DEFAULT_POLICY_OBSERVATION_BACKEND,
+    POLICY_BONUS_RENDER_MODE,
+    POLICY_OBSERVATION_BACKENDS,
+    POLICY_OBSERVATION_CONTRACT_ID,
+    POLICY_TRAIL_RENDER_MODE,
+    policy_observation_surface,
+)
+from curvyzero.infra.modal.mctx_dependency_smoke import JAX_VERSION
 from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
     STACKED_SOURCE_STATE_GRAY64_SHAPE,
+)
+from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
+    LEARNER_SEAT_MODE_RANDOM_PER_EPISODE,
+)
+from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
+    LEARNER_SEAT_MODES,
 )
 from curvyzero.training.curvyzero_source_state_visual_turn_commit_lightzero_env import (
     LIGHTZERO_SOURCE_STATE_VISUAL_TURN_COMMIT_ENV_ID,
@@ -325,22 +358,34 @@ from curvyzero.training.curvytron_two_seat_lightzero_train_smoke import (
 )
 
 
-APP_NAME = "curvyzero-lightzero-curvytron-visual-survival-train"
-TASK_ID = "lightzero-curvytron-visual-survival"
-VOLUME_NAME = "curvyzero-runs"
+APP_NAME = curvytron_train_app_name()
+TASK_ID = CURVYTRON_TRAINING_TASK_ID
+VOLUME_NAME = curvytron_runs_volume_name()
+CONTROL_VOLUME_NAME = curvytron_control_volume_name()
 TRAIL_RENDER_MODE_BODY_CIRCLES_FAST = _TRAIL_RENDER_MODE_BODY_CIRCLES_FAST
-DEFAULT_SOURCE_STATE_TRAIL_RENDER_MODE = SOURCE_STATE_DEFAULT_TRAIL_RENDER_MODE
+DEFAULT_SOURCE_STATE_BONUS_RENDER_MODE = POLICY_BONUS_RENDER_MODE
+SOURCE_STATE_BONUS_RENDER_MODE_CHOICES = tuple(SOURCE_STATE_SUPPORTED_BONUS_RENDER_MODES)
+DEFAULT_SOURCE_STATE_TRAIL_RENDER_MODE = POLICY_TRAIL_RENDER_MODE
 SOURCE_STATE_TRAIL_RENDER_MODE_CHOICES = tuple(SOURCE_STATE_SUPPORTED_TRAIL_RENDER_MODES)
+DEFAULT_POLICY_OBSERVATION_BACKEND_CHOICE = DEFAULT_POLICY_OBSERVATION_BACKEND
+POLICY_OBSERVATION_BACKEND_CHOICES = tuple(POLICY_OBSERVATION_BACKENDS)
+DEFAULT_LEARNER_SEAT_MODE = LEARNER_SEAT_MODE_RANDOM_PER_EPISODE
+LEARNER_SEAT_MODE_CHOICES = tuple(LEARNER_SEAT_MODES)
 LIGHTZERO_VERSION = "0.2.0"
 REMOTE_ROOT = Path("/repo")
 RUNS_MOUNT = Path("/runs")
+CONTROL_MOUNT = Path("/control")
+_RUNS_VOLUME_RELOAD_LOCK = threading.Lock()
+_CONTROL_VOLUME_RELOAD_LOCK = threading.Lock()
+_RUNS_REF_PREFIX = "runs:"
+_CONTROL_REF_PREFIX = "control:"
 
 DEFAULT_MODE = "dry"
 DEFAULT_COMPUTE = "gpu-l4-t4"
 DEFAULT_SEED = 0
 DEFAULT_MAX_ENV_STEP = 8192
 DEFAULT_MAX_TRAIN_ITER = 64
-DEFAULT_SOURCE_MAX_STEPS = 256
+DEFAULT_SOURCE_MAX_STEPS = CURVYTRON_SOURCE_MAX_STEPS
 DEFAULT_COLLECTOR_ENV_NUM = 1
 DEFAULT_EVALUATOR_ENV_NUM = 1
 DEFAULT_N_EVALUATOR_EPISODE = 1
@@ -356,8 +401,13 @@ DEFAULT_PROFILE_VOLUME_COMMIT = False
 DEFAULT_PROFILE_SPAWN = False
 # Checkpoint cadence also controls automatic checkpoint eval/inspection/GIF work.
 # Keep this frequent enough to observe progress but not every loop.
-DEFAULT_SAVE_CKPT_AFTER_ITER = 100
+DEFAULT_SAVE_CKPT_AFTER_ITER = CURVYTRON_SAVE_CKPT_AFTER_ITER
 DEFAULT_STOP_AFTER_LEARNER_TRAIN_CALLS = 0
+DEFAULT_COMMIT_ON_CHECKPOINT = CURVYTRON_COMMIT_ON_CHECKPOINT
+DEFAULT_OPPONENT_ASSIGNMENT_REFRESH_INTERVAL_TRAIN_ITER = 0
+OPPONENT_ASSIGNMENT_REFRESH_POINTER_SCHEMA_ID = (
+    "curvyzero_opponent_assignment_refresh_pointer/v0"
+)
 DEFAULT_DECISION_SOURCE_FRAMES = SOURCE_STATE_DEFAULT_DECISION_SOURCE_FRAMES
 DEFAULT_DECISION_MS = SOURCE_STATE_DEFAULT_DECISION_MS
 DEFAULT_SOURCE_PHYSICS_STEP_MS = DEFAULT_DECISION_MS / DEFAULT_DECISION_SOURCE_FRAMES
@@ -388,6 +438,7 @@ REWARD_VARIANT_CHOICES = (
     REWARD_VARIANT_SPARSE_OUTCOME,
     REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME,
     REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME,
+    REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME,
     REWARD_VARIANT_ALL_PLAYERS_ALIVE_DIAGNOSTIC,
 )
 DEFAULT_EGO_ACTION_STRAIGHT_OVERRIDE_PROBABILITY = 0.0
@@ -403,6 +454,14 @@ DEFAULT_OPPONENT_RUNTIME_MODE = OPPONENT_RUNTIME_MODE_NORMAL
 OPPONENT_POLICY_KIND_NONE_CENTRALIZED_JOINT_ACTION = "none_centralized_joint_action"
 DEFAULT_OPPONENT_POLICY_KIND = OPPONENT_POLICY_KIND_FIXED_STRAIGHT
 DEFAULT_OPPONENT_USE_CUDA = False
+INITIAL_POLICY_CHECKPOINT_LOAD_MODE_STRICT = "strict"
+INITIAL_POLICY_CHECKPOINT_LOAD_MODE_MATCHING_SHAPE = "matching_shape"
+DEFAULT_INITIAL_POLICY_CHECKPOINT_LOAD_MODE = INITIAL_POLICY_CHECKPOINT_LOAD_MODE_MATCHING_SHAPE
+INITIAL_POLICY_CHECKPOINT_LOAD_MODE_CHOICES = (
+    INITIAL_POLICY_CHECKPOINT_LOAD_MODE_STRICT,
+    INITIAL_POLICY_CHECKPOINT_LOAD_MODE_MATCHING_SHAPE,
+)
+INITIAL_POLICY_MODEL_ONLY_OPTIMIZER_MARKER = "curvyzero_initial_policy_model_only_seed/v1"
 OPPONENT_POLICY_KIND_CHOICES = (
     OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
     OPPONENT_POLICY_KIND_PROACTIVE_WALL_AVOIDANT,
@@ -424,7 +483,8 @@ DEFAULT_BACKGROUND_GIF_CHECKPOINT_SEED_MIXING_ENABLED = True
 # 0 means no GIF-specific physical-step cap: capture stops when the env ends.
 DEFAULT_BACKGROUND_GIF_MAX_STEPS = 0
 DEFAULT_BACKGROUND_GIF_FRAME_STRIDE = 1
-DEFAULT_BACKGROUND_GIF_FPS = 8.0
+DEFAULT_BACKGROUND_GIF_FPS = CURVYTRON_BACKGROUND_GIF_FPS
+DEFAULT_BACKGROUND_GIF_MIN_FRAME_DURATION_MS = 10
 DEFAULT_BACKGROUND_GIF_SCALE = 4
 CHECKPOINT_SELFPLAY_GIF_FRAME_SIZE = SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE
 DEFAULT_BACKGROUND_GIF_FRAME_SIZE = CHECKPOINT_SELFPLAY_GIF_FRAME_SIZE
@@ -527,6 +587,40 @@ def _validate_source_state_trail_render_mode(value: str) -> str:
     return mode
 
 
+def _validate_source_state_bonus_render_mode(value: str) -> str:
+    mode = str(value)
+    if mode not in SOURCE_STATE_BONUS_RENDER_MODE_CHOICES:
+        raise ValueError(
+            "source_state_bonus_render_mode must be one of "
+            f"{SOURCE_STATE_BONUS_RENDER_MODE_CHOICES!r}; got {mode!r}"
+        )
+    return mode
+
+
+def _validate_policy_observation_backend(value: str) -> str:
+    backend = str(value)
+    if backend not in POLICY_OBSERVATION_BACKEND_CHOICES:
+        raise ValueError(
+            "policy_observation_backend must be one of "
+            f"{POLICY_OBSERVATION_BACKEND_CHOICES!r}; got {backend!r}"
+        )
+    return backend
+
+
+def _validate_learner_seat_mode(
+    value: str | None,
+    *,
+    absent_default: str = DEFAULT_LEARNER_SEAT_MODE,
+) -> str:
+    mode = str(absent_default if value is None else value)
+    if mode not in LEARNER_SEAT_MODE_CHOICES:
+        raise ValueError(
+            "learner_seat_mode must be one of "
+            f"{LEARNER_SEAT_MODE_CHOICES!r}; got {mode!r}"
+        )
+    return mode
+
+
 def _reward_policy_for_variant(*, env_variant: str, reward_variant: str) -> dict[str, Any]:
     reward_variant = _normalize_reward_variant_for_env(
         env_variant=env_variant,
@@ -596,6 +690,35 @@ def _reward_policy_for_variant(*, env_variant: str, reward_variant: str) -> dict
                 "draw_bonus": 0.0,
                 "truncation_bonus": 0.0,
             }
+        if reward_variant == REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME:
+            return {
+                "reward_variant": reward_variant,
+                "reward_schema_id": SURVIVAL_PLUS_BONUS_PLUS_OUTCOME_REWARD_SCHEMA_ID,
+                "survival_length_is_eval_metric": True,
+                "dense_survival_reward": True,
+                "dense_alive_helper": 1.0,
+                "same_step_bonus_pickup_reward": True,
+                "bonus_pickup_reward_per_catch": (
+                    SURVIVAL_PLUS_BONUS_NO_OUTCOME_BONUS_REWARD
+                ),
+                "bonus_pickup_source": "bonus_catch_count_step[0, ego_player_index]",
+                "sparse_outcome_reward": True,
+                "sparse_outcome_telemetry_only": False,
+                "terminal_outcome_scaled_by_episode_source_steps": True,
+                "terminal_outcome_scale": "episode_source_step_count",
+                "survival_only": False,
+                "diagnostic_all_players_alive": False,
+                "centralized_joint_action_control": False,
+                "per_player_reward": True,
+                "zero_sum_reward": False,
+                "post_transition_alive_reward": 1.0,
+                "post_transition_dead_reward": 0.0,
+                "terminal_outcome_bonus": 1.0,
+                "winner_bonus": 1.0,
+                "loser_penalty": -1.0,
+                "draw_bonus": 0.0,
+                "truncation_bonus": 0.0,
+            }
         raise ValueError(
             "source_state_fixed_opponent reward_variant must be one of "
             f"{SOURCE_STATE_FIXED_OPPONENT_REWARD_VARIANTS!r}; got {reward_variant!r}"
@@ -644,6 +767,14 @@ def _lightzero_target_config_for_reward(
             value_support_scale = int(
                 source_max_steps * (1.0 + SURVIVAL_PLUS_BONUS_NO_OUTCOME_BONUS_REWARD)
             )
+        if reward_variant == REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME:
+            reward_support_scale = int(
+                source_max_steps + 1.0 + SURVIVAL_PLUS_BONUS_NO_OUTCOME_BONUS_REWARD
+            )
+            value_support_scale = int(
+                source_max_steps
+                * (2.0 + SURVIVAL_PLUS_BONUS_NO_OUTCOME_BONUS_REWARD)
+            )
         max_support_scale = SOURCE_STATE_FIXED_OPPONENT_MAX_MODEL_SUPPORT_SCALE
         capped_reward_support_scale = min(int(reward_support_scale), max_support_scale)
         capped_value_support_scale = min(int(value_support_scale), max_support_scale)
@@ -656,7 +787,9 @@ def _lightzero_target_config_for_reward(
         )
         return {
             "discount_factor": 1.0,
-            "td_steps": int(source_max_steps),
+            # source_max_steps is the environment/game cap. It is not a MuZero
+            # bootstrap horizon; keep LightZero's stock td_steps unless a
+            # separate explicit target-horizon knob is added later.
             "model_support_scale": int(model_support_scale),
             "model_reward_support_size": model_support_size,
             "model_value_support_size": model_support_size,
@@ -810,6 +943,7 @@ image = (
     modal.Image.debian_slim(python_version="3.11")
     .uv_pip_install(
         f"LightZero=={LIGHTZERO_VERSION}",
+        f"jax[cuda12]=={JAX_VERSION}",
         "numpy>=1.26",
         "cloudpickle>=3",
         "pillow>=10",
@@ -822,7 +956,15 @@ image = (
         copy=True,
     )
 )
-runs_volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
+runs_volume = modal.Volume.from_name(
+    VOLUME_NAME,
+    **modal_volume_kwargs_for_name(VOLUME_NAME),
+)
+control_volume = modal.Volume.from_name(
+    CONTROL_VOLUME_NAME,
+    **modal_volume_kwargs_for_name(CONTROL_VOLUME_NAME),
+)
+TRAINER_VOLUMES = {str(RUNS_MOUNT): runs_volume, str(CONTROL_MOUNT): control_volume}
 app = modal.App(APP_NAME)
 
 
@@ -1953,6 +2095,7 @@ def _install_checkpoint_progress_writer(
     exp_name: Path,
     attempt_train_root: Path,
     started_monotonic: float,
+    commit_on_checkpoint: bool = DEFAULT_COMMIT_ON_CHECKPOINT,
 ) -> Any:
     """Write the progress file used by the GIF browser whenever LightZero checkpoints."""
 
@@ -1983,6 +2126,8 @@ def _install_checkpoint_progress_writer(
                 learner=self,
                 started_monotonic=started_monotonic,
             )
+            if commit_on_checkpoint:
+                _commit_runs_volume_with_backoff(label="checkpoint_progress_commit")
         except Exception as exc:  # pragma: no cover - remote resilience only.
             print(
                 f"curvyzero checkpoint progress write failed: {type(exc).__name__}: {exc}",
@@ -2484,6 +2629,389 @@ def _install_trusted_run_torch_load_retry(*, run_id: str) -> Any:
 
     def restore() -> None:
         torch.load = original_load
+
+    return restore
+
+
+def _checkpoint_payload_optimizer_keys(payload: Any) -> list[str]:
+    if not isinstance(payload, dict):
+        return []
+    return [
+        str(key)
+        for key in payload
+        if "optim" in str(key).lower() or "scheduler" in str(key).lower()
+    ]
+
+
+def _checkpoint_state_dict_candidate_score(state_dict: Any) -> int:
+    if not isinstance(state_dict, dict):
+        return -1
+    keys = [str(key) for key in state_dict]
+    tensor_count = sum(1 for value in state_dict.values() if hasattr(value, "shape"))
+    if tensor_count <= 0:
+        return -1
+    score = tensor_count
+    for marker in (
+        "representation_network",
+        "prediction_network",
+        "dynamics_network",
+        "encoder",
+        "value_head",
+        "policy_head",
+    ):
+        if any(marker in key for key in keys):
+            score += 1000
+    return score
+
+
+def _nested_checkpoint_payload_value(payload: Any, state_key: str) -> Any:
+    current = payload
+    for part in state_key.split("."):
+        if not isinstance(current, dict) or part not in current:
+            raise KeyError(f"checkpoint payload does not contain state key {state_key!r}")
+        current = current[part]
+    return current
+
+
+def _select_checkpoint_model_state_dict(
+    payload: Any,
+    *,
+    state_key: str | None,
+) -> tuple[str, dict[str, Any]]:
+    if state_key:
+        value = _nested_checkpoint_payload_value(payload, state_key)
+        if not isinstance(value, dict):
+            raise TypeError(f"checkpoint state key {state_key!r} did not point to a state dict")
+        if _checkpoint_state_dict_candidate_score(value) < 0:
+            raise ValueError(f"checkpoint state key {state_key!r} did not contain tensors")
+        return state_key, value
+
+    candidates: list[tuple[str, Any]] = []
+    if isinstance(payload, dict):
+        for key in ("model", "state_dict", "model_state_dict", "_model", "_learn_model"):
+            if key in payload:
+                candidates.append((key, payload[key]))
+        for key, value in payload.items():
+            if not isinstance(value, dict):
+                continue
+            for nested_key in ("model", "state_dict", "model_state_dict", "_model", "_learn_model"):
+                if nested_key in value:
+                    candidates.append((f"{key}.{nested_key}", value[nested_key]))
+        candidates.append(("payload", payload))
+
+    best: tuple[str, dict[str, Any], int] | None = None
+    for key, value in candidates:
+        score = _checkpoint_state_dict_candidate_score(value)
+        if score < 0 or not isinstance(value, dict):
+            continue
+        if best is None or score > best[2]:
+            best = (key, value, score)
+    if best is None:
+        raise ValueError("checkpoint payload did not contain a model state dict")
+    return best[0], best[1]
+
+
+def _torch_load_checkpoint_payload(path: Path) -> Any:
+    import torch
+
+    try:
+        return torch.load(path, map_location="cpu")
+    except pickle.UnpicklingError as exc:
+        if "Weights only load failed" not in str(exc):
+            raise
+        return torch.load(path, map_location="cpu", weights_only=False)
+
+
+def _prepare_initial_policy_checkpoint_load(
+    *,
+    initial_policy_checkpoint_ref: str | None = None,
+    initial_policy_checkpoint_state_key: str | None = None,
+    initial_policy_checkpoint_load_mode: str = DEFAULT_INITIAL_POLICY_CHECKPOINT_LOAD_MODE,
+    attempt_train_root: Path,
+) -> dict[str, Any] | None:
+    checkpoint_ref = str(initial_policy_checkpoint_ref or "").strip()
+    if not checkpoint_ref:
+        if initial_policy_checkpoint_state_key:
+            raise ValueError(
+                "initial_policy_checkpoint_state_key requires initial_policy_checkpoint_ref"
+            )
+        return None
+    if initial_policy_checkpoint_load_mode not in INITIAL_POLICY_CHECKPOINT_LOAD_MODE_CHOICES:
+        raise ValueError(
+            "initial_policy_checkpoint_load_mode must be one of "
+            f"{INITIAL_POLICY_CHECKPOINT_LOAD_MODE_CHOICES!r}"
+        )
+    _reject_mutable_frozen_opponent_checkpoint_ref(checkpoint_ref)
+    if not re.fullmatch(r"iteration_\d+\.pth\.tar", Path(checkpoint_ref).name):
+        raise ValueError(
+            "initial_policy_checkpoint_ref must be an immutable iteration_N.pth.tar ref: "
+            f"{checkpoint_ref}"
+        )
+
+    source_path, resolution = runs.resolve_mounted_ref_or_path(
+        checkpoint_ref,
+        mount=RUNS_MOUNT,
+        remote_root=REMOTE_ROOT,
+    )
+    if not source_path.exists():
+        raise FileNotFoundError(f"initial policy checkpoint does not exist: {checkpoint_ref}")
+
+    source_ref = resolution.get("source_ref") or (
+        runs.file_ref(source_path, mount=RUNS_MOUNT)
+        if _path_is_under(source_path.resolve(), RUNS_MOUNT.resolve())
+        else None
+    )
+    report: dict[str, Any] = {
+        "enabled": True,
+        "input": checkpoint_ref,
+        "checkpoint_ref": source_ref or checkpoint_ref,
+        "source_path": str(source_path),
+        "source_kind": resolution.get("source_kind"),
+        "load_mode": initial_policy_checkpoint_load_mode,
+        "state_key": initial_policy_checkpoint_state_key,
+        "applied": False,
+        "load_path": str(source_path),
+        "prepared": {
+            "kind": "original_checkpoint",
+            "optimizer_keys_removed": [],
+        },
+    }
+
+    if initial_policy_checkpoint_load_mode == INITIAL_POLICY_CHECKPOINT_LOAD_MODE_MATCHING_SHAPE:
+        payload = _torch_load_checkpoint_payload(source_path)
+        state_key, state_dict = _select_checkpoint_model_state_dict(
+            payload,
+            state_key=initial_policy_checkpoint_state_key,
+        )
+        output_dir = attempt_train_root / "initial_policy_checkpoint"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / Path(checkpoint_ref).name
+        import torch
+
+        torch.save(
+            {
+                "model": state_dict,
+                "target_model": state_dict,
+                "optimizer": {
+                    "curvyzero_marker": INITIAL_POLICY_MODEL_ONLY_OPTIMIZER_MARKER,
+                },
+            },
+            output_path,
+        )
+        report["load_path"] = str(output_path)
+        report["prepared"] = {
+            "kind": "model_only_checkpoint",
+            "source_state_key": state_key,
+            "source_optimizer_keys": _checkpoint_payload_optimizer_keys(payload),
+            "optimizer_keys_removed": _checkpoint_payload_optimizer_keys(payload),
+            "checkpoint_ref": runs.file_ref(output_path, mount=RUNS_MOUNT),
+            "fresh_optimizer_intent": True,
+            "note": (
+                "Only model weights are handed to LightZero. The new run keeps its fresh "
+                "optimizer state."
+            ),
+        }
+
+    report["load_result"] = {
+        "loaded": False,
+        "status": "pending_train_muzero_load",
+        "module_loads": [],
+        "optimizer_load_calls": [],
+    }
+    return report
+
+
+class _InitialPolicyCheckpointLoadAudit:
+    def __init__(self, *, checkpoint: Mapping[str, Any]):
+        self.checkpoint = checkpoint
+        self.expected_load_path = Path(str(checkpoint.get("load_path") or "")).resolve()
+        self.load_mode = str(checkpoint.get("load_mode") or "")
+        self.torch_loads: list[dict[str, Any]] = []
+        self.module_loads: list[dict[str, Any]] = []
+        self.optimizer_load_calls: list[dict[str, Any]] = []
+        self.errors: list[str] = []
+        self.initial_load_seen = False
+        self.module_load_slots_remaining = 0
+        self.optimizer_load_slots_remaining = 0
+
+    def record_torch_load(self, target: Path | None) -> None:
+        if target is None or len(self.torch_loads) >= 20:
+            return
+        resolved = target.resolve()
+        is_initial = bool(self.expected_load_path) and resolved == self.expected_load_path
+        if is_initial:
+            self.initial_load_seen = True
+            self.module_load_slots_remaining = 4
+            self.optimizer_load_slots_remaining = 1
+        self.torch_loads.append({"path": str(resolved), "initial_policy_checkpoint": is_initial})
+
+    def consume_initial_module_load_slot(self) -> bool:
+        if not self.initial_load_seen or self.module_load_slots_remaining <= 0:
+            return False
+        self.module_load_slots_remaining -= 1
+        return True
+
+    def should_skip_optimizer_load(self, state_dict: Any) -> bool:
+        if (
+            isinstance(state_dict, dict)
+            and state_dict.get("curvyzero_marker") == INITIAL_POLICY_MODEL_ONLY_OPTIMIZER_MARKER
+        ):
+            return True
+        if self.initial_load_seen and self.optimizer_load_slots_remaining > 0:
+            self.optimizer_load_slots_remaining -= 1
+            return self.load_mode == INITIAL_POLICY_CHECKPOINT_LOAD_MODE_MATCHING_SHAPE
+        return False
+
+    def prepare_module_state_dict(self, module: Any, state_dict: Any) -> tuple[Any, dict[str, Any]]:
+        if self.load_mode != INITIAL_POLICY_CHECKPOINT_LOAD_MODE_MATCHING_SHAPE:
+            return state_dict, {"filtered": False}
+        if not isinstance(state_dict, dict):
+            return state_dict, {"filtered": False, "reason": "state_dict_not_dict"}
+        current_state = getattr(module, "state_dict", None)
+        if not callable(current_state):
+            return state_dict, {"filtered": False, "reason": "module_has_no_state_dict"}
+        target_state = current_state()
+        matched: dict[str, Any] = {}
+        skipped_shape: list[str] = []
+        skipped_missing: list[str] = []
+        for key, value in state_dict.items():
+            key_text = str(key)
+            target_value = target_state.get(key_text)
+            if target_value is None:
+                skipped_missing.append(key_text)
+                continue
+            if getattr(value, "shape", None) != getattr(target_value, "shape", None):
+                skipped_shape.append(key_text)
+                continue
+            matched[key_text] = value
+        return matched, {
+            "filtered": True,
+            "input_key_count": len(state_dict),
+            "matched_key_count": len(matched),
+            "skipped_missing_count": len(skipped_missing),
+            "skipped_shape_count": len(skipped_shape),
+            "skipped_missing_sample": skipped_missing[:20],
+            "skipped_shape_sample": skipped_shape[:20],
+        }
+
+    def record_module_load(
+        self,
+        module: Any,
+        state_dict: Any,
+        *,
+        strict: Any,
+        filter_report: Mapping[str, Any] | None = None,
+    ) -> None:
+        if len(self.module_loads) >= 20:
+            return
+        score = _checkpoint_state_dict_candidate_score(state_dict)
+        keys = [str(key) for key in state_dict] if isinstance(state_dict, dict) else []
+        self.module_loads.append(
+            {
+                "module_type": f"{type(module).__module__}.{type(module).__qualname__}",
+                "strict": strict,
+                "state_dict_key_count": len(keys),
+                "state_dict_key_sample": keys[:12],
+                "meaningful_model_load": score >= 1000,
+                "filter_report": dict(filter_report or {}),
+            }
+        )
+
+    def record_optimizer_load(
+        self,
+        optimizer: Any,
+        state_dict: Any,
+        *,
+        skipped: bool,
+    ) -> None:
+        if len(self.optimizer_load_calls) >= 20:
+            return
+        keys = sorted(str(key) for key in state_dict) if isinstance(state_dict, dict) else []
+        self.optimizer_load_calls.append(
+            {
+                "optimizer_type": f"{type(optimizer).__module__}.{type(optimizer).__qualname__}",
+                "state_dict_keys": keys[:20],
+                "skipped_to_preserve_fresh_optimizer": skipped,
+            }
+        )
+
+    def summary(self) -> dict[str, Any]:
+        optimizer_loaded = any(
+            not row.get("skipped_to_preserve_fresh_optimizer")
+            for row in self.optimizer_load_calls
+        )
+        module_loads = []
+        for row in self.module_loads:
+            item = dict(row)
+            item["fresh_optimizer_preserved"] = not optimizer_loaded
+            module_loads.append(item)
+        loaded = any(row.get("meaningful_model_load") for row in module_loads)
+        return {
+            "loaded": loaded,
+            "fresh_optimizer_preserved": not optimizer_loaded,
+            "module_loads": module_loads,
+            "optimizer_load_calls": self.optimizer_load_calls,
+            "torch_loads": self.torch_loads,
+            "errors": self.errors,
+        }
+
+
+def _install_initial_policy_checkpoint_load_audit(
+    audit: _InitialPolicyCheckpointLoadAudit,
+) -> Any:
+    import torch
+
+    original_torch_load = torch.load
+    original_module_load_state_dict = torch.nn.Module.load_state_dict
+    original_optimizer_load_state_dict = torch.optim.Optimizer.load_state_dict
+
+    def wrapped_torch_load(*args: Any, **kwargs: Any) -> Any:
+        audit.record_torch_load(_torch_load_target_path(args, kwargs))
+        return original_torch_load(*args, **kwargs)
+
+    def wrapped_module_load_state_dict(self: Any, state_dict: Any, *args: Any, **kwargs: Any) -> Any:
+        strict = kwargs.get("strict", args[0] if args else True)
+        filter_report: Mapping[str, Any] | None = None
+        if audit.consume_initial_module_load_slot():
+            state_dict, filter_report = audit.prepare_module_state_dict(self, state_dict)
+            if (
+                filter_report.get("filtered")
+                and audit.load_mode == INITIAL_POLICY_CHECKPOINT_LOAD_MODE_MATCHING_SHAPE
+            ):
+                if args:
+                    args = (False, *args[1:])
+                else:
+                    kwargs = dict(kwargs)
+                    kwargs["strict"] = False
+                strict = False
+        try:
+            result = original_module_load_state_dict(self, state_dict, *args, **kwargs)
+        except Exception as exc:
+            audit.errors.append(f"module load failed: {type(exc).__name__}: {exc}")
+            raise
+        audit.record_module_load(
+            self,
+            state_dict,
+            strict=strict,
+            filter_report=filter_report,
+        )
+        return result
+
+    def wrapped_optimizer_load_state_dict(self: Any, state_dict: Any) -> Any:
+        skip = audit.should_skip_optimizer_load(state_dict)
+        audit.record_optimizer_load(self, state_dict, skipped=skip)
+        if skip:
+            return None
+        return original_optimizer_load_state_dict(self, state_dict)
+
+    torch.load = wrapped_torch_load
+    torch.nn.Module.load_state_dict = wrapped_module_load_state_dict
+    torch.optim.Optimizer.load_state_dict = wrapped_optimizer_load_state_dict
+
+    def restore() -> None:
+        torch.optim.Optimizer.load_state_dict = original_optimizer_load_state_dict
+        torch.nn.Module.load_state_dict = original_module_load_state_dict
+        torch.load = original_torch_load
 
     return restore
 
@@ -3090,10 +3618,14 @@ def _run_visual_survival_train(
     profile_allow_auto_resume: bool,
     profile_volume_commit: bool,
     save_ckpt_after_iter: int,
+    commit_on_checkpoint: bool,
     stop_after_learner_train_calls: int,
     env_variant: str,
     reward_variant: str,
     source_state_trail_render_mode: str,
+    source_state_bonus_render_mode: str,
+    policy_observation_backend: str,
+    learner_seat_mode: str,
     ego_action_straight_override_probability: float,
     control_noise_profile_id: str,
     policy_action_repeat_min: int,
@@ -3113,6 +3645,9 @@ def _run_visual_survival_train(
     opponent_checkpoint_state_key: str | None,
     opponent_mixture_spec: str | None,
     opponent_assignment_ref: str | None,
+    initial_policy_checkpoint_ref: str | None = None,
+    initial_policy_checkpoint_state_key: str | None = None,
+    initial_policy_checkpoint_load_mode: str = DEFAULT_INITIAL_POLICY_CHECKPOINT_LOAD_MODE,
     background_eval_enabled: bool,
     background_eval_launch_kind: str,
     background_eval_compute: str,
@@ -3135,6 +3670,10 @@ def _run_visual_survival_train(
     background_gif_checkpoint_seed_mixing_enabled: bool = (
         DEFAULT_BACKGROUND_GIF_CHECKPOINT_SEED_MIXING_ENABLED
     ),
+    opponent_assignment_refresh_interval_train_iter: int = (
+        DEFAULT_OPPONENT_ASSIGNMENT_REFRESH_INTERVAL_TRAIN_ITER
+    ),
+    opponent_assignment_refresh_ref: str | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     if mode not in MODE_CHOICES:
@@ -3169,6 +3708,13 @@ def _run_visual_survival_train(
     source_state_trail_render_mode = _validate_source_state_trail_render_mode(
         source_state_trail_render_mode
     )
+    source_state_bonus_render_mode = _validate_source_state_bonus_render_mode(
+        source_state_bonus_render_mode
+    )
+    policy_observation_backend = _validate_policy_observation_backend(
+        policy_observation_backend
+    )
+    learner_seat_mode = _validate_learner_seat_mode(learner_seat_mode)
     lightzero_target_config = _lightzero_target_config_for_reward(
         env_variant=env_variant,
         reward_variant=reward_variant,
@@ -3270,6 +3816,21 @@ def _run_visual_survival_train(
         raise ValueError("stop_after_learner_train_calls must be non-negative")
     if int(lightzero_eval_freq) < 0:
         raise ValueError("lightzero_eval_freq must be non-negative")
+    if int(opponent_assignment_refresh_interval_train_iter) < 0:
+        raise ValueError("opponent_assignment_refresh_interval_train_iter must be non-negative")
+    if int(opponent_assignment_refresh_interval_train_iter) > 0 and not opponent_assignment_refresh_ref:
+        raise ValueError(
+            "opponent_assignment_refresh_ref is required when "
+            "opponent_assignment_refresh_interval_train_iter is positive"
+        )
+    if (
+        initial_policy_checkpoint_load_mode not in INITIAL_POLICY_CHECKPOINT_LOAD_MODE_CHOICES
+        and initial_policy_checkpoint_ref
+    ):
+        raise ValueError(
+            "initial_policy_checkpoint_load_mode must be one of "
+            f"{INITIAL_POLICY_CHECKPOINT_LOAD_MODE_CHOICES!r}"
+        )
     if float(background_gif_fps) <= 0.0:
         raise ValueError("background_gif_fps must be positive")
     packages = {
@@ -3292,6 +3853,7 @@ def _run_visual_survival_train(
     attempt_root = runs.volume_path(RUNS_MOUNT, attempt_root_ref)
     attempt_train_root = runs.volume_path(RUNS_MOUNT, attempt_train_ref)
     telemetry_path = attempt_train_root / "env_steps.jsonl"
+    assignment_refresh_events_path = attempt_train_root / "opponent_assignment_refresh_events.jsonl"
     exp_name_ref = attempt_train_ref / "lightzero_exp"
     exp_name = Path(exp_name_ref.as_posix())
     env_spec = _env_variant_spec(env_variant)
@@ -3310,6 +3872,7 @@ def _run_visual_survival_train(
         if opponent_assignment is not None
         else _resolve_opponent_mixture_for_env(opponent_mixture_spec=opponent_mixture_spec)
     )
+    opponent_assignment_context = _opponent_assignment_context_for_env(opponent_assignment)
     if opponent_mixture is not None:
         if env_variant != ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT:
             raise ValueError(
@@ -3326,6 +3889,12 @@ def _run_visual_survival_train(
         opponent_policy_kind=opponent_policy_kind,
         env_spec=env_spec,
         opponent_mixture=opponent_mixture,
+    )
+    initial_policy_checkpoint = _prepare_initial_policy_checkpoint_load(
+        initial_policy_checkpoint_ref=initial_policy_checkpoint_ref,
+        initial_policy_checkpoint_state_key=initial_policy_checkpoint_state_key,
+        initial_policy_checkpoint_load_mode=initial_policy_checkpoint_load_mode,
+        attempt_train_root=attempt_train_root,
     )
 
     gif_browser_run_marker_enabled = bool(background_gif_enabled)
@@ -3356,6 +3925,7 @@ def _run_visual_survival_train(
         "profile_volume_commit": bool(profile_volume_commit),
         "lightzero_multi_gpu": bool(lightzero_multi_gpu),
         "save_ckpt_after_iter": int(save_ckpt_after_iter),
+        "commit_on_checkpoint": bool(commit_on_checkpoint),
         "stop_after_learner_train_calls": int(stop_after_learner_train_calls),
         "env_variant": env_variant,
         "env_type": env_spec["env_type"],
@@ -3366,8 +3936,23 @@ def _run_visual_survival_train(
         "reward_policy": reward_policy,
         "lightzero_target_config": lightzero_target_config,
         "source_state_trail_render_mode": source_state_trail_render_mode,
+        "source_state_bonus_render_mode": source_state_bonus_render_mode,
+        "policy_observation_backend": policy_observation_backend,
+        "policy_trail_render_mode": source_state_trail_render_mode,
+        "policy_bonus_render_mode": source_state_bonus_render_mode,
+        "policy_observation_contract_id": POLICY_OBSERVATION_CONTRACT_ID,
+        "observation_contract": policy_observation_surface(
+            trail_render_mode=source_state_trail_render_mode,
+            bonus_render_mode=source_state_bonus_render_mode,
+            backend=policy_observation_backend,
+        ),
+        "learner_seat_mode": learner_seat_mode,
         "default_trail_render_mode": DEFAULT_SOURCE_STATE_TRAIL_RENDER_MODE,
         "supported_trail_render_modes": list(SOURCE_STATE_TRAIL_RENDER_MODE_CHOICES),
+        "default_bonus_render_mode": DEFAULT_SOURCE_STATE_BONUS_RENDER_MODE,
+        "supported_bonus_render_modes": list(SOURCE_STATE_BONUS_RENDER_MODE_CHOICES),
+        "default_policy_observation_backend": DEFAULT_POLICY_OBSERVATION_BACKEND_CHOICE,
+        "supported_policy_observation_backends": list(POLICY_OBSERVATION_BACKEND_CHOICES),
         "observation_schema_id": env_spec["observation_schema_id"],
         "debug_fidelity_only": env_spec["debug_fidelity_only"],
         "ego_action_straight_override_probability": float(ego_action_straight_override_probability),
@@ -3450,6 +4035,21 @@ def _run_visual_survival_train(
         "opponent_mixture_spec": opponent_mixture_spec,
         "opponent_mixture": opponent_mixture,
         "opponent_assignment_ref": opponent_assignment_ref,
+        "opponent_assignment_context": opponent_assignment_context,
+        "opponent_assignment_refresh": {
+            "enabled": int(opponent_assignment_refresh_interval_train_iter) > 0
+            and bool(opponent_assignment_refresh_ref),
+            "mode": "assignment_or_pointer_ref_refresh",
+            "interval_train_iter": int(opponent_assignment_refresh_interval_train_iter),
+            "pending_assignment_ref": opponent_assignment_refresh_ref,
+            "events_ref": runs.file_ref(assignment_refresh_events_path, mount=RUNS_MOUNT),
+            "control_plane_caveat": (
+                "Refresh may read either an immutable assignment JSON or a "
+                "curvyzero_opponent_assignment_refresh_pointer/v0 JSON that "
+                "names the immutable assignment and expected sha256. The pointer "
+                "write must be atomic enough for Modal Volume readers."
+            ),
+        },
         "opponent_assignment": (
             {
                 key: opponent_assignment.get(key)
@@ -3463,6 +4063,25 @@ def _run_visual_survival_train(
                 )
             }
             if opponent_assignment is not None
+            else None
+        ),
+        "initial_policy_checkpoint": (
+            {
+                key: initial_policy_checkpoint.get(key)
+                for key in (
+                    "enabled",
+                    "input",
+                    "checkpoint_ref",
+                    "source_kind",
+                    "load_mode",
+                    "state_key",
+                    "applied",
+                    "load_path",
+                    "prepared",
+                    "load_result",
+                )
+            }
+            if initial_policy_checkpoint is not None
             else None
         ),
         "background_eval_enabled": bool(background_eval_enabled),
@@ -3572,8 +4191,12 @@ def _run_visual_survival_train(
         opponent_snapshot_ref=opponent_snapshot_ref,
         opponent_checkpoint_state_key=opponent_checkpoint_state_key,
         opponent_mixture=opponent_mixture,
+        opponent_assignment_context=opponent_assignment_context,
         reward_variant=reward_variant,
         source_state_trail_render_mode=source_state_trail_render_mode,
+        source_state_bonus_render_mode=source_state_bonus_render_mode,
+        policy_observation_backend=policy_observation_backend,
+        learner_seat_mode=learner_seat_mode,
     )
     auto_resume = _prepare_lightzero_auto_resume(
         run_id=run_id,
@@ -3629,6 +4252,31 @@ def _run_visual_survival_train(
             max_env_step=max_env_step,
             max_train_iter=max_train_iter,
         )
+        if initial_policy_checkpoint is not None:
+            initial_policy_checkpoint["applied"] = False
+            initial_policy_checkpoint["skip_reason"] = (
+                "auto_resume_found_existing_run_checkpoint; resume wins over initial seed"
+            )
+            command["initial_policy_checkpoint"] = _to_plain(initial_policy_checkpoint)
+    elif initial_policy_checkpoint is not None:
+        initial_policy_checkpoint["applied"] = True
+        patched["patches"].append(
+            _set_load_ckpt_before_run(
+                patched["main_config"],
+                str(initial_policy_checkpoint["load_path"]),
+                reason=(
+                    "seed fresh training run from immutable tournament winner checkpoint "
+                    "while preserving fresh optimizer state"
+                ),
+            )
+        )
+        patched["surface"] = _extract_surface(
+            patched["main_config"],
+            patched["create_config"],
+            max_env_step=max_env_step,
+            max_train_iter=max_train_iter,
+        )
+        command["initial_policy_checkpoint"] = _to_plain(initial_policy_checkpoint)
     surface = patched["surface"]
     problems.extend(_validate_visual_survival_surface(surface=surface, command=command))
 
@@ -3653,18 +4301,52 @@ def _run_visual_survival_train(
         cuda_sync_enabled=profile_cuda_sync_enabled,
     )
     target_audit = _LightZeroTargetAudit(mode=mode, env_variant=command["env_variant"])
+    initial_policy_load_audit = (
+        _InitialPolicyCheckpointLoadAudit(checkpoint=initial_policy_checkpoint)
+        if initial_policy_checkpoint is not None and initial_policy_checkpoint.get("applied")
+        else None
+    )
+    assignment_refresh_events: list[dict[str, Any]] = []
+
+    def record_assignment_refresh_event(event: Mapping[str, Any]) -> None:
+        row = _to_plain(
+            {
+                "schema_id": "curvyzero_opponent_assignment_refresh_event/v0",
+                "run_id": run_id,
+                "attempt_id": attempt_id,
+                "created_at": runs.utc_timestamp(),
+                **dict(event),
+            }
+        )
+        assignment_refresh_events.append(row)
+        assignment_refresh_events_path.parent.mkdir(parents=True, exist_ok=True)
+        with assignment_refresh_events_path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(row, sort_keys=True) + "\n")
+
     if mode in {"train", "profile"} and not problems:
+        train_original_cwd = Path.cwd()
+        train_restore_cwd = (
+            _preferred_cwd_outside_runs_mount()
+            if _path_is_inside_or_equal(train_original_cwd, RUNS_MOUNT)
+            else train_original_cwd
+        )
         os.chdir(RUNS_MOUNT)
         stdout_buffer = io.StringIO()
         stderr_buffer = io.StringIO()
         train_started = time.perf_counter()
         restore_profile = None
         restore_target_audit = None
+        restore_assignment_refresh = None
         restore_live_publisher = None
         restore_progress_writer = None
         restore_resume_state = None
+        restore_initial_policy_load_audit = None
         gpu_sampler = None
         try:
+            if initial_policy_load_audit is not None:
+                restore_initial_policy_load_audit = _install_initial_policy_checkpoint_load_audit(
+                    initial_policy_load_audit
+                )
             restore_resume_state = _install_lightzero_full_resume_state_hooks(
                 train_muzero=train_muzero,
                 run_id=run_id,
@@ -3681,6 +4363,7 @@ def _run_visual_survival_train(
                 exp_name=exp_name,
                 attempt_train_root=attempt_train_root,
                 started_monotonic=train_started,
+                commit_on_checkpoint=command["commit_on_checkpoint"],
             )
             restore_live_publisher = _install_live_checkpoint_publisher(
                 train_muzero=train_muzero,
@@ -3694,6 +4377,21 @@ def _run_visual_survival_train(
                     else None
                 ),
             )
+            if command["opponent_assignment_refresh"]["enabled"]:
+                restore_assignment_refresh = _install_lightzero_opponent_assignment_refresh_hook(
+                    train_muzero=train_muzero,
+                    interval_train_iter=int(
+                        command["opponent_assignment_refresh"]["interval_train_iter"]
+                    ),
+                    load_pending_assignment=lambda: _resolve_opponent_assignment_for_env(
+                        opponent_assignment_ref=opponent_assignment_refresh_ref,
+                        reload_volume_before_read=True,
+                    ),
+                    initial_assignment=opponent_assignment,
+                    event_sink=record_assignment_refresh_event,
+                )
+                if restore_assignment_refresh is None:
+                    raise RuntimeError("opponent assignment refresh hook was not installed")
             restore_target_audit = _install_lightzero_target_audit(
                 train_muzero=train_muzero,
                 audit=target_audit,
@@ -3771,6 +4469,16 @@ def _run_visual_survival_train(
                     target_audit.add_error(
                         f"target audit restore failed: {type(exc).__name__}: {exc}"
                     )
+            if restore_assignment_refresh is not None:
+                try:
+                    restore_assignment_refresh()
+                except Exception as exc:  # pragma: no cover - remote diagnosis only.
+                    record_assignment_refresh_event(
+                        {
+                            "decision": "restore_failed",
+                            "reason": f"{type(exc).__name__}: {exc}",
+                        }
+                    )
             if restore_live_publisher is not None:
                 try:
                     restore_live_publisher()
@@ -3792,11 +4500,27 @@ def _run_visual_survival_train(
                     profiler.add_note(
                         f"full resume state restore hook cleanup failed: {type(exc).__name__}: {exc}"
                     )
+            if restore_initial_policy_load_audit is not None:
+                try:
+                    restore_initial_policy_load_audit()
+                except Exception as exc:  # pragma: no cover - remote diagnosis only.
+                    if initial_policy_load_audit is not None:
+                        initial_policy_load_audit.errors.append(
+                            f"initial policy load audit restore failed: {type(exc).__name__}: {exc}"
+                        )
             if gpu_sampler is not None:
                 gpu_stop_event, gpu_thread = gpu_sampler
                 gpu_stop_event.set()
                 gpu_thread.join(timeout=5)
                 profiler.sample_gpu()
+            try:
+                os.chdir(train_restore_cwd)
+            except Exception as exc:  # pragma: no cover - remote diagnosis only.
+                profiler.add_note(f"cwd restore failed: {type(exc).__name__}: {exc}")
+
+    if initial_policy_checkpoint is not None and initial_policy_load_audit is not None:
+        initial_policy_checkpoint["load_result"] = initial_policy_load_audit.summary()
+        command["initial_policy_checkpoint"] = _to_plain(initial_policy_checkpoint)
 
     artifact_summary = _scan_lightzero_artifacts(str(exp_name))
     checkpoint_mirror = _mirror_lightzero_checkpoints(
@@ -3849,11 +4573,27 @@ def _run_visual_survival_train(
         "surface": surface,
         "opponent_checkpoint": opponent_checkpoint,
         "auto_resume": auto_resume,
+        "initial_policy_checkpoint": (
+            _to_plain(initial_policy_checkpoint) if initial_policy_checkpoint is not None else None
+        ),
         "patches": patched["patches"],
         "compile_config": compile_summary,
         "train_result": train_result,
         "phase_profile": phase_profile,
         "target_audit": target_audit_summary,
+        "opponent_assignment_refresh": {
+            "enabled": command["opponent_assignment_refresh"]["enabled"],
+            "mode": command["opponent_assignment_refresh"]["mode"],
+            "interval_train_iter": command["opponent_assignment_refresh"][
+                "interval_train_iter"
+            ],
+            "pending_assignment_ref": command["opponent_assignment_refresh"][
+                "pending_assignment_ref"
+            ],
+            "events_ref": command["opponent_assignment_refresh"]["events_ref"],
+            "event_count": len(assignment_refresh_events),
+            "events": assignment_refresh_events[-20:],
+        },
         "lightzero_artifacts": artifact_summary,
         "checkpoint_mirror": checkpoint_mirror,
         "action_observability": action_summary,
@@ -4025,6 +4765,7 @@ def _run_visual_survival_train(
         "action_observability": action_summary,
         "checkpoint_mirror": checkpoint_mirror,
         "auto_resume": auto_resume,
+        "initial_policy_checkpoint": summary.get("initial_policy_checkpoint"),
         "final_volume_commit": final_volume_commit,
         "phase_profile": phase_profile,
         "target_audit": target_audit_summary,
@@ -4154,6 +4895,7 @@ def _resolve_opponent_checkpoint_for_env(
     opponent_policy_kind: str,
     opponent_checkpoint_ref: str | None,
     opponent_checkpoint_report_ref: str | None,
+    reload_checkpoint_volume_before_read: bool = False,
 ) -> dict[str, Any] | None:
     if opponent_policy_kind == OPPONENT_POLICY_KIND_NONE_CENTRALIZED_JOINT_ACTION:
         if opponent_checkpoint_ref:
@@ -4175,10 +4917,13 @@ def _resolve_opponent_checkpoint_for_env(
     if not opponent_checkpoint_ref:
         raise ValueError("opponent_checkpoint_ref is required with frozen_lightzero_checkpoint")
     _reject_mutable_frozen_opponent_checkpoint_ref(str(opponent_checkpoint_ref))
-    path, resolution = runs.resolve_mounted_ref_or_path(
+    if reload_checkpoint_volume_before_read:
+        _safe_reload_volume_for_ref(
+            str(opponent_checkpoint_ref),
+            reason="opponent checkpoint resolution",
+        )
+    path, resolution = _resolve_trainer_ref_or_path(
         opponent_checkpoint_ref,
-        mount=RUNS_MOUNT,
-        remote_root=REMOTE_ROOT,
     )
     if not path.is_file():
         raise FileNotFoundError(f"opponent checkpoint file not found: {path}")
@@ -4194,13 +4939,14 @@ def _resolve_opponent_checkpoint_for_env(
         "input": opponent_checkpoint_ref,
         "resolved_checkpoint_path": str(path),
         "checkpoint_ref": report_ref,
-        "file": runs.file_summary_any_mount(path, mount=RUNS_MOUNT),
+        "file": _file_summary_for_resolution(path, resolution),
     }
 
 
 def _resolve_opponent_mixture_for_env(
     *,
     opponent_mixture_spec: Any,
+    reload_checkpoint_volume_before_read: bool = False,
 ) -> dict[str, Any] | None:
     mixture = parse_opponent_mixture_spec(opponent_mixture_spec)
     if mixture is None:
@@ -4221,10 +4967,13 @@ def _resolve_opponent_mixture_for_env(
                     "frozen opponent mixture entries must use exact immutable "
                     "iteration_N.pth.tar checkpoint refs"
                 )
-            path, resolution = runs.resolve_mounted_ref_or_path(
+            if reload_checkpoint_volume_before_read:
+                _safe_reload_volume_for_ref(
+                    str(checkpoint_ref),
+                    reason="opponent mixture checkpoint resolution",
+                )
+            path, resolution = _resolve_trainer_ref_or_path(
                 str(checkpoint_ref),
-                mount=RUNS_MOUNT,
-                remote_root=REMOTE_ROOT,
             )
             if not path.is_file():
                 raise FileNotFoundError(f"opponent mixture checkpoint file not found: {path}")
@@ -4240,9 +4989,9 @@ def _resolve_opponent_mixture_for_env(
                     "opponent_checkpoint_path": str(path),
                     "opponent_checkpoint_ref": str(report_ref),
                     "opponent_checkpoint_resolution": resolution,
-                    "opponent_checkpoint_file": runs.file_summary_any_mount(
+                    "opponent_checkpoint_file": _file_summary_for_resolution(
                         path,
-                        mount=RUNS_MOUNT,
+                        resolution,
                     ),
                 }
             )
@@ -4254,28 +5003,203 @@ def _resolve_opponent_mixture_for_env(
     }
 
 
+def _path_is_inside_or_equal(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve(strict=False).relative_to(parent.resolve(strict=False))
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _preferred_cwd_outside_runs_mount() -> Path:
+    for candidate in (Path(tempfile.gettempdir()), REMOTE_ROOT, Path("/")):
+        if candidate.exists() and not _path_is_inside_or_equal(candidate, RUNS_MOUNT):
+            return candidate
+    return Path("/")
+
+
+def _safe_reload_volume(
+    volume: Any,
+    *,
+    mount: Path,
+    lock: threading.Lock,
+    reason: str,
+) -> None:
+    """Reload a Volume without keeping cwd inside that mounted Volume."""
+
+    if not hasattr(volume, "reload"):
+        return
+    with lock:
+        try:
+            original_cwd = Path.cwd()
+        except OSError:
+            original_cwd = None
+        moved = False
+        if original_cwd is None or _path_is_inside_or_equal(original_cwd, mount):
+            os.chdir(_preferred_cwd_outside_runs_mount())
+            moved = True
+        try:
+            volume.reload()
+        except Exception as exc:
+            raise RuntimeError(f"volume reload failed during {reason}: {exc}") from exc
+        finally:
+            if moved and original_cwd is not None:
+                os.chdir(original_cwd)
+
+
+def _safe_reload_runs_volume(*, reason: str) -> None:
+    _safe_reload_volume(
+        runs_volume,
+        mount=RUNS_MOUNT,
+        lock=_RUNS_VOLUME_RELOAD_LOCK,
+        reason=reason,
+    )
+
+
+def _safe_reload_control_volume(*, reason: str) -> None:
+    _safe_reload_volume(
+        control_volume,
+        mount=CONTROL_MOUNT,
+        lock=_CONTROL_VOLUME_RELOAD_LOCK,
+        reason=reason,
+    )
+
+
+def _volume_name_for_ref(path_text: str, *, default_mount_name: str = "runs") -> str | None:
+    if path_text.startswith(_CONTROL_REF_PREFIX):
+        return "control"
+    if path_text.startswith(_RUNS_REF_PREFIX):
+        return "runs"
+    path = Path(path_text)
+    if not path.is_absolute():
+        return default_mount_name
+    path_posix = path.as_posix()
+    control_posix = CONTROL_MOUNT.as_posix()
+    runs_posix = RUNS_MOUNT.as_posix()
+    if path_posix == control_posix or path_posix.startswith(f"{control_posix}/"):
+        return "control"
+    if path_posix == runs_posix or path_posix.startswith(f"{runs_posix}/"):
+        return "runs"
+    return None
+
+
+def _safe_reload_volume_for_ref(
+    path_text: str,
+    *,
+    reason: str,
+    default_mount_name: str = "runs",
+) -> None:
+    volume_name = _volume_name_for_ref(path_text, default_mount_name=default_mount_name)
+    if volume_name == "control":
+        _safe_reload_control_volume(reason=reason)
+    elif volume_name == "runs":
+        _safe_reload_runs_volume(reason=reason)
+
+
+def _prefixed_volume_ref(path_text: str) -> tuple[Path, str, str] | None:
+    for prefix, mount_name, mount in (
+        (_CONTROL_REF_PREFIX, "control", CONTROL_MOUNT),
+        (_RUNS_REF_PREFIX, "runs", RUNS_MOUNT),
+    ):
+        if path_text.startswith(prefix):
+            raw_ref = path_text[len(prefix) :]
+            ref = runs.require_relative_ref(raw_ref)
+            return mount / Path(*ref.parts), mount_name, ref.as_posix()
+    return None
+
+
+def _resolve_trainer_ref_or_path(
+    path_text: str,
+    *,
+    default_mount: Path | None = None,
+    default_mount_name: str = "runs",
+) -> tuple[Path, dict[str, Any]]:
+    mount = RUNS_MOUNT if default_mount is None else default_mount
+    prefixed = _prefixed_volume_ref(str(path_text))
+    if prefixed is not None:
+        path, mount_name, source_ref = prefixed
+        return path, {
+            "source_kind": f"{mount_name}_volume_ref",
+            "source_ref": source_ref,
+            "mount": mount_name,
+        }
+    path, resolution = runs.resolve_mounted_ref_or_path(
+        str(path_text),
+        mount=mount,
+        remote_root=REMOTE_ROOT,
+    )
+    return path, {"mount": default_mount_name, **resolution}
+
+
+def _file_summary_for_resolution(path: Path, resolution: Mapping[str, Any]) -> dict[str, Any]:
+    mount = CONTROL_MOUNT if resolution.get("mount") == "control" else RUNS_MOUNT
+    return runs.file_summary_any_mount(path, mount=mount)
+
+
 def _resolve_opponent_assignment_for_env(
     *,
     opponent_assignment_ref: str | None,
+    reload_volume_before_read: bool = False,
+    reload_checkpoint_volume_before_read: bool = False,
+    _pointer_depth: int = 0,
 ) -> dict[str, Any] | None:
-    """Read one immutable assignment and resolve its opponent mixture for the env."""
+    """Read an assignment, or a small mutable pointer to one, for the env."""
 
     if not opponent_assignment_ref:
         return None
-    path, resolution = runs.resolve_mounted_ref_or_path(
+    if reload_volume_before_read:
+        if str(opponent_assignment_ref).startswith(_CONTROL_REF_PREFIX):
+            _safe_reload_control_volume(reason="opponent assignment refresh")
+        else:
+            _safe_reload_runs_volume(reason="opponent assignment refresh")
+    path, resolution = _resolve_trainer_ref_or_path(
         str(opponent_assignment_ref),
-        mount=RUNS_MOUNT,
-        remote_root=REMOTE_ROOT,
     )
     if not path.is_file():
         raise FileNotFoundError(f"opponent assignment file not found: {path}")
     payload = json.loads(path.read_text(encoding="utf-8"))
+    if payload.get("schema_id") == OPPONENT_ASSIGNMENT_REFRESH_POINTER_SCHEMA_ID:
+        if int(_pointer_depth) >= 3:
+            raise ValueError("opponent assignment refresh pointer chain is too deep")
+        pointed_ref = payload.get("assignment_ref")
+        if not isinstance(pointed_ref, str) or not pointed_ref:
+            raise ValueError("opponent assignment refresh pointer requires assignment_ref")
+        resolved = _resolve_opponent_assignment_for_env(
+            opponent_assignment_ref=pointed_ref,
+            reload_volume_before_read=False,
+            reload_checkpoint_volume_before_read=reload_checkpoint_volume_before_read,
+            _pointer_depth=int(_pointer_depth) + 1,
+        )
+        if resolved is None:
+            return None
+        expected_sha = payload.get("assignment_sha256")
+        if expected_sha and str(expected_sha) != str(resolved.get("assignment_sha256")):
+            raise ValueError(
+                "opponent assignment refresh pointer sha mismatch: "
+                f"expected {expected_sha}, got {resolved.get('assignment_sha256')}"
+            )
+        pointer_ref = (
+            str(resolution.get("source_ref"))
+            if resolution.get("source_ref")
+            else str(opponent_assignment_ref)
+        )
+        resolved["assignment_pointer"] = {
+            "schema_id": OPPONENT_ASSIGNMENT_REFRESH_POINTER_SCHEMA_ID,
+            "pointer_ref": pointer_ref,
+            "pointer_path": str(path),
+            "pointed_assignment_ref": pointed_ref,
+            "expected_assignment_sha256": expected_sha,
+            "pointer_resolution": resolution,
+            "pointer_file": _file_summary_for_resolution(path, resolution),
+        }
+        return resolved
     parsed = parse_opponent_assignment_snapshot(payload)
     if parsed is None:
         return None
     assignment_hash = canonical_assignment_json_sha256(payload)
     opponent_mixture = _resolve_opponent_mixture_for_env(
-        opponent_mixture_spec=parsed["opponent_mixture"]
+        opponent_mixture_spec=parsed["opponent_mixture"],
+        reload_checkpoint_volume_before_read=reload_checkpoint_volume_before_read,
     )
     return {
         "assignment_id": parsed["assignment_id"],
@@ -4289,9 +5213,391 @@ def _resolve_opponent_assignment_for_env(
         "assignment_path": str(path),
         "assignment_sha256": assignment_hash,
         "assignment_resolution": resolution,
-        "assignment_file": runs.file_summary_any_mount(path, mount=RUNS_MOUNT),
+        "assignment_file": _file_summary_for_resolution(path, resolution),
         "opponent_mixture": opponent_mixture,
     }
+
+
+def _opponent_assignment_context_for_env(
+    opponent_assignment: Mapping[str, Any] | None,
+    *,
+    refresh_index: int | None = None,
+) -> dict[str, Any] | None:
+    if opponent_assignment is None:
+        return None
+    context = {
+        "assignment_id": opponent_assignment.get("assignment_id"),
+        "assignment_ref": opponent_assignment.get("assignment_ref"),
+        "assignment_sha256": opponent_assignment.get("assignment_sha256"),
+        "source_epoch": opponent_assignment.get("source_epoch"),
+        "source_ref": opponent_assignment.get("source_ref"),
+    }
+    if refresh_index is not None:
+        context["refresh_index"] = int(refresh_index)
+    return {key: value for key, value in context.items() if value is not None}
+
+
+def _lightzero_collect_train_iter_from_call(
+    args: tuple[Any, ...],
+    kwargs: Mapping[str, Any],
+) -> int:
+    """Extract MuZeroCollector.collect's train_iter argument.
+
+    LightZero 0.2.0 uses collect(n_episode=None, train_iter=0, ...), so a
+    single positional argument is n_episode, not train_iter.
+    """
+
+    if "train_iter" in kwargs:
+        return int(kwargs["train_iter"])
+    if len(args) >= 2:
+        return int(args[1])
+    return 0
+
+
+def _opponent_assignment_refresh_bucket(
+    *,
+    train_iter: int,
+    interval_train_iter: int,
+) -> int:
+    interval = int(interval_train_iter)
+    if interval < 1:
+        raise ValueError("opponent assignment refresh interval must be at least 1")
+    train_iter = int(train_iter)
+    if train_iter <= 0:
+        return 0
+    return train_iter // interval
+
+
+def _opponent_assignment_refresh_due(
+    *,
+    train_iter: int,
+    interval_train_iter: int,
+    last_checked_bucket: int,
+) -> bool:
+    bucket = _opponent_assignment_refresh_bucket(
+        train_iter=train_iter,
+        interval_train_iter=interval_train_iter,
+    )
+    return bucket > int(last_checked_bucket)
+
+
+def _opponent_assignment_refresh_reset_param(
+    *,
+    env_num: int,
+    opponent_assignment: Mapping[str, Any],
+    refresh_index: int,
+) -> dict[int, dict[str, Any]]:
+    env_num = int(env_num)
+    if env_num < 1:
+        raise ValueError("opponent assignment refresh requires at least one env")
+    opponent_mixture = opponent_assignment.get("opponent_mixture")
+    if not isinstance(opponent_mixture, Mapping):
+        raise ValueError("opponent assignment refresh requires a resolved opponent_mixture")
+    context = _opponent_assignment_context_for_env(
+        opponent_assignment,
+        refresh_index=int(refresh_index),
+    )
+    if context is None:
+        raise ValueError("opponent assignment refresh requires assignment context")
+    for key in ("assignment_id", "assignment_ref", "assignment_sha256", "refresh_index"):
+        if key not in context:
+            raise ValueError(f"opponent assignment refresh context missing {key}")
+    return {
+        env_id: {
+            "opponent_mixture": copy.deepcopy(dict(opponent_mixture)),
+            "opponent_assignment_context": copy.deepcopy(context),
+        }
+        for env_id in range(env_num)
+    }
+
+
+def _opponent_assignment_refresh_ready_report(
+    *,
+    env_manager: Any,
+    opponent_assignment: Mapping[str, Any],
+    refresh_index: int,
+) -> dict[str, Any]:
+    env_num = int(getattr(env_manager, "env_num"))
+    expected_context = _opponent_assignment_context_for_env(
+        opponent_assignment,
+        refresh_index=int(refresh_index),
+    )
+    if expected_context is None:
+        return {"ok": False, "reason": "missing expected assignment context"}
+
+    ready_obs = getattr(env_manager, "ready_obs", None)
+    if isinstance(ready_obs, Mapping):
+        ready_ids = set(int(key) for key in ready_obs.keys())
+    elif isinstance(ready_obs, (list, tuple)):
+        ready_ids = set(range(len(ready_obs)))
+    else:
+        return {
+            "ok": False,
+            "reason": f"ready_obs has unsupported type {type(ready_obs).__name__}",
+        }
+    expected_ids = set(range(env_num))
+    if ready_ids != expected_ids:
+        return {
+            "ok": False,
+            "reason": "not all envs are ready after assignment refresh",
+            "ready_env_ids": sorted(ready_ids),
+            "expected_env_ids": sorted(expected_ids),
+        }
+
+    infos = getattr(env_manager, "last_reset_info", None)
+    if isinstance(infos, Mapping):
+        info_by_env = {int(key): value for key, value in infos.items()}
+    elif isinstance(infos, (list, tuple)):
+        info_by_env = {env_id: value for env_id, value in enumerate(infos)}
+    else:
+        return {
+            "ok": False,
+            "reason": f"last_reset_info has unsupported type {type(infos).__name__}",
+        }
+    if set(info_by_env) != expected_ids:
+        return {
+            "ok": False,
+            "reason": "last_reset_info missing env ids after assignment refresh",
+            "info_env_ids": sorted(info_by_env),
+            "expected_env_ids": sorted(expected_ids),
+        }
+
+    mismatches: list[dict[str, Any]] = []
+    expected_pairs = {
+        "opponent_assignment_id": expected_context.get("assignment_id"),
+        "opponent_assignment_ref": expected_context.get("assignment_ref"),
+        "opponent_assignment_sha256": expected_context.get("assignment_sha256"),
+        "opponent_assignment_refresh_index": expected_context.get("refresh_index"),
+    }
+    for env_id, info in sorted(info_by_env.items()):
+        if not isinstance(info, Mapping):
+            mismatches.append(
+                {"env_id": env_id, "reason": f"info type {type(info).__name__}"}
+            )
+            continue
+        for key, expected in expected_pairs.items():
+            if info.get(key) != expected:
+                mismatches.append(
+                    {
+                        "env_id": env_id,
+                        "field": key,
+                        "actual": info.get(key),
+                        "expected": expected,
+                    }
+                )
+    if mismatches:
+        return {
+            "ok": False,
+            "reason": "env assignment info mismatch after refresh",
+            "mismatches": mismatches,
+        }
+    return {
+        "ok": True,
+        "reason": "all envs ready with refreshed opponent assignment",
+        "env_num": env_num,
+        "assignment_id": expected_context.get("assignment_id"),
+        "assignment_ref": expected_context.get("assignment_ref"),
+        "assignment_sha256": expected_context.get("assignment_sha256"),
+        "refresh_index": int(refresh_index),
+    }
+
+
+def _apply_opponent_assignment_refresh_to_collector_env(
+    *,
+    collector: Any,
+    opponent_assignment: Mapping[str, Any],
+    refresh_index: int,
+) -> dict[str, Any]:
+    env_manager = getattr(collector, "_env")
+    env_num = int(getattr(env_manager, "env_num"))
+    reset_param = _opponent_assignment_refresh_reset_param(
+        env_num=env_num,
+        opponent_assignment=opponent_assignment,
+        refresh_index=int(refresh_index),
+    )
+    env_manager.reset(reset_param)
+    report = _opponent_assignment_refresh_ready_report(
+        env_manager=env_manager,
+        opponent_assignment=opponent_assignment,
+        refresh_index=int(refresh_index),
+    )
+    if not report.get("ok", False):
+        raise RuntimeError(
+            "opponent assignment refresh reset was not proven: "
+            f"{report.get('reason')}"
+        )
+
+    policy = getattr(collector, "_policy", None)
+    policy_reset = getattr(policy, "reset", None)
+    if callable(policy_reset):
+        policy_reset(list(reset_param.keys()))
+    reset_stat = getattr(collector, "_reset_stat", None)
+    if callable(reset_stat):
+        for env_id in reset_param:
+            reset_stat(env_id)
+    return report
+
+
+def _install_lightzero_opponent_assignment_refresh_hook(
+    *,
+    train_muzero: Any,
+    interval_train_iter: int,
+    load_pending_assignment: Any,
+    initial_assignment: Mapping[str, Any] | None = None,
+    event_sink: Any | None = None,
+) -> Any:
+    interval_train_iter = int(interval_train_iter)
+    if interval_train_iter < 1:
+        raise ValueError("opponent assignment refresh interval must be at least 1")
+    if not callable(load_pending_assignment):
+        raise TypeError("load_pending_assignment must be callable")
+
+    globals_map = getattr(train_muzero, "__globals__", {})
+    collector_cls = globals_map.get("Collector")
+    if not inspect.isclass(collector_cls):
+        try:
+            worker_module = importlib.import_module("lzero.worker")
+            collector_cls = getattr(worker_module, "MuZeroCollector", None)
+        except Exception:
+            collector_cls = None
+    if not inspect.isclass(collector_cls):
+        emit_missing = _to_plain(
+            {
+                "decision": "hook_not_installed",
+                "reason": "no LightZero Collector class found",
+            }
+        )
+        if callable(event_sink):
+            event_sink(emit_missing)
+        return None
+
+    owner = next(
+        (
+            base
+            for base in inspect.getmro(collector_cls)
+            if "collect" in getattr(base, "__dict__", {})
+        ),
+        None,
+    )
+    if owner is None:
+        return None
+
+    original = owner.__dict__["collect"]
+    initial_context = _opponent_assignment_context_for_env(initial_assignment)
+    state = {
+        "initial_collect_checked": False,
+        "last_checked_bucket": 0,
+        "refresh_index": int((initial_context or {}).get("refresh_index", 0) or 0),
+        "last_applied_assignment_sha256": (
+            str((initial_context or {}).get("assignment_sha256"))
+            if (initial_context or {}).get("assignment_sha256") is not None
+            else None
+        ),
+    }
+
+    def emit(event: Mapping[str, Any]) -> None:
+        if callable(event_sink):
+            event_sink(_to_plain(dict(event)))
+
+    def wrapped(self: Any, *args: Any, **kwargs: Any) -> Any:
+        train_iter = _lightzero_collect_train_iter_from_call(args, kwargs)
+        bucket = _opponent_assignment_refresh_bucket(
+            train_iter=train_iter,
+            interval_train_iter=interval_train_iter,
+        )
+        check_initial_collect = int(train_iter) <= 0 and not bool(
+            state["initial_collect_checked"]
+        )
+        if check_initial_collect or bucket > int(state["last_checked_bucket"]):
+            try:
+                pending_assignment = load_pending_assignment()
+            except Exception as exc:
+                emit(
+                    {
+                        "decision": "kept_previous",
+                        "reason": f"pending assignment load failed: {type(exc).__name__}: {exc}",
+                        "train_iter": int(train_iter),
+                        "bucket": int(bucket),
+                    }
+                )
+            else:
+                if pending_assignment is None:
+                    state["initial_collect_checked"] = True
+                    state["last_checked_bucket"] = bucket
+                    emit(
+                        {
+                            "decision": "kept_previous",
+                            "reason": "no pending assignment",
+                            "train_iter": int(train_iter),
+                            "bucket": int(bucket),
+                        }
+                    )
+                else:
+                    pending_sha = pending_assignment.get("assignment_sha256")
+                    if not pending_sha:
+                        emit(
+                            {
+                                "decision": "kept_previous",
+                                "reason": "pending assignment missing assignment_sha256",
+                                "train_iter": int(train_iter),
+                                "bucket": int(bucket),
+                            }
+                        )
+                    elif pending_sha == state["last_applied_assignment_sha256"]:
+                        state["initial_collect_checked"] = True
+                        state["last_checked_bucket"] = bucket
+                        emit(
+                            {
+                                "decision": "unchanged",
+                                "assignment_sha256": str(pending_sha),
+                                "train_iter": int(train_iter),
+                                "bucket": int(bucket),
+                            }
+                        )
+                    else:
+                        refresh_index = int(state["refresh_index"]) + 1
+                        try:
+                            report = _apply_opponent_assignment_refresh_to_collector_env(
+                                collector=self,
+                                opponent_assignment=pending_assignment,
+                                refresh_index=refresh_index,
+                            )
+                        except Exception as exc:
+                            emit(
+                                {
+                                    "decision": "failed_after_reset_attempt",
+                                    "reason": f"{type(exc).__name__}: {exc}",
+                                    "train_iter": int(train_iter),
+                                    "bucket": int(bucket),
+                                    "assignment_sha256": str(pending_sha),
+                                    "refresh_index": int(refresh_index),
+                                }
+                            )
+                            raise
+                        state["refresh_index"] = refresh_index
+                        state["initial_collect_checked"] = True
+                        state["last_checked_bucket"] = bucket
+                        state["last_applied_assignment_sha256"] = str(pending_sha)
+                        emit(
+                            {
+                                "decision": "applied",
+                                "train_iter": int(train_iter),
+                                "bucket": int(bucket),
+                                "refresh_index": int(refresh_index),
+                                "assignment_id": pending_assignment.get("assignment_id"),
+                                "assignment_ref": pending_assignment.get("assignment_ref"),
+                                "assignment_sha256": str(pending_sha),
+                                "env_ready_report": report,
+                            }
+                        )
+        return original(self, *args, **kwargs)
+
+    setattr(owner, "collect", wrapped)
+
+    def restore() -> None:
+        setattr(owner, "collect", original)
+
+    return restore
 
 
 def _opponent_assignment_artifact_refs(
@@ -4319,7 +5625,17 @@ def _write_opponent_assignment_artifacts(
     attempt_id: str,
     assignment: Mapping[str, Any],
     audit: Mapping[str, Any] | None = None,
+    target_volume: str = "runs",
+    mirror_checkpoints_to_control: bool = False,
 ) -> dict[str, Any]:
+    if mirror_checkpoints_to_control:
+        raise NotImplementedError(
+            "mirror_checkpoints_to_control is not wired in this trainer writer yet"
+        )
+    target_volume = str(target_volume or "runs")
+    if target_volume not in {"runs", "control"}:
+        raise ValueError("target_volume must be 'runs' or 'control'")
+    target_mount = CONTROL_MOUNT if target_volume == "control" else RUNS_MOUNT
     parsed = parse_opponent_assignment_snapshot(assignment)
     if parsed is None:
         raise ValueError("opponent assignment is required")
@@ -4329,25 +5645,33 @@ def _write_opponent_assignment_artifacts(
         attempt_id=attempt_id,
         assignment_id=assignment_id,
     )
-    assignment_path = runs.volume_path(RUNS_MOUNT, refs["assignment"])
+    assignment_path = runs.volume_path(target_mount, refs["assignment"])
     assignment_sha256 = canonical_assignment_json_sha256(assignment)
     runs.write_json(assignment_path, _to_plain(dict(assignment)))
     audit_summary = None
     if audit is not None:
         validate_assignment_audit(audit, assignment=assignment)
-        audit_path = runs.volume_path(RUNS_MOUNT, refs["audit"])
+        audit_path = runs.volume_path(target_mount, refs["audit"])
         runs.write_json(audit_path, _to_plain(dict(audit)))
-        audit_summary = runs.file_summary_any_mount(audit_path, mount=RUNS_MOUNT)
-    _commit_runs_volume_with_backoff(label="opponent_assignment_artifact_commit")
+        audit_summary = runs.file_summary_any_mount(audit_path, mount=target_mount)
+    if target_volume == "control":
+        _commit_control_volume_with_backoff(label="opponent_assignment_artifact_commit")
+        ref_prefix = _CONTROL_REF_PREFIX
+    else:
+        _commit_runs_volume_with_backoff(label="opponent_assignment_artifact_commit")
+        ref_prefix = ""
+    assignment_ref = f"{ref_prefix}{refs['assignment'].as_posix()}"
+    audit_ref = f"{ref_prefix}{refs['audit'].as_posix()}" if audit is not None else None
     return {
         "schema_id": "curvyzero_opponent_assignment_artifact_write/v0",
         "run_id": run_id,
         "attempt_id": attempt_id,
         "assignment_id": assignment_id,
-        "assignment_ref": refs["assignment"].as_posix(),
+        "target_volume": target_volume,
+        "assignment_ref": assignment_ref,
         "assignment_sha256": assignment_sha256,
-        "assignment_file": runs.file_summary_any_mount(assignment_path, mount=RUNS_MOUNT),
-        "audit_ref": refs["audit"].as_posix() if audit is not None else None,
+        "assignment_file": runs.file_summary_any_mount(assignment_path, mount=target_mount),
+        "audit_ref": audit_ref,
         "audit_file": audit_summary,
     }
 
@@ -4645,7 +5969,11 @@ def _build_visual_survival_configs(
     source_physics_step_ms: float = DEFAULT_SOURCE_PHYSICS_STEP_MS,
     source_max_steps_semantics: str = "source_physics_steps",
     opponent_mixture: dict[str, Any] | None = None,
+    opponent_assignment_context: dict[str, Any] | None = None,
     source_state_trail_render_mode: str = DEFAULT_SOURCE_STATE_TRAIL_RENDER_MODE,
+    source_state_bonus_render_mode: str = DEFAULT_SOURCE_STATE_BONUS_RENDER_MODE,
+    policy_observation_backend: str = DEFAULT_POLICY_OBSERVATION_BACKEND_CHOICE,
+    learner_seat_mode: str = DEFAULT_LEARNER_SEAT_MODE,
     policy_action_repeat_min: int = DEFAULT_POLICY_ACTION_REPEAT_MIN,
     policy_action_repeat_max: int = DEFAULT_POLICY_ACTION_REPEAT_MAX,
     policy_action_repeat_extra_probability: float = (
@@ -4672,6 +6000,13 @@ def _build_visual_survival_configs(
     source_state_trail_render_mode = _validate_source_state_trail_render_mode(
         source_state_trail_render_mode
     )
+    source_state_bonus_render_mode = _validate_source_state_bonus_render_mode(
+        source_state_bonus_render_mode
+    )
+    policy_observation_backend = _validate_policy_observation_backend(
+        policy_observation_backend
+    )
+    learner_seat_mode = _validate_learner_seat_mode(learner_seat_mode)
     if not profile_env_timing_enabled:
         _validate_trusted_source_state_action_cadence(
             env_variant=env_variant,
@@ -4769,8 +6104,23 @@ def _build_visual_survival_configs(
             "reward_policy": reward_policy,
             "lightzero_target_config": target_config,
             "source_state_trail_render_mode": source_state_trail_render_mode,
+            "source_state_bonus_render_mode": source_state_bonus_render_mode,
+            "policy_observation_backend": policy_observation_backend,
+            "policy_trail_render_mode": source_state_trail_render_mode,
+            "policy_bonus_render_mode": source_state_bonus_render_mode,
+            "policy_observation_contract_id": POLICY_OBSERVATION_CONTRACT_ID,
+            "observation_contract": policy_observation_surface(
+                trail_render_mode=source_state_trail_render_mode,
+                bonus_render_mode=source_state_bonus_render_mode,
+                backend=policy_observation_backend,
+            ),
+            "learner_seat_mode": learner_seat_mode,
             "default_trail_render_mode": DEFAULT_SOURCE_STATE_TRAIL_RENDER_MODE,
             "supported_trail_render_modes": list(SOURCE_STATE_TRAIL_RENDER_MODE_CHOICES),
+            "default_bonus_render_mode": DEFAULT_SOURCE_STATE_BONUS_RENDER_MODE,
+            "supported_bonus_render_modes": list(SOURCE_STATE_BONUS_RENDER_MODE_CHOICES),
+            "default_policy_observation_backend": DEFAULT_POLICY_OBSERVATION_BACKEND_CHOICE,
+            "supported_policy_observation_backends": list(POLICY_OBSERVATION_BACKEND_CHOICES),
             "observation_schema_id": env_spec["observation_schema_id"],
             "debug_fidelity_only": env_spec["debug_fidelity_only"],
             "source_fidelity_claim": env_spec["source_fidelity_claim"],
@@ -4850,6 +6200,8 @@ def _build_visual_survival_configs(
     )
     if opponent_mixture is not None:
         env_cfg["opponent_mixture"] = opponent_mixture
+    if opponent_assignment_context is not None:
+        env_cfg["opponent_assignment_context"] = opponent_assignment_context
     if opponent_policy_kind == OPPONENT_POLICY_KIND_FROZEN_LIGHTZERO_CHECKPOINT:
         if opponent_checkpoint is None:
             raise ValueError("opponent_checkpoint is required for frozen opponent env config")
@@ -4941,8 +6293,16 @@ def _extract_surface(
         "reward_policy": _to_plain(env.get("reward_policy")),
         "lightzero_target_config": _to_plain(env.get("lightzero_target_config")),
         "source_state_trail_render_mode": env.get("source_state_trail_render_mode"),
+        "source_state_bonus_render_mode": env.get("source_state_bonus_render_mode"),
+        "policy_observation_backend": env.get("policy_observation_backend"),
+        "policy_trail_render_mode": env.get("policy_trail_render_mode"),
+        "policy_bonus_render_mode": env.get("policy_bonus_render_mode"),
+        "policy_observation_contract_id": env.get("policy_observation_contract_id"),
+        "observation_contract": _to_plain(env.get("observation_contract")),
         "default_trail_render_mode": env.get("default_trail_render_mode"),
         "supported_trail_render_modes": _to_plain(env.get("supported_trail_render_modes")),
+        "default_bonus_render_mode": env.get("default_bonus_render_mode"),
+        "supported_bonus_render_modes": _to_plain(env.get("supported_bonus_render_modes")),
         "observation_schema_id": env.get("observation_schema_id"),
         "debug_fidelity_only": env.get("debug_fidelity_only"),
         "source_fidelity_claim": env.get("source_fidelity_claim"),
@@ -5053,8 +6413,11 @@ def _validate_visual_survival_surface(
         "reward_policy": command["reward_policy"],
         "lightzero_target_config": _to_plain(command["lightzero_target_config"]),
         "source_state_trail_render_mode": command["source_state_trail_render_mode"],
+        "source_state_bonus_render_mode": command["source_state_bonus_render_mode"],
         "default_trail_render_mode": command["default_trail_render_mode"],
         "supported_trail_render_modes": command["supported_trail_render_modes"],
+        "default_bonus_render_mode": command["default_bonus_render_mode"],
+        "supported_bonus_render_modes": command["supported_bonus_render_modes"],
         "observation_schema_id": command["observation_schema_id"],
         "debug_fidelity_only": command["debug_fidelity_only"],
         "source_fidelity_claim": command["source_fidelity_claim"],
@@ -5278,6 +6641,11 @@ def _compile_config_summary(main_config: Any, create_config: Any, *, seed: int) 
                     "source_state_trail_render_mode",
                     None,
                 ),
+                "source_state_bonus_render_mode": _cfg_get(
+                    env_cfg,
+                    "source_state_bonus_render_mode",
+                    None,
+                ),
                 "default_trail_render_mode": _cfg_get(
                     env_cfg,
                     "default_trail_render_mode",
@@ -5285,6 +6653,14 @@ def _compile_config_summary(main_config: Any, create_config: Any, *, seed: int) 
                 ),
                 "supported_trail_render_modes": _to_plain(
                     _cfg_get(env_cfg, "supported_trail_render_modes", None)
+                ),
+                "default_bonus_render_mode": _cfg_get(
+                    env_cfg,
+                    "default_bonus_render_mode",
+                    None,
+                ),
+                "supported_bonus_render_modes": _to_plain(
+                    _cfg_get(env_cfg, "supported_bonus_render_modes", None)
                 ),
                 "lightzero_target_config": _to_plain(
                     _cfg_get(env_cfg, "lightzero_target_config", None)
@@ -5366,7 +6742,12 @@ def _set_save_ckpt_after_iter(main_config: Any, value: int) -> dict[str, Any]:
     }
 
 
-def _set_load_ckpt_before_run(main_config: Any, checkpoint_path: str) -> dict[str, Any]:
+def _set_load_ckpt_before_run(
+    main_config: Any,
+    checkpoint_path: str,
+    *,
+    reason: str = "automatic resume from the latest iteration checkpoint for this run",
+) -> dict[str, Any]:
     current = main_config["policy"]
     for part in ("learn", "learner", "hook"):
         if part not in current or current[part] is None:
@@ -5378,7 +6759,7 @@ def _set_load_ckpt_before_run(main_config: Any, checkpoint_path: str) -> dict[st
         "path": "policy.learn.learner.hook.load_ckpt_before_run",
         "old": _to_plain(old_value),
         "new": checkpoint_path,
-        "reason": "automatic resume from the latest iteration checkpoint for this run",
+        "reason": reason,
     }
 
 
@@ -5390,11 +6771,10 @@ def _prepare_lightzero_auto_resume(
 ) -> dict[str, Any]:
     """Find the newest LightZero iteration checkpoint already saved for this run."""
 
-    if hasattr(runs_volume, "reload"):
-        try:
-            runs_volume.reload()
-        except Exception:
-            pass
+    try:
+        _safe_reload_runs_volume(reason="auto resume checkpoint scan")
+    except Exception:
+        pass
 
     run_root = runs.volume_path(RUNS_MOUNT, runs.run_root_ref(TASK_ID, run_id))
     current_exp_name = runs.volume_path(RUNS_MOUNT, exp_name_ref)
@@ -6465,8 +7845,14 @@ def _checkpoint_eval_poller_command(
     ),
     natural_bonus_spawn: bool = TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN,
 ) -> dict[str, Any]:
+    reload_assignment_volume = bool(
+        opponent_assignment_ref
+        and str(opponent_assignment_ref).startswith((_CONTROL_REF_PREFIX, _RUNS_REF_PREFIX))
+    )
     opponent_assignment = _resolve_opponent_assignment_for_env(
-        opponent_assignment_ref=opponent_assignment_ref
+        opponent_assignment_ref=opponent_assignment_ref,
+        reload_volume_before_read=reload_assignment_volume,
+        reload_checkpoint_volume_before_read=reload_assignment_volume,
     )
     if opponent_assignment is not None and opponent_mixture_spec is not None:
         raise ValueError("opponent_assignment_ref cannot be combined with opponent_mixture_spec")
@@ -6610,11 +7996,10 @@ def _run_checkpoint_eval_poller(
     )
 
     while time.monotonic() - started_monotonic < max_runtime_sec:
-        if hasattr(runs_volume, "reload"):
-            try:
-                runs_volume.reload()
-            except Exception:
-                pass
+        try:
+            _safe_reload_runs_volume(reason="checkpoint eval poller scan")
+        except Exception:
+            pass
 
         artifact_summary = _scan_lightzero_artifacts(str(exp_name))
         checkpoint_files = artifact_summary.get("checkpoint_files", [])
@@ -6764,6 +8149,7 @@ def _live_train_summary_for_inspector(command: dict[str, Any]) -> dict[str, Any]
         "visual_source_state_backed": command.get("visual_source_state_backed"),
         "source_fidelity_claim": command.get("source_fidelity_claim"),
         "source_state_trail_render_mode": command.get("source_state_trail_render_mode"),
+        "source_state_bonus_render_mode": command.get("source_state_bonus_render_mode"),
         "opponent_death_mode": command.get("opponent_death_mode"),
         "opponent_runtime_mode": command.get("opponent_runtime_mode"),
         "opponent_runtime_mode_claim": command.get("opponent_runtime_mode_claim"),
@@ -6772,6 +8158,8 @@ def _live_train_summary_for_inspector(command: dict[str, Any]) -> dict[str, Any]
         "opponent_trail_mode": command.get("opponent_trail_mode"),
         "default_trail_render_mode": command.get("default_trail_render_mode"),
         "supported_trail_render_modes": command.get("supported_trail_render_modes"),
+        "default_bonus_render_mode": command.get("default_bonus_render_mode"),
+        "supported_bonus_render_modes": command.get("supported_bonus_render_modes"),
         "debug_fidelity_only": command.get("debug_fidelity_only"),
         "training_readiness_gate": training_readiness_gate,
         "learning_proof": command.get("learning_proof", False),
@@ -6804,11 +8192,10 @@ def _wait_for_visible_checkpoint(checkpoint_ref: str) -> Path:
     checkpoint_path = runs.volume_path(RUNS_MOUNT, checkpoint_ref)
     deadline = time.monotonic() + DEFAULT_BACKGROUND_CHECKPOINT_WAIT_TIMEOUT_SEC
     while not checkpoint_path.is_file() and time.monotonic() < deadline:
-        if hasattr(runs_volume, "reload"):
-            try:
-                runs_volume.reload()
-            except Exception:
-                pass
+        try:
+            _safe_reload_runs_volume(reason="wait for visible checkpoint")
+        except Exception:
+            pass
         if checkpoint_path.is_file():
             break
         time.sleep(DEFAULT_BACKGROUND_CHECKPOINT_WAIT_POLL_SEC)
@@ -6836,13 +8223,46 @@ def _commit_runs_volume_with_backoff(
     initial_jitter_sec: float = 0.0,
     max_sleep_sec: float = 20.0,
 ) -> None:
-    if not hasattr(runs_volume, "commit"):
+    _commit_volume_with_backoff(
+        runs_volume,
+        label=label,
+        attempts=attempts,
+        initial_jitter_sec=initial_jitter_sec,
+        max_sleep_sec=max_sleep_sec,
+    )
+
+
+def _commit_control_volume_with_backoff(
+    *,
+    label: str,
+    attempts: int = 6,
+    initial_jitter_sec: float = 0.0,
+    max_sleep_sec: float = 20.0,
+) -> None:
+    _commit_volume_with_backoff(
+        control_volume,
+        label=label,
+        attempts=attempts,
+        initial_jitter_sec=initial_jitter_sec,
+        max_sleep_sec=max_sleep_sec,
+    )
+
+
+def _commit_volume_with_backoff(
+    volume: Any,
+    *,
+    label: str,
+    attempts: int = 6,
+    initial_jitter_sec: float = 0.0,
+    max_sleep_sec: float = 20.0,
+) -> None:
+    if not hasattr(volume, "commit"):
         return
     if initial_jitter_sec > 0:
         time.sleep(random.uniform(0.0, float(initial_jitter_sec)))
     for attempt_index in range(int(attempts)):
         try:
-            runs_volume.commit()
+            volume.commit()
             return
         except Exception as exc:
             is_last = attempt_index >= int(attempts) - 1
@@ -6897,6 +8317,7 @@ def _run_checkpoint_eval_and_inspect(
     opponent_snapshot_ref: str | None,
     opponent_checkpoint_state_key: str | None,
     opponent_mixture_spec: Any | None = None,
+    opponent_assignment_ref: str | None = None,
     opponent_death_mode: str = DEFAULT_OPPONENT_DEATH_MODE,
     opponent_runtime_mode: str = DEFAULT_OPPONENT_RUNTIME_MODE,
     natural_bonus_spawn: bool = TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN,
@@ -6910,11 +8331,10 @@ def _run_checkpoint_eval_and_inspect(
             f"unknown env_variant {env_variant!r}; expected one of {ENV_VARIANT_CHOICES!r}"
         )
 
-    if hasattr(runs_volume, "reload"):
-        try:
-            runs_volume.reload()
-        except Exception:
-            pass
+    try:
+        _safe_reload_runs_volume(reason="background checkpoint eval startup")
+    except Exception:
+        pass
 
     from curvyzero.infra.modal import lightzero_curvytron_visual_survival_eval as eval_mod
     from curvyzero.training.curvytron_inspector import build_inspector_report
@@ -6931,6 +8351,16 @@ def _run_checkpoint_eval_and_inspect(
         eval_seeds=None,
         eval_seed_count=eval_seed_count,
         eval_seed_rng_seed=eval_seed_rng_seed,
+    )
+    opponent_assignment = _resolve_opponent_assignment_for_env(
+        opponent_assignment_ref=opponent_assignment_ref
+    )
+    if opponent_assignment is not None and opponent_mixture_spec is not None:
+        raise ValueError("opponent_assignment_ref cannot be combined with opponent_mixture_spec")
+    effective_opponent_mixture = (
+        opponent_assignment["opponent_mixture"]
+        if opponent_assignment is not None
+        else opponent_mixture_spec
     )
     _wait_for_visible_checkpoint(checkpoint_ref)
     stamp = runs.utc_stamp()
@@ -6978,7 +8408,7 @@ def _run_checkpoint_eval_and_inspect(
             opponent_checkpoint_ref=opponent_checkpoint_ref,
             opponent_snapshot_ref=opponent_snapshot_ref,
             opponent_checkpoint_state_key=opponent_checkpoint_state_key,
-            opponent_mixture_spec=opponent_mixture_spec,
+            opponent_mixture_spec=effective_opponent_mixture,
             opponent_death_mode=opponent_death_mode,
             opponent_runtime_mode=opponent_runtime_mode,
             natural_bonus_spawn=bool(natural_bonus_spawn),
@@ -7028,8 +8458,24 @@ def _run_checkpoint_eval_and_inspect(
             "model_reward_variant_role": "checkpoint_model_reconstruction_only_not_scoring",
             "opponent_policy_kind": opponent_policy_kind,
             "opponent_checkpoint_ref": opponent_checkpoint_ref,
-            "opponent_mixture_enabled": opponent_mixture_spec is not None,
-            "opponent_mixture": _to_plain(opponent_mixture_spec),
+            "opponent_mixture_enabled": effective_opponent_mixture is not None,
+            "opponent_mixture": _to_plain(effective_opponent_mixture),
+            "opponent_assignment_ref": opponent_assignment_ref,
+            "opponent_assignment": (
+                {
+                    key: opponent_assignment.get(key)
+                    for key in (
+                        "assignment_id",
+                        "source_epoch",
+                        "source_ref",
+                        "assignment_ref",
+                        "assignment_sha256",
+                        "assignment_file",
+                    )
+                }
+                if opponent_assignment is not None
+                else None
+            ),
             "opponent_snapshot_ref": opponent_snapshot_ref,
             "opponent_checkpoint_state_key": opponent_checkpoint_state_key,
             "opponent_runtime_mode": opponent_runtime_mode,
@@ -7065,8 +8511,24 @@ def _run_checkpoint_eval_and_inspect(
             "volume_name": VOLUME_NAME,
             "opponent_policy_kind": opponent_policy_kind,
             "opponent_checkpoint_ref": opponent_checkpoint_ref,
-            "opponent_mixture_enabled": opponent_mixture_spec is not None,
-            "opponent_mixture": _to_plain(opponent_mixture_spec),
+            "opponent_mixture_enabled": effective_opponent_mixture is not None,
+            "opponent_mixture": _to_plain(effective_opponent_mixture),
+            "opponent_assignment_ref": opponent_assignment_ref,
+            "opponent_assignment": (
+                {
+                    key: opponent_assignment.get(key)
+                    for key in (
+                        "assignment_id",
+                        "source_epoch",
+                        "source_ref",
+                        "assignment_ref",
+                        "assignment_sha256",
+                        "assignment_file",
+                    )
+                }
+                if opponent_assignment is not None
+                else None
+            ),
             "opponent_snapshot_ref": opponent_snapshot_ref,
             "opponent_checkpoint_state_key": opponent_checkpoint_state_key,
             "opponent_runtime_mode": opponent_runtime_mode,
@@ -7403,7 +8865,10 @@ def _save_raw_frames_gif(
     if scale < 1:
         raise ValueError("background_gif_scale must be at least 1")
     gif_path.parent.mkdir(parents=True, exist_ok=True)
-    duration_ms = max(20, int(round(1000.0 / fps)))
+    duration_ms = max(
+        int(DEFAULT_BACKGROUND_GIF_MIN_FRAME_DURATION_MS),
+        int(round(1000.0 / fps)),
+    )
     pil_frames = []
     for frame in raw_frames:
         image_frame = Image.fromarray(frame, mode="RGB") if is_rgb else Image.fromarray(frame)
@@ -7899,11 +9364,10 @@ def _run_checkpoint_selfplay_gif(
     summary_path = artifact_root / "summary.json"
 
     try:
-        if hasattr(runs_volume, "reload"):
-            try:
-                runs_volume.reload()
-            except Exception:
-                pass
+        try:
+            _safe_reload_runs_volume(reason="checkpoint selfplay gif startup")
+        except Exception:
+            pass
         from curvyzero.infra.modal import lightzero_curvytron_visual_survival_eval as eval_mod
 
         checkpoint_path = _wait_for_visible_checkpoint(checkpoint_ref)
@@ -8127,6 +9591,165 @@ def _run_checkpoint_selfplay_gif(
     return _to_plain(summary)
 
 
+_POLICY_OBSERVATION_GPU_PROFILE_INT_FIELDS = frozenset(
+    {
+        "visual_trail_capacity",
+        "visual_trail_active_count",
+        "visual_trail_last_active_exclusive",
+        "visual_trail_inactive_prefix_slots",
+        "min_render_trail_slots",
+        "render_trail_slots",
+        "render_trail_prefix_headroom_slots",
+        "cache_misses",
+        "cache_size",
+    }
+)
+_POLICY_OBSERVATION_GPU_PROFILE_SUM_FIELDS = (
+    "compact_sec",
+    "device_put_sec",
+    "render_total_sec",
+    "readback_total_sec",
+    "total_sec",
+    "cache_misses",
+)
+_POLICY_OBSERVATION_GPU_PROFILE_MAX_FIELDS = (
+    "visual_trail_capacity",
+    "visual_trail_active_count",
+    "visual_trail_last_active_exclusive",
+    "visual_trail_inactive_prefix_slots",
+    "visual_trail_active_prefix_fill_ratio",
+    "min_render_trail_slots",
+    "render_trail_slots",
+    "render_trail_prefix_headroom_slots",
+    "render_trail_slot_utilization",
+    "render_trail_capacity_ratio",
+    "compact_sec",
+    "device_put_sec",
+    "render_total_sec",
+    "readback_total_sec",
+    "total_sec",
+    "cache_misses",
+    "cache_size",
+)
+_POLICY_OBSERVATION_GPU_PROFILE_MIN_FIELDS = (
+    "visual_trail_active_prefix_fill_ratio",
+    "render_trail_slot_utilization",
+    "render_trail_capacity_ratio",
+)
+_POLICY_OBSERVATION_GPU_PROFILE_FIELDS = tuple(
+    dict.fromkeys(
+        (
+            *_POLICY_OBSERVATION_GPU_PROFILE_MAX_FIELDS,
+            *_POLICY_OBSERVATION_GPU_PROFILE_SUM_FIELDS,
+        )
+    )
+)
+
+
+def _telemetry_float(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return number
+
+
+def _policy_observation_gpu_profile_output_value(key: str, value: float) -> int | float:
+    if key in _POLICY_OBSERVATION_GPU_PROFILE_INT_FIELDS:
+        return int(value)
+    return float(value)
+
+
+def _compact_policy_observation_gpu_profile(profile: Any) -> dict[str, int | float]:
+    if not isinstance(profile, dict):
+        return {}
+    compact: dict[str, int | float] = {}
+    for key in _POLICY_OBSERVATION_GPU_PROFILE_FIELDS:
+        value = _telemetry_float(profile.get(key))
+        if value is None:
+            continue
+        compact[key] = _policy_observation_gpu_profile_output_value(key, value)
+    active_count = _telemetry_float(compact.get("visual_trail_active_count"))
+    active_prefix = _telemetry_float(compact.get("visual_trail_last_active_exclusive"))
+    render_slots = _telemetry_float(compact.get("render_trail_slots"))
+    capacity = _telemetry_float(compact.get("visual_trail_capacity"))
+    if active_count is not None and active_prefix is not None:
+        compact["visual_trail_inactive_prefix_slots"] = int(
+            max(0.0, active_prefix - active_count)
+        )
+        if active_prefix > 0.0:
+            compact["visual_trail_active_prefix_fill_ratio"] = float(
+                active_count / active_prefix
+            )
+    if active_prefix is not None and render_slots is not None:
+        compact["render_trail_prefix_headroom_slots"] = int(
+            max(0.0, render_slots - active_prefix)
+        )
+    if active_count is not None and render_slots is not None and render_slots > 0.0:
+        compact["render_trail_slot_utilization"] = float(active_count / render_slots)
+    if capacity is not None and render_slots is not None and capacity > 0.0:
+        compact["render_trail_capacity_ratio"] = float(render_slots / capacity)
+    return compact
+
+
+def _summarize_policy_observation_gpu_profiles(
+    *,
+    profile_count: int,
+    profile_sums: Counter[str],
+    profile_counts: Counter[str],
+    profile_max: dict[str, float],
+    profile_min: dict[str, float],
+    last_profile: dict[str, int | float],
+    scope: str,
+    inactive_prefix_row_count: int,
+    capacity_reduction_row_count: int,
+    cache_miss_row_count: int,
+) -> dict[str, Any] | None:
+    if profile_count <= 0:
+        return None
+    summary: dict[str, Any] = {
+        "scope": scope,
+        "sampled_profile_count": int(profile_count),
+        "sampled_inactive_prefix_row_count": int(inactive_prefix_row_count),
+        "sampled_capacity_reduction_row_count": int(capacity_reduction_row_count),
+        "sampled_cache_miss_row_count": int(cache_miss_row_count),
+        **last_profile,
+    }
+    sampled_sum = {
+        key: _policy_observation_gpu_profile_output_value(key, profile_sums[key])
+        for key in _POLICY_OBSERVATION_GPU_PROFILE_SUM_FIELDS
+        if profile_counts[key]
+    }
+    if sampled_sum:
+        summary["sampled_sum"] = sampled_sum
+    sampled_mean = {
+        key: float(profile_sums[key]) / float(profile_counts[key])
+        for key in _POLICY_OBSERVATION_GPU_PROFILE_SUM_FIELDS
+        if profile_counts[key]
+    }
+    if sampled_mean:
+        summary["sampled_mean"] = sampled_mean
+    sampled_max = {
+        key: _policy_observation_gpu_profile_output_value(key, profile_max[key])
+        for key in _POLICY_OBSERVATION_GPU_PROFILE_MAX_FIELDS
+        if key in profile_max
+    }
+    if sampled_max:
+        summary["sampled_max"] = sampled_max
+    sampled_min = {
+        key: _policy_observation_gpu_profile_output_value(key, profile_min[key])
+        for key in _POLICY_OBSERVATION_GPU_PROFILE_MIN_FIELDS
+        if key in profile_min
+    }
+    if sampled_min:
+        summary["sampled_min"] = sampled_min
+    return summary
+
+
 def _summarize_env_step_telemetry(path: Path) -> dict[str, Any]:
     action_counts: Counter[str] = Counter()
     physical_action_counts: Counter[str] = Counter()
@@ -8135,6 +9758,15 @@ def _summarize_env_step_telemetry(path: Path) -> dict[str, Any]:
     terminal_reasons: Counter[str] = Counter()
     profile_env_timing_sums: Counter[str] = Counter()
     profile_env_timing_counts: Counter[str] = Counter()
+    policy_observation_gpu_profile_sums: Counter[str] = Counter()
+    policy_observation_gpu_profile_counts: Counter[str] = Counter()
+    policy_observation_gpu_profile_max: dict[str, float] = {}
+    policy_observation_gpu_profile_min: dict[str, float] = {}
+    policy_observation_gpu_profile_count = 0
+    policy_observation_gpu_inactive_prefix_row_count = 0
+    policy_observation_gpu_capacity_reduction_row_count = 0
+    policy_observation_gpu_cache_miss_row_count = 0
+    policy_observation_gpu_last_profile: dict[str, int | float] = {}
     rows: list[dict[str, Any]] = []
     observed_fields = _observed_fields_from_telemetry_rows([])
     trainer_reward_sum = 0.0
@@ -8196,6 +9828,55 @@ def _summarize_env_step_telemetry(path: Path) -> dict[str, Any]:
                     continue
                 profile_env_timing_sums[str(key)] += seconds
                 profile_env_timing_counts[str(key)] += 1
+        raw_policy_observation_gpu_profile = row.get("policy_observation_gpu_last_profile")
+        policy_observation_gpu_profile = _compact_policy_observation_gpu_profile(
+            raw_policy_observation_gpu_profile
+        )
+        if policy_observation_gpu_profile:
+            policy_observation_gpu_profile_count += 1
+            policy_observation_gpu_last_profile = policy_observation_gpu_profile
+            if (
+                _telemetry_float(
+                    policy_observation_gpu_profile.get("visual_trail_inactive_prefix_slots")
+                )
+                or 0.0
+            ) > 0.0:
+                policy_observation_gpu_inactive_prefix_row_count += 1
+            render_trail_capacity_ratio = _telemetry_float(
+                policy_observation_gpu_profile.get("render_trail_capacity_ratio")
+            )
+            render_slots_reduced = (
+                isinstance(raw_policy_observation_gpu_profile, dict)
+                and bool(
+                    raw_policy_observation_gpu_profile.get(
+                        "render_trail_slots_reduced_from_capacity"
+                    )
+                )
+            ) or (
+                render_trail_capacity_ratio is not None
+                and render_trail_capacity_ratio < 1.0
+            )
+            if render_slots_reduced:
+                policy_observation_gpu_capacity_reduction_row_count += 1
+            if (
+                _telemetry_float(policy_observation_gpu_profile.get("cache_misses"))
+                or 0.0
+            ) > 0.0:
+                policy_observation_gpu_cache_miss_row_count += 1
+            for key, value in policy_observation_gpu_profile.items():
+                numeric_value = float(value)
+                policy_observation_gpu_profile_sums[key] += numeric_value
+                policy_observation_gpu_profile_counts[key] += 1
+                if (
+                    key not in policy_observation_gpu_profile_max
+                    or numeric_value > policy_observation_gpu_profile_max[key]
+                ):
+                    policy_observation_gpu_profile_max[key] = numeric_value
+                if (
+                    key not in policy_observation_gpu_profile_min
+                    or numeric_value < policy_observation_gpu_profile_min[key]
+                ):
+                    policy_observation_gpu_profile_min[key] = numeric_value
         trainer_reward_sum += float(row.get("reward") or 0.0)
         done_count += int(bool(row.get("done", False)))
     for action_id in ("0", "1", "2"):
@@ -8203,12 +9884,13 @@ def _summarize_env_step_telemetry(path: Path) -> dict[str, Any]:
         physical_action_counts.setdefault(action_id, 0)
         opponent_counts.setdefault(action_id, 0)
     row_count = sum(action_counts.values())
-    return {
+    telemetry_scope = "sampled_telemetry_rows" if telemetry_sampled else "all_telemetry_rows"
+    summary = {
         "status": "ok",
         "path": str(path),
         "row_count": int(row_count),
         "sampled_row_count": int(row_count),
-        "counts_scope": "sampled_telemetry_rows" if telemetry_sampled else "all_telemetry_rows",
+        "counts_scope": telemetry_scope,
         "telemetry_sampled": bool(telemetry_sampled),
         "telemetry_stride": telemetry_stride,
         "scalar_step_count": int(row_count),
@@ -8236,7 +9918,7 @@ def _summarize_env_step_telemetry(path: Path) -> dict[str, Any]:
             else None
         ),
         "profile_env_timing_sec": {
-            "scope": "sampled_telemetry_rows" if telemetry_sampled else "all_telemetry_rows",
+            "scope": telemetry_scope,
             "sampled_sum": dict(sorted(profile_env_timing_sums.items())),
             "sampled_count": dict(sorted(profile_env_timing_counts.items())),
             "sampled_mean": {
@@ -8251,6 +9933,21 @@ def _summarize_env_step_telemetry(path: Path) -> dict[str, Any]:
         "collapse_warning": _action_collapse_warning(action_counts),
         "physical_action_collapse_warning": _action_collapse_warning(physical_action_counts),
     }
+    policy_observation_gpu_summary = _summarize_policy_observation_gpu_profiles(
+        profile_count=policy_observation_gpu_profile_count,
+        profile_sums=policy_observation_gpu_profile_sums,
+        profile_counts=policy_observation_gpu_profile_counts,
+        profile_max=policy_observation_gpu_profile_max,
+        profile_min=policy_observation_gpu_profile_min,
+        last_profile=policy_observation_gpu_last_profile,
+        scope=telemetry_scope,
+        inactive_prefix_row_count=policy_observation_gpu_inactive_prefix_row_count,
+        capacity_reduction_row_count=policy_observation_gpu_capacity_reduction_row_count,
+        cache_miss_row_count=policy_observation_gpu_cache_miss_row_count,
+    )
+    if policy_observation_gpu_summary is not None:
+        summary["policy_observation_gpu_last_profile"] = policy_observation_gpu_summary
+    return summary
 
 
 def _observed_fields_from_telemetry_rows(rows: list[dict[str, Any]]) -> dict[str, bool]:
@@ -9078,7 +10775,7 @@ def _run_two_seat_selfplay_payload(
 
 @app.function(
     image=image,
-    volumes={str(RUNS_MOUNT): runs_volume},
+    volumes=TRAINER_VOLUMES,
     timeout=12 * 60 * 60,
     cpu=40.0,
     memory=65536,
@@ -9093,7 +10790,7 @@ def lightzero_curvytron_two_seat_selfplay_cpu(payload: dict[str, Any]) -> dict[s
 
 @app.function(
     image=image,
-    volumes={str(RUNS_MOUNT): runs_volume},
+    volumes=TRAINER_VOLUMES,
     timeout=12 * 60 * 60,
     cpu=40.0,
     memory=65536,
@@ -9109,7 +10806,7 @@ def lightzero_curvytron_two_seat_selfplay_gpu(payload: dict[str, Any]) -> dict[s
 
 @app.function(
     image=image,
-    volumes={str(RUNS_MOUNT): runs_volume},
+    volumes=TRAINER_VOLUMES,
     timeout=12 * 60 * 60,
     cpu=40.0,
     memory=65536,
@@ -9135,7 +10832,7 @@ def _to_plain(value: Any) -> Any:
     return value
 
 
-@app.function(image=image, volumes={str(RUNS_MOUNT): runs_volume}, timeout=40 * 60, cpu=2.0)
+@app.function(image=image, volumes=TRAINER_VOLUMES, timeout=40 * 60, cpu=2.0)
 def lightzero_curvytron_visual_survival_checkpoint_eval_and_inspect(
     checkpoint_ref: str,
     checkpoint_label: str | None = None,
@@ -9202,7 +10899,7 @@ def lightzero_curvytron_visual_survival_checkpoint_eval_and_inspect(
     )
 
 
-@app.function(image=image, volumes={str(RUNS_MOUNT): runs_volume}, timeout=40 * 60, cpu=2.0)
+@app.function(image=image, volumes=TRAINER_VOLUMES, timeout=40 * 60, cpu=2.0)
 def lightzero_curvytron_visual_survival_checkpoint_selfplay_gif(
     checkpoint_ref: str,
     checkpoint_label: str | None = None,
@@ -9263,7 +10960,7 @@ def lightzero_curvytron_visual_survival_checkpoint_selfplay_gif(
 
 @app.function(
     image=image,
-    volumes={str(RUNS_MOUNT): runs_volume},
+    volumes=TRAINER_VOLUMES,
     timeout=DEFAULT_BACKGROUND_EVAL_POLLER_MODAL_TIMEOUT_SEC,
     cpu=1.0,
 )
@@ -9363,17 +11060,19 @@ def lightzero_curvytron_visual_survival_checkpoint_eval_poller(
     )
 
 
-@app.function(image=image, volumes={str(RUNS_MOUNT): runs_volume}, timeout=20 * 60, cpu=2.0)
+@app.function(image=image, volumes=TRAINER_VOLUMES, timeout=20 * 60, cpu=2.0)
 def lightzero_curvytron_write_opponent_assignment_artifacts(payload: dict[str, Any]) -> dict[str, Any]:
     return _write_opponent_assignment_artifacts(
         run_id=str(payload["run_id"]),
         attempt_id=str(payload["attempt_id"]),
         assignment=payload["assignment"],
         audit=payload.get("audit"),
+        target_volume=str(payload.get("target_volume") or "runs"),
+        mirror_checkpoints_to_control=bool(payload.get("mirror_checkpoints_to_control", False)),
     )
 
 
-@app.function(image=image, volumes={str(RUNS_MOUNT): runs_volume}, timeout=20 * 60, cpu=2.0)
+@app.function(image=image, volumes=TRAINER_VOLUMES, timeout=20 * 60, cpu=2.0)
 def lightzero_curvytron_visual_survival_cpu(
     mode: str = DEFAULT_MODE,
     seed: int = DEFAULT_SEED,
@@ -9396,10 +11095,14 @@ def lightzero_curvytron_visual_survival_cpu(
     profile_volume_commit: bool = DEFAULT_PROFILE_VOLUME_COMMIT,
     lightzero_multi_gpu: bool = DEFAULT_LIGHTZERO_MULTI_GPU,
     save_ckpt_after_iter: int = DEFAULT_SAVE_CKPT_AFTER_ITER,
+    commit_on_checkpoint: bool = DEFAULT_COMMIT_ON_CHECKPOINT,
     stop_after_learner_train_calls: int = DEFAULT_STOP_AFTER_LEARNER_TRAIN_CALLS,
     env_variant: str = DEFAULT_ENV_VARIANT,
     reward_variant: str = DEFAULT_REWARD_VARIANT,
     source_state_trail_render_mode: str = DEFAULT_SOURCE_STATE_TRAIL_RENDER_MODE,
+    source_state_bonus_render_mode: str = DEFAULT_SOURCE_STATE_BONUS_RENDER_MODE,
+    policy_observation_backend: str = DEFAULT_POLICY_OBSERVATION_BACKEND_CHOICE,
+    learner_seat_mode: str = DEFAULT_LEARNER_SEAT_MODE,
     ego_action_straight_override_probability: float = (
         DEFAULT_EGO_ACTION_STRAIGHT_OVERRIDE_PROBABILITY
     ),
@@ -9422,6 +11125,13 @@ def lightzero_curvytron_visual_survival_cpu(
     opponent_checkpoint_state_key: str | None = None,
     opponent_mixture_spec: str | None = None,
     opponent_assignment_ref: str | None = None,
+    initial_policy_checkpoint_ref: str | None = None,
+    initial_policy_checkpoint_state_key: str | None = None,
+    initial_policy_checkpoint_load_mode: str = DEFAULT_INITIAL_POLICY_CHECKPOINT_LOAD_MODE,
+    opponent_assignment_refresh_interval_train_iter: int = (
+        DEFAULT_OPPONENT_ASSIGNMENT_REFRESH_INTERVAL_TRAIN_ITER
+    ),
+    opponent_assignment_refresh_ref: str | None = None,
     background_eval_enabled: bool = DEFAULT_BACKGROUND_EVAL_ENABLED,
     background_eval_launch_kind: str = BACKGROUND_EVAL_LAUNCH_HOOK,
     background_eval_compute: str = DEFAULT_BACKGROUND_EVAL_COMPUTE,
@@ -9465,10 +11175,14 @@ def lightzero_curvytron_visual_survival_cpu(
         profile_volume_commit=profile_volume_commit,
         lightzero_multi_gpu=lightzero_multi_gpu,
         save_ckpt_after_iter=save_ckpt_after_iter,
+        commit_on_checkpoint=commit_on_checkpoint,
         stop_after_learner_train_calls=stop_after_learner_train_calls,
         env_variant=env_variant,
         reward_variant=reward_variant,
         source_state_trail_render_mode=source_state_trail_render_mode,
+        source_state_bonus_render_mode=source_state_bonus_render_mode,
+        policy_observation_backend=policy_observation_backend,
+        learner_seat_mode=learner_seat_mode,
         ego_action_straight_override_probability=ego_action_straight_override_probability,
         policy_action_repeat_min=policy_action_repeat_min,
         policy_action_repeat_max=policy_action_repeat_max,
@@ -9487,6 +11201,13 @@ def lightzero_curvytron_visual_survival_cpu(
         opponent_checkpoint_state_key=opponent_checkpoint_state_key,
         opponent_mixture_spec=opponent_mixture_spec,
         opponent_assignment_ref=opponent_assignment_ref,
+        initial_policy_checkpoint_ref=initial_policy_checkpoint_ref,
+        initial_policy_checkpoint_state_key=initial_policy_checkpoint_state_key,
+        initial_policy_checkpoint_load_mode=initial_policy_checkpoint_load_mode,
+        opponent_assignment_refresh_interval_train_iter=(
+            opponent_assignment_refresh_interval_train_iter
+        ),
+        opponent_assignment_refresh_ref=opponent_assignment_refresh_ref,
         background_eval_enabled=background_eval_enabled,
         background_eval_launch_kind=background_eval_launch_kind,
         background_eval_compute=background_eval_compute,
@@ -9532,10 +11253,14 @@ def _apply_visual_survival_train_default_kwargs(kwargs: dict[str, Any]) -> None:
         "profile_volume_commit": DEFAULT_PROFILE_VOLUME_COMMIT,
         "lightzero_multi_gpu": DEFAULT_LIGHTZERO_MULTI_GPU,
         "save_ckpt_after_iter": DEFAULT_SAVE_CKPT_AFTER_ITER,
+        "commit_on_checkpoint": DEFAULT_COMMIT_ON_CHECKPOINT,
         "stop_after_learner_train_calls": DEFAULT_STOP_AFTER_LEARNER_TRAIN_CALLS,
         "env_variant": DEFAULT_ENV_VARIANT,
         "reward_variant": DEFAULT_REWARD_VARIANT,
         "source_state_trail_render_mode": DEFAULT_SOURCE_STATE_TRAIL_RENDER_MODE,
+        "source_state_bonus_render_mode": DEFAULT_SOURCE_STATE_BONUS_RENDER_MODE,
+        "policy_observation_backend": DEFAULT_POLICY_OBSERVATION_BACKEND_CHOICE,
+        "learner_seat_mode": DEFAULT_LEARNER_SEAT_MODE,
         "ego_action_straight_override_probability": (
             DEFAULT_EGO_ACTION_STRAIGHT_OVERRIDE_PROBABILITY
         ),
@@ -9556,6 +11281,13 @@ def _apply_visual_survival_train_default_kwargs(kwargs: dict[str, Any]) -> None:
         "opponent_checkpoint_state_key": None,
         "opponent_mixture_spec": None,
         "opponent_assignment_ref": None,
+        "initial_policy_checkpoint_ref": None,
+        "initial_policy_checkpoint_state_key": None,
+        "initial_policy_checkpoint_load_mode": DEFAULT_INITIAL_POLICY_CHECKPOINT_LOAD_MODE,
+        "opponent_assignment_refresh_interval_train_iter": (
+            DEFAULT_OPPONENT_ASSIGNMENT_REFRESH_INTERVAL_TRAIN_ITER
+        ),
+        "opponent_assignment_refresh_ref": None,
         "background_eval_enabled": DEFAULT_BACKGROUND_EVAL_ENABLED,
         "background_eval_launch_kind": DEFAULT_BACKGROUND_EVAL_LAUNCH_KIND,
         "background_eval_compute": DEFAULT_BACKGROUND_EVAL_COMPUTE,
@@ -9582,7 +11314,7 @@ def _apply_visual_survival_train_default_kwargs(kwargs: dict[str, Any]) -> None:
 
 @app.function(
     image=image,
-    volumes={str(RUNS_MOUNT): runs_volume},
+    volumes=TRAINER_VOLUMES,
     timeout=DEFAULT_STOCK_TRAIN_MODAL_TIMEOUT_SEC,
     cpu=64.0,
     memory=65536,
@@ -9594,7 +11326,7 @@ def lightzero_curvytron_visual_survival_cpu64(**kwargs: Any) -> dict[str, Any]:
 
 @app.function(
     image=image,
-    volumes={str(RUNS_MOUNT): runs_volume},
+    volumes=TRAINER_VOLUMES,
     timeout=DEFAULT_STOCK_TRAIN_MODAL_TIMEOUT_SEC,
     cpu=8.0,
     memory=32768,
@@ -9622,10 +11354,14 @@ def lightzero_curvytron_visual_survival_gpu(
     profile_volume_commit: bool = DEFAULT_PROFILE_VOLUME_COMMIT,
     lightzero_multi_gpu: bool = DEFAULT_LIGHTZERO_MULTI_GPU,
     save_ckpt_after_iter: int = DEFAULT_SAVE_CKPT_AFTER_ITER,
+    commit_on_checkpoint: bool = DEFAULT_COMMIT_ON_CHECKPOINT,
     stop_after_learner_train_calls: int = DEFAULT_STOP_AFTER_LEARNER_TRAIN_CALLS,
     env_variant: str = DEFAULT_ENV_VARIANT,
     reward_variant: str = DEFAULT_REWARD_VARIANT,
     source_state_trail_render_mode: str = DEFAULT_SOURCE_STATE_TRAIL_RENDER_MODE,
+    source_state_bonus_render_mode: str = DEFAULT_SOURCE_STATE_BONUS_RENDER_MODE,
+    policy_observation_backend: str = DEFAULT_POLICY_OBSERVATION_BACKEND_CHOICE,
+    learner_seat_mode: str = DEFAULT_LEARNER_SEAT_MODE,
     ego_action_straight_override_probability: float = (
         DEFAULT_EGO_ACTION_STRAIGHT_OVERRIDE_PROBABILITY
     ),
@@ -9648,6 +11384,13 @@ def lightzero_curvytron_visual_survival_gpu(
     opponent_checkpoint_state_key: str | None = None,
     opponent_mixture_spec: str | None = None,
     opponent_assignment_ref: str | None = None,
+    initial_policy_checkpoint_ref: str | None = None,
+    initial_policy_checkpoint_state_key: str | None = None,
+    initial_policy_checkpoint_load_mode: str = DEFAULT_INITIAL_POLICY_CHECKPOINT_LOAD_MODE,
+    opponent_assignment_refresh_interval_train_iter: int = (
+        DEFAULT_OPPONENT_ASSIGNMENT_REFRESH_INTERVAL_TRAIN_ITER
+    ),
+    opponent_assignment_refresh_ref: str | None = None,
     background_eval_enabled: bool = DEFAULT_BACKGROUND_EVAL_ENABLED,
     background_eval_launch_kind: str = BACKGROUND_EVAL_LAUNCH_HOOK,
     background_eval_compute: str = DEFAULT_BACKGROUND_EVAL_COMPUTE,
@@ -9691,10 +11434,14 @@ def lightzero_curvytron_visual_survival_gpu(
         profile_volume_commit=profile_volume_commit,
         lightzero_multi_gpu=lightzero_multi_gpu,
         save_ckpt_after_iter=save_ckpt_after_iter,
+        commit_on_checkpoint=commit_on_checkpoint,
         stop_after_learner_train_calls=stop_after_learner_train_calls,
         env_variant=env_variant,
         reward_variant=reward_variant,
         source_state_trail_render_mode=source_state_trail_render_mode,
+        source_state_bonus_render_mode=source_state_bonus_render_mode,
+        policy_observation_backend=policy_observation_backend,
+        learner_seat_mode=learner_seat_mode,
         ego_action_straight_override_probability=ego_action_straight_override_probability,
         policy_action_repeat_min=policy_action_repeat_min,
         policy_action_repeat_max=policy_action_repeat_max,
@@ -9713,6 +11460,13 @@ def lightzero_curvytron_visual_survival_gpu(
         opponent_checkpoint_state_key=opponent_checkpoint_state_key,
         opponent_mixture_spec=opponent_mixture_spec,
         opponent_assignment_ref=opponent_assignment_ref,
+        initial_policy_checkpoint_ref=initial_policy_checkpoint_ref,
+        initial_policy_checkpoint_state_key=initial_policy_checkpoint_state_key,
+        initial_policy_checkpoint_load_mode=initial_policy_checkpoint_load_mode,
+        opponent_assignment_refresh_interval_train_iter=(
+            opponent_assignment_refresh_interval_train_iter
+        ),
+        opponent_assignment_refresh_ref=opponent_assignment_refresh_ref,
         background_eval_enabled=background_eval_enabled,
         background_eval_launch_kind=background_eval_launch_kind,
         background_eval_compute=background_eval_compute,
@@ -9737,7 +11491,7 @@ def lightzero_curvytron_visual_survival_gpu(
 
 @app.function(
     image=image,
-    volumes={str(RUNS_MOUNT): runs_volume},
+    volumes=TRAINER_VOLUMES,
     timeout=DEFAULT_STOCK_TRAIN_MODAL_TIMEOUT_SEC,
     cpu=40.0,
     memory=65536,
@@ -9750,7 +11504,7 @@ def lightzero_curvytron_visual_survival_gpu_cpu40(**kwargs: Any) -> dict[str, An
 
 @app.function(
     image=image,
-    volumes={str(RUNS_MOUNT): runs_volume},
+    volumes=TRAINER_VOLUMES,
     timeout=DEFAULT_STOCK_TRAIN_MODAL_TIMEOUT_SEC,
     cpu=40.0,
     memory=65536,
@@ -9763,7 +11517,7 @@ def lightzero_curvytron_visual_survival_h100_cpu40(**kwargs: Any) -> dict[str, A
 
 @app.function(
     image=image,
-    volumes={str(RUNS_MOUNT): runs_volume},
+    volumes=TRAINER_VOLUMES,
     timeout=DEFAULT_STOCK_TRAIN_MODAL_TIMEOUT_SEC,
     cpu=40.0,
     memory=65536,
@@ -9774,7 +11528,7 @@ def lightzero_curvytron_visual_survival_h100x2_cpu40(**kwargs: Any) -> dict[str,
     return _run_visual_survival_train(compute=COMPUTE_GPU_H100X2_CPU40, **kwargs)
 
 
-@app.function(image=image, volumes={str(RUNS_MOUNT): runs_volume}, timeout=20 * 60, cpu=2.0)
+@app.function(image=image, volumes=TRAINER_VOLUMES, timeout=20 * 60, cpu=2.0)
 def lightzero_curvytron_visual_survival_opponent_smoke(
     run_id: str = DEFAULT_RUN_ID,
     attempt_id: str = "snapshot-opponent-wrapper-smoke",
@@ -9848,6 +11602,7 @@ def _compact_train_result_for_output(result: Any) -> Any:
         "mode": train_result.get("mode"),
         "compute": train_result.get("compute"),
         "called_train_muzero": train_result.get("called_train_muzero"),
+        "initial_policy_checkpoint": train_result.get("initial_policy_checkpoint"),
         "command": {
             "env_variant": command.get("env_variant"),
             "reward_variant": command.get("reward_variant"),
@@ -9859,6 +11614,12 @@ def _compact_train_result_for_output(result: Any) -> Any:
             "num_simulations": command.get("num_simulations"),
             "batch_size": command.get("batch_size"),
             "source_state_trail_render_mode": command.get("source_state_trail_render_mode"),
+            "source_state_bonus_render_mode": command.get("source_state_bonus_render_mode"),
+            "policy_observation_backend": command.get("policy_observation_backend"),
+            "policy_trail_render_mode": command.get("policy_trail_render_mode"),
+            "policy_bonus_render_mode": command.get("policy_bonus_render_mode"),
+            "policy_observation_contract_id": command.get("policy_observation_contract_id"),
+            "observation_contract": _to_plain(command.get("observation_contract")),
             "lightzero_eval_freq": command.get("lightzero_eval_freq"),
             "skip_lightzero_eval_in_profile": command.get("skip_lightzero_eval_in_profile"),
             "profile_cuda_sync_enabled": command.get("profile_cuda_sync_enabled"),
@@ -9881,6 +11642,8 @@ def _compact_train_result_for_output(result: Any) -> Any:
             "opponent_runtime_mode": command.get("opponent_runtime_mode"),
             "env_telemetry_stride": command.get("env_telemetry_stride"),
             "save_ckpt_after_iter": command.get("save_ckpt_after_iter"),
+            "commit_on_checkpoint": command.get("commit_on_checkpoint"),
+            "opponent_assignment_refresh": command.get("opponent_assignment_refresh"),
         },
         "counts": {
             "env_steps_collected": env_steps,
@@ -9927,6 +11690,18 @@ def _compact_train_result_for_output(result: Any) -> Any:
         },
         "final_volume_commit": train_result.get("final_volume_commit"),
     }
+    policy_observation_gpu_summary = action.get("policy_observation_gpu_last_profile")
+    if policy_observation_gpu_summary is not None:
+        compact["telemetry"]["policy_observation_gpu_last_profile"] = (
+            policy_observation_gpu_summary
+        )
+    elif str(command.get("policy_observation_backend") or "") == "jax_gpu":
+        compact["telemetry"]["policy_observation_gpu_last_profile"] = {
+            "status": "missing",
+            "scope": action.get("counts_scope"),
+            "sampled_profile_count": 0,
+            "reason": "telemetry rows lacked policy_observation_gpu_last_profile",
+        }
     if "background_eval" in result:
         compact["background_eval"] = result["background_eval"]
     return compact
@@ -9957,10 +11732,14 @@ def main(
     profile_spawn: bool = DEFAULT_PROFILE_SPAWN,
     lightzero_multi_gpu: bool = DEFAULT_LIGHTZERO_MULTI_GPU,
     save_ckpt_after_iter: int = DEFAULT_SAVE_CKPT_AFTER_ITER,
+    commit_on_checkpoint: bool = DEFAULT_COMMIT_ON_CHECKPOINT,
     stop_after_learner_train_calls: int = DEFAULT_STOP_AFTER_LEARNER_TRAIN_CALLS,
     env_variant: str = DEFAULT_ENV_VARIANT,
     reward_variant: str = DEFAULT_REWARD_VARIANT,
     source_state_trail_render_mode: str = DEFAULT_SOURCE_STATE_TRAIL_RENDER_MODE,
+    source_state_bonus_render_mode: str = DEFAULT_SOURCE_STATE_BONUS_RENDER_MODE,
+    policy_observation_backend: str = DEFAULT_POLICY_OBSERVATION_BACKEND_CHOICE,
+    learner_seat_mode: str = DEFAULT_LEARNER_SEAT_MODE,
     ego_action_straight_override_probability: float = (
         DEFAULT_EGO_ACTION_STRAIGHT_OVERRIDE_PROBABILITY
     ),
@@ -9981,8 +11760,17 @@ def main(
     opponent_checkpoint_ref: str | None = None,
     opponent_mixture_spec: str | None = None,
     opponent_assignment_ref: str | None = None,
+    initial_policy_checkpoint_ref: str | None = None,
+    initial_policy_checkpoint_state_key: str | None = None,
+    initial_policy_checkpoint_load_mode: str = DEFAULT_INITIAL_POLICY_CHECKPOINT_LOAD_MODE,
+    opponent_assignment_refresh_interval_train_iter: int = (
+        DEFAULT_OPPONENT_ASSIGNMENT_REFRESH_INTERVAL_TRAIN_ITER
+    ),
+    opponent_assignment_refresh_ref: str | None = None,
     opponent_assignment_json_path: str = "",
     opponent_assignment_audit_json_path: str = "",
+    opponent_assignment_target_volume: str = "runs",
+    mirror_assignment_checkpoints_to_control: bool = False,
     snapshot_ref: str = "curvytron_visual_survival_snapshot_opponent_smoke",
     checkpoint_ref: str | None = None,
     state_key: str | None = None,
@@ -10097,6 +11885,8 @@ def main(
                 "attempt_id": attempt_id,
                 "assignment": assignment,
                 "audit": audit,
+                "target_volume": opponent_assignment_target_volume,
+                "mirror_checkpoints_to_control": mirror_assignment_checkpoints_to_control,
             }
         )
         print(json.dumps(_to_plain(result), indent=2, sort_keys=True))
@@ -10324,6 +12114,13 @@ def main(
     source_state_trail_render_mode = _validate_source_state_trail_render_mode(
         source_state_trail_render_mode
     )
+    source_state_bonus_render_mode = _validate_source_state_bonus_render_mode(
+        source_state_bonus_render_mode
+    )
+    policy_observation_backend = _validate_policy_observation_backend(
+        policy_observation_backend
+    )
+    learner_seat_mode = _validate_learner_seat_mode(learner_seat_mode)
     kwargs = {
         "mode": mode,
         "seed": seed,
@@ -10346,10 +12143,14 @@ def main(
         "profile_volume_commit": profile_volume_commit,
         "lightzero_multi_gpu": lightzero_multi_gpu,
         "save_ckpt_after_iter": save_ckpt_after_iter,
+        "commit_on_checkpoint": commit_on_checkpoint,
         "stop_after_learner_train_calls": stop_after_learner_train_calls,
         "env_variant": env_variant,
         "reward_variant": reward_variant,
         "source_state_trail_render_mode": source_state_trail_render_mode,
+        "source_state_bonus_render_mode": source_state_bonus_render_mode,
+        "policy_observation_backend": policy_observation_backend,
+        "learner_seat_mode": learner_seat_mode,
         "ego_action_straight_override_probability": ego_action_straight_override_probability,
         "policy_action_repeat_min": policy_action_repeat_min,
         "policy_action_repeat_max": policy_action_repeat_max,
@@ -10365,9 +12166,16 @@ def main(
         "opponent_checkpoint_ref": opponent_checkpoint_ref,
         "opponent_mixture_spec": opponent_mixture_spec,
         "opponent_assignment_ref": opponent_assignment_ref,
+        "initial_policy_checkpoint_ref": initial_policy_checkpoint_ref,
+        "initial_policy_checkpoint_state_key": initial_policy_checkpoint_state_key,
+        "initial_policy_checkpoint_load_mode": initial_policy_checkpoint_load_mode,
         "opponent_snapshot_ref": snapshot_ref,
         "opponent_checkpoint_report_ref": checkpoint_ref,
         "opponent_checkpoint_state_key": state_key,
+        "opponent_assignment_refresh_interval_train_iter": (
+            opponent_assignment_refresh_interval_train_iter
+        ),
+        "opponent_assignment_refresh_ref": opponent_assignment_refresh_ref,
         "background_eval_enabled": background_eval_enabled,
         "background_eval_launch_kind": background_eval_launch_kind,
         "background_eval_compute": background_eval_compute,

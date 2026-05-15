@@ -1,19 +1,29 @@
 # Gaps And Tests
 
+For plain-language definitions of the repair, continuation, validation,
+assignment, and refresh terms used here, see `README.md`.
+
 ## Highest Priority Gaps
 
 | Gap | Why it matters | First test |
 | --- | --- | --- |
-| Live Dict pointer repair | Publisher writes pointer, but Modal Dict is not durable truth. | Local repair command repopulates missing/stale Dict from validated immutable Volume snapshot; tiny remote smoke passed; production runbook still needed. |
-| Production assignment runbook | Assignment writer works, but the operator flow needs one documented safe path. | Runbook command stores `assignment.json` and `audit.json` under attempt path and records the returned refs. |
+| Live Dict pointer repair | Publisher writes pointer, but Modal Dict is not durable truth. | Local repair command repopulates missing/stale Dict from validated immutable Volume snapshot; tiny remote smoke passed; minimal operator runbook added. |
+| Assignment command path | Assignment writer works, but we need one clear command path. | Command stores `assignment.json` and `audit.json` under a training attempt and records the returned refs. |
 | Run-scoped slot recipe control | Operators should be able to change a run's desired slots after launch without changing trainer code. | Dict recipe validator plus materializer smoke writes a new immutable assignment and audit for one run id. |
-| Intake continuation remote proof | Online Elo needs to add new checkpoints without resetting evidence. Local tests cover the contract; remote/prod proof is still needed. | Existing `latest.json` starts next round and preserves pair history in a bounded remote smoke. |
-| Queue/dedupe repair remote proof | Queue events are not durable enough alone. Local tests cover repair; remote/prod proof is still needed. | Duplicate/lost event repaired by periodic scan in a bounded remote smoke. |
+| Run-scoped reward recipe control | Operators should be able to choose survival, bonus, and final-outcome reward weights per run. | Pure validator maps named profiles to current reward variants and stores a frozen reward recipe/hash in launch or new-attempt artifacts. |
+| Online tournament continuation on Modal | New checkpoints need to enter an existing tournament without resetting evidence. | Small bounded Modal proof passed: old 3 -> new 3, continued to round 1, wrote 6 rating rows. Next proof should use the deployed service shape and a larger active pool. |
+| Queue/claim repair on Modal | Queue and claim state can be missing or stale. | Small bounded Modal proof passed: empty Queue was rebuilt from manifest and a forced stale claim was replaced. Next proof should avoid forced takeover and show normal expiry/retry. |
+| Checkpoint id stability | Old rating evidence is keyed by checkpoint id. If ids change when new refs arrive, old ratings and pair history can detach from the same checkpoint. | Local regression now preserves old ids from `latest.json` when explicit continuation specs add new checkpoint refs. |
+| Dict manifest loss | Modal Dict can forget coordination state; Volume manifest is the durable truth. | Local regression now rebuilds the Dict manifest from the Volume manifest during drain when a tournament/rating id is supplied. |
+| Partial-pool claim blocking | A claim for a small player pool must not block a later larger player pool. | Local regression now keys rating claims by desired checkpoint-pool hash and forces live run watches into continuation mode. |
+| Modal launch lifetime | Background tournament game/rating workers can die when a non-detached `modal run` parent exits. | Remote proof must use `modal run --detach`, a deployed scheduled function that keeps work alive, or a parent command that waits for children; then verify `latest.json` and completed game summaries. |
+| Website reload busy errors | A failed Volume reload must not make the website think it is fresh. | Local regression now retries after a busy/error reload instead of throttling the next attempt. |
 | One-frame tournament parity | New leaderboard must match current train cadence. | Rating spec with `decision_source_frames=1` is recorded, hashed, and used in game summaries; tiny two-checkpoint remote rating/publish smoke passed. |
 | Stable-slot recency smoke | `recent_strong` only means recent if rating rows carry run/attempt/iteration/latest metadata. | Rerun a bounded multi-checkpoint smoke and verify `recent_strong` selects the latest checkpoint for the watched run, not only the best remaining row. |
 | Larger bounded closed-loop smoke | Tiny manual smoke proves plumbing, not scale or repair behavior. | Run a bounded multi-checkpoint smoke and verify publish -> assignment -> train still works after metadata repair. |
+| Running trainer assignment refresh | A promoted checkpoint must affect future trainer collection, not only produce a leaderboard row. | Fake-LightZero collector-boundary test, env reset-mixture test, and tiny remote smoke prove a running trainer or controlled resume/new attempt consumes a newly materialized assignment at a clean boundary. |
 | Seeded non-checkpoint players | Scripted/hand-coded baselines need roster identity if included. | Normalize scripted player specs without fake checkpoint refs. |
-| Fractional invincibility overlay | Some percentage of episodes may need invincible opponents regardless of base policy. | Deterministic selection applies `opponent_death_mode=immortal` as an overlay and records telemetry/audit. |
+| Fractional invincibility overlay | Some percentage of episodes may need invincible opponents regardless of base policy. | Deterministic selection applies public `opponent_immortal=true` as an overlay and records telemetry/audit; env-bound `opponent_death_mode=immortal` is derived runtime plumbing. |
 
 ## Existing Tests To Reuse
 
@@ -40,14 +50,97 @@ means:
   opponents before top-policy bias dominates;
 - higher-rated policies are sampled more often, but lower-ranked or uncertain
   policies still appear;
+- a batch of new strong checkpoints should not be judged only against the same
+  established players and then mostly dropped because of random noise;
+- when a large new batch arrives, some new-vs-new games are useful after each
+  entrant has enough established-opponent placement signal;
 - repeated comfortable pairs are de-prioritized when fresh useful pairs exist;
 - duplicate pairs are blocked within a round;
 - some cross-band games remain so scalar Elo does not hide non-transitive
   matchups.
 
-Do not treat local contract coverage or tiny remote smokes as production-scale
-proof. Production gates still need remote queue/stale-claim proof, a larger
-current-source one-frame leaderboard run, and a larger closed-loop smoke.
+Do not treat local tests or tiny Modal smokes as enough. The useful proof is:
+add candidates to a real Modal-backed tournament, see games start in parallel,
+watch ratings continue from old evidence, and recover from broken Queue/claim
+state.
+
+The first small Modal proof passed on 2026-05-14, but it is not the final shape:
+it used manual `modal run` commands and forced stale-claim takeover. The next
+proof should run from the deployed app path and should not need manual repair
+except for the specific failure mode being tested.
+
+Launch-lifetime rule: do not call a round healthy just because input/progress
+files were written. If a local `modal run` returns before child game workers
+finish, use `modal run --detach` or wait for the children. Success means
+`latest.json` advanced and completed game summaries exist.
+
+## Current Online Tournament Proof Target
+
+Plain desired behavior:
+
+- Keep an active pool of about 100 mature checkpoints.
+- When a new checkpoint arrives, schedule games against many active checkpoints.
+- If 10 new checkpoints arrive together, schedule all of their games together.
+- The games should be separate Modal calls as much as possible.
+- The next rating snapshot must include old rows, old pair history, and the new
+  evidence.
+
+Local proof already added:
+
+- 2 new checkpoints against 100 established checkpoints get 20 placement
+  opponents each in one generated round.
+- 10 new checkpoints against 50 established checkpoints get established
+  opponents first; no new-vs-new placement pairs are needed for the first
+  placement burst.
+
+Bounded first proof:
+
+- Use a small active pool first, such as 10 existing checkpoints.
+- Add 2 new checkpoints.
+- Ask for 20 distinct opponents per new checkpoint if possible.
+- Use an odd `games_per_pair`, such as 3 or 21 depending on speed.
+- Check the generated pair list before trusting the run.
+- Then run the same path on Modal and inspect progress artifacts.
+
+Small proof that passed:
+
+- 3 existing checkpoint refs were rated first.
+- 3 new checkpoint refs were submitted through intake.
+- Queue-loss repair rebuilt the missing events from the manifest.
+- Stale-claim repair allowed the drain to take over.
+- The continued rating wrote round 1, not another round 0.
+- The final snapshot kept the old rows and added the new rows.
+
+What that proof does not prove:
+
+- no overlap between scheduled drains and manual drains;
+- no non-detached `modal run` parent killing child workers after scheduling;
+- no stale website/provisional snapshot issue;
+- no production-scale fanout;
+- no deployed-service lifecycle;
+- no checkpoint-id reorder case on Modal. That case is now covered locally and
+  should be included in the next remote proof.
+
+Follow-up local repairs now added:
+
+- Missing Dict manifest can be rebuilt from the Volume manifest for explicit
+  tournament/rating ids.
+- Rating claims use the desired checkpoint-pool hash, so a stale small-pool
+  claim does not block an expanded-pool continuation. Claim keys also include
+  fresh-vs-continuation mode, so a fresh-run claim does not block an explicit
+  continuation.
+- Live run watches force continuation during drain and spawn, even if the
+  original rating defaults did not say `continue_from_latest=true`.
+- Website reload errors no longer update the success throttle.
+
+Terms:
+
+- **Queue loss**: the manifest says a checkpoint should be processed, but the
+  Queue has no event. The drain should recreate the event.
+- **Stale claim**: a previous drain claimed the right to start a rating job but
+  did not finish. A later drain should take over after the timeout.
+- **One-frame validation**: rating games record `decision_source_frames=1`, so
+  the tournament is not using an old slow timing setup.
 
 ## New Test Groups
 
@@ -66,6 +159,8 @@ current-source one-frame leaderboard run, and a larger closed-loop smoke.
 - done: active-pool limit defaults to top 100, mature tail rows are marked
   `retired`, retired rows are excluded from adaptive scheduling, and unplaced
   tail rows stay `provisional` instead of being retired early;
+- done: new checkpoint batches prefer established active opponents in placement
+  before spending placement budget on new-vs-new pairs;
 - next: seat-balance policy for repeated canonical pairs;
 
 ### Public Leaderboard Contract
@@ -92,6 +187,8 @@ current-source one-frame leaderboard run, and a larger closed-loop smoke.
 - done: verify `stable_slots_v1` uses nested `recency.latest_for_run`;
 - done: tournament/intake rating rows preserve run id, attempt id, iteration,
   mtime, and `latest_for_run` so `recent_strong` has real metadata;
+- done: explicit checkpoint refs and rating continuation preserve that metadata
+  instead of thinning old checkpoints back to bare refs;
 - done: dedupe checkpoint entries by checkpoint id and checkpoint ref;
 - done: test blank and wall-avoidant immortal sentinels as normal assignment
   entries;
@@ -101,7 +198,7 @@ current-source one-frame leaderboard run, and a larger closed-loop smoke.
   `iteration`, `checkpoint_mtime_ns`, and per-run `latest_for_run` metadata;
 - next: remote-smoke `stable_slots_v1` after this metadata repair and inspect
   the concrete assignment entries;
-- next: document the production operator flow.
+- next: document the assignment command path.
 - next: implement run-scoped slot recipe Dict control and materialize it into
   assignment/audit artifacts.
 
@@ -111,10 +208,39 @@ current-source one-frame leaderboard run, and a larger closed-loop smoke.
   existing mixture contract;
 - local train/poller command plumbing records assignment ref/metadata;
 - tiny remote train smokes consumed assignment refs;
+- next: run-scoped reward recipes should map to existing reward variants first:
+  `sparse_outcome`, `dense_survival_plus_outcome`, and
+  `survival_plus_bonus_no_outcome`;
+- next: launch/attempt metadata should record reward profile, reward schema id,
+  reward schema hash, and reward recipe hash;
+- next: changing reward recipe during one attempt should fail unless a specific
+  replay policy exists;
 - resume reuses assignment by default;
 - explicit refresh creates new assignment id;
 - eval/GIF receives same assignment metadata as training;
 - no LightZero collector/search/learner code imports tournament modules.
+- direct in-run assignment refresh now exists for the trainer:
+  `opponent_assignment_refresh_interval_train_iter` plus
+  `opponent_assignment_refresh_ref`.
+- done locally: coarse refresh helpers build per-env reset params, verify all
+  envs report the new assignment before collect, keep the old assignment on
+  pre-reset pending-assignment failures, keep/retry when the pending assignment
+  is missing `assignment_sha256`, block collect on reset-proof failure, fail
+  before training if the hook cannot be installed, and write refresh JSONL plus
+  summary data.
+- done locally: fake-LightZero tests cover bucket behavior around train
+  iterations 49/50/51/100 and prove refresh applies before the future collection
+  batch.
+- done locally: env tests prove a refreshed mixture clears the old selected
+  opponent and old loaded frozen opponent object when a slot name is reused.
+- done remotely: tiny Modal train proof `refresh-e2e-smoke-20260514/train-refresh-d`
+  completed with initial assignment A, pending assignment B, one applied refresh
+  event, all-env ready proof, and telemetry rows under both A then B.
+- next: wire the direct path to a run-control pending-assignment pointer with
+  `ready.json` verification.
+- next: add failure tests for missing Dict, wrong run id, wrong attempt id,
+  stale generation, stale refresh index, missing assignment file, hash mismatch,
+  mutable checkpoint refs, partial write, and env-manager update failure.
 
 ### Intake And Online Elo
 
@@ -134,10 +260,18 @@ current-source one-frame leaderboard run, and a larger closed-loop smoke.
 - local: continuation preserves retired checkpoint history in the rating spec;
   the scheduler filters retired rows at pair selection time instead of deleting
   them from durable rating state.
+- local: explicit continuation preserves old checkpoint ids from `latest.json`
+  when new checkpoint refs are inserted before old refs.
 - local: queue loss can be repaired from manifest queued refs when drain finds
   an empty queue;
 - local: stale claims expire or repair without consuming events twice;
-- next: missing Dict manifest can be rebuilt from a Volume manifest;
+- local: a missing Dict manifest can be repaired from the durable Volume
+  manifest when drain/status/tick/submit are called with a tournament/rating id;
+- local: a fresh claim for a smaller desired pool does not block a larger pool;
+- local: fresh-run and continue-from-latest claims are separate claim modes;
+- local: live run-id/prefix watches force continuation and use the full known
+  `seen_checkpoint_refs` pool during drain/spawn;
+- next: prove the live-watch continuation repair remotely on Modal;
 - next: replaying the same rating round output is idempotent and does not
   double-count pair history or scheduler reason counts.
 
@@ -163,7 +297,8 @@ current-source one-frame leaderboard run, and a larger closed-loop smoke.
 
 - duplicated mixture entries with mortal/immortal variants select at configured
   weights;
-- telemetry records selected entry, `opponent_death_mode`, and runtime mode;
+- telemetry records selected entry, public `opponent_immortal`, derived
+  `opponent_death_mode`, and runtime mode;
 - assignment audit records whether immortality is a per-entry property or a
   global overlay;
 - frozen-policy cache behavior is tested if mortal/immortal variants reuse the
@@ -176,21 +311,95 @@ current-source one-frame leaderboard run, and a larger closed-loop smoke.
 - `blank_canvas_noop` requires `fixed_straight`;
 - frozen checkpoint entries require exact immutable refs and normal runtime;
 - `proactive_wall_avoidant` uses scripted wall-avoidant logic and safe margin;
-- `opponent_death_mode=immortal` is death immunity, not source bonus
+- Public `opponent_immortal=true` is death immunity. Env-bound
+  `opponent_death_mode=immortal` is derived runtime plumbing, not source bonus
   invincibility.
 
 ## Blockers Before Overnight Leaderboard-Fed Training
 
-1. Modal Dict pointer repair/fallback has local tests and a tiny remote smoke,
-   but still needs production runbook coverage.
-2. Assignment writer/operator flow needs a production runbook.
-3. Periodic safe refresh semantics are absent.
-4. Online Elo continuation and queue/stale-claim repair have local contract
+1. Online tournament continuation and queue/claim repair have local contract
    tests, but production-scale proof is still needed.
-5. One-frame tournament/leaderboard run has a tiny remote smoke, but is not yet
+2. One-frame tournament/leaderboard run has a tiny remote smoke, but is not yet
    validated at current public-source scale.
-6. A larger bounded closed-loop smoke is still needed, and it should explicitly
+3. A larger bounded closed-loop smoke is still needed, and it should explicitly
    verify the `recent_strong` slot.
+4. Assignment writer flow needs one clear command path.
+5. Direct periodic refresh exists, but leaderboard promotion still needs the
+   run-control/`ready.json` handoff before it can safely change a running
+   trainer without explicit `opponent_assignment_refresh_ref`.
+6. Reward recipe control is designed but not implemented; first version should
+   be launch/new-attempt only.
+
+## Mutable Refresh Validation Gates
+
+Plain target:
+
+```text
+Coach writes immutable assignment
+-> Coach writes pending assignment pointer to run-control
+-> trainer checks that pointer every about 50 learner iterations
+-> trainer applies it before a future collection batch
+-> trainer records exactly what happened
+```
+
+Do before code is trusted:
+
+1. Pure contract tests for direct assignment hash/checkpoint resolution.
+   **Local tests added for the direct path.**
+2. Fake-LightZero tests for `Collector.collect` wrapping and learner-iteration
+   cadence. **Local helper/fake tests added.**
+3. Env-level tests for applying a new opponent mixture at reset and clearing old
+   loaded opponent objects. **Local tests added.**
+4. Subprocess-env smoke proving all collector envs use the same assignment after
+   a forced reset.
+5. Tiny train with initial assignment A and pending assignment B, checking
+   refresh JSONL, summary, env telemetry, and checkpoint/GIF metadata.
+   **Remote base-env proof added for refresh JSONL, summary, and env telemetry.**
+
+Telemetry that must exist:
+
+- refresh decision: `planned`, `applied`, `kept_previous`, or `failed`;
+- run id and attempt id;
+- Dict generation and refresh index;
+- old and new assignment id/ref/hash;
+- learner train iteration at check and apply time;
+- collection batch index or collect call index;
+- timing for Dict read, assignment resolve, env reset/apply, and frozen
+  checkpoint load if it happened;
+- failure reason if the old assignment was kept.
+
+Artifacts to extend:
+
+- `opponent_assignment_refresh_events.jsonl`: every check/apply/failure event;
+- `summary.json`: initial assignment, latest applied assignment, refresh count,
+  and failed refresh count;
+- `progress_latest.json`: active assignment at checkpoint time;
+- `env_steps.jsonl`: assignment id/ref/hash/refresh index for each row, not only
+  mixture entry name;
+- eval/GIF command metadata: assignment active when the checkpoint was saved,
+  not whichever assignment is latest later.
+
+Race conditions to keep testing:
+
+- Dict points at a file before the file is visible on Volume;
+- a newer pending assignment appears while the trainer is resolving an older
+  one;
+- two attempts for one run id both try to apply or acknowledge a refresh;
+- one subprocess env updates and another does not;
+- refresh happens after `Collector.collect` has started;
+- a replay batch contains transitions from mixed assignment ids;
+- a reused slot name keeps an old frozen checkpoint object alive;
+- a checkpoint load stalls the first env action instead of the boundary hook.
+
+Fallback behavior to test:
+
+- Bad pending assignment before env reset: keep old assignment, log a visible
+  `kept_previous` or `failed` event, continue.
+- No pending assignment: no-op, continue.
+- Assignment verified but one env reset fails: do not collect a possibly mixed
+  batch; rebuild/restart or end the attempt cleanly.
+- A refresh that fails should be easy to see in `refresh_events.jsonl`,
+  `summary.json`, and the run website/status bundle.
 
 ## Minimal End-To-End Test Plan
 
@@ -204,6 +413,39 @@ current-source one-frame leaderboard run, and a larger closed-loop smoke.
 8. Rating updates. **Done manually.**
 9. New `stable_slots_v1` assignment generated at explicit refresh boundary.
    **Done mechanically once; rerun after checkpoint-recency metadata repair.**
+
+## 2026-05-14 Online Intake Proof
+
+Passed:
+
+- `inspector-detached-online-proof-20260514b` /
+  `elo-oneframe-detached-proof` proved the small online path on Modal.
+- Baseline: three checkpoints, one round, 3/3 games complete.
+- Intake: three new checkpoints accepted.
+- Continuation: round 1 ran with six checkpoints, 9/9 games complete, and
+  `latest.json` advanced to round 1.
+
+The proof specifically checks the footgun we hit earlier:
+
+- `input.json` alone is not enough.
+- `progress.json` saying games are running is not enough.
+- Success means finished game summaries exist and `latest.json` points at the
+  new round.
+
+Still missing:
+
+- Larger proof with a real current-source checkpoint pool.
+- Public leaderboard publish at production thresholds.
+- Website responsiveness proof against this completed run.
+- Long-running subscriber/drain proof without manual operator steps.
+
+Done for the small proof:
+
+- Published `inspector-detached-proof-leaderboard-20260514b` from
+  `inspector-detached-online-proof-20260514b` /
+  `elo-oneframe-detached-proof`.
+- Dict pointer published successfully.
+- Tiny proof thresholds were used, so this validates the write path only.
 
 ## Non-Blockers For Plain Overnight Training
 

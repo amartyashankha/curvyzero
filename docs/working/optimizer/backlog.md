@@ -108,11 +108,12 @@ section unless it has been refreshed in the current plate map or system map.
 - Keep the compact [runtime verdict](runtime_verdict_2026-05-10.md) current
   when source profile numbers, CPU/GPU boundary evidence, or full-GPU rewrite
   stance changes.
-- Reorientation: visual CurvyTron is the main training path. The Coach launcher
-  is now `--mode two-seat-selfplay`; fixed/frozen-opponent stock `train_muzero`
-  stays as controls/profiling. The optimizer target is LightZero-style visual
-  input and conv-stack plumbing, not the source-backed `[B,2,106]` scalar-ray
-  path. Keep scalar-ray as a sidecar diagnostic and timing comparison only.
+- Superseded reorientation: older notes said the Coach launcher was
+  `--mode two-seat-selfplay` and stock `train_muzero` was controls/profiling.
+  That is no longer current. Current guidance is stock LightZero `--mode train`
+  with `env_variant=source_state_fixed_opponent`, frozen-opponent route docs,
+  and CPU `cpu_oracle` `browser_lines + simple_symbols` policy observations.
+  Keep scalar-ray and old two-seat notes as sidecar/postmortem evidence only.
 - Historical note: the old `debug_visual_tensor` /
   `curvyzero_debug_occupancy_gray64/v0` surface was a smoke target only. The
   stock-control/profile surface is now source-state visual stack
@@ -152,14 +153,13 @@ section unless it has been refreshed in the current plate map or system map.
   source setup can produce zero body circles and overstate ray-path throughput.
 - 2026-05-12 postmortem correction: the old "canonical two-seat" measurement
   target is now an experimental/prototype lane, not trusted learning evidence.
-  Next full-loop learning measurements should start from stock-loop controls or
-  a native replay bridge. Historical note: next full-loop measurement was the
-  canonical two-seat self-play launcher. Keep
-  native source-state visual LightZero `train_muzero` as a stock-control
-  comparison. Report env step, render, stack/normalize, policy/search, replay,
-  reset, learner, checkpoint, and checkpoint/policy-version metadata when using
-  actor chunks. The current stock loop is synchronous; actor-fleet freshness
-  only applies to future split collection.
+  Next full-loop learning measurements should start from stock/frozen route
+  docs. Historical note: next full-loop measurement was once expected to use the
+  custom two-seat self-play launcher; that is superseded. Report env step,
+  render, stack/normalize, policy/search, replay, reset, learner, checkpoint,
+  and checkpoint/policy-version metadata when using actor chunks. The current
+  stock loop is synchronous; actor-fleet freshness only applies to future split
+  collection.
 - Historical post-reorientation order for CurvyTron optimizer work:
   1. Keep `lightzero_curvyzero_stacked_debug_visual_survival_train.py --mode
      two-seat-selfplay` as the Coach canonical launcher, and keep the native

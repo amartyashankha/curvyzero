@@ -155,14 +155,15 @@ BONUS_RENDER_MODES = frozenset(
     )
 )
 BONUS_RENDER_MODE_ORDER = (
+    BONUS_RENDER_MODE_SIMPLE_SYMBOLS,
     BONUS_RENDER_MODE_BROWSER_SPRITES,
     BONUS_RENDER_MODE_CIRCLES_FAST,
-    BONUS_RENDER_MODE_SIMPLE_SYMBOLS,
 )
-BONUS_RENDER_MODE_DEFAULT = BONUS_RENDER_MODE_BROWSER_SPRITES
+BONUS_RENDER_MODE_DEFAULT = BONUS_RENDER_MODE_SIMPLE_SYMBOLS
 BONUS_SYMBOL_RENDER_MODE_DEFAULT = BONUS_RENDER_MODE_SIMPLE_SYMBOLS
 BONUS_SYMBOL_OUTER_LUMA_BY_SHAPE = (68, 148, 196)
-BONUS_SYMBOL_INNER_LUMA = 212
+BONUS_SYMBOL_INNER_LUMA_BY_SHAPE = (212, 48, 48)
+BONUS_SYMBOL_INNER_LUMA = BONUS_SYMBOL_INNER_LUMA_BY_SHAPE[0]
 BONUS_SYMBOL_BASE_SIZE = 7
 SOURCE_STATE_RGB_BROWSER_LINES_RENDERER_IMPL_ID = (
     "curvyzero_source_state_rgb_canvas_like_browser_lines_numpy/v0"
@@ -1208,9 +1209,9 @@ def source_state_canvas_gray64_schema() -> dict[str, Any]:
         "default_bonus_render_mode": BONUS_RENDER_MODE_DEFAULT,
         "supported_bonus_render_modes": list(BONUS_RENDER_MODE_ORDER),
         "bonus_render_mode": BONUS_RENDER_MODE_DEFAULT,
-        "bonus_renderer_kind": "source_sprite_atlas_tiles",
-        "bonus_renderer_truth_level": ("source_state_browser_bonus_sprite_atlas_non_pixel_parity"),
-        "bonus_renderer_is_approximation": False,
+        "bonus_renderer_kind": "simple_symbol_masks",
+        "bonus_renderer_truth_level": "source_state_type_coded_simple_symbol_masks",
+        "bonus_renderer_is_approximation": True,
         "bonus_sprite_missing_fallback": "deterministic_type_coded_placeholder_stamp",
         "bonus_sprite_cache": "in_process_lru_stamp_cache_by_tile_index_and_pixel_size",
         "bonus_sprite_sheet": SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_SPRITE_SHEET_RELATIVE_PATH,
@@ -2445,17 +2446,13 @@ class SourceStateCanvasGray64DirtyRenderCache:
 
     def _record_cold_start(self) -> bool:
         self.stats.cold_starts += 1
-        if self.profile_timing:
-            self.stats.record_fallback_reason("cold_start")
+        self.stats.record_fallback_reason("cold_start")
         return False
 
     def _fallback(self, reason: str, *, reset: bool = False) -> bool:
         if reset:
             self.reset()
-        if self.profile_timing:
-            self.stats.record_fallback(reason)
-        else:
-            self.stats.fallbacks += 1
+        self.stats.record_fallback(reason)
         return False
 
     def capture_full(
@@ -4324,17 +4321,58 @@ def _simple_bonus_symbol_base(bonus_type: int | None) -> np.ndarray:
     stamp[outer_mask] = np.uint8(BONUS_SYMBOL_OUTER_LUMA_BY_SHAPE[outer_index])
     inner = np.zeros((size, size), dtype=bool)
     if inner_index == 0:
-        inner[center, 1 : size - 1] = True
-        inner[1 : size - 1, center] = True
+        if outer_index == 0:
+            inner[center - 1 : center + 2, 1 : size - 1] = True
+            inner[1 : size - 1, center - 1 : center + 2] = True
+        elif outer_index == 1:
+            inner[center - 1 : center + 2, 1 : size - 1] = True
+            inner[1 : size - 1, center - 1 : center + 2] = True
+        else:
+            inner[center : size - 1, :] = True
+            inner[:, center : size - 1] = True
     elif inner_index == 1:
-        for offset in range(1, size - 1):
-            inner[offset, offset] = True
-            inner[offset, size - 1 - offset] = True
+        if outer_index == 0:
+            for offset in range(size):
+                inner[offset, offset] = True
+                if offset + 1 < size:
+                    inner[offset, offset + 1] = True
+                if offset > 0:
+                    inner[offset, offset - 1] = True
+            for y_index, x_index in ((0, 5), (1, 4), (2, 3), (3, 2), (4, 1), (5, 0)):
+                inner[y_index, x_index] = True
+        elif outer_index == 1:
+            for offset in range(size):
+                inner[offset, offset] = True
+                inner[offset, size - 1 - offset] = True
+                if offset + 1 < size:
+                    inner[offset, offset + 1] = True
+                if offset > 0:
+                    inner[offset, size - offset] = True
+        else:
+            for offset in range(size):
+                x_index = size - 1 - offset
+                inner[offset, x_index] = True
+                if x_index > 0:
+                    inner[offset, x_index - 1] = True
+            for y_index, x_index in ((2, 1), (3, 2), (4, 3), (5, 4), (6, 5)):
+                inner[y_index, x_index] = True
+                if x_index + 1 < size:
+                    inner[y_index, x_index + 1] = True
     elif inner_index == 2:
-        inner[center - 1 : center + 2, 1 : size - 1] = True
+        if outer_index == 0:
+            inner[center - 2 : center + 1, :] = True
+        elif outer_index == 1:
+            inner[1 : center + 1, :] = True
+        else:
+            inner[center : size - 1, :] = True
     else:
-        inner[1 : size - 1, center - 1 : center + 2] = True
-    stamp[outer_mask & inner] = np.uint8(BONUS_SYMBOL_INNER_LUMA)
+        if outer_index == 0:
+            inner[:, center : center + 3] = True
+        elif outer_index == 1:
+            inner[:, 1 : center + 1] = True
+        else:
+            inner[:, center : size - 1] = True
+    stamp[outer_mask & inner] = np.uint8(BONUS_SYMBOL_INNER_LUMA_BY_SHAPE[outer_index])
     return stamp
 
 
@@ -4468,20 +4506,61 @@ def _draw_bonus_simple_symbols_rgb(
         bonus_types_iter = (None for _ in range(len(positions)))
     else:
         bonus_types_iter = (int(value) for value in bonus_types)
-    scratch = np.zeros(canvas.shape[:2], dtype=np.uint8)
     for position, radius, bonus_type in zip(positions, radii, bonus_types_iter, strict=True):
-        scratch.fill(0)
-        _draw_world_simple_bonus_symbol(
-            scratch,
+        _draw_world_simple_bonus_symbol_rgb(
+            canvas,
             position[0],
             position[1],
             radius,
             map_size,
             bonus_type=bonus_type,
         )
-        mask = scratch > 0
-        if bool(mask.any()):
-            canvas[mask] = scratch[mask][:, None]
+
+
+def _draw_world_simple_bonus_symbol_rgb(
+    canvas: np.ndarray,
+    x_value: Any,
+    y_value: Any,
+    radius_value: Any,
+    map_size: float,
+    *,
+    bonus_type: int | None,
+) -> None:
+    x = float(x_value)
+    y = float(y_value)
+    radius = float(radius_value)
+    if not np.isfinite(x) or not np.isfinite(y) or not np.isfinite(radius):
+        return
+    if radius <= 0.0:
+        return
+    if x + radius <= 0.0 or x - radius >= map_size:
+        return
+    if y + radius <= 0.0 or y - radius >= map_size:
+        return
+
+    size = int(canvas.shape[0])
+    radius_px = int(max(3, np.ceil((radius / map_size) * float(size))))
+    px = int(np.clip(np.rint((x / map_size) * float(size - 1)), 0, size - 1))
+    py = int(np.clip(np.rint((y / map_size) * float(size - 1)), 0, size - 1))
+    dst_size = int(radius_px * 2 + 1)
+    stamp = _simple_bonus_symbol_stamp(bonus_type, dst_size)
+
+    x0 = max(0, px - radius_px)
+    x1 = min(size, px + radius_px + 1)
+    y0 = max(0, py - radius_px)
+    y1 = min(size, py + radius_px + 1)
+    if x0 >= x1 or y0 >= y1:
+        return
+
+    stamp_x0 = x0 - (px - radius_px)
+    stamp_y0 = y0 - (py - radius_px)
+    patch = stamp[
+        stamp_y0 : stamp_y0 + (y1 - y0),
+        stamp_x0 : stamp_x0 + (x1 - x0),
+    ]
+    mask = patch > 0
+    if bool(mask.any()):
+        canvas[y0:y1, x0:x1][mask] = patch[mask][:, None]
 
 
 def _draw_bonus_sprites_rgb(
@@ -4966,6 +5045,7 @@ __all__ = [
     "BONUS_RENDER_MODE_SIMPLE_SYMBOLS",
     "BONUS_SYMBOL_BASE_SIZE",
     "BONUS_SYMBOL_INNER_LUMA",
+    "BONUS_SYMBOL_INNER_LUMA_BY_SHAPE",
     "BONUS_SYMBOL_OUTER_LUMA_BY_SHAPE",
     "BONUS_SYMBOL_RENDER_MODE_DEFAULT",
     "BONUS_RENDER_MODE_DEFAULT",

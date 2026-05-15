@@ -17,7 +17,8 @@ env_variant=source_state_fixed_opponent
 For this stock lane, the render comparison is:
 
 - `browser_lines`: richer browser-like source-state render.
-- `body_circles_fast`: faster approximation used in the current live matrices.
+- `body_circles_fast`: faster approximation used in historical/control
+  matrices only.
 
 Do not use the old `fast_gray64_direct` name for current stock fixed-opponent
 runs. That name belongs to the superseded custom two-seat adapter.
@@ -49,6 +50,28 @@ Latest artifact after the direct fast gray64 hot-path landing:
 ```text
 artifacts/local/curvytron_render_profiles/render_trajectory_lengths_directfast_20260513b.json
 artifacts/local/curvytron_render_profiles/render_trajectory_lengths_directfast_20260513b.cells.jsonl
+```
+
+Latest artifact after the simple-symbol bonus renderer and minimum-footprint
+fix:
+
+```text
+artifacts/local/curvytron_render_profiles/render_trajectory_lengths_symbols_min7_20260514.json
+artifacts/local/curvytron_render_profiles/render_trajectory_lengths_symbols_min7_20260514.cells.jsonl
+```
+
+Latest artifact after the V8 row-specific symbol masks:
+
+```text
+artifacts/local/curvytron_render_profiles/render_trajectory_lengths_symbols_v8_20260514.json
+artifacts/local/curvytron_render_profiles/render_trajectory_lengths_symbols_v8_20260514.cells.jsonl
+```
+
+Latest artifact after the explicit `source_state_bonus_render_mode` wiring:
+
+```text
+artifacts/local/curvytron_render_profiles/render_trajectory_lengths_explicit_bonus_v8_20260514.json
+artifacts/local/curvytron_render_profiles/render_trajectory_lengths_explicit_bonus_v8_20260514.cells.jsonl
 ```
 
 Previous scalar full-redraw baseline used for the comparison table:
@@ -93,8 +116,9 @@ What changed that can affect these numbers:
   terminal timing, bonus density, and long no-death state evolution can move;
 - default bonus rendering is now browser-sprite based inside the full RGB
   canvas path;
-- render mode names did not change for the stock fixed-opponent path:
-  `browser_lines` and `body_circles_fast` are still the current knobs.
+- render mode names did not change for the historical stock fixed-opponent
+  comparison tables: `browser_lines` and `body_circles_fast` were the knobs
+  being measured.
 
 This answers the render Amdahl question for long env rollouts. It does not by
 itself predict full training wall time when games are short or when MCTS/search
@@ -129,6 +153,73 @@ Plain read:
   path; the current hot path goes straight to gray64.
 - After this patch, the fast approximation is no longer render-dominated at
   short horizons. At long horizons, vector/game stepping becomes comparable.
+
+## Simple Symbols, Minimum 7x7 Footprint
+
+Date: 2026-05-14, after replacing luma-only bonus circles in the direct fast
+path with `simple_symbols`.
+
+| render | steps | wall s | steps/s | render s | render % | observation s | vector step s |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `browser_lines` | 100 | 0.261 | 383.8 | 0.197 | 75.6% | 0.204 | 0.038 |
+| `body_circles_fast` + `simple_symbols` | 100 | 0.066 | 1518.6 | 0.009 | 13.7% | 0.013 | 0.036 |
+| `browser_lines` | 500 | 1.425 | 350.8 | 1.100 | 77.2% | 1.135 | 0.193 |
+| `body_circles_fast` + `simple_symbols` | 500 | 0.331 | 1510.2 | 0.054 | 16.3% | 0.071 | 0.175 |
+| `browser_lines` | 1000 | 2.643 | 378.4 | 2.016 | 76.3% | 2.080 | 0.375 |
+| `body_circles_fast` + `simple_symbols` | 1000 | 0.683 | 1464.2 | 0.125 | 18.4% | 0.160 | 0.354 |
+
+Plain read: the symbol lane kept the fast-path renderer speed. It is about
+`4.3x` faster than `browser_lines` at 500 steps and about `3.9x` faster at 1000
+steps in this local env-only no-death profile.
+
+## Simple Symbols V8
+
+Date: 2026-05-14, after row-specific asymmetric V8 masks.
+
+Artifact:
+
+```text
+artifacts/local/curvytron_render_profiles/render_trajectory_lengths_symbols_v8_20260514.json
+```
+
+| render | steps | wall s | steps/s | render s | render % | observation s | vector step s |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `browser_lines` | 100 | 0.327 | 305.9 | 0.242 | 74.1% | 0.251 | 0.050 |
+| `body_circles_fast` + `simple_symbols` V8 | 100 | 0.064 | 1560.0 | 0.009 | 13.6% | 0.012 | 0.035 |
+| `browser_lines` | 500 | 1.439 | 347.5 | 1.108 | 77.0% | 1.143 | 0.195 |
+| `body_circles_fast` + `simple_symbols` V8 | 500 | 0.340 | 1469.0 | 0.056 | 16.3% | 0.073 | 0.179 |
+| `browser_lines` | 1000 | 2.932 | 341.1 | 2.228 | 76.0% | 2.304 | 0.415 |
+| `body_circles_fast` + `simple_symbols` V8 | 1000 | 0.676 | 1479.6 | 0.124 | 18.4% | 0.159 | 0.349 |
+
+Plain read: V8 did not slow the direct fast path in this local env-only lens.
+It is about `4.2x` faster than `browser_lines` at 500 steps and about `4.3x`
+faster at 1000 steps.
+
+## Explicit Bonus Flag V8
+
+Date: 2026-05-14, after `source_state_bonus_render_mode` was added to the stock
+source-state training env. This is still local env-only, no-death, no
+LightZero search/learner. It checks that the explicit training option did not
+erase the fast path.
+
+Artifact:
+
+```text
+artifacts/local/curvytron_render_profiles/render_trajectory_lengths_explicit_bonus_v8_20260514.json
+```
+
+| render | steps | wall s | steps/s | render s | render % | observation s | vector step s |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `browser_lines + browser_sprites` | 100 | 0.263 | 380.6 | 0.198 | 75.5% | 0.205 | 0.038 |
+| `body_circles_fast + simple_symbols` | 100 | 0.062 | 1625.6 | 0.008 | 13.5% | 0.012 | 0.034 |
+| `browser_lines + browser_sprites` | 500 | 1.385 | 361.0 | 1.075 | 77.6% | 1.106 | 0.186 |
+| `body_circles_fast + simple_symbols` | 500 | 0.324 | 1541.4 | 0.053 | 16.2% | 0.069 | 0.172 |
+| `browser_lines + browser_sprites` | 1000 | 2.544 | 393.1 | 1.960 | 77.1% | 2.018 | 0.353 |
+| `body_circles_fast + simple_symbols` | 1000 | 0.667 | 1498.7 | 0.123 | 18.4% | 0.156 | 0.345 |
+
+Plain read: the explicit option kept the env-only speed signal. The fast
+training observation is about `4.3x` faster at 500 steps and about `3.8x`
+faster at 1000 steps in this narrow lens.
 
 ## Browser Lines, Dirty Cache On
 

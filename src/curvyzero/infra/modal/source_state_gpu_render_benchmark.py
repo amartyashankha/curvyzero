@@ -31,11 +31,34 @@ RENDER_MODE_IDS = {
     RENDER_MODE_BROWSER_LINES: 0,
 }
 
+BONUS_RENDER_MODE_BROWSER_SPRITES = "browser_sprites"
+BONUS_RENDER_MODE_CIRCLES_FAST = "circles_fast"
+BONUS_RENDER_MODE_SIMPLE_SYMBOLS = "simple_symbols"
+BONUS_RENDER_MODE_IDS = {
+    BONUS_RENDER_MODE_BROWSER_SPRITES: 0,
+    BONUS_RENDER_MODE_CIRCLES_FAST: 1,
+    BONUS_RENDER_MODE_SIMPLE_SYMBOLS: 2,
+}
+
 RENDER_SURFACE_DIRECT_GRAY64 = "direct_gray64"
 RENDER_SURFACE_BLOCK_704_GRAY64 = "block_704_gray64"
 RENDER_SURFACES = {
     RENDER_SURFACE_DIRECT_GRAY64,
     RENDER_SURFACE_BLOCK_704_GRAY64,
+}
+TRAIL_COMPOSITION_PRIORITY_BUFFER = "priority_buffer"
+TRAIL_COMPOSITION_OWNER_ORDERED_COMPACT = "owner_ordered_compact"
+TRAIL_COMPOSITIONS = {
+    TRAIL_COMPOSITION_PRIORITY_BUFFER,
+    TRAIL_COMPOSITION_OWNER_ORDERED_COMPACT,
+}
+STATE_SOURCE_SYNTHETIC = "synthetic"
+STATE_SOURCE_REAL_ENV_ROLLOUT = "real_env_rollout"
+STATE_SOURCE_ADVERSARIAL_FIXTURE = "adversarial_fixture"
+STATE_SOURCES = {
+    STATE_SOURCE_SYNTHETIC,
+    STATE_SOURCE_REAL_ENV_ROLLOUT,
+    STATE_SOURCE_ADVERSARIAL_FIXTURE,
 }
 
 SYNTHETIC_BACKGROUND_LUMA = 34
@@ -44,9 +67,17 @@ SYNTHETIC_PLAYER_LUMA_BY_INDEX = (76, 150, 76, 217)
 SYNTHETIC_BACKGROUND_LUMA_FLOAT = 34.0
 SYNTHETIC_INVALID_OWNER_LUMA_FLOAT = 120.0
 SYNTHETIC_PLAYER_LUMA_FLOAT_BY_INDEX = (76.245, 149.685, 75.945, 217.335)
+PERSPECTIVE_SELF_LUMA = 96
+PERSPECTIVE_OTHER_LUMA = 128
+PERSPECTIVE_SELF_LUMA_FLOAT = 96.0
+PERSPECTIVE_OTHER_LUMA_FLOAT = 128.0
+BONUS_SYMBOL_OUTER_LUMA_BY_SHAPE = (68.0, 148.0, 196.0)
+BONUS_SYMBOL_INNER_LUMA_BY_SHAPE = (212.0, 48.0, 48.0)
+BONUS_SYMBOL_BASE_SIZE = 7
 
 SCHEMA_ID = "curvyzero_source_state_gpu_render_benchmark/v0"
-RENDERER_IMPL_ID = "synthetic_source_state_jax/v1"
+SCALAR_PROFILE_SCHEMA_ID = "curvyzero_source_state_gpu_scalar_component_profile/v1"
+RENDERER_IMPL_ID = "synthetic_source_state_jax/v2"
 COMPUTE_L4_T4 = "gpu-l4-t4"
 COMPUTE_H100 = "gpu-h100"
 COMPUTE_CHOICES = {COMPUTE_L4_T4, COMPUTE_H100}
@@ -94,13 +125,20 @@ def _run_source_state_gpu_render_benchmark_impl(config: dict[str, Any]) -> dict[
     import numpy as np
 
     checked = _validate_config(config)
+    if bool(config.get("scalar_component_profile", False)):
+        return _run_scalar_component_profile_impl(jax=jax, jnp=jnp, np=np, config=checked)
     render_mode_id = RENDER_MODE_IDS[checked["render_mode"]]
-    state = _synthetic_source_state(np=np, config=checked)
+    bonus_render_mode_id = BONUS_RENDER_MODE_IDS[checked["bonus_render_mode"]]
+    state, production_reference_state = _source_state_and_reference_for_benchmark(
+        np=np,
+        config=checked,
+    )
     render_fn = _make_jax_render_fn(
         jax=jax,
         jnp=jnp,
         config=checked,
         render_mode_id=render_mode_id,
+        bonus_render_mode_id=bonus_render_mode_id,
     )
 
     timings = _benchmark_render(
@@ -114,8 +152,10 @@ def _run_source_state_gpu_render_benchmark_impl(config: dict[str, Any]) -> dict[
         jax=jax,
         np=np,
         state=state,
+        production_reference_state=production_reference_state,
         config=checked,
         render_mode_id=render_mode_id,
+        bonus_render_mode_id=bonus_render_mode_id,
     )
 
     return {
@@ -136,7 +176,17 @@ def _run_source_state_gpu_render_benchmark_impl(config: dict[str, Any]) -> dict[
         },
         "config": checked,
         "semantics": {
-            "input_shape": "synthetic source-state arrays, not live env rows",
+            "input_shape": (
+                "synthetic source-state arrays"
+                if checked["state_source"] == STATE_SOURCE_SYNTHETIC
+                else (
+                    "hand-authored adversarial production state converted to compact render arrays"
+                    if checked["state_source"] == STATE_SOURCE_ADVERSARIAL_FIXTURE
+                    else "real VectorMultiplayerEnv.state converted to compact render arrays"
+                )
+            ),
+            "state_source": checked["state_source"],
+            "controlled_player": checked["controlled_player"],
             "output_shape": [
                 checked["batch_size"],
                 1,
@@ -149,22 +199,292 @@ def _run_source_state_gpu_render_benchmark_impl(config: dict[str, Any]) -> dict[
                 "not trusted browser fidelity"
             ),
             "block_704_gray64": (
-                "checks all 11x11 source pixels for each 64x64 cell with "
-                "production-like pixel-space trail/head raster; closer to 704->64 "
-                "cost but still no full RGB canvas"
+                f"outputs final {checked['target_size']}x{checked['target_size']} while "
+                "checking all high-resolution sample positions for each cell with "
+                "production-like pixel-space trail/head raster; no materialized "
+                "source RGB canvas"
             ),
-            "browser_lines": "approximates connected same-owner source-state segments",
-            "composition": "luma overwrite approximation; production parity must be checked",
+            "browser_lines": (
+                "approximates connected source-state segments using the previous active "
+                "same-owner point, with break_before suppressing a new segment"
+            ),
+            "bonus_render_mode": checked["bonus_render_mode"],
+            "perspective": (
+                "controlled-player self/other luma"
+                if checked["controlled_player"] is not None
+                else "source/player-color luma"
+            ),
+            "trail_composition": checked["trail_composition"],
+            "composition": (
+                (
+                    "benchmark-only CPU-packed owner draw order; block_704_gray64 "
+                    "trail pass overwrites without carrying a priority buffer"
+                )
+                if checked["trail_composition"] == TRAIL_COMPOSITION_OWNER_ORDERED_COMPACT
+                else (
+                    "policy-grayscale owner-priority overwrite; production parity "
+                    "must still be checked for every rollout shape"
+                )
+            ),
         },
         "known_gaps": [
-            "No live CurvyTron env or LightZero trainer/checkpoint imports.",
+            (
+                "Real env rows are benchmark-only when state_source=real_env_rollout; "
+                "there is still no LightZero trainer/checkpoint integration."
+            ),
             "No Modal Volume access.",
             "No full RGB canvas parity yet; block_704_gray64 can be compared to production CPU render.",
             "Synthetic trail rows preserve tensor shape, not exact game histories.",
-            "JAX path does not yet implement exact owner draw grouping, RGB overwrite, or bonus sprites.",
+            (
+                "JAX path now uses previous active same-owner browser-line connectivity, "
+                "and block_704_gray64 uses owner-priority composition for the current "
+                "policy-grayscale target. It is not a full RGB browser renderer."
+            ),
+            (
+                "owner_ordered_compact, when selected, is benchmark-only and only "
+                "changes compact render input ordering inside this Modal benchmark."
+            ),
+            "Browser sprite parity is intentionally out of scope when bonus_render_mode=simple_symbols.",
         ],
         "timings": timings,
         "verification": verification,
+    }
+
+
+def _run_scalar_component_profile_impl(
+    *,
+    jax: Any,
+    jnp: Any,
+    np: Any,
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    """Profile the current one-env, two-player JAX observation shape."""
+
+    if int(config["batch_size"]) != 1:
+        raise ValueError("scalar_component_profile requires batch_size=1")
+    if int(config["player_count"]) != 2:
+        raise ValueError("scalar_component_profile currently expects player_count=2")
+    if config["render_surface"] != RENDER_SURFACE_BLOCK_704_GRAY64:
+        raise ValueError("scalar_component_profile currently expects block_704_gray64")
+
+    render_mode_id = RENDER_MODE_IDS[config["render_mode"]]
+    bonus_render_mode_id = BONUS_RENDER_MODE_IDS[config["bonus_render_mode"]]
+    render_config_p0 = {**config, "controlled_player": 0}
+    render_config_p1 = {**config, "controlled_player": 1}
+    render_fn_p0 = _make_jax_render_fn(
+        jax=jax,
+        jnp=jnp,
+        config=render_config_p0,
+        render_mode_id=render_mode_id,
+        bonus_render_mode_id=bonus_render_mode_id,
+    )
+    render_fn_p1 = _make_jax_render_fn(
+        jax=jax,
+        jnp=jnp,
+        config=render_config_p1,
+        render_mode_id=render_mode_id,
+        bonus_render_mode_id=bonus_render_mode_id,
+    )
+    fused_render_fn = _make_jax_two_view_render_fn(
+        jax=jax,
+        jnp=jnp,
+        config=config,
+        render_mode_id=render_mode_id,
+        bonus_render_mode_id=bonus_render_mode_id,
+    )
+    production_state = _real_env_rollout_production_state(np=np, config=config)
+    warmup_runs = int(config["warmup_runs"])
+    steady_runs = int(config["steady_runs"])
+
+    timings: dict[str, list[float]] = {
+        "production_to_compact_sec": [],
+        "host_to_device_sec": [],
+        "render_player0_sec": [],
+        "readback_player0_sec": [],
+        "render_player1_sec": [],
+        "readback_player1_sec": [],
+        "separate_render_readback_sec": [],
+        "two_view_total_sec": [],
+        "fused_render_sec": [],
+        "fused_readback_sec": [],
+        "fused_render_readback_sec": [],
+        "fused_two_view_total_sec": [],
+    }
+    compile_two_view_sec: float | None = None
+    compile_fused_two_view_sec: float | None = None
+    fused_comparison: dict[str, Any] | None = None
+
+    for iteration in range(warmup_runs + steady_runs):
+        total_started = time.perf_counter()
+
+        started = time.perf_counter()
+        compact_state = _production_to_benchmark_source_state(
+            np=np,
+            production_state=production_state,
+            config=config,
+        )
+        compact_state = _prepare_compact_state_for_render(
+            np=np,
+            state=compact_state,
+            config=config,
+        )
+        conversion_sec = time.perf_counter() - started
+
+        started = time.perf_counter()
+        device_state = _copy_state_to_device(jax=jax, state=compact_state)
+        transfer_sec = time.perf_counter() - started
+
+        started = time.perf_counter()
+        output_p0 = render_fn_p0(device_state)
+        output_p0.block_until_ready()
+        render_p0_sec = time.perf_counter() - started
+
+        started = time.perf_counter()
+        host_p0 = np.asarray(output_p0)
+        readback_p0_sec = time.perf_counter() - started
+
+        started = time.perf_counter()
+        output_p1 = render_fn_p1(device_state)
+        output_p1.block_until_ready()
+        render_p1_sec = time.perf_counter() - started
+
+        started = time.perf_counter()
+        host_p1 = np.asarray(output_p1)
+        readback_p1_sec = time.perf_counter() - started
+
+        separate_total_sec = time.perf_counter() - total_started
+
+        started = time.perf_counter()
+        fused_output = fused_render_fn(device_state)
+        fused_output.block_until_ready()
+        fused_render_sec = time.perf_counter() - started
+
+        started = time.perf_counter()
+        host_fused = np.asarray(fused_output)
+        fused_readback_sec = time.perf_counter() - started
+
+        separate_render_readback_sec = (
+            render_p0_sec + readback_p0_sec + render_p1_sec + readback_p1_sec
+        )
+        fused_render_readback_sec = fused_render_sec + fused_readback_sec
+        fused_total_sec = conversion_sec + transfer_sec + fused_render_readback_sec
+        if iteration == 0:
+            compile_two_view_sec = separate_total_sec
+            compile_fused_two_view_sec = fused_total_sec
+        if iteration >= warmup_runs:
+            if fused_comparison is None:
+                separate = np.concatenate([host_p0, host_p1], axis=0)
+                diff = np.abs(host_fused.astype(np.int16) - separate.astype(np.int16))
+                cpu_started = time.perf_counter()
+                cpu_p0 = _cpu_render_original_production_canvas_gray64(
+                    np=np,
+                    production_state=production_state,
+                    config={**config, "controlled_player": 0},
+                )
+                cpu_p1 = _cpu_render_original_production_canvas_gray64(
+                    np=np,
+                    production_state=production_state,
+                    config={**config, "controlled_player": 1},
+                )
+                cpu_pair = np.concatenate([cpu_p0, cpu_p1], axis=0)
+                cpu_sec = time.perf_counter() - cpu_started
+                cpu_diff = np.abs(host_fused.astype(np.int16) - cpu_pair.astype(np.int16))
+                cpu_mismatch_count = int(np.count_nonzero(cpu_diff))
+                fused_comparison = {
+                    "shape": list(host_fused.shape),
+                    "matches_separate": bool(not np.count_nonzero(diff)),
+                    "mismatch_count": int(np.count_nonzero(diff)),
+                    "max_abs_diff": int(diff.max()) if diff.size else 0,
+                    "cpu_reference_kind": (
+                        "production_render_source_state_canvas_gray64_player0_player1"
+                    ),
+                    "cpu_reference_sec": float(cpu_sec),
+                    "cpu_exact_parity": bool(cpu_mismatch_count == 0),
+                    "cpu_mismatch_count": cpu_mismatch_count,
+                    "cpu_mismatch_fraction": (
+                        float(cpu_mismatch_count / cpu_diff.size) if cpu_diff.size else 0.0
+                    ),
+                    "cpu_max_abs_diff": int(cpu_diff.max()) if cpu_diff.size else 0,
+                    "cpu_mean_abs_diff": float(cpu_diff.mean()) if cpu_diff.size else 0.0,
+                }
+            timings["production_to_compact_sec"].append(conversion_sec)
+            timings["host_to_device_sec"].append(transfer_sec)
+            timings["render_player0_sec"].append(render_p0_sec)
+            timings["readback_player0_sec"].append(readback_p0_sec)
+            timings["render_player1_sec"].append(render_p1_sec)
+            timings["readback_player1_sec"].append(readback_p1_sec)
+            timings["separate_render_readback_sec"].append(separate_render_readback_sec)
+            timings["two_view_total_sec"].append(separate_total_sec)
+            timings["fused_render_sec"].append(fused_render_sec)
+            timings["fused_readback_sec"].append(fused_readback_sec)
+            timings["fused_render_readback_sec"].append(fused_render_readback_sec)
+            timings["fused_two_view_total_sec"].append(fused_total_sec)
+
+    medians = {key: _median(value) for key, value in timings.items()}
+    fused_total = medians["fused_two_view_total_sec"]
+    fused_render_readback = medians["fused_render_readback_sec"]
+    return {
+        "schema_id": SCALAR_PROFILE_SCHEMA_ID,
+        "ok": True,
+        "app_name": APP_NAME,
+        "renderer_impl_id": RENDERER_IMPL_ID,
+        "nvidia_smi": _nvidia_smi(),
+        "packages": {
+            "jax": _version_or_missing("jax"),
+            "jaxlib": _version_or_missing("jaxlib"),
+            "numpy": _version_or_missing("numpy"),
+        },
+        "jax": {
+            "default_backend": jax.default_backend(),
+            "device_count": len(jax.devices()),
+            "devices": [str(device) for device in jax.devices()],
+        },
+        "config": {**config, "scalar_component_profile": True},
+        "timings": {
+            "warmup_runs": warmup_runs,
+            "steady_runs": steady_runs,
+            "compile_first_two_view_sec": compile_two_view_sec,
+            "compile_first_fused_two_view_sec": compile_fused_two_view_sec,
+            "median": medians,
+            "frames_per_sec_two_views": _rate(2.0, medians["two_view_total_sec"]),
+            "env_steps_per_sec_two_views": _rate(1.0, medians["two_view_total_sec"]),
+            "fused_frames_per_sec_two_views": _rate(2.0, fused_total),
+            "fused_env_steps_per_sec_two_views": _rate(1.0, fused_total),
+            "fused_vs_separate_total_speedup": (
+                medians["two_view_total_sec"] / fused_total if fused_total > 0.0 else None
+            ),
+            "fused_vs_separate_render_readback_speedup": (
+                medians["separate_render_readback_sec"] / fused_render_readback
+                if fused_render_readback > 0.0
+                else None
+            ),
+        },
+        "fused_comparison": fused_comparison or {"status": "not_checked"},
+        "semantic_notes": {
+            "previous_point_algorithm": (
+                "JAX browser_lines scans trail slots once and carries the last active "
+                "position per non-negative owner. Each current active slot connects to "
+                "that carried same-owner point unless break_before is set or the trail "
+                "radius changed."
+            ),
+            "fused_two_view_path": (
+                "For block_704_gray64, the fused JIT keeps a leading two-view axis and "
+                "shares trail, bonus, and head geometry across player-perspective luma "
+                "palettes before returning [2,1,64,64] for the scalar batch=1 profile."
+            ),
+            "remaining_fidelity_gap": (
+                "This is still a benchmark prototype. The block_704_gray64 JAX path "
+                "now matches the production policy-grayscale owner ordering on the "
+                "checked smoke rows, but it is not a full RGB browser renderer and "
+                "is not wired into the trainer."
+            ),
+        },
+        "plain_read": (
+            "This profiles the current scalar trainer shape against a fused two-view "
+            "JIT: one production env row, one host-to-device copy, either two "
+            "controlled-player renders plus two NumPy readbacks, or one JIT render "
+            "returning [2,1,64,64] plus one readback."
+        ),
     }
 
 
@@ -224,9 +544,7 @@ def _benchmark_render(
         "host_to_device_sec_median": _median(transfer_times),
         "compile_first_render_sec": compile_first_render_sec,
         "device_render_sec_median": _median(render_times),
-        "device_to_host_sec_median": _median(readback_times)
-        if config["transfer_output"]
-        else None,
+        "device_to_host_sec_median": _median(readback_times) if config["transfer_output"] else None,
         "end_to_end_sec_median": _median(end_to_end_times),
         "device_frames_per_sec": _rate(float(config["batch_size"]), _median(render_times)),
         "end_to_end_frames_per_sec": _rate(
@@ -243,12 +561,18 @@ def _make_jax_render_fn(
     jnp: Any,
     config: dict[str, Any],
     render_mode_id: int,
+    bonus_render_mode_id: int,
 ) -> Any:
     target_size = int(config["target_size"])
     frame_size = int(config["frame_size"])
     map_size = float(config["map_size"])
     bonus_count = int(config["bonus_count"])
     render_surface = str(config["render_surface"])
+    trail_composition = str(config.get("trail_composition", TRAIL_COMPOSITION_PRIORITY_BUFFER))
+    use_priority_buffer = trail_composition != TRAIL_COMPOSITION_OWNER_ORDERED_COMPACT
+    controlled_player = config.get("controlled_player")
+    player_luma_by_index = _player_luma_by_index(config)
+    player_luma_float_by_index = _player_luma_float_by_index(config)
 
     @jax.jit
     def render(device_state: dict[str, Any]) -> Any:
@@ -262,15 +586,88 @@ def _make_jax_render_fn(
                 map_size=map_size,
                 bonus_count=bonus_count,
                 render_mode_id=render_mode_id,
+                bonus_render_mode_id=bonus_render_mode_id,
+                controlled_player=controlled_player,
+                player_luma_float_by_index=player_luma_float_by_index,
+                use_priority_buffer=use_priority_buffer,
             )
         return _jax_render_direct_gray64(
             jnp=jnp,
+            lax=jax.lax,
             state=device_state,
             target_size=target_size,
             map_size=map_size,
             bonus_count=bonus_count,
             render_mode_id=render_mode_id,
+            bonus_render_mode_id=bonus_render_mode_id,
+            controlled_player=controlled_player,
+            player_luma_by_index=player_luma_by_index,
         )
+
+    return render
+
+
+def _make_jax_two_view_render_fn(
+    *,
+    jax: Any,
+    jnp: Any,
+    config: dict[str, Any],
+    render_mode_id: int,
+    bonus_render_mode_id: int,
+) -> Any:
+    target_size = int(config["target_size"])
+    frame_size = int(config["frame_size"])
+    map_size = float(config["map_size"])
+    bonus_count = int(config["bonus_count"])
+    render_surface = str(config["render_surface"])
+    trail_composition = str(config.get("trail_composition", TRAIL_COMPOSITION_PRIORITY_BUFFER))
+    use_priority_buffer = trail_composition != TRAIL_COMPOSITION_OWNER_ORDERED_COMPACT
+    p0_luma = _player_luma_by_index({**config, "controlled_player": 0})
+    p1_luma = _player_luma_by_index({**config, "controlled_player": 1})
+    p0_luma_float = _player_luma_float_by_index({**config, "controlled_player": 0})
+    p1_luma_float = _player_luma_float_by_index({**config, "controlled_player": 1})
+
+    @jax.jit
+    def render(device_state: dict[str, Any]) -> Any:
+        if render_surface == RENDER_SURFACE_BLOCK_704_GRAY64:
+            return _jax_render_block_704_gray64_two_views(
+                jnp=jnp,
+                lax=jax.lax,
+                state=device_state,
+                frame_size=frame_size,
+                target_size=target_size,
+                map_size=map_size,
+                bonus_count=bonus_count,
+                render_mode_id=render_mode_id,
+                bonus_render_mode_id=bonus_render_mode_id,
+                player_luma_float_by_view=(p0_luma_float, p1_luma_float),
+                use_priority_buffer=use_priority_buffer,
+            )
+        p0 = _jax_render_direct_gray64(
+            jnp=jnp,
+            lax=jax.lax,
+            state=device_state,
+            target_size=target_size,
+            map_size=map_size,
+            bonus_count=bonus_count,
+            render_mode_id=render_mode_id,
+            bonus_render_mode_id=bonus_render_mode_id,
+            controlled_player=0,
+            player_luma_by_index=p0_luma,
+        )
+        p1 = _jax_render_direct_gray64(
+            jnp=jnp,
+            lax=jax.lax,
+            state=device_state,
+            target_size=target_size,
+            map_size=map_size,
+            bonus_count=bonus_count,
+            render_mode_id=render_mode_id,
+            bonus_render_mode_id=bonus_render_mode_id,
+            controlled_player=1,
+            player_luma_by_index=p1_luma,
+        )
+        return jnp.concatenate([p0, p1], axis=0)
 
     return render
 
@@ -278,21 +675,21 @@ def _make_jax_render_fn(
 def _jax_render_direct_gray64(
     *,
     jnp: Any,
+    lax: Any,
     state: dict[str, Any],
     target_size: int,
     map_size: float,
     bonus_count: int,
     render_mode_id: int,
+    bonus_render_mode_id: int,
+    controlled_player: int | None,
+    player_luma_by_index: tuple[int, ...],
 ) -> Any:
     grid_x = (
-        (jnp.arange(target_size, dtype=jnp.float32) + 0.5)
-        * float(map_size)
-        / float(target_size)
+        (jnp.arange(target_size, dtype=jnp.float32) + 0.5) * float(map_size) / float(target_size)
     )
     grid_y = (
-        (jnp.arange(target_size, dtype=jnp.float32) + 0.5)
-        * float(map_size)
-        / float(target_size)
+        (jnp.arange(target_size, dtype=jnp.float32) + 0.5) * float(map_size) / float(target_size)
     )
     world_x = grid_x[None, None, None, :]
     world_y = grid_y[None, None, :, None]
@@ -303,15 +700,10 @@ def _jax_render_direct_gray64(
     hit = trail_dx * trail_dx + trail_dy * trail_dy <= trail_radius_sq
 
     if render_mode_id == RENDER_MODE_IDS[RENDER_MODE_BROWSER_LINES]:
-        prev_x = jnp.concatenate([state["trail_x"][:, :1], state["trail_x"][:, :-1]], axis=1)
-        prev_y = jnp.concatenate([state["trail_y"][:, :1], state["trail_y"][:, :-1]], axis=1)
-        prev_owner = jnp.concatenate(
-            [state["trail_owner"][:, :1], state["trail_owner"][:, :-1]],
-            axis=1,
-        )
-        prev_active = jnp.concatenate(
-            [jnp.zeros_like(state["trail_active"][:, :1]), state["trail_active"][:, :-1]],
-            axis=1,
+        prev_x, prev_y, prev_active = _previous_owner_trail_slots(
+            jnp=jnp,
+            lax=lax,
+            state=state,
         )
         hit = hit | _segment_hits(
             jnp=jnp,
@@ -323,18 +715,28 @@ def _jax_render_direct_gray64(
             prev_y=prev_y,
             radius_sq=trail_radius_sq,
             owner=state["trail_owner"],
-            prev_owner=prev_owner,
+            prev_owner=state["trail_owner"],
             active=prev_active,
             break_before=state["trail_break_before"],
         )
 
     hit = hit & (state["trail_active"][:, :, None, None] != 0)
-    player_luma = jnp.asarray(SYNTHETIC_PLAYER_LUMA_BY_INDEX, dtype=jnp.uint8)
     owner = state["trail_owner"]
+    player_luma = _player_luma_for_state(
+        jnp=jnp,
+        state=state,
+        controlled_player=controlled_player,
+        fallback_luma=player_luma_by_index,
+        dtype=jnp.uint8,
+    )
     trail_value = jnp.where(
         owner < 0,
         jnp.uint8(SYNTHETIC_INVALID_OWNER_LUMA),
-        jnp.take(player_luma, jnp.mod(owner, player_luma.shape[0])),
+        jnp.take_along_axis(
+            player_luma,
+            jnp.mod(owner, player_luma.shape[1])[:, :, None],
+            axis=1,
+        )[:, :, 0],
     ).astype(jnp.uint8)
     trail_layer = jnp.max(
         jnp.where(hit, trail_value[:, :, None, None], jnp.zeros((), dtype=jnp.uint8)),
@@ -351,6 +753,9 @@ def _jax_render_direct_gray64(
         world_x=world_x,
         world_y=world_y,
         bonus_count=bonus_count,
+        bonus_render_mode_id=bonus_render_mode_id,
+        controlled_player=controlled_player,
+        player_luma_by_index=player_luma_by_index,
     )
     return out[:, None, :, :].astype(jnp.uint8)
 
@@ -365,13 +770,15 @@ def _jax_render_block_704_gray64(
     map_size: float,
     bonus_count: int,
     render_mode_id: int,
+    bonus_render_mode_id: int,
+    controlled_player: int | None,
+    player_luma_float_by_index: tuple[float, ...],
+    use_priority_buffer: bool,
 ) -> Any:
     if frame_size % target_size != 0:
         raise ValueError("frame_size must be divisible by target_size")
     block = frame_size // target_size
-    source = (jnp.arange(frame_size, dtype=jnp.float32) + 0.5) * float(map_size) / float(
-        frame_size
-    )
+    source = (jnp.arange(frame_size, dtype=jnp.float32) + 0.5) * float(map_size) / float(frame_size)
     source_blocks = source.reshape(target_size, block)
     world_x = source_blocks[None, None, :, None, :]
     world_y = source_blocks[None, :, None, :, None]
@@ -384,8 +791,27 @@ def _jax_render_block_704_gray64(
         SYNTHETIC_BACKGROUND_LUMA_FLOAT,
         dtype=jnp.float32,
     )
+    if use_priority_buffer:
+        trail_priority = jnp.full(
+            image.shape,
+            jnp.int32(-1),
+            dtype=jnp.int32,
+        )
+    prev_trail_x = None
+    prev_trail_y = None
+    prev_trail_active = None
+    if render_mode_id == RENDER_MODE_IDS[RENDER_MODE_BROWSER_LINES]:
+        prev_trail_x, prev_trail_y, prev_trail_active = _previous_owner_trail_slots(
+            jnp=jnp,
+            lax=lax,
+            state=state,
+        )
 
     def draw_trail_slot(slot: Any, current: Any) -> Any:
+        if use_priority_buffer:
+            current_luma, current_priority = current
+        else:
+            current_luma = current
         x = state["trail_x"][:, slot] * pixel_scale
         y = state["trail_y"][:, slot] * pixel_scale
         radius = state["trail_radius"][:, slot] * pixel_scale
@@ -397,40 +823,79 @@ def _jax_render_block_704_gray64(
         hit = dx * dx + dy * dy <= radius_sq
 
         if render_mode_id == RENDER_MODE_IDS[RENDER_MODE_BROWSER_LINES]:
-            previous = jnp.maximum(slot - 1, 0)
-            prev_x = state["trail_x"][:, previous] * pixel_scale
-            prev_y = state["trail_y"][:, previous] * pixel_scale
-            prev_owner = state["trail_owner"][:, previous]
-            prev_active = state["trail_active"][:, previous] != 0
             hit = hit | _segment_hits_one_slot(
                 jnp=jnp,
                 world_x=pixel_x,
                 world_y=pixel_y,
                 x=x,
                 y=y,
-                prev_x=prev_x,
-                prev_y=prev_y,
+                prev_x=prev_trail_x[:, slot] * pixel_scale,
+                prev_y=prev_trail_y[:, slot] * pixel_scale,
                 radius_sq=radius_sq,
                 owner=owner,
-                prev_owner=prev_owner,
-                active=prev_active,
+                prev_owner=owner,
+                active=prev_trail_active[:, slot],
                 break_before=state["trail_break_before"][:, slot],
                 slot=slot,
             )
 
-        player_luma = jnp.asarray(SYNTHETIC_PLAYER_LUMA_FLOAT_BY_INDEX, dtype=jnp.float32)
+        player_luma = _player_luma_for_state(
+            jnp=jnp,
+            state=state,
+            controlled_player=controlled_player,
+            fallback_luma=player_luma_float_by_index,
+            dtype=jnp.float32,
+        )
         value = jnp.where(
             owner < 0,
             jnp.float32(SYNTHETIC_INVALID_OWNER_LUMA_FLOAT),
-            jnp.take(player_luma, jnp.mod(owner, player_luma.shape[0])),
+            jnp.take_along_axis(
+                player_luma,
+                jnp.mod(owner, player_luma.shape[1])[:, None],
+                axis=1,
+            )[:, 0],
         ).astype(jnp.float32)
+        update = hit & active[:, None, None, None, None]
+        if use_priority_buffer:
+            priority = _owner_draw_priority(
+                jnp=jnp,
+                owner=owner,
+                player_count=state["head_x"].shape[1],
+            )
+            update = update & (priority[:, None, None, None, None] >= current_priority)
+            return (
+                jnp.where(
+                    update,
+                    value[:, None, None, None, None],
+                    current_luma,
+                ),
+                jnp.where(
+                    update,
+                    priority[:, None, None, None, None],
+                    current_priority,
+                ),
+            )
         return jnp.where(
-            hit & active[:, None, None, None, None],
+            update,
             value[:, None, None, None, None],
-            current,
+            current_luma,
         )
 
-    image = lax.fori_loop(0, state["trail_x"].shape[1], draw_trail_slot, image)
+    if use_priority_buffer:
+        image, _ = lax.fori_loop(
+            0,
+            state["trail_x"].shape[1],
+            draw_trail_slot,
+            (image, trail_priority),
+        )
+    else:
+        image = lax.fori_loop(
+            0,
+            state["trail_x"].shape[1],
+            draw_trail_slot,
+            image,
+        )
+
     image = _draw_block_bonus_and_heads(
         jnp=jnp,
         lax=lax,
@@ -443,9 +908,293 @@ def _jax_render_block_704_gray64(
         frame_size=frame_size,
         map_size=map_size,
         bonus_count=bonus_count,
+        bonus_render_mode_id=bonus_render_mode_id,
+        controlled_player=controlled_player,
+        player_luma_float_by_index=player_luma_float_by_index,
     )
     gray = jnp.rint(jnp.mean(image.astype(jnp.float32), axis=(3, 4)))
     return jnp.clip(gray, 0, 255).astype(jnp.uint8)[:, None, :, :]
+
+
+def _jax_render_block_704_gray64_two_views(
+    *,
+    jnp: Any,
+    lax: Any,
+    state: dict[str, Any],
+    frame_size: int,
+    target_size: int,
+    map_size: float,
+    bonus_count: int,
+    render_mode_id: int,
+    bonus_render_mode_id: int,
+    player_luma_float_by_view: tuple[tuple[float, ...], ...],
+    use_priority_buffer: bool,
+) -> Any:
+    if frame_size % target_size != 0:
+        raise ValueError("frame_size must be divisible by target_size")
+    block = frame_size // target_size
+    view_count = len(player_luma_float_by_view)
+    source = (jnp.arange(frame_size, dtype=jnp.float32) + 0.5) * float(map_size) / float(frame_size)
+    source_blocks = source.reshape(target_size, block)
+    world_x = source_blocks[None, None, :, None, :]
+    world_y = source_blocks[None, :, None, :, None]
+    pixel_blocks = jnp.arange(frame_size, dtype=jnp.float32).reshape(target_size, block)
+    pixel_x = pixel_blocks[None, None, :, None, :]
+    pixel_y = pixel_blocks[None, :, None, :, None]
+    pixel_scale = float(frame_size) / float(map_size)
+    image = jnp.full(
+        (view_count, state["trail_x"].shape[0], target_size, target_size, block, block),
+        SYNTHETIC_BACKGROUND_LUMA_FLOAT,
+        dtype=jnp.float32,
+    )
+    if use_priority_buffer:
+        trail_priority = jnp.full(
+            image.shape,
+            jnp.int32(-1),
+            dtype=jnp.int32,
+        )
+    prev_trail_x = None
+    prev_trail_y = None
+    prev_trail_active = None
+    if render_mode_id == RENDER_MODE_IDS[RENDER_MODE_BROWSER_LINES]:
+        prev_trail_x, prev_trail_y, prev_trail_active = _previous_owner_trail_slots(
+            jnp=jnp,
+            lax=lax,
+            state=state,
+        )
+    player_luma = _player_luma_for_controlled_players(
+        jnp=jnp,
+        state=state,
+        controlled_players=(0, 1),
+        fallback_luma_by_view=player_luma_float_by_view,
+        dtype=jnp.float32,
+    )
+
+    def draw_trail_slot(slot: Any, current: Any) -> Any:
+        if use_priority_buffer:
+            current_luma, current_priority = current
+        else:
+            current_luma = current
+        x = state["trail_x"][:, slot] * pixel_scale
+        y = state["trail_y"][:, slot] * pixel_scale
+        radius = state["trail_radius"][:, slot] * pixel_scale
+        owner = state["trail_owner"][:, slot]
+        active = state["trail_active"][:, slot] != 0
+        dx = pixel_x - x[:, None, None, None, None]
+        dy = pixel_y - y[:, None, None, None, None]
+        radius_sq = radius[:, None, None, None, None] ** 2
+        hit = dx * dx + dy * dy <= radius_sq
+
+        if render_mode_id == RENDER_MODE_IDS[RENDER_MODE_BROWSER_LINES]:
+            hit = hit | _segment_hits_one_slot(
+                jnp=jnp,
+                world_x=pixel_x,
+                world_y=pixel_y,
+                x=x,
+                y=y,
+                prev_x=prev_trail_x[:, slot] * pixel_scale,
+                prev_y=prev_trail_y[:, slot] * pixel_scale,
+                radius_sq=radius_sq,
+                owner=owner,
+                prev_owner=owner,
+                active=prev_trail_active[:, slot],
+                break_before=state["trail_break_before"][:, slot],
+                slot=slot,
+            )
+
+        owner_value = jnp.where(
+            owner < 0,
+            jnp.float32(SYNTHETIC_INVALID_OWNER_LUMA_FLOAT),
+            jnp.take_along_axis(
+                player_luma,
+                jnp.mod(owner, player_luma.shape[2])[None, :, None],
+                axis=2,
+            )[:, :, 0],
+        ).astype(jnp.float32)
+        update = hit[None, :, :, :, :, :] & active[None, :, None, None, None, None]
+        if use_priority_buffer:
+            priority = _owner_draw_priority(
+                jnp=jnp,
+                owner=owner,
+                player_count=state["head_x"].shape[1],
+            )
+            update = update & (priority[None, :, None, None, None, None] >= current_priority)
+            return (
+                jnp.where(
+                    update,
+                    owner_value[:, :, None, None, None, None],
+                    current_luma,
+                ),
+                jnp.where(
+                    update,
+                    priority[None, :, None, None, None, None],
+                    current_priority,
+                ),
+            )
+        return jnp.where(
+            update,
+            owner_value[:, :, None, None, None, None],
+            current_luma,
+        )
+
+    if use_priority_buffer:
+        image, _ = lax.fori_loop(
+            0,
+            state["trail_x"].shape[1],
+            draw_trail_slot,
+            (image, trail_priority),
+        )
+    else:
+        image = lax.fori_loop(
+            0,
+            state["trail_x"].shape[1],
+            draw_trail_slot,
+            image,
+        )
+    image = _draw_block_bonus_and_heads_two_views(
+        jnp=jnp,
+        lax=lax,
+        image=image,
+        state=state,
+        world_x=world_x,
+        world_y=world_y,
+        pixel_x=pixel_x,
+        pixel_y=pixel_y,
+        frame_size=frame_size,
+        map_size=map_size,
+        bonus_count=bonus_count,
+        bonus_render_mode_id=bonus_render_mode_id,
+        player_luma_float_by_view=player_luma_float_by_view,
+    )
+    gray = jnp.rint(jnp.mean(image.astype(jnp.float32), axis=(4, 5)))
+    out = jnp.clip(gray, 0, 255).astype(jnp.uint8)[:, :, None, :, :]
+    return out.reshape((view_count * state["trail_x"].shape[0], 1, target_size, target_size))
+
+
+def _owner_draw_priority(*, jnp: Any, owner: Any, player_count: int) -> Any:
+    return jnp.where(
+        owner < 0,
+        jnp.int32(0),
+        (jnp.int32(player_count) - owner.astype(jnp.int32)),
+    )
+
+
+def _player_luma_for_state(
+    *,
+    jnp: Any,
+    state: dict[str, Any],
+    controlled_player: int | None,
+    fallback_luma: tuple[int, ...] | tuple[float, ...],
+    dtype: Any,
+) -> Any:
+    batch_size = state["head_x"].shape[0]
+    player_count = state["head_x"].shape[1]
+    fallback = jnp.asarray(fallback_luma, dtype=dtype)
+    if controlled_player is None or "avatar_color" not in state:
+        return jnp.broadcast_to(fallback[None, :player_count], (batch_size, player_count))
+
+    controlled = int(controlled_player)
+    avatar_color = state["avatar_color"][:, :player_count].astype(jnp.int32)
+    self_color = avatar_color[:, controlled]
+    owns_self_color = avatar_color == self_color[:, None]
+    self_value = jnp.asarray(PERSPECTIVE_SELF_LUMA_FLOAT, dtype=dtype)
+    other_value = jnp.asarray(PERSPECTIVE_OTHER_LUMA_FLOAT, dtype=dtype)
+    return jnp.where(owns_self_color, self_value, other_value).astype(dtype)
+
+
+def _player_luma_for_controlled_players(
+    *,
+    jnp: Any,
+    state: dict[str, Any],
+    controlled_players: tuple[int, ...],
+    fallback_luma_by_view: tuple[tuple[float, ...], ...],
+    dtype: Any,
+) -> Any:
+    return jnp.stack(
+        [
+            _player_luma_for_state(
+                jnp=jnp,
+                state=state,
+                controlled_player=player,
+                fallback_luma=fallback_luma_by_view[index],
+                dtype=dtype,
+            )
+            for index, player in enumerate(controlled_players)
+        ],
+        axis=0,
+    )
+
+
+def _previous_owner_trail_slots(
+    *,
+    jnp: Any,
+    lax: Any,
+    state: dict[str, Any],
+) -> tuple[Any, Any, Any]:
+    batch_size = state["trail_x"].shape[0]
+    player_count = state["head_x"].shape[1]
+    rows = jnp.arange(batch_size)
+    prev_x = jnp.zeros_like(state["trail_x"])
+    prev_y = jnp.zeros_like(state["trail_y"])
+    prev_active = jnp.zeros(state["trail_active"].shape, dtype=bool)
+    last_x = jnp.zeros((batch_size, player_count), dtype=state["trail_x"].dtype)
+    last_y = jnp.zeros((batch_size, player_count), dtype=state["trail_y"].dtype)
+    last_radius = jnp.zeros((batch_size, player_count), dtype=state["trail_radius"].dtype)
+    last_active = jnp.zeros((batch_size, player_count), dtype=bool)
+
+    def scan_slot(slot: Any, carry: Any) -> Any:
+        (
+            prev_x_acc,
+            prev_y_acc,
+            prev_active_acc,
+            last_x_acc,
+            last_y_acc,
+            last_radius_acc,
+            last_active_acc,
+        ) = carry
+        owner = state["trail_owner"][:, slot]
+        owner_valid = (owner >= 0) & (owner < player_count)
+        owner_index = jnp.clip(owner, 0, player_count - 1)
+        gathered_x = last_x_acc[rows, owner_index]
+        gathered_y = last_y_acc[rows, owner_index]
+        gathered_radius = last_radius_acc[rows, owner_index]
+        radius_matches = jnp.abs(gathered_radius - state["trail_radius"][:, slot]) <= 1.0e-6
+        gathered_active = last_active_acc[rows, owner_index] & owner_valid & radius_matches
+
+        prev_x_acc = prev_x_acc.at[:, slot].set(gathered_x)
+        prev_y_acc = prev_y_acc.at[:, slot].set(gathered_y)
+        prev_active_acc = prev_active_acc.at[:, slot].set(gathered_active)
+
+        update = (state["trail_active"][:, slot] != 0) & owner_valid
+        last_x_acc = last_x_acc.at[rows, owner_index].set(
+            jnp.where(update, state["trail_x"][:, slot], gathered_x)
+        )
+        last_y_acc = last_y_acc.at[rows, owner_index].set(
+            jnp.where(update, state["trail_y"][:, slot], gathered_y)
+        )
+        last_radius_acc = last_radius_acc.at[rows, owner_index].set(
+            jnp.where(update, state["trail_radius"][:, slot], gathered_radius)
+        )
+        last_active_acc = last_active_acc.at[rows, owner_index].set(
+            jnp.where(update, jnp.ones_like(gathered_active), last_active_acc[rows, owner_index])
+        )
+        return (
+            prev_x_acc,
+            prev_y_acc,
+            prev_active_acc,
+            last_x_acc,
+            last_y_acc,
+            last_radius_acc,
+            last_active_acc,
+        )
+
+    prev_x, prev_y, prev_active, _, _, _, _ = lax.fori_loop(
+        0,
+        state["trail_x"].shape[1],
+        scan_slot,
+        (prev_x, prev_y, prev_active, last_x, last_y, last_radius, last_active),
+    )
+    return prev_x, prev_y, prev_active
 
 
 def _segment_hits(
@@ -475,12 +1224,7 @@ def _segment_hits(
     nearest_y = prev_y[:, :, None, None] + t * vy[:, :, None, None]
     dx = world_x - nearest_x
     dy = world_y - nearest_y
-    ok = (
-        (break_before == 0)
-        & (active != 0)
-        & (owner == prev_owner)
-        & (length_sq > 0.0001)
-    )
+    ok = (break_before == 0) & (active != 0) & (owner == prev_owner) & (length_sq > 0.0001)
     return (dx * dx + dy * dy <= radius_sq) & ok[:, :, None, None]
 
 
@@ -512,13 +1256,7 @@ def _segment_hits_one_slot(
     nearest_y = prev_y[:, None, None, None, None] + t * vy[:, None, None, None, None]
     dx = world_x - nearest_x
     dy = world_y - nearest_y
-    ok = (
-        (slot > 0)
-        & (break_before == 0)
-        & active
-        & (owner == prev_owner)
-        & (length_sq > 0.0001)
-    )
+    ok = (slot > 0) & (break_before == 0) & active & (owner == prev_owner) & (length_sq > 0.0001)
     return (dx * dx + dy * dy <= radius_sq) & ok[:, None, None, None, None]
 
 
@@ -530,6 +1268,9 @@ def _draw_direct_bonus_and_heads(
     world_x: Any,
     world_y: Any,
     bonus_count: int,
+    bonus_render_mode_id: int,
+    controlled_player: int | None,
+    player_luma_by_index: tuple[int, ...],
 ) -> Any:
     if bonus_count > 0:
         bonus_dx = world_x - state["bonus_x"][:, :, None, None]
@@ -538,7 +1279,11 @@ def _draw_direct_bonus_and_heads(
             bonus_dx * bonus_dx + bonus_dy * bonus_dy
             <= state["bonus_radius"][:, :, None, None] ** 2
         ) & (state["bonus_active"][:, :, None, None] != 0)
-        bonus_value = (144 + (state["bonus_type"] % 4) * 24).astype(jnp.uint8)
+        bonus_value = _direct_bonus_value(
+            jnp=jnp,
+            bonus_type=state["bonus_type"],
+            bonus_render_mode_id=bonus_render_mode_id,
+        )
         bonus_layer = jnp.max(
             jnp.where(
                 bonus_hit,
@@ -550,19 +1295,38 @@ def _draw_direct_bonus_and_heads(
         out = jnp.maximum(out, bonus_layer)
 
     player_count = state["head_x"].shape[1]
-    player_luma = jnp.asarray(SYNTHETIC_PLAYER_LUMA_BY_INDEX, dtype=jnp.uint8)
+    player_luma = _player_luma_for_state(
+        jnp=jnp,
+        state=state,
+        controlled_player=controlled_player,
+        fallback_luma=player_luma_by_index,
+        dtype=jnp.uint8,
+    )
     player_indices = jnp.arange(player_count, dtype=jnp.int32)
-    player_values = jnp.take(player_luma, jnp.mod(player_indices, player_luma.shape[0]))
+    player_values = jnp.take_along_axis(
+        player_luma,
+        jnp.mod(player_indices, player_luma.shape[1])[None, :],
+        axis=1,
+    )
     head_dx = world_x - state["head_x"][:, :, None, None]
     head_dy = world_y - state["head_y"][:, :, None, None]
     head_hit = (
         head_dx * head_dx + head_dy * head_dy <= state["head_radius"][:, :, None, None] ** 2
     ) & (state["head_alive"][:, :, None, None] != 0)
     head_layer = jnp.max(
-        jnp.where(head_hit, player_values[None, :, None, None], jnp.zeros((), dtype=jnp.uint8)),
+        jnp.where(head_hit, player_values[:, :, None, None], jnp.zeros((), dtype=jnp.uint8)),
         axis=1,
     )
     return jnp.maximum(out, head_layer)
+
+
+def _direct_bonus_value(*, jnp: Any, bonus_type: Any, bonus_render_mode_id: int) -> Any:
+    if bonus_render_mode_id == BONUS_RENDER_MODE_IDS[BONUS_RENDER_MODE_SIMPLE_SYMBOLS]:
+        code = _bonus_type_code(jnp=jnp, bonus_type=bonus_type)
+        outer_index = (code - 1) // 4
+        outer_luma = jnp.asarray(BONUS_SYMBOL_OUTER_LUMA_BY_SHAPE, dtype=jnp.uint8)
+        return jnp.take(outer_luma, outer_index).astype(jnp.uint8)
+    return (144 + (bonus_type % 4) * 24).astype(jnp.uint8)
 
 
 def _draw_block_bonus_and_heads(
@@ -578,39 +1342,268 @@ def _draw_block_bonus_and_heads(
     frame_size: int,
     map_size: float,
     bonus_count: int,
+    bonus_render_mode_id: int,
+    controlled_player: int | None,
+    player_luma_float_by_index: tuple[float, ...],
 ) -> Any:
     def draw_bonus(index: Any, current: Any) -> Any:
-        dx = world_x - state["bonus_x"][:, index, None, None, None, None]
-        dy = world_y - state["bonus_y"][:, index, None, None, None, None]
-        radius = state["bonus_radius"][:, index, None, None, None, None]
-        hit = (
-            dx * dx + dy * dy <= radius * radius
-        ) & (state["bonus_active"][:, index, None, None, None, None] != 0)
-        value = (144 + (state["bonus_type"][:, index] % 4) * 24).astype(jnp.float32)
+        if bonus_render_mode_id == BONUS_RENDER_MODE_IDS[BONUS_RENDER_MODE_SIMPLE_SYMBOLS]:
+            hit, value = _block_simple_symbol_bonus_hit_value(
+                jnp=jnp,
+                state=state,
+                index=index,
+                pixel_x=pixel_x,
+                pixel_y=pixel_y,
+                frame_size=frame_size,
+                map_size=map_size,
+            )
+            return jnp.where(hit, value, current)
+        else:
+            dx = world_x - state["bonus_x"][:, index, None, None, None, None]
+            dy = world_y - state["bonus_y"][:, index, None, None, None, None]
+            radius = state["bonus_radius"][:, index, None, None, None, None]
+            hit = (dx * dx + dy * dy <= radius * radius) & (
+                state["bonus_active"][:, index, None, None, None, None] != 0
+            )
+            value = (144 + (state["bonus_type"][:, index] % 4) * 24).astype(jnp.float32)
         return jnp.where(hit, value[:, None, None, None, None], current)
 
     def draw_head(index: Any, current: Any) -> Any:
-        px = jnp.rint(
-            state["head_x"][:, index] * float(frame_size - 1) / float(map_size)
-        )
-        py = jnp.rint(
-            state["head_y"][:, index] * float(frame_size - 1) / float(map_size)
-        )
-        radius = jnp.ceil(
-            state["head_radius"][:, index] * float(frame_size) / float(map_size)
-        )
+        px = jnp.rint(state["head_x"][:, index] * float(frame_size - 1) / float(map_size))
+        py = jnp.rint(state["head_y"][:, index] * float(frame_size - 1) / float(map_size))
+        radius = jnp.ceil(state["head_radius"][:, index] * float(frame_size) / float(map_size))
         dx = pixel_x - px[:, None, None, None, None]
         dy = pixel_y - py[:, None, None, None, None]
         hit = (dx * dx + dy * dy <= radius[:, None, None, None, None] ** 2) & (
             state["head_alive"][:, index, None, None, None, None] != 0
         )
-        player_luma = jnp.asarray(SYNTHETIC_PLAYER_LUMA_FLOAT_BY_INDEX, dtype=jnp.float32)
-        value = jnp.take(player_luma, jnp.mod(index, player_luma.shape[0]))
-        return jnp.where(hit, value, current)
+        player_luma = _player_luma_for_state(
+            jnp=jnp,
+            state=state,
+            controlled_player=controlled_player,
+            fallback_luma=player_luma_float_by_index,
+            dtype=jnp.float32,
+        )
+        value = player_luma[:, jnp.mod(index, player_luma.shape[1])]
+        return jnp.where(hit, value[:, None, None, None, None], current)
 
     if bonus_count > 0:
         image = lax.fori_loop(0, bonus_count, draw_bonus, image)
     return lax.fori_loop(0, state["head_x"].shape[1], draw_head, image)
+
+
+def _draw_block_bonus_and_heads_two_views(
+    *,
+    jnp: Any,
+    lax: Any,
+    image: Any,
+    state: dict[str, Any],
+    world_x: Any,
+    world_y: Any,
+    pixel_x: Any,
+    pixel_y: Any,
+    frame_size: int,
+    map_size: float,
+    bonus_count: int,
+    bonus_render_mode_id: int,
+    player_luma_float_by_view: tuple[tuple[float, ...], ...],
+) -> Any:
+    def draw_bonus(index: Any, current: Any) -> Any:
+        if bonus_render_mode_id == BONUS_RENDER_MODE_IDS[BONUS_RENDER_MODE_SIMPLE_SYMBOLS]:
+            hit, value = _block_simple_symbol_bonus_hit_value(
+                jnp=jnp,
+                state=state,
+                index=index,
+                pixel_x=pixel_x,
+                pixel_y=pixel_y,
+                frame_size=frame_size,
+                map_size=map_size,
+            )
+            return jnp.where(hit[None, :, :, :, :, :], value[None, :, :, :, :, :], current)
+        else:
+            dx = world_x - state["bonus_x"][:, index, None, None, None, None]
+            dy = world_y - state["bonus_y"][:, index, None, None, None, None]
+            radius = state["bonus_radius"][:, index, None, None, None, None]
+            hit = (dx * dx + dy * dy <= radius * radius) & (
+                state["bonus_active"][:, index, None, None, None, None] != 0
+            )
+            value = (144 + (state["bonus_type"][:, index] % 4) * 24).astype(jnp.float32)
+        return jnp.where(
+            hit[None, :, :, :, :, :],
+            value[None, :, None, None, None, None],
+            current,
+        )
+
+    def draw_head(index: Any, current: Any) -> Any:
+        px = jnp.rint(state["head_x"][:, index] * float(frame_size - 1) / float(map_size))
+        py = jnp.rint(state["head_y"][:, index] * float(frame_size - 1) / float(map_size))
+        radius = jnp.ceil(state["head_radius"][:, index] * float(frame_size) / float(map_size))
+        dx = pixel_x - px[:, None, None, None, None]
+        dy = pixel_y - py[:, None, None, None, None]
+        hit = (dx * dx + dy * dy <= radius[:, None, None, None, None] ** 2) & (
+            state["head_alive"][:, index, None, None, None, None] != 0
+        )
+        player_luma = _player_luma_for_controlled_players(
+            jnp=jnp,
+            state=state,
+            controlled_players=(0, 1),
+            fallback_luma_by_view=player_luma_float_by_view,
+            dtype=jnp.float32,
+        )
+        value = player_luma[:, :, jnp.mod(index, player_luma.shape[2])]
+        return jnp.where(
+            hit[None, :, :, :, :, :],
+            value[:, :, None, None, None, None],
+            current,
+        )
+
+    if bonus_count > 0:
+        image = lax.fori_loop(0, bonus_count, draw_bonus, image)
+    return lax.fori_loop(0, state["head_x"].shape[1], draw_head, image)
+
+
+def _block_simple_symbol_bonus_hit_value(
+    *,
+    jnp: Any,
+    state: dict[str, Any],
+    index: Any,
+    pixel_x: Any,
+    pixel_y: Any,
+    frame_size: int,
+    map_size: float,
+) -> tuple[Any, Any]:
+    x = state["bonus_x"][:, index]
+    y = state["bonus_y"][:, index]
+    radius = state["bonus_radius"][:, index]
+    radius_px = jnp.maximum(
+        3.0,
+        jnp.ceil(radius * float(frame_size) / float(map_size)),
+    )
+    center_x = jnp.clip(
+        jnp.rint(x * float(frame_size - 1) / float(map_size)),
+        0.0,
+        float(frame_size - 1),
+    )
+    center_y = jnp.clip(
+        jnp.rint(y * float(frame_size - 1) / float(map_size)),
+        0.0,
+        float(frame_size - 1),
+    )
+    dst_size = radius_px * 2.0 + 1.0
+    local_x = pixel_x - (center_x[:, None, None, None, None] - radius_px[:, None, None, None, None])
+    local_y = pixel_y - (center_y[:, None, None, None, None] - radius_px[:, None, None, None, None])
+    in_bounds = (
+        (local_x >= 0.0)
+        & (local_y >= 0.0)
+        & (local_x < dst_size[:, None, None, None, None])
+        & (local_y < dst_size[:, None, None, None, None])
+        & (state["bonus_active"][:, index, None, None, None, None] != 0)
+        & (radius[:, None, None, None, None] > 0.0)
+    )
+    scale = float(BONUS_SYMBOL_BASE_SIZE - 1)
+    base_x = jnp.rint(local_x * scale / jnp.maximum(dst_size[:, None, None, None, None] - 1.0, 1.0))
+    base_y = jnp.rint(local_y * scale / jnp.maximum(dst_size[:, None, None, None, None] - 1.0, 1.0))
+    base_x = jnp.clip(base_x, 0.0, scale).astype(jnp.int32)
+    base_y = jnp.clip(base_y, 0.0, scale).astype(jnp.int32)
+    stamp_value = _simple_symbol_luma(
+        jnp=jnp,
+        base_x=base_x,
+        base_y=base_y,
+        bonus_type=state["bonus_type"][:, index],
+    )
+    hit = in_bounds & (stamp_value > 0.0)
+    return hit, stamp_value
+
+
+def _simple_symbol_luma(*, jnp: Any, base_x: Any, base_y: Any, bonus_type: Any) -> Any:
+    code = _bonus_type_code(jnp=jnp, bonus_type=bonus_type)
+    symbol_index = code - 1
+    outer_index = symbol_index // 4
+    inner_index = symbol_index % 4
+    center = (BONUS_SYMBOL_BASE_SIZE - 1) // 2
+    dx = jnp.abs(base_x - center)
+    dy = jnp.abs(base_y - center)
+    outer_circle = dx * dx + dy * dy <= center * center
+    outer_diamond = dx + dy <= center + 1
+    outer_square = jnp.ones_like(outer_circle, dtype=bool)
+    outer_mask = jnp.where(
+        outer_index[:, None, None, None, None] == 0,
+        outer_circle,
+        jnp.where(outer_index[:, None, None, None, None] == 1, outer_diamond, outer_square),
+    )
+    inner = _simple_symbol_inner_mask(
+        jnp=jnp,
+        base_x=base_x,
+        base_y=base_y,
+        outer_index=outer_index,
+        inner_index=inner_index,
+    )
+    outer_luma = jnp.asarray(BONUS_SYMBOL_OUTER_LUMA_BY_SHAPE, dtype=jnp.float32)
+    inner_luma = jnp.asarray(BONUS_SYMBOL_INNER_LUMA_BY_SHAPE, dtype=jnp.float32)
+    outer_value = jnp.take(outer_luma, outer_index)[:, None, None, None, None]
+    inner_value = jnp.take(inner_luma, outer_index)[:, None, None, None, None]
+    return jnp.where(outer_mask & inner, inner_value, jnp.where(outer_mask, outer_value, 0.0))
+
+
+def _simple_symbol_inner_mask(
+    *,
+    jnp: Any,
+    base_x: Any,
+    base_y: Any,
+    outer_index: Any,
+    inner_index: Any,
+) -> Any:
+    outer = outer_index[:, None, None, None, None]
+    inner = inner_index[:, None, None, None, None]
+    center = (BONUS_SYMBOL_BASE_SIZE - 1) // 2
+    plus_01 = ((base_y >= center - 1) & (base_y <= center + 1) & (base_x >= 1) & (base_x <= 5)) | (
+        (base_x >= center - 1) & (base_x <= center + 1) & (base_y >= 1) & (base_y <= 5)
+    )
+    plus_2 = ((base_y >= center) & (base_y <= 5)) | ((base_x >= center) & (base_x <= 5))
+    plus = jnp.where(outer == 2, plus_2, plus_01)
+
+    x0 = (jnp.abs(base_x - base_y) <= 1) | (
+        ((base_y == 0) & (base_x == 5))
+        | ((base_y == 1) & (base_x == 4))
+        | ((base_y == 2) & (base_x == 3))
+        | ((base_y == 3) & (base_x == 2))
+        | ((base_y == 4) & (base_x == 1))
+        | ((base_y == 5) & (base_x == 0))
+    )
+    x1 = (
+        (base_x == base_y)
+        | (base_x == 6 - base_y)
+        | (base_x == base_y + 1)
+        | ((base_y > 0) & (base_x == 7 - base_y))
+    )
+    x2 = (
+        (base_x == 6 - base_y)
+        | (base_x == 5 - base_y)
+        | ((base_y >= 2) & (base_x == base_y - 1))
+        | ((base_y >= 2) & (base_x == base_y))
+    )
+    cross = jnp.where(outer == 0, x0, jnp.where(outer == 1, x1, x2))
+
+    horiz0 = (base_y >= center - 2) & (base_y <= center)
+    horiz1 = (base_y >= 1) & (base_y <= center)
+    horiz2 = (base_y >= center) & (base_y <= 5)
+    horizontal = jnp.where(outer == 0, horiz0, jnp.where(outer == 1, horiz1, horiz2))
+
+    vert0 = (base_x >= center) & (base_x <= center + 2)
+    vert1 = (base_x >= 1) & (base_x <= center)
+    vert2 = (base_x >= center) & (base_x <= 5)
+    vertical = jnp.where(outer == 0, vert0, jnp.where(outer == 1, vert1, vert2))
+
+    return jnp.where(
+        inner == 0,
+        plus,
+        jnp.where(inner == 1, cross, jnp.where(inner == 2, horizontal, vertical)),
+    )
+
+
+def _bonus_type_code(*, jnp: Any, bonus_type: Any) -> Any:
+    code = bonus_type.astype(jnp.int32)
+    return jnp.where((code >= 1) & (code <= 12), code, jnp.ones_like(code))
 
 
 def _copy_state_to_device(*, jax: Any, state: dict[str, Any]) -> dict[str, Any]:
@@ -625,8 +1618,10 @@ def _verify_against_cpu(
     jax: Any,
     np: Any,
     state: dict[str, Any],
+    production_reference_state: dict[str, Any] | None,
     config: dict[str, Any],
     render_mode_id: int,
+    bonus_render_mode_id: int,
 ) -> dict[str, Any]:
     import jax.numpy as jnp
 
@@ -644,12 +1639,13 @@ def _verify_against_cpu(
             "max_pixel_trail_slot_tests": int(config["cpu_verify_max_pixel_trail_tests"]),
         }
 
-    sliced_state = {key: value[:verify_rows].copy() for key, value in state.items()}
+    sliced_state = _slice_batch_state(np=np, state=state, rows=verify_rows)
     verify_render_fn = _make_jax_render_fn(
         jax=jax,
         jnp=jnp,
         config={**config, "batch_size": verify_rows},
         render_mode_id=render_mode_id,
+        bonus_render_mode_id=bonus_render_mode_id,
     )
     device_state = _copy_state_to_device(jax=jax, state=sliced_state)
     started = time.perf_counter()
@@ -666,9 +1662,13 @@ def _verify_against_cpu(
             state=sliced_state,
             config={**config, "batch_size": verify_rows},
             render_mode_id=render_mode_id,
+            player_luma_by_index=_player_luma_by_index(config),
         )
     else:
-        cpu_reference_kind = "production_render_source_state_canvas_gray64_browser_lines"
+        cpu_reference_kind = (
+            "production_render_source_state_canvas_gray64_"
+            f"{config['render_mode']}_{config['bonus_render_mode']}"
+        )
         if int(config["target_size"]) != 64 or int(config["frame_size"]) != 704:
             return {
                 "rows": verify_rows,
@@ -677,16 +1677,41 @@ def _verify_against_cpu(
                 "frame_size": int(config["frame_size"]),
                 "target_size": int(config["target_size"]),
             }
-        cpu = _cpu_render_production_canvas_gray64(
-            np=np,
-            state=sliced_state,
-            config={**config, "batch_size": verify_rows},
-        )
+        if production_reference_state is not None:
+            cpu = _cpu_render_original_production_canvas_gray64(
+                np=np,
+                production_state=_slice_batch_state(
+                    np=np,
+                    state=production_reference_state,
+                    rows=verify_rows,
+                ),
+                config={**config, "batch_size": verify_rows},
+            )
+        else:
+            cpu = _cpu_render_production_canvas_gray64(
+                np=np,
+                state=sliced_state,
+                config={**config, "batch_size": verify_rows},
+            )
     cpu_sec = time.perf_counter() - started
 
     diff = np.abs(gpu.astype(np.int16) - cpu.astype(np.int16))
     mismatch_count = int(np.count_nonzero(diff))
     total_values = int(diff.size)
+    mismatch_samples: list[dict[str, int]] = []
+    if mismatch_count:
+        for row, channel, y, x in np.argwhere(diff)[:16]:
+            mismatch_samples.append(
+                {
+                    "row": int(row),
+                    "channel": int(channel),
+                    "y": int(y),
+                    "x": int(x),
+                    "gpu": int(gpu[row, channel, y, x]),
+                    "cpu": int(cpu[row, channel, y, x]),
+                    "abs_diff": int(diff[row, channel, y, x]),
+                }
+            )
     return {
         "rows": verify_rows,
         "status": "checked",
@@ -699,6 +1724,7 @@ def _verify_against_cpu(
         "cpu_reference_sec": cpu_sec,
         "gpu_verify_render_sec": gpu_sec,
         "pixel_trail_slot_tests": operations,
+        "mismatch_samples": mismatch_samples,
     }
 
 
@@ -708,6 +1734,7 @@ def _cpu_render_direct_gray64(
     state: dict[str, Any],
     config: dict[str, Any],
     render_mode_id: int,
+    player_luma_by_index: tuple[int, ...],
 ) -> Any:
     batch_size = int(config["batch_size"])
     player_count = int(config["player_count"])
@@ -720,6 +1747,7 @@ def _cpu_render_direct_gray64(
         SYNTHETIC_BACKGROUND_LUMA,
         dtype=np.uint8,
     )
+    prev_x, prev_y, prev_active = _cpu_previous_owner_trail_slots(np=np, state=state)
 
     for row in range(batch_size):
         for py in range(target_size):
@@ -740,20 +1768,19 @@ def _cpu_render_direct_gray64(
                         and render_mode_id == RENDER_MODE_IDS[RENDER_MODE_BROWSER_LINES]
                         and slot > 0
                         and not bool(state["trail_break_before"][row, slot])
-                        and bool(state["trail_active"][row, slot - 1])
-                        and int(state["trail_owner"][row, slot - 1]) == owner
+                        and bool(prev_active[row, slot])
                     ):
                         hit = _point_hits_segment(
                             world_x=world_x,
                             world_y=world_y,
-                            ax=float(state["trail_x"][row, slot - 1]),
-                            ay=float(state["trail_y"][row, slot - 1]),
+                            ax=float(prev_x[row, slot]),
+                            ay=float(prev_y[row, slot]),
                             bx=float(state["trail_x"][row, slot]),
                             by=float(state["trail_y"][row, slot]),
                             radius=radius,
                         )
                     if hit:
-                        value = max(value, _synthetic_owner_luma(owner))
+                        value = max(value, _owner_luma(owner, player_luma_by_index))
 
                 for bonus in range(bonus_count):
                     if not bool(state["bonus_active"][row, bonus]):
@@ -771,16 +1798,58 @@ def _cpu_render_direct_gray64(
                     dy = world_y - float(state["head_y"][row, player])
                     radius = float(state["head_radius"][row, player])
                     if dx * dx + dy * dy <= radius * radius:
-                        value = max(value, _synthetic_owner_luma(player))
+                        value = max(value, _owner_luma(player, player_luma_by_index))
 
                 out[row, 0, py, px] = np.uint8(value)
     return out
 
 
-def _synthetic_owner_luma(owner: int) -> int:
+def _cpu_previous_owner_trail_slots(
+    *,
+    np: Any,
+    state: dict[str, Any],
+) -> tuple[Any, Any, Any]:
+    trail_x = np.asarray(state["trail_x"])
+    trail_y = np.asarray(state["trail_y"])
+    trail_radius = np.asarray(state["trail_radius"])
+    trail_owner = np.asarray(state["trail_owner"])
+    trail_active = np.asarray(state["trail_active"]).astype(bool, copy=False)
+    batch_size, trail_slots = trail_x.shape
+    player_count = int(np.asarray(state["head_x"]).shape[1])
+    prev_x = np.zeros_like(trail_x)
+    prev_y = np.zeros_like(trail_y)
+    prev_active = np.zeros(trail_active.shape, dtype=bool)
+    last_x = np.zeros((batch_size, player_count), dtype=trail_x.dtype)
+    last_y = np.zeros((batch_size, player_count), dtype=trail_y.dtype)
+    last_radius = np.zeros((batch_size, player_count), dtype=trail_radius.dtype)
+    last_active = np.zeros((batch_size, player_count), dtype=bool)
+
+    for row in range(batch_size):
+        for slot in range(trail_slots):
+            owner = int(trail_owner[row, slot])
+            if owner < 0 or owner >= player_count:
+                continue
+            if last_active[row, owner] and np.isclose(
+                last_radius[row, owner],
+                trail_radius[row, slot],
+                rtol=0.0,
+                atol=1.0e-6,
+            ):
+                prev_x[row, slot] = last_x[row, owner]
+                prev_y[row, slot] = last_y[row, owner]
+                prev_active[row, slot] = True
+            if bool(trail_active[row, slot]):
+                last_x[row, owner] = trail_x[row, slot]
+                last_y[row, owner] = trail_y[row, slot]
+                last_radius[row, owner] = trail_radius[row, slot]
+                last_active[row, owner] = True
+    return prev_x, prev_y, prev_active
+
+
+def _owner_luma(owner: int, player_luma_by_index: tuple[int, ...]) -> int:
     if owner < 0:
         return SYNTHETIC_INVALID_OWNER_LUMA
-    return SYNTHETIC_PLAYER_LUMA_BY_INDEX[owner % len(SYNTHETIC_PLAYER_LUMA_BY_INDEX)]
+    return player_luma_by_index[owner % len(player_luma_by_index)]
 
 
 def _cpu_render_production_canvas_gray64(
@@ -789,19 +1858,49 @@ def _cpu_render_production_canvas_gray64(
     state: dict[str, Any],
     config: dict[str, Any],
 ) -> Any:
+    production_state = _synthetic_to_production_source_state(np=np, state=state, config=config)
+    return _cpu_render_original_production_canvas_gray64(
+        np=np,
+        production_state=production_state,
+        config=config,
+    )
+
+
+def _cpu_render_original_production_canvas_gray64(
+    *,
+    np: Any,
+    production_state: dict[str, Any],
+    config: dict[str, Any],
+) -> Any:
     from curvyzero.env.vector_visual_observation import (
+        BONUS_RENDER_MODE_BROWSER_SPRITES,
+        BONUS_RENDER_MODE_CIRCLES_FAST,
+        BONUS_RENDER_MODE_SIMPLE_SYMBOLS,
         TRAIL_RENDER_MODE_BROWSER_LINES,
         render_source_state_canvas_gray64,
     )
 
+    bonus_render_mode = str(config.get("bonus_render_mode", BONUS_RENDER_MODE_SIMPLE_SYMBOLS))
+    if bonus_render_mode not in {
+        BONUS_RENDER_MODE_BROWSER_SPRITES,
+        BONUS_RENDER_MODE_CIRCLES_FAST,
+        BONUS_RENDER_MODE_SIMPLE_SYMBOLS,
+    }:
+        raise ValueError(f"unsupported production bonus_render_mode {bonus_render_mode!r}")
     batch_size = int(config["batch_size"])
-    production_state = _synthetic_to_production_source_state(np=np, state=state, config=config)
     out = np.empty((batch_size, 1, 64, 64), dtype=np.uint8)
     for row in range(batch_size):
         out[row] = render_source_state_canvas_gray64(
             production_state,
             row=row,
+            player_rgb=_benchmark_player_rgb_palette_for_state(
+                np=np,
+                state=production_state,
+                row=row,
+                config=config,
+            ),
             trail_render_mode=TRAIL_RENDER_MODE_BROWSER_LINES,
+            bonus_render_mode=bonus_render_mode,
         )
     return out
 
@@ -819,6 +1918,10 @@ def _synthetic_to_production_source_state(
     trail_pos = np.stack([state["trail_x"], state["trail_y"]], axis=2).astype(np.float64)
     head_pos = np.stack([state["head_x"], state["head_y"]], axis=2).astype(np.float64)
     trail_active = state["trail_active"].astype(bool, copy=False)
+    trail_write_cursor = np.asarray(
+        state.get("trail_write_cursor", np.sum(trail_active, axis=1)),
+        dtype=np.int32,
+    )
     bonus_pos = np.stack([state["bonus_x"], state["bonus_y"]], axis=2).astype(np.float64)
 
     return {
@@ -830,7 +1933,7 @@ def _synthetic_to_production_source_state(
         "pos": head_pos,
         "radius": state["head_radius"].astype(np.float64),
         "body_active": trail_active,
-        "body_write_cursor": np.sum(trail_active, axis=1).astype(np.int32),
+        "body_write_cursor": trail_write_cursor.copy(),
         "body_pos": trail_pos,
         "body_radius": state["trail_radius"].astype(np.float64),
         "body_owner": state["trail_owner"].astype(np.int16),
@@ -839,12 +1942,15 @@ def _synthetic_to_production_source_state(
         "terminated": np.zeros((batch_size,), dtype=bool),
         "truncated": np.zeros((batch_size,), dtype=bool),
         "terminal_reason": np.zeros((batch_size,), dtype=np.int16),
-        "avatar_color": (
-            np.arange(player_count, dtype=np.int16)[None, :]
-            .repeat(batch_size, axis=0)
-        ),
+        "avatar_color": np.asarray(
+            state.get(
+                "avatar_color",
+                np.arange(player_count, dtype=np.int16)[None, :].repeat(batch_size, axis=0),
+            ),
+            dtype=np.int16,
+        )[:batch_size, :player_count].copy(),
         "visual_trail_active": trail_active,
-        "visual_trail_write_cursor": np.sum(trail_active, axis=1).astype(np.int32),
+        "visual_trail_write_cursor": trail_write_cursor.copy(),
         "visual_trail_pos": trail_pos,
         "visual_trail_radius": state["trail_radius"].astype(np.float64),
         "visual_trail_owner": state["trail_owner"].astype(np.int16),
@@ -854,6 +1960,410 @@ def _synthetic_to_production_source_state(
         "bonus_radius": state["bonus_radius"].astype(np.float64),
         "bonus_type": state["bonus_type"].astype(np.int16),
     }
+
+
+def _source_state_for_benchmark(*, np: Any, config: dict[str, Any]) -> dict[str, Any]:
+    state, _ = _source_state_and_reference_for_benchmark(np=np, config=config)
+    return state
+
+
+def _source_state_and_reference_for_benchmark(
+    *,
+    np: Any,
+    config: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    if config["state_source"] == STATE_SOURCE_REAL_ENV_ROLLOUT:
+        production_state = _real_env_rollout_production_state(np=np, config=config)
+        return (
+            _prepare_compact_state_for_render(
+                np=np,
+                state=_production_to_benchmark_source_state(
+                    np=np,
+                    production_state=production_state,
+                    config=config,
+                ),
+                config=config,
+            ),
+            production_state,
+        )
+    if config["state_source"] == STATE_SOURCE_ADVERSARIAL_FIXTURE:
+        production_state = _adversarial_fixture_production_state(np=np, config=config)
+        return (
+            _prepare_compact_state_for_render(
+                np=np,
+                state=_production_to_benchmark_source_state(
+                    np=np,
+                    production_state=production_state,
+                    config=config,
+                ),
+                config=config,
+            ),
+            production_state,
+        )
+    return (
+        _prepare_compact_state_for_render(
+            np=np,
+            state=_synthetic_source_state(np=np, config=config),
+            config=config,
+        ),
+        None,
+    )
+
+
+def _prepare_compact_state_for_render(
+    *,
+    np: Any,
+    state: dict[str, Any],
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    if config.get("trail_composition") != TRAIL_COMPOSITION_OWNER_ORDERED_COMPACT:
+        return state
+    return _pack_compact_trails_in_owner_draw_order(
+        np=np,
+        state=state,
+        config=config,
+    )
+
+
+def _owner_ordered_active_trail_slots(
+    *,
+    np: Any,
+    owners: Any,
+    active: Any,
+) -> Any:
+    owner_array = np.asarray(owners)
+    active_array = np.asarray(active).astype(bool, copy=False)
+    slots = np.flatnonzero(active_array).astype(np.int32, copy=False)
+    if slots.size == 0:
+        return slots
+    active_owners = owner_array[slots].astype(np.int64, copy=False)
+    unique_owners = tuple(int(owner) for owner in np.unique(active_owners))
+    invalid_owners = tuple(sorted(owner for owner in unique_owners if owner < 0))
+    valid_owners = tuple(sorted((owner for owner in unique_owners if owner >= 0), reverse=True))
+    ordered = [
+        slots[active_owners == owner]
+        for owner in (*invalid_owners, *valid_owners)
+    ]
+    if not ordered:
+        return np.empty((0,), dtype=np.int32)
+    return np.concatenate(ordered).astype(np.int32, copy=False)
+
+
+def _owner_ordered_compact_trail_order(
+    *,
+    np: Any,
+    owners: Any,
+    active: Any,
+) -> Any:
+    active_slots = _owner_ordered_active_trail_slots(
+        np=np,
+        owners=owners,
+        active=active,
+    )
+    active_mask = np.asarray(active).astype(bool, copy=False)
+    inactive_slots = np.flatnonzero(~active_mask).astype(np.int32, copy=False)
+    if active_slots.size == 0:
+        return inactive_slots
+    if inactive_slots.size == 0:
+        return active_slots
+    return np.concatenate([active_slots, inactive_slots]).astype(np.int32, copy=False)
+
+
+def _pack_compact_trails_in_owner_draw_order(
+    *,
+    np: Any,
+    state: dict[str, Any],
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    batch_size = int(config["batch_size"])
+    trail_keys = (
+        "trail_x",
+        "trail_y",
+        "trail_radius",
+        "trail_owner",
+        "trail_active",
+        "trail_break_before",
+    )
+    packed = dict(state)
+    packed_trails = {
+        key: np.empty_like(np.asarray(state[key]))
+        for key in trail_keys
+    }
+    active_counts = np.zeros((batch_size,), dtype=np.int32)
+    for row in range(batch_size):
+        order = _owner_ordered_compact_trail_order(
+            np=np,
+            owners=state["trail_owner"][row],
+            active=state["trail_active"][row],
+        )
+        active_count = int(np.count_nonzero(state["trail_active"][row]))
+        active_counts[row] = active_count
+        for key in trail_keys:
+            packed_trails[key][row] = state[key][row, order]
+    packed.update(packed_trails)
+    packed["trail_write_cursor"] = active_counts
+    return packed
+
+
+def _slice_batch_state(*, np: Any, state: dict[str, Any], rows: int) -> dict[str, Any]:
+    sliced: dict[str, Any] = {}
+    for key, value in state.items():
+        if isinstance(value, np.ndarray) and value.ndim > 0 and value.shape[0] >= rows:
+            sliced[key] = value[:rows].copy()
+        else:
+            sliced[key] = value.copy() if hasattr(value, "copy") else value
+    return sliced
+
+
+def _player_luma_by_index(config: dict[str, Any]) -> tuple[int, ...]:
+    controlled = config.get("controlled_player")
+    player_count = int(config["player_count"])
+    if controlled is None:
+        repeats = (player_count + len(SYNTHETIC_PLAYER_LUMA_BY_INDEX) - 1) // len(
+            SYNTHETIC_PLAYER_LUMA_BY_INDEX
+        )
+        return (SYNTHETIC_PLAYER_LUMA_BY_INDEX * repeats)[:player_count]
+    player = int(controlled)
+    return tuple(
+        PERSPECTIVE_SELF_LUMA if index == player else PERSPECTIVE_OTHER_LUMA
+        for index in range(player_count)
+    )
+
+
+def _player_luma_float_by_index(config: dict[str, Any]) -> tuple[float, ...]:
+    controlled = config.get("controlled_player")
+    player_count = int(config["player_count"])
+    if controlled is None:
+        repeats = (player_count + len(SYNTHETIC_PLAYER_LUMA_FLOAT_BY_INDEX) - 1) // len(
+            SYNTHETIC_PLAYER_LUMA_FLOAT_BY_INDEX
+        )
+        return (SYNTHETIC_PLAYER_LUMA_FLOAT_BY_INDEX * repeats)[:player_count]
+    player = int(controlled)
+    return tuple(
+        PERSPECTIVE_SELF_LUMA_FLOAT if index == player else PERSPECTIVE_OTHER_LUMA_FLOAT
+        for index in range(player_count)
+    )
+
+
+def _benchmark_player_rgb_palette(
+    config: dict[str, Any],
+) -> tuple[tuple[int, int, int], ...] | None:
+    controlled = config.get("controlled_player")
+    if controlled is None:
+        return None
+    player = int(controlled)
+    return tuple(
+        (
+            (PERSPECTIVE_SELF_LUMA, PERSPECTIVE_SELF_LUMA, PERSPECTIVE_SELF_LUMA)
+            if index == player
+            else (PERSPECTIVE_OTHER_LUMA, PERSPECTIVE_OTHER_LUMA, PERSPECTIVE_OTHER_LUMA)
+        )
+        for index in range(int(config["player_count"]))
+    )
+
+
+def _benchmark_player_rgb_palette_for_state(
+    *,
+    np: Any,
+    state: dict[str, Any],
+    row: int,
+    config: dict[str, Any],
+) -> tuple[tuple[int, int, int], ...] | None:
+    controlled = config.get("controlled_player")
+    if controlled is None:
+        return None
+    player = int(controlled)
+    player_count = int(config["player_count"])
+    color_indices = np.arange(player_count, dtype=np.int64)
+    if "avatar_color" in state:
+        avatar_color = np.asarray(state["avatar_color"])
+        if avatar_color.ndim >= 2:
+            color_indices = np.asarray(avatar_color[int(row), :player_count], dtype=np.int64)
+    if bool((color_indices < 0).any()):
+        raise ValueError("avatar_color indices must be non-negative")
+    max_color_index = int(color_indices.max()) if color_indices.size else player_count - 1
+    self_rgb = (PERSPECTIVE_SELF_LUMA, PERSPECTIVE_SELF_LUMA, PERSPECTIVE_SELF_LUMA)
+    other_rgb = (PERSPECTIVE_OTHER_LUMA, PERSPECTIVE_OTHER_LUMA, PERSPECTIVE_OTHER_LUMA)
+    palette = [other_rgb for _ in range(max(player_count, max_color_index + 1))]
+    palette[int(color_indices[player])] = self_rgb
+    return tuple(palette)
+
+
+def _real_env_rollout_source_state(*, np: Any, config: dict[str, Any]) -> dict[str, Any]:
+    production_state = _real_env_rollout_production_state(np=np, config=config)
+    return _prepare_compact_state_for_render(
+        np=np,
+        state=_production_to_benchmark_source_state(
+            np=np,
+            production_state=production_state,
+            config=config,
+        ),
+        config=config,
+    )
+
+
+def _real_env_rollout_production_state(*, np: Any, config: dict[str, Any]) -> dict[str, Any]:
+    from curvyzero.env import vector_runtime
+    from curvyzero.env.vector_multiplayer_env import SOURCE_PHYSICS_STEP_MS
+    from curvyzero.env.vector_multiplayer_env import VectorMultiplayerEnv
+
+    batch_size = int(config["batch_size"])
+    player_count = int(config["player_count"])
+    trail_slots = int(config["trail_slots"])
+    bonus_count = int(config["bonus_count"])
+    seed = int(config["seed"])
+    env = VectorMultiplayerEnv(
+        batch_size=batch_size,
+        player_count=player_count,
+        seed=seed,
+        decision_source_frames=1,
+        body_capacity=trail_slots,
+        map_size=float(config["map_size"]),
+        death_mode=vector_runtime.DEATH_MODE_PROFILE_NO_DEATH,
+        natural_bonus_spawn=False,
+    )
+    env.reset(seed=seed)
+    rng = np.random.default_rng(seed + 17)
+    if bonus_count > 0:
+        for row in range(batch_size):
+            env.seed_active_bonus(
+                row=row,
+                bonus_type=int((row % 12) + 1),
+                x=float(rng.uniform(0.2 * env.map_size, 0.8 * env.map_size)),
+                y=float(rng.uniform(0.2 * env.map_size, 0.8 * env.map_size)),
+                radius=3.0,
+                bonus_id=row + 1,
+                slot=0,
+                bonus_capacity=bonus_count,
+            )
+    for _ in range(int(config["real_env_steps"])):
+        actions = rng.integers(
+            0,
+            3,
+            size=(batch_size, player_count),
+            dtype=np.int16,
+        )
+        env.step(actions, timer_advance_ms=SOURCE_PHYSICS_STEP_MS)
+    return env.state
+
+
+def _production_to_benchmark_source_state(
+    *,
+    np: Any,
+    production_state: dict[str, Any],
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    batch_size = int(config["batch_size"])
+    player_count = int(config["player_count"])
+    trail_slots = int(config["trail_slots"])
+    bonus_count = int(config["bonus_count"])
+
+    if "visual_trail_pos" in production_state and "visual_trail_active" in production_state:
+        trail_pos = np.asarray(production_state["visual_trail_pos"], dtype=np.float32)
+        trail_radius = np.asarray(production_state["visual_trail_radius"], dtype=np.float32)
+        trail_owner = np.asarray(production_state["visual_trail_owner"], dtype=np.int32)
+        trail_active = np.asarray(production_state["visual_trail_active"], dtype=np.uint8)
+        trail_write_cursor = np.asarray(
+            production_state.get(
+                "visual_trail_write_cursor",
+                np.full((batch_size,), trail_active.shape[1], dtype=np.int32),
+            ),
+            dtype=np.int32,
+        )
+        trail_break = np.asarray(
+            production_state.get(
+                "visual_trail_break_before",
+                np.zeros(trail_active.shape, dtype=bool),
+            ),
+            dtype=np.uint8,
+        )
+    else:
+        trail_pos = np.asarray(production_state["body_pos"], dtype=np.float32)
+        trail_radius = np.asarray(production_state["body_radius"], dtype=np.float32)
+        trail_owner = np.asarray(production_state["body_owner"], dtype=np.int32)
+        trail_active = np.asarray(production_state["body_active"], dtype=np.uint8)
+        trail_write_cursor = np.asarray(
+            production_state.get(
+                "body_write_cursor",
+                np.full((batch_size,), trail_active.shape[1], dtype=np.int32),
+            ),
+            dtype=np.int32,
+        )
+        trail_break = np.asarray(
+            production_state.get(
+                "body_break_before",
+                np.zeros(trail_active.shape, dtype=bool),
+            ),
+            dtype=np.uint8,
+        )
+
+    pos = np.asarray(production_state["pos"], dtype=np.float32)
+    radius = np.asarray(production_state["radius"], dtype=np.float32)
+    alive = np.asarray(production_state["alive"], dtype=np.uint8)
+    present = np.asarray(production_state.get("present", alive), dtype=np.uint8)
+    head_alive = (alive[:, :player_count] & present[:, :player_count]).astype(np.uint8)
+    avatar_color = np.asarray(
+        production_state.get(
+            "avatar_color",
+            np.arange(player_count, dtype=np.int16)[None, :].repeat(batch_size, axis=0),
+        ),
+        dtype=np.int32,
+    )
+
+    state = {
+        "trail_x": np.zeros((batch_size, trail_slots), dtype=np.float32),
+        "trail_y": np.zeros((batch_size, trail_slots), dtype=np.float32),
+        "trail_radius": np.zeros((batch_size, trail_slots), dtype=np.float32),
+        "trail_owner": np.full((batch_size, trail_slots), -1, dtype=np.int32),
+        "trail_active": np.zeros((batch_size, trail_slots), dtype=np.uint8),
+        "trail_break_before": np.zeros((batch_size, trail_slots), dtype=np.uint8),
+        "head_x": pos[:batch_size, :player_count, 0].astype(np.float32, copy=True),
+        "head_y": pos[:batch_size, :player_count, 1].astype(np.float32, copy=True),
+        "head_radius": radius[:batch_size, :player_count].astype(np.float32, copy=True),
+        "head_alive": head_alive[:batch_size, :player_count].astype(np.uint8, copy=True),
+        "avatar_color": avatar_color[:batch_size, :player_count].astype(np.int32, copy=True),
+        "trail_write_cursor": np.clip(
+            trail_write_cursor[:batch_size],
+            0,
+            trail_slots,
+        ).astype(np.int32, copy=True),
+        "bonus_x": np.zeros((batch_size, bonus_count), dtype=np.float32),
+        "bonus_y": np.zeros((batch_size, bonus_count), dtype=np.float32),
+        "bonus_radius": np.zeros((batch_size, bonus_count), dtype=np.float32),
+        "bonus_active": np.zeros((batch_size, bonus_count), dtype=np.uint8),
+        "bonus_type": np.ones((batch_size, bonus_count), dtype=np.int32),
+    }
+    copied_trails = min(trail_slots, int(trail_active.shape[1]))
+    if copied_trails:
+        active_copy = trail_active[:batch_size, :copied_trails].copy()
+        for row in range(batch_size):
+            cursor = int(state["trail_write_cursor"][row])
+            if cursor < copied_trails:
+                active_copy[row, max(0, cursor) :] = 0
+        state["trail_x"][:, :copied_trails] = trail_pos[:batch_size, :copied_trails, 0]
+        state["trail_y"][:, :copied_trails] = trail_pos[:batch_size, :copied_trails, 1]
+        state["trail_radius"][:, :copied_trails] = trail_radius[:batch_size, :copied_trails]
+        state["trail_owner"][:, :copied_trails] = trail_owner[:batch_size, :copied_trails]
+        state["trail_active"][:, :copied_trails] = active_copy
+        state["trail_break_before"][:, :copied_trails] = trail_break[:batch_size, :copied_trails]
+
+    if bonus_count and "bonus_active" in production_state:
+        active = np.asarray(production_state["bonus_active"], dtype=np.uint8)
+        copied_bonuses = min(bonus_count, int(active.shape[1]))
+        if copied_bonuses:
+            bonus_pos = np.asarray(production_state["bonus_pos"], dtype=np.float32)
+            state["bonus_x"][:, :copied_bonuses] = bonus_pos[:batch_size, :copied_bonuses, 0]
+            state["bonus_y"][:, :copied_bonuses] = bonus_pos[:batch_size, :copied_bonuses, 1]
+            state["bonus_radius"][:, :copied_bonuses] = np.asarray(
+                production_state["bonus_radius"],
+                dtype=np.float32,
+            )[:batch_size, :copied_bonuses]
+            state["bonus_active"][:, :copied_bonuses] = active[:batch_size, :copied_bonuses]
+            state["bonus_type"][:, :copied_bonuses] = np.asarray(
+                production_state["bonus_type"],
+                dtype=np.int32,
+            )[:batch_size, :copied_bonuses]
+    return state
 
 
 def _point_hits_segment(
@@ -944,7 +2454,7 @@ def _synthetic_source_state(*, np: Any, config: dict[str, Any]) -> dict[str, Any
     )
     bonus_radius = rng.uniform(10.0, 18.0, size=(batch_size, bonus_count)).astype(np.float32)
     bonus_active = np.ones((batch_size, bonus_count), dtype=np.uint8)
-    bonus_type = rng.integers(0, 4, size=(batch_size, bonus_count), dtype=np.int32)
+    bonus_type = rng.integers(1, 13, size=(batch_size, bonus_count), dtype=np.int32)
 
     return {
         "trail_x": trail_x,
@@ -965,31 +2475,294 @@ def _synthetic_source_state(*, np: Any, config: dict[str, Any]) -> dict[str, Any
     }
 
 
+def _adversarial_fixture_production_state(
+    *,
+    np: Any,
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    batch_size = int(config["batch_size"])
+    player_count = int(config["player_count"])
+    trail_slots = int(config["trail_slots"])
+    bonus_count = int(config["bonus_count"])
+    map_size = float(config["map_size"])
+    if player_count < 2:
+        raise ValueError("adversarial_fixture requires player_count >= 2")
+    if trail_slots < 10:
+        raise ValueError("adversarial_fixture requires trail_slots >= 10")
+
+    pos = np.zeros((batch_size, player_count, 2), dtype=np.float64)
+    radius = np.full((batch_size, player_count), 8.0, dtype=np.float64)
+    alive = np.ones((batch_size, player_count), dtype=bool)
+    present = np.ones((batch_size, player_count), dtype=bool)
+
+    trail_pos = np.zeros((batch_size, trail_slots, 2), dtype=np.float64)
+    trail_radius = np.zeros((batch_size, trail_slots), dtype=np.float64)
+    trail_owner = np.full((batch_size, trail_slots), -1, dtype=np.int16)
+    trail_active = np.zeros((batch_size, trail_slots), dtype=bool)
+    trail_break = np.zeros((batch_size, trail_slots), dtype=bool)
+    trail_cursor = np.full((batch_size,), trail_slots, dtype=np.int32)
+
+    bonus_pos = np.zeros((batch_size, bonus_count, 2), dtype=np.float64)
+    bonus_radius = np.zeros((batch_size, bonus_count), dtype=np.float64)
+    bonus_active = np.zeros((batch_size, bonus_count), dtype=bool)
+    bonus_type = np.ones((batch_size, bonus_count), dtype=np.int16)
+    avatar_color = np.arange(player_count, dtype=np.int16)[None, :].repeat(batch_size, axis=0)
+
+    def xy(x_fraction: float, y_fraction: float) -> tuple[float, float]:
+        return map_size * x_fraction, map_size * y_fraction
+
+    def set_head(
+        row: int,
+        player: int,
+        x_fraction: float,
+        y_fraction: float,
+        *,
+        head_radius: float,
+        is_alive: bool = True,
+        is_present: bool = True,
+    ) -> None:
+        if player >= player_count:
+            return
+        pos[row, player] = xy(x_fraction, y_fraction)
+        radius[row, player] = float(head_radius)
+        alive[row, player] = bool(is_alive)
+        present[row, player] = bool(is_present)
+
+    def set_trail(
+        row: int,
+        slot: int,
+        owner: int,
+        x_fraction: float,
+        y_fraction: float,
+        *,
+        point_radius: float,
+        active: bool = True,
+        break_before: bool = False,
+    ) -> None:
+        if slot >= trail_slots:
+            return
+        trail_pos[row, slot] = xy(x_fraction, y_fraction)
+        trail_radius[row, slot] = float(point_radius)
+        trail_owner[row, slot] = int(owner)
+        trail_active[row, slot] = bool(active)
+        trail_break[row, slot] = bool(break_before)
+
+    def set_bonus(
+        row: int,
+        slot: int,
+        x_fraction: float,
+        y_fraction: float,
+        *,
+        item_radius: float,
+        item_type: int,
+        active: bool = True,
+    ) -> None:
+        if slot >= bonus_count:
+            return
+        bonus_pos[row, slot] = xy(x_fraction, y_fraction)
+        bonus_radius[row, slot] = float(item_radius)
+        bonus_type[row, slot] = np.int16(item_type)
+        bonus_active[row, slot] = bool(active)
+
+    owner2 = 2 if player_count > 2 else 1
+    for row in range(batch_size):
+        pattern = row % 4
+        if player_count >= 3:
+            if pattern == 0:
+                avatar_color[row, :3] = np.asarray([2, 0, 1], dtype=np.int16)
+            elif pattern == 1:
+                avatar_color[row, :3] = np.asarray([0, 0, 2], dtype=np.int16)
+            elif pattern == 2:
+                avatar_color[row, :3] = np.asarray([7, 3, 5], dtype=np.int16)
+            else:
+                avatar_color[row, :3] = np.asarray([1, 2, 1], dtype=np.int16)
+        elif player_count == 2:
+            avatar_color[row, :2] = (
+                np.asarray([1, 0], dtype=np.int16)
+                if pattern % 2 == 0
+                else np.asarray([0, 0], dtype=np.int16)
+            )
+        if pattern == 0:
+            trail_cursor[row] = min(trail_slots, 8)
+            set_trail(row, 0, 0, 0.25, 0.25, point_radius=5.0, break_before=True)
+            set_trail(row, 1, 1, 0.75, 0.25, point_radius=7.0, break_before=True)
+            set_trail(row, 2, 0, 0.75, 0.75, point_radius=5.0)
+            set_trail(row, 3, 1, 0.25, 0.75, point_radius=7.0)
+            set_trail(row, 4, 0, 0.32, 0.75, point_radius=9.0, break_before=True)
+            set_trail(row, 5, 0, 0.43, 0.75, point_radius=9.0)
+            set_trail(row, 6, 1, 0.50, 0.50, point_radius=4.0, break_before=True)
+            set_trail(row, 7, owner2, 0.50, 0.50, point_radius=10.0, break_before=True)
+            set_trail(row, 8, 1, 0.50, 0.15, point_radius=18.0, break_before=True)
+            set_trail(row, 9, 0, 0.50, 0.85, point_radius=18.0)
+            set_head(row, 0, 0.50, 0.50, head_radius=12.0)
+            set_head(row, 1, 0.50, 0.50, head_radius=6.0)
+            set_head(row, owner2, 0.58, 0.50, head_radius=8.0)
+            set_bonus(row, 0, 0.50, 0.50, item_radius=14.0, item_type=1)
+            set_bonus(row, 1, 0.50, 0.35, item_radius=12.0, item_type=5)
+            set_bonus(row, 2, 0.02, 0.02, item_radius=10.0, item_type=12)
+        elif pattern == 1:
+            set_trail(row, 0, 0, 0.14, 0.16, point_radius=4.0, break_before=True)
+            set_trail(row, 1, 0, 0.25, 0.16, point_radius=4.0)
+            set_trail(row, 2, 0, 0.36, 0.16, point_radius=4.0, break_before=True)
+            set_trail(row, 3, 1, 0.47, 0.16, point_radius=4.0, active=False)
+            set_trail(row, 4, 0, 0.58, 0.16, point_radius=4.0)
+            set_trail(row, 5, 1, 0.58, 0.30, point_radius=8.0, break_before=True)
+            set_trail(row, 6, 1, 0.36, 0.30, point_radius=8.0)
+            set_trail(row, 7, 1, 0.25, 0.30, point_radius=3.0)
+            set_trail(row, 8, 1, 0.14, 0.30, point_radius=3.0)
+            set_trail(row, 9, -1, 0.50, 0.45, point_radius=12.0, break_before=True)
+            set_head(row, 0, 0.58, 0.16, head_radius=8.0)
+            set_head(row, 1, 0.42, 0.42, head_radius=9.0, is_alive=False)
+            set_head(row, owner2, 0.70, 0.42, head_radius=7.0, is_present=False)
+            set_bonus(row, 0, 0.42, 0.42, item_radius=13.0, item_type=2)
+            set_bonus(row, 1, 0.14, 0.30, item_radius=10.0, item_type=6)
+            set_bonus(row, 2, 0.97, 0.50, item_radius=11.0, item_type=10)
+        elif pattern == 2:
+            trail_cursor[row] = 0
+            for slot in range(min(trail_slots, 10)):
+                owner = slot % min(player_count, 3)
+                set_trail(
+                    row,
+                    slot,
+                    owner,
+                    0.12 + 0.08 * slot,
+                    0.82 - 0.05 * (slot % 4),
+                    point_radius=14.0 if slot % 2 else 5.0,
+                    break_before=(slot % 3 == 0),
+                )
+            set_head(row, 0, 0.25, 0.62, head_radius=10.0)
+            set_head(row, 1, 0.35, 0.62, head_radius=10.0)
+            set_head(row, owner2, 0.45, 0.62, head_radius=10.0)
+            set_bonus(row, 0, 0.25, 0.62, item_radius=12.0, item_type=3)
+            set_bonus(row, 1, 0.02, 0.98, item_radius=11.0, item_type=7)
+            set_bonus(row, 2, 0.50, 0.82, item_radius=12.0, item_type=11)
+        else:
+            set_trail(row, 0, 0, 0.20, 0.70, point_radius=6.0, break_before=True)
+            set_trail(row, 1, 1, 0.30, 0.62, point_radius=6.0, break_before=True)
+            set_trail(row, 2, 1, 0.45, 0.62, point_radius=6.0)
+            set_trail(row, 3, 0, 0.60, 0.70, point_radius=6.0)
+            set_trail(row, 4, owner2, 0.60, 0.30, point_radius=5.0, break_before=True)
+            set_trail(row, 5, 0, 0.50, 0.30, point_radius=9.0, break_before=True)
+            set_trail(row, 6, owner2, 0.40, 0.30, point_radius=5.0)
+            set_trail(row, 7, 0, 0.30, 0.30, point_radius=9.0)
+            set_trail(row, 8, -1, 0.70, 0.70, point_radius=7.0, break_before=True)
+            set_trail(row, 9, owner2, 0.76, 0.70, point_radius=7.0, active=False)
+            set_head(row, 0, 0.30, 0.30, head_radius=9.0)
+            set_head(row, 1, 0.45, 0.62, head_radius=7.0)
+            set_head(row, owner2, 0.40, 0.30, head_radius=8.0, is_present=False)
+            set_bonus(row, 0, 0.30, 0.30, item_radius=13.0, item_type=4)
+            set_bonus(row, 1, 0.45, 0.62, item_radius=9.0, item_type=8)
+            set_bonus(row, 2, 0.70, 0.70, item_radius=10.0, item_type=9)
+
+        for slot in range(3, bonus_count):
+            item_type = ((row * max(1, bonus_count) + slot) % 12) + 1
+            x_fraction = 0.08 + 0.12 * (slot % 7)
+            y_fraction = 0.08 + 0.14 * ((slot // 7) % 6)
+            set_bonus(
+                row,
+                slot,
+                x_fraction,
+                y_fraction,
+                item_radius=8.0 + float(slot % 5),
+                item_type=item_type,
+            )
+
+    return {
+        "tick": np.arange(batch_size, dtype=np.int64),
+        "elapsed_ms": np.zeros((batch_size,), dtype=np.float64),
+        "map_size": np.full((batch_size,), map_size, dtype=np.float64),
+        "present": present,
+        "alive": alive,
+        "pos": pos,
+        "radius": radius,
+        "body_active": trail_active.copy(),
+        "body_write_cursor": trail_cursor.copy(),
+        "body_pos": trail_pos.copy(),
+        "body_radius": trail_radius.copy(),
+        "body_owner": trail_owner.copy(),
+        "body_break_before": trail_break.copy(),
+        "done": np.zeros((batch_size,), dtype=bool),
+        "terminated": np.zeros((batch_size,), dtype=bool),
+        "truncated": np.zeros((batch_size,), dtype=bool),
+        "terminal_reason": np.zeros((batch_size,), dtype=np.int16),
+        "avatar_color": avatar_color,
+        "visual_trail_active": trail_active,
+        "visual_trail_write_cursor": trail_cursor,
+        "visual_trail_pos": trail_pos,
+        "visual_trail_radius": trail_radius,
+        "visual_trail_owner": trail_owner,
+        "visual_trail_break_before": trail_break,
+        "bonus_active": bonus_active,
+        "bonus_pos": bonus_pos,
+        "bonus_radius": bonus_radius,
+        "bonus_type": bonus_type,
+    }
+
+
 def _validate_config(config: dict[str, Any]) -> dict[str, Any]:
+    state_source = str(config.get("state_source", STATE_SOURCE_SYNTHETIC))
+    if state_source not in STATE_SOURCES:
+        allowed = ", ".join(sorted(STATE_SOURCES))
+        raise ValueError(f"state_source must be one of {allowed}, got {state_source!r}")
     render_mode = str(config.get("render_mode", RENDER_MODE_BROWSER_LINES))
     if render_mode not in RENDER_MODE_IDS:
         allowed = ", ".join(sorted(RENDER_MODE_IDS))
         raise ValueError(f"render_mode must be one of {allowed}, got {render_mode!r}")
+    bonus_render_mode = str(config.get("bonus_render_mode", BONUS_RENDER_MODE_SIMPLE_SYMBOLS))
+    if bonus_render_mode not in BONUS_RENDER_MODE_IDS:
+        allowed = ", ".join(sorted(BONUS_RENDER_MODE_IDS))
+        raise ValueError(f"bonus_render_mode must be one of {allowed}, got {bonus_render_mode!r}")
     render_surface = str(config.get("render_surface", RENDER_SURFACE_DIRECT_GRAY64))
     if render_surface not in RENDER_SURFACES:
         allowed = ", ".join(sorted(RENDER_SURFACES))
         raise ValueError(f"render_surface must be one of {allowed}, got {render_surface!r}")
+    trail_composition = str(config.get("trail_composition", TRAIL_COMPOSITION_PRIORITY_BUFFER))
+    if trail_composition not in TRAIL_COMPOSITIONS:
+        allowed = ", ".join(sorted(TRAIL_COMPOSITIONS))
+        raise ValueError(
+            f"trail_composition must be one of {allowed}, got {trail_composition!r}"
+        )
+    if (
+        trail_composition == TRAIL_COMPOSITION_OWNER_ORDERED_COMPACT
+        and render_surface != RENDER_SURFACE_BLOCK_704_GRAY64
+    ):
+        raise ValueError("owner_ordered_compact trail_composition requires block_704_gray64")
 
+    player_count = _positive_int(config.get("player_count", 2), "player_count")
+    controlled_player = _optional_player_index(
+        config.get("controlled_player", 0),
+        player_count=player_count,
+    )
+    if "map_size" in config:
+        map_size = float(config["map_size"])
+    elif state_source == STATE_SOURCE_REAL_ENV_ROLLOUT:
+        from curvyzero.env.config import CurvyTronReferenceDefaults
+
+        map_size = float(CurvyTronReferenceDefaults().arena_size_for_players(player_count))
+    elif state_source == STATE_SOURCE_ADVERSARIAL_FIXTURE:
+        map_size = 704.0
+    else:
+        map_size = 1000.0
     checked = {
+        "state_source": state_source,
         "batch_size": _positive_int(config.get("batch_size", 64), "batch_size"),
-        "player_count": _positive_int(config.get("player_count", 2), "player_count"),
+        "player_count": player_count,
+        "controlled_player": controlled_player,
         "trail_slots": _positive_int(config.get("trail_slots", 256), "trail_slots"),
         "render_mode": render_mode,
+        "bonus_render_mode": bonus_render_mode,
         "render_surface": render_surface,
+        "trail_composition": trail_composition,
         "bonus_count": _nonnegative_int(config.get("bonus_count", 8), "bonus_count"),
         "frame_size": _positive_int(config.get("frame_size", 704), "frame_size"),
         "target_size": _positive_int(config.get("target_size", 64), "target_size"),
         "seed": int(config.get("seed", 20260513)),
         "warmup_runs": _nonnegative_int(config.get("warmup_runs", 3), "warmup_runs"),
         "steady_runs": _positive_int(config.get("steady_runs", 10), "steady_runs"),
+        "real_env_steps": _nonnegative_int(config.get("real_env_steps", 128), "real_env_steps"),
         "verify_rows": _nonnegative_int(config.get("verify_rows", 2), "verify_rows"),
         "transfer_output": bool(config.get("transfer_output", False)),
-        "map_size": float(config.get("map_size", 1000.0)),
+        "map_size": map_size,
         "trail_radius": float(config.get("trail_radius", 4.0)),
         "cpu_verify_max_pixel_trail_tests": int(
             config.get("cpu_verify_max_pixel_trail_tests", 25_000_000)
@@ -1006,6 +2779,17 @@ def _validate_config(config: dict[str, Any]) -> dict[str, Any]:
     ):
         raise ValueError("block_704_gray64 requires frame_size divisible by target_size")
     return checked
+
+
+def _optional_player_index(value: Any, *, player_count: int) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, str) and value.lower() in {"none", "world", "source"}:
+        return None
+    player = int(value)
+    if player < 0 or player >= player_count:
+        raise ValueError(f"controlled_player must be in [0, {player_count}) or none, got {value!r}")
+    return player
 
 
 def _positive_int(value: Any, name: str) -> int:
@@ -1060,41 +2844,53 @@ def _nvidia_smi() -> str | None:
 
 @app.local_entrypoint()
 def main(
+    state_source: str = STATE_SOURCE_SYNTHETIC,
     batch_size: int = 64,
     player_count: int = 2,
+    controlled_player: int | None = 0,
     trail_slots: int = 256,
     compute: str = COMPUTE_L4_T4,
     render_mode: str = RENDER_MODE_BROWSER_LINES,
+    bonus_render_mode: str = BONUS_RENDER_MODE_SIMPLE_SYMBOLS,
     render_surface: str = RENDER_SURFACE_DIRECT_GRAY64,
+    trail_composition: str = TRAIL_COMPOSITION_PRIORITY_BUFFER,
     bonus_count: int = 8,
     frame_size: int = 704,
     target_size: int = 64,
     seed: int = 20260513,
     warmup_runs: int = 3,
     steady_runs: int = 10,
+    real_env_steps: int = 128,
     verify_rows: int = 2,
     transfer_output: bool = False,
     trail_radius: float = 4.0,
+    scalar_component_profile: bool = False,
 ) -> None:
     if compute not in COMPUTE_CHOICES:
         allowed = ", ".join(sorted(COMPUTE_CHOICES))
         raise ValueError(f"compute must be one of {allowed}; got {compute!r}")
     config = {
+        "state_source": state_source,
         "batch_size": batch_size,
         "player_count": player_count,
+        "controlled_player": controlled_player,
         "trail_slots": trail_slots,
         "compute": compute,
         "render_mode": render_mode,
+        "bonus_render_mode": bonus_render_mode,
         "render_surface": render_surface,
+        "trail_composition": trail_composition,
         "bonus_count": bonus_count,
         "frame_size": frame_size,
         "target_size": target_size,
         "seed": seed,
         "warmup_runs": warmup_runs,
         "steady_runs": steady_runs,
+        "real_env_steps": real_env_steps,
         "verify_rows": verify_rows,
         "transfer_output": transfer_output,
         "trail_radius": trail_radius,
+        "scalar_component_profile": scalar_component_profile,
     }
     fn = (
         run_source_state_gpu_render_benchmark_h100

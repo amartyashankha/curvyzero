@@ -19,12 +19,24 @@ from typing import Any, Sequence
 
 import numpy as np
 
-from curvyzero.env.vector_multiplayer_env import SOURCE_PHYSICS_STEP_MS
+from curvyzero.contracts.curvytron import (
+    CURVYTRON_COMMIT_ON_CHECKPOINT as COMMIT_ON_CHECKPOINT,
+    CURVYTRON_DECISION_MS as DECISION_MS,
+    CURVYTRON_POLICY_BONUS_RENDER_MODE as BONUS_RENDER_SIMPLE_SYMBOLS,
+    CURVYTRON_POLICY_TRAIL_RENDER_MODE as RENDER_BROWSER,
+    CURVYTRON_SOURCE_MAX_STEPS as SOURCE_MAX_STEPS,
+    CURVYTRON_TRAINING_TASK_ID,
+    DEFAULT_CURVYTRON_TRAIN_APP_NAME,
+    LEARNER_SEAT_MODE_RANDOM_PER_EPISODE,
+    REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME as REWARD_SURVIVAL_PLUS_BONUS_NO_OUTCOME,
+    TRAIN_KWARGS_REQUIRED_FOR_GROUPED_SUBMIT,
+)
+from curvyzero.training.opponent_mixture import OPPONENT_MIXTURE_SCHEMA_ID
 
 
 MODULE = "curvyzero.infra.modal.lightzero_curvyzero_stacked_debug_visual_survival_train"
-APP_NAME = "curvyzero-lightzero-curvytron-visual-survival-train"
-TASK_ID = "lightzero-curvytron-visual-survival"
+APP_NAME = DEFAULT_CURVYTRON_TRAIN_APP_NAME
+TASK_ID = CURVYTRON_TRAINING_TASK_ID
 SCHEMA_ID = "curvyzero_curvytron_survivaldiag_dry_run_manifest/v0"
 ROW_SCHEMA_ID = "curvyzero_curvytron_survivaldiag_dry_run_manifest_row/v0"
 
@@ -38,77 +50,10 @@ OPPONENT_RUNTIME_NORMAL = "normal"
 OPPONENT_RUNTIME_BLANK_CANVAS_NOOP = "blank_canvas_noop"
 OPPONENT_DEATH_NORMAL = "normal"
 OPPONENT_DEATH_IMMORTAL = "immortal"
-REWARD_SURVIVAL_PLUS_BONUS_NO_OUTCOME = "survival_plus_bonus_no_outcome"
 REWARD_SURVIVAL_ONLY_GATED = "survival_only"
-RENDER_FAST = "body_circles_fast"
-RENDER_BROWSER = "browser_lines"
-SOURCE_MAX_STEPS = 65_536
-DECISION_MS = SOURCE_PHYSICS_STEP_MS
+INITIAL_POLICY_CHECKPOINT_LOAD_MODE_MATCHING_SHAPE = "matching_shape"
 ACTION_REPEAT_SEED_OFFSET = 2027
 STRAIGHT_OVERRIDE_SEED_OFFSET = 1009
-
-TRAIN_KWARGS_REQUIRED_FOR_GROUPED_SUBMIT: tuple[str, ...] = (
-    "mode",
-    "seed",
-    "run_id",
-    "attempt_id",
-    "max_env_step",
-    "max_train_iter",
-    "source_max_steps",
-    "decision_ms",
-    "collector_env_num",
-    "evaluator_env_num",
-    "n_evaluator_episode",
-    "n_episode",
-    "num_simulations",
-    "batch_size",
-    "lightzero_eval_freq",
-    "skip_lightzero_eval_in_profile",
-    "profile_cuda_sync_enabled",
-    "profile_allow_auto_resume",
-    "profile_volume_commit",
-    "lightzero_multi_gpu",
-    "save_ckpt_after_iter",
-    "stop_after_learner_train_calls",
-    "env_variant",
-    "reward_variant",
-    "source_state_trail_render_mode",
-    "ego_action_straight_override_probability",
-    "policy_action_repeat_min",
-    "policy_action_repeat_max",
-    "policy_action_repeat_extra_probability",
-    "control_noise_profile_id",
-    "disable_death_for_profile",
-    "opponent_death_mode",
-    "opponent_runtime_mode",
-    "env_telemetry_stride",
-    "env_manager_type",
-    "opponent_policy_kind",
-    "opponent_use_cuda",
-    "opponent_checkpoint_ref",
-    "opponent_snapshot_ref",
-    "opponent_checkpoint_report_ref",
-    "opponent_checkpoint_state_key",
-    "background_eval_enabled",
-    "background_eval_launch_kind",
-    "background_eval_compute",
-    "background_eval_id_prefix",
-    "background_eval_seed_count",
-    "background_eval_seed_rng_seed",
-    "background_eval_max_steps",
-    "background_eval_step_detail_limit",
-    "background_eval_num_simulations",
-    "background_eval_batch_size",
-    "background_gif_enabled",
-    "background_gif_seed_offset",
-    "background_gif_max_steps",
-    "background_gif_frame_stride",
-    "background_gif_fps",
-    "background_gif_scale",
-    "background_gif_frame_size",
-    "background_gif_collect_temperature",
-    "background_gif_collect_epsilon",
-)
 
 DEFAULT_MATRIX_NAME = "curvy-survive-bonus-large"
 DEFAULT_RUN_PREFIX = "curvy-survive-bonus"
@@ -283,7 +228,7 @@ BLOCK_SPECS: tuple[BlockSpec, ...] = (
         stage_index=1,
         hypothesis_id="h01_blank_canvas_action_repeat_survival_core",
         description=(
-            "The 32-row blank-canvas core: two render twins, four stochasticity "
+            "The blank-canvas core: target render, four stochasticity "
             "levels, four copies, no reward/opponent/compute crossing."
         ),
         stochasticity_profile_ids=("none", "low", "medium", "high"),
@@ -303,7 +248,6 @@ BLOCK_SPECS: tuple[BlockSpec, ...] = (
 )
 
 RENDER_PAIRS: tuple[tuple[str, str], ...] = (
-    ("fast", RENDER_FAST),
     ("browser", RENDER_BROWSER),
 )
 
@@ -364,8 +308,6 @@ def _seed_base(*, block: BlockSpec, stochasticity_index: int, copy_id: str) -> i
 
 
 def _render_tag(render_mode: str) -> str:
-    if render_mode == RENDER_FAST:
-        return "fast"
     if render_mode == RENDER_BROWSER:
         return "browser"
     return render_mode.replace("_", "-")
@@ -764,7 +706,7 @@ def _rows(args: argparse.Namespace) -> list[Row]:
             hypothesis_id="h10_blank_canvas_repeat_all_stochasticity_scale",
             description=(
                 "Second-wave clean repeat block: blank canvas, all stochasticity "
-                "levels, four new copies, matched fast/browser render pairs."
+                "levels, four new copies, target render only."
             ),
             stochasticity_profile_ids=("none", "low", "medium", "high"),
             copy_ids=("c07", "c08", "c09", "c10"),
@@ -938,6 +880,7 @@ def _rows(args: argparse.Namespace) -> list[Row]:
 
 
 def _command_for_row(row: Row, *, run_id: str, attempt_id: str, detach: bool) -> list[str]:
+    opponent_mixture_spec = _opponent_mixture_spec_for_row(row)
     command = [
         "uv",
         "run",
@@ -973,8 +916,14 @@ def _command_for_row(row: Row, *, run_id: str, attempt_id: str, detach: bool) ->
             row.opponent_runtime_mode,
             "--opponent-death-mode",
             row.opponent_death_mode,
+            "--opponent-mixture-spec",
+            json.dumps(opponent_mixture_spec, sort_keys=True, separators=(",", ":")),
             "--source-state-trail-render-mode",
             row.source_state_trail_render_mode,
+            "--source-state-bonus-render-mode",
+            BONUS_RENDER_SIMPLE_SYMBOLS,
+            "--learner-seat-mode",
+            LEARNER_SEAT_MODE_RANDOM_PER_EPISODE,
             "--ego-action-straight-override-probability",
             str(row.stochasticity.ego_action_straight_override_probability),
             "--control-noise-profile-id",
@@ -1053,14 +1002,45 @@ def _command_for_row(row: Row, *, run_id: str, attempt_id: str, detach: bool) ->
             "compact",
         ]
     )
-    if row.opponent_checkpoint_ref is not None:
-        command.extend(["--opponent-checkpoint-ref", row.opponent_checkpoint_ref])
-    if row.opponent_snapshot_ref is not None:
-        command.extend(["--snapshot-ref", row.opponent_snapshot_ref])
+    command.extend(
+        [
+            "--initial-policy-checkpoint-ref",
+            DEFAULT_RECENT_OPPONENT_CHECKPOINT_REF,
+            "--initial-policy-checkpoint-load-mode",
+            INITIAL_POLICY_CHECKPOINT_LOAD_MODE_MATCHING_SHAPE,
+        ]
+    )
     return command
 
 
+def _opponent_mixture_spec_for_row(row: Row) -> dict[str, Any]:
+    opponent_immortal = (
+        row.opponent_death_mode == OPPONENT_DEATH_IMMORTAL
+        or row.opponent_runtime_mode == OPPONENT_RUNTIME_BLANK_CANVAS_NOOP
+    )
+    entry: dict[str, Any] = {
+        "name": "single_opponent",
+        "weight": 1,
+        "opponent_policy_kind": row.opponent_policy_kind,
+        "opponent_runtime_mode": row.opponent_runtime_mode,
+        "opponent_immortal": opponent_immortal,
+    }
+    if row.opponent_checkpoint_ref is not None:
+        entry["opponent_checkpoint_ref"] = row.opponent_checkpoint_ref
+    if row.opponent_snapshot_ref is not None:
+        entry["opponent_snapshot_ref"] = row.opponent_snapshot_ref
+    if row.opponent_policy_seed is not None:
+        entry["opponent_policy_seed"] = row.opponent_policy_seed
+    return {
+        "schema_id": OPPONENT_MIXTURE_SCHEMA_ID,
+        "selection_unit": "episode_reset",
+        "seed": row.reset_seed,
+        "entries": [entry],
+    }
+
+
 def _train_kwargs_for_row(row: Row, *, run_id: str, attempt_id: str) -> dict[str, Any]:
+    opponent_mixture_spec = _opponent_mixture_spec_for_row(row)
     return {
         "mode": MODE_TRAIN,
         "seed": row.training_seed,
@@ -1083,10 +1063,13 @@ def _train_kwargs_for_row(row: Row, *, run_id: str, attempt_id: str) -> dict[str
         "profile_volume_commit": False,
         "lightzero_multi_gpu": False,
         "save_ckpt_after_iter": row.save_ckpt_after_iter,
+        "commit_on_checkpoint": COMMIT_ON_CHECKPOINT,
         "stop_after_learner_train_calls": 0,
         "env_variant": ENV_SOURCE_STATE_FIXED_OPPONENT,
         "reward_variant": row.reward_variant,
         "source_state_trail_render_mode": row.source_state_trail_render_mode,
+        "source_state_bonus_render_mode": BONUS_RENDER_SIMPLE_SYMBOLS,
+        "learner_seat_mode": LEARNER_SEAT_MODE_RANDOM_PER_EPISODE,
         "ego_action_straight_override_probability": (
             row.stochasticity.ego_action_straight_override_probability
         ),
@@ -1103,10 +1086,14 @@ def _train_kwargs_for_row(row: Row, *, run_id: str, attempt_id: str) -> dict[str
         "env_manager_type": row.env_manager_type,
         "opponent_policy_kind": row.opponent_policy_kind,
         "opponent_use_cuda": False,
-        "opponent_checkpoint_ref": row.opponent_checkpoint_ref,
-        "opponent_snapshot_ref": row.opponent_snapshot_ref,
+        "opponent_checkpoint_ref": None,
+        "opponent_snapshot_ref": None,
         "opponent_checkpoint_report_ref": None,
         "opponent_checkpoint_state_key": None,
+        "opponent_mixture_spec": opponent_mixture_spec,
+        "initial_policy_checkpoint_ref": DEFAULT_RECENT_OPPONENT_CHECKPOINT_REF,
+        "initial_policy_checkpoint_state_key": None,
+        "initial_policy_checkpoint_load_mode": INITIAL_POLICY_CHECKPOINT_LOAD_MODE_MATCHING_SHAPE,
         "background_eval_enabled": row.background_eval_enabled,
         "background_eval_launch_kind": row.background_eval_launch_kind,
         "background_eval_compute": row.background_eval_compute,
@@ -1148,9 +1135,10 @@ def _poller_kwargs_for_row(row: Row, *, run_id: str, attempt_id: str) -> dict[st
         "env_variant": ENV_SOURCE_STATE_FIXED_OPPONENT,
         "reward_variant": row.reward_variant,
         "opponent_policy_kind": row.opponent_policy_kind,
-        "opponent_checkpoint_ref": row.opponent_checkpoint_ref,
-        "opponent_snapshot_ref": row.opponent_snapshot_ref,
+        "opponent_checkpoint_ref": None,
+        "opponent_snapshot_ref": None,
         "opponent_checkpoint_state_key": None,
+        "opponent_mixture_spec": _opponent_mixture_spec_for_row(row),
         "opponent_death_mode": row.opponent_death_mode,
         "opponent_runtime_mode": row.opponent_runtime_mode,
         "background_eval_compute": row.background_eval_compute,
@@ -1206,7 +1194,7 @@ def _manifest_row(
         raise ValueError(f"refusing stale two-seat command for row {row.row_id}")
     if command[command.index("--mode") + 1] != MODE_TRAIN:
         raise ValueError(f"row {row.row_id} must use --mode train")
-    if row.source_state_trail_render_mode not in {RENDER_FAST, RENDER_BROWSER}:
+    if row.source_state_trail_render_mode != RENDER_BROWSER:
         raise ValueError(f"unexpected render mode in row {row.row_id}")
     reward_contract = _reward_contract(row.reward_variant)
     opponent_contract = _opponent_contract(row)
@@ -1250,6 +1238,7 @@ def _manifest_row(
         "opponent_snapshot_ref": row.opponent_snapshot_ref,
         "source_max_steps": SOURCE_MAX_STEPS,
         "source_state_trail_render_mode": row.source_state_trail_render_mode,
+        "source_state_bonus_render_mode": BONUS_RENDER_SIMPLE_SYMBOLS,
         "logical_pair_id": row.logical_pair_id,
         "render_pair_role": row.render_pair_role,
         "copy_id": row.copy_id,
@@ -1396,8 +1385,12 @@ def _validate_manifest_rows(rows: list[dict[str, Any]]) -> None:
         pair_groups.setdefault(str(row["logical_pair_id"]), []).append(row)
     for logical_pair_id, group in pair_groups.items():
         roles = {row["render_pair_role"] for row in group}
-        if roles != {"fast", "browser"} or len(group) != 2:
-            raise ValueError(f"logical_pair_id {logical_pair_id!r} is not a render twin")
+        expected_roles = {role for role, _mode in RENDER_PAIRS}
+        if roles != expected_roles or len(group) != len(RENDER_PAIRS):
+            raise ValueError(
+                f"logical_pair_id {logical_pair_id!r} does not match "
+                f"render roles {sorted(expected_roles)!r}"
+            )
         comparable_fields = (
             "block_id",
             "hypothesis_id",
@@ -1566,7 +1559,7 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
                     {str(row["stochasticity_profile_id"]) for row in group}
                 ),
                 "copy_ids": sorted({str(row["copy_id"]) for row in group}),
-                "render_pair_roles": ["fast", "browser"],
+                "render_pair_roles": [role for role, _mode in RENDER_PAIRS],
             }
         )
     gated_specs = _gated_survival_only_ablation_specs() + _gated_ancestor_checkpoint_specs(args)
@@ -1574,16 +1567,16 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
         default_rows = "300 executable large-ready rows plus gated specs"
         executable_row_shape = {
             "blank_canvas_all_level_repeats": (
-                "160 rows: 2 renders x 4 stochasticity levels x 20 copies"
+                "80 rows: target render x 4 stochasticity levels x 20 copies"
             ),
             "blank_canvas_medium_high_extra": (
-                "40 rows: 2 renders x medium/high stochasticity x 10 extra copies"
+                "20 rows: target render x medium/high stochasticity x 10 extra copies"
             ),
             "passive_immortal_dirty_controls": (
-                "40 rows: 2 renders x 4 stochasticity levels x 5 dirty-control copies"
+                "20 rows: target render x 4 stochasticity levels x 5 dirty-control copies"
             ),
             "blank_canvas_compute_sentinels": (
-                "60 rows: 2 renders x medium/high stochasticity x 5 copies x "
+                "30 rows: target render x medium/high stochasticity x 5 copies x "
                 "search16/collector64/batch64"
             ),
         }
@@ -1591,13 +1584,13 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
         default_rows = "50 executable v1c blank-repeat expansion rows plus gated specs"
         executable_row_shape = {
             "blank_canvas_scale_all": (
-                "32 rows: 2 renders x 4 stochasticity levels x 4 new copies"
+                "16 rows: target render x 4 stochasticity levels x 4 new copies"
             ),
             "blank_canvas_medium_high_scale": (
-                "8 rows: 2 renders x medium/high stochasticity x 2 new copies"
+                "4 rows: target render x medium/high stochasticity x 2 new copies"
             ),
             "passive_immortal_dirty_extension": (
-                "4 rows: 2 renders x low/high stochasticity x 1 dirty-control copy"
+                "2 rows: target render x low/high stochasticity x 1 dirty-control copy"
             ),
             "compute_sentinel_extension": (
                 "6 rows: matched render pairs for sim16, collector64, and batch64"
@@ -1606,15 +1599,15 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
     else:
         default_rows = "50 executable review rows plus gated ablation/control specs"
         executable_row_shape = {
-            "exact_preflight": "4 rows: 2 renders x medium stochasticity x 2 copies",
-            "blank_canvas_core": "32 rows: 2 renders x 4 stochasticity levels x 4 copies",
+            "exact_preflight": "2 rows: target render x medium stochasticity x 2 copies",
+            "blank_canvas_core": "16 rows: target render x 4 stochasticity levels x 4 copies",
             "blank_canvas_extra_repeats": (
-                "8 rows: 2 renders x medium/high stochasticity x 2 extra copies"
+                "4 rows: target render x medium/high stochasticity x 2 extra copies"
             ),
             "passive_immortal_dirty_control": (
-                "4 rows: 2 renders x medium stochasticity x 2 copies"
+                "2 rows: target render x medium stochasticity x 2 copies"
             ),
-            "compute_sentinel": "2 rows: sim16 matched render pair",
+            "compute_sentinel": "1 row: sim16 target-render sentinel",
         }
     return {
         "schema_id": SCHEMA_ID,
@@ -1637,16 +1630,16 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
             "executable_row_shape": executable_row_shape,
             "gated_shape": {
                 "survival_only_ablation": (
-                    "4 specs: 2 renders x 1 stochasticity x 2 copies, not commanded"
+                    "2 specs: target render x 1 stochasticity x 2 copies, not commanded"
                 ),
                 "ancestor_checkpoint_controls": (
-                    "6 specs: old/mid/recent x 2 renders, not commanded"
+                    "3 specs: old/mid/recent x target render, not commanded"
                 ),
                 "scripted_random_frozen_expansions": (
                     "omitted until first-class wiring, immutable identity, and e2e canary"
                 ),
             },
-            "render_pairing": "every logical setting has fast/browser twins",
+            "render_pairing": "every logical setting uses the target render surface",
             "default_source_max_steps": SOURCE_MAX_STEPS,
             "reward_variant": REWARD_SURVIVAL_PLUS_BONUS_NO_OUTCOME,
             "main_opponent_runtime_mode": OPPONENT_RUNTIME_BLANK_CANVAS_NOOP,

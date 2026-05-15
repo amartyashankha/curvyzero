@@ -33,16 +33,16 @@ def test_survivaldiag_default_shape_is_large_ready_and_dry_run_only():
     assert manifest["dry_run_only"] is True
     assert manifest["launches_modal"] is False
     assert manifest["current_launch_approved"] is False
-    assert manifest["row_count"] == 300
+    assert manifest["row_count"] == 150
     assert manifest["logical_pair_count"] == 150
-    assert len(manifest["gated_specs"]) == 10
+    assert len(manifest["gated_specs"]) == 5
 
     block_counts = {block["block_id"]: block["row_count"] for block in manifest["blocks"]}
     assert block_counts == {
-        "b20_blank_canvas_all_level_repeats": 160,
-        "b21_blank_canvas_medium_high_extra": 40,
-        "b22_passive_immortal_dirty_controls": 40,
-        "b23_blank_canvas_compute_sentinels": 60,
+        "b20_blank_canvas_all_level_repeats": 80,
+        "b21_blank_canvas_medium_high_extra": 20,
+        "b22_passive_immortal_dirty_controls": 20,
+        "b23_blank_canvas_compute_sentinels": 30,
     }
 
 
@@ -61,16 +61,16 @@ def test_blank_repeat_expansion_profile_is_clean_v1c_shape():
     )
 
     assert manifest["matrix_profile"] == "blank_repeat_expansion"
-    assert manifest["row_count"] == 50
+    assert manifest["row_count"] == 25
     assert manifest["logical_pair_count"] == 25
-    assert len(manifest["gated_specs"]) == 10
+    assert len(manifest["gated_specs"]) == 5
 
     block_counts = {block["block_id"]: block["row_count"] for block in manifest["blocks"]}
     assert block_counts == {
-        "b10_blank_canvas_scale_all": 32,
-        "b11_blank_canvas_medium_high_scale": 8,
-        "b12_passive_immortal_dirty_extension": 4,
-        "b13_compute_sentinel_extension": 6,
+        "b10_blank_canvas_scale_all": 16,
+        "b11_blank_canvas_medium_high_scale": 4,
+        "b12_passive_immortal_dirty_extension": 2,
+        "b13_compute_sentinel_extension": 3,
     }
     assert {
         row["opponent_runtime_mode"]
@@ -83,13 +83,13 @@ def test_blank_repeat_expansion_profile_is_clean_v1c_shape():
     assert all(len(row["attempt_id"]) <= 96 for row in manifest["rows"])
 
 
-def test_blank_core_has_matched_render_pairs_and_separate_seed_fields():
+def test_blank_core_uses_single_policy_surface_and_separate_seed_fields():
     manifest = _manifest()
     blank_rows = [
         row for row in manifest["rows"] if row["block_id"] == "b20_blank_canvas_all_level_repeats"
     ]
 
-    assert len(blank_rows) == 160
+    assert len(blank_rows) == 80
     assert {row["stochasticity_profile_id"] for row in blank_rows} == {
         "none",
         "low",
@@ -113,7 +113,8 @@ def test_blank_core_has_matched_render_pairs_and_separate_seed_fields():
 
     assert len(by_pair) == 80
     for pair_rows in by_pair.values():
-        assert {row["render_pair_role"] for row in pair_rows} == {"fast", "browser"}
+        assert {row["render_pair_role"] for row in pair_rows} == {"browser"}
+        assert len(pair_rows) == 1
         assert len({row["training_seed"] for row in pair_rows}) == 1
         assert len({row["reset_seed"] for row in pair_rows}) == 1
         assert len({row["eval_seed"] for row in pair_rows}) == 1
@@ -132,8 +133,10 @@ def test_executable_rows_use_supported_stock_train_lane_and_high_cap():
         assert command[command.index("--mode") + 1] == "train"
         assert "two-seat-selfplay" not in command_text
         assert row["calls_stock_train_muzero"] is True
-        assert row["source_max_steps"] == 65536
-        assert command[command.index("--source-max-steps") + 1] == "65536"
+        assert row["source_max_steps"] == module.SOURCE_MAX_STEPS
+        assert command[command.index("--source-max-steps") + 1] == str(
+            module.SOURCE_MAX_STEPS
+        )
         assert row["flags"]["max_train_iter"] == 300000
         assert command[command.index("--max-train-iter") + 1] == "300000"
         assert row["flags"]["max_env_step"] == 30000000
@@ -156,7 +159,7 @@ def test_executable_rows_use_supported_stock_train_lane_and_high_cap():
         assert "--no-background-eval-enabled" not in command
         assert "--no-background-gif-enabled" not in command
         assert row["deployed_app_submission"]["app_name"] == (
-            "curvyzero-lightzero-curvytron-visual-survival-train"
+            "curvyzero-lightzero-curvytron-visual-survival-train-v2"
         )
         assert row["deployed_app_submission"]["spawn_order"] == ["poller", "train"]
         assert row["deployed_app_submission"]["poller_function"] == (
@@ -182,7 +185,7 @@ def test_controls_are_labeled_and_expansions_are_gated_not_commanded():
     manifest = _manifest()
 
     dirty_rows = [row for row in manifest["rows"] if row["row_kind"] == "dirty_control"]
-    assert len(dirty_rows) == 40
+    assert len(dirty_rows) == 20
     assert {row["opponent_runtime_mode"] for row in dirty_rows} == {"normal"}
     assert {row["opponent_death_mode"] for row in dirty_rows} == {"immortal"}
     assert {row["stochasticity_profile_id"] for row in dirty_rows} == {
@@ -198,7 +201,7 @@ def test_controls_are_labeled_and_expansions_are_gated_not_commanded():
     compute_rows = [
         row for row in manifest["rows"] if row["row_kind"] == "compute_sentinel"
     ]
-    assert len(compute_rows) == 60
+    assert len(compute_rows) == 30
     assert {row["compute_label"] for row in compute_rows} == {
         "search16",
         "collect64",
@@ -219,7 +222,7 @@ def test_controls_are_labeled_and_expansions_are_gated_not_commanded():
         for spec in gated
         if spec["block_id"] == "b05_ancestor_checkpoint_sentinels_gated"
     ]
-    assert len(ancestor_specs) == 6
+    assert len(ancestor_specs) == 3
     assert {spec["opponent_policy_kind"] for spec in ancestor_specs} == {
         "frozen_lightzero_checkpoint"
     }
@@ -248,7 +251,7 @@ def test_large_ready_names_are_human_readable():
     manifest = _manifest()
     run_ids = {row["run_id"] for row in manifest["rows"]}
 
-    assert len(run_ids) == 300
+    assert len(run_ids) == 150
     assert all(run_id.startswith("curvy-survive-bonus-") for run_id in run_ids)
     assert not any("survbonusnoout" in run_id for run_id in run_ids)
     assert not any("blanknoop" in run_id for run_id in run_ids)

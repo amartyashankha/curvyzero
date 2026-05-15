@@ -191,7 +191,10 @@ is the biggest exposed cost. The physics/runtime step-many work is only about
 `4.3s` in both rows; the main difference is RGB render plus stack packing.
 `body_circles_fast` is about 2x faster end to end on this matched profile, but
 it is a visual-fidelity tradeoff and should not quietly replace the trusted
-training visual without an explicit Coach/Environment decision.
+training visual without an explicit Coach/Environment decision. 2026-05-15
+correction: current production policy observations are CPU `cpu_oracle`
+`browser_lines + simple_symbols`; this `body_circles_fast` row is historical
+control evidence only.
 
 Long-survival subprocess scaling check, C4, death disabled, 1,024 total env
 steps:

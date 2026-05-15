@@ -16,7 +16,8 @@ env_variant=source_state_fixed_opponent
 
 For this stock fixed-opponent lane, the trusted render comparison is:
 
-- `browser_lines`: richer source-state/browser-like visual surface.
+- `browser_lines + simple_symbols` through CPU `cpu_oracle`: current production
+  policy observation surface, stacked as `[4,64,64]`.
 - `body_circles_fast`: faster approximation lens for profiling or explicit
   speed/fidelity experiments.
 
@@ -51,8 +52,10 @@ SourceStateGray64Stack4.update
   -> render_source_state_canvas_gray64 per player for other P counts or unsafe palettes
 ```
 
-Default training surface is `browser_lines` trails plus `browser_sprites`
-bonuses. Browser pixel parity is still not claimed.
+Historical note: older text below may mention `browser_sprites` as the default.
+That is stale for policy observations. Current production policy observations
+use `browser_lines + simple_symbols` through CPU `cpu_oracle`; browser sprites
+are artifact/reference views. Browser pixel parity is still not claimed.
 
 2026-05-12 optimization landed: the two-seat stack now avoids the worst
 duplicate trail redraw when the palette is safe. The helper renders the
