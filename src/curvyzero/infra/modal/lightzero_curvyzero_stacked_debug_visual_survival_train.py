@@ -92,6 +92,7 @@ from curvyzero.contracts.curvytron import (
     modal_volume_kwargs_for_name,
 )
 from curvyzero.infra.modal import run_management as runs
+from curvyzero.training import exploration_bonus as xb
 from curvyzero.training import lightzero_checkpoints as lz_checkpoints
 from curvyzero.training.curvytron_current_policy_selfplay_smoke import (
     STACK_RENDER_MODE_ORDER,
@@ -2633,6 +2634,124 @@ def _install_trusted_run_torch_load_retry(*, run_id: str) -> Any:
     return restore
 
 
+def _install_curvyzero_rnd_reward_model(
+    *,
+    train_muzero: Any,
+    exploration_bonus_spec: xb.ExplorationBonusSpec,
+) -> Any | None:
+    if not exploration_bonus_spec.enabled:
+        return None
+    globals_map = getattr(train_muzero, "__globals__", None)
+    if not isinstance(globals_map, dict):
+        raise RuntimeError("selected LightZero entrypoint does not expose patchable globals")
+    missing = object()
+    restore_actions: list[Any] = []
+
+    previous_global = globals_map.get("RNDRewardModel", missing)
+    globals_map["RNDRewardModel"] = xb.CurvyRNDRewardModel
+
+    def restore_global() -> None:
+        if previous_global is missing:
+            globals_map.pop("RNDRewardModel", None)
+        else:
+            globals_map["RNDRewardModel"] = previous_global
+
+    restore_actions.append(restore_global)
+
+    def restore() -> None:
+        for restore_action in reversed(restore_actions):
+            restore_action()
+
+    return restore
+
+
+def _summarize_rnd_reward_model_metrics(
+    *,
+    enabled: bool,
+    latest_path: Path,
+    jsonl_path: Path,
+) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "schema_id": "curvyzero_rnd_reward_model_metrics_scan/v0",
+        "enabled": bool(enabled),
+        "latest_ref": runs.file_ref(latest_path, mount=RUNS_MOUNT),
+        "jsonl_ref": runs.file_ref(jsonl_path, mount=RUNS_MOUNT),
+        "latest_exists": latest_path.exists(),
+        "jsonl_exists": jsonl_path.exists(),
+        "latest": None,
+        "event_count": 0,
+        "last_event_reasons": [],
+        "errors": [],
+    }
+    if latest_path.exists():
+        try:
+            summary["latest"] = json.loads(latest_path.read_text(encoding="utf-8"))
+            summary["latest_file"] = runs.file_summary(latest_path, mount=RUNS_MOUNT)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            summary["errors"].append(
+                f"latest metrics read failed: {type(exc).__name__}: {exc}"
+            )
+    if jsonl_path.exists():
+        try:
+            event_count = 0
+            reasons: list[str | None] = []
+            last_valid_event: dict[str, Any] | None = None
+            with jsonl_path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    event_count += 1
+                    if len(reasons) >= 20:
+                        reasons.pop(0)
+                    try:
+                        row = json.loads(line)
+                        if isinstance(row, dict):
+                            reasons.append(row.get("reason"))
+                            last_valid_event = row
+                        else:
+                            reasons.append(None)
+                    except json.JSONDecodeError:
+                        reasons.append("json_decode_error")
+            summary["event_count"] = event_count
+            summary["last_event_reasons"] = reasons
+            summary["jsonl_file"] = runs.file_summary(jsonl_path, mount=RUNS_MOUNT)
+            if summary["latest"] is None and last_valid_event is not None:
+                summary["latest"] = last_valid_event
+                summary["latest_source"] = "jsonl_tail_fallback"
+        except (OSError, UnicodeDecodeError) as exc:
+            summary["errors"].append(
+                f"jsonl metrics read failed: {type(exc).__name__}: {exc}"
+            )
+    return _to_plain(summary)
+
+
+def _validate_required_rnd_reward_model_metrics(
+    metrics: Mapping[str, Any],
+    *,
+    weight: float,
+) -> list[str]:
+    del weight
+    latest = metrics.get("latest") if isinstance(metrics.get("latest"), Mapping) else None
+    if latest is None:
+        return ["required RND reward-model metrics were not written"]
+    problems: list[str] = []
+    if int(latest.get("collect_data_calls") or 0) < 1:
+        problems.append("required RND metrics missing collect_data call proof")
+    if int(latest.get("train_with_data_calls") or 0) < 1:
+        problems.append("required RND metrics missing train_with_data call proof")
+    if int(latest.get("estimate_calls") or 0) < 1:
+        problems.append("required RND metrics missing estimate call proof")
+    if int(latest.get("train_cnt_rnd") or 0) < 1:
+        problems.append("required RND metrics missing predictor update proof")
+    predictor_before = latest.get("last_predictor_hash_before_train")
+    predictor_after = latest.get("last_predictor_hash_after_train")
+    if not predictor_before or not predictor_after or predictor_before == predictor_after:
+        problems.append("required RND metrics show predictor weights did not change")
+    target_before = latest.get("last_target_hash_before_train")
+    target_after = latest.get("last_target_hash_after_train")
+    if target_before and target_after and target_before != target_after:
+        problems.append("required RND metrics show target weights changed")
+    return problems
+
+
 def _checkpoint_payload_optimizer_keys(payload: Any) -> list[str]:
     if not isinstance(payload, dict):
         return []
@@ -3674,6 +3793,16 @@ def _run_visual_survival_train(
         DEFAULT_OPPONENT_ASSIGNMENT_REFRESH_INTERVAL_TRAIN_ITER
     ),
     opponent_assignment_refresh_ref: str | None = None,
+    exploration_bonus_mode: str = xb.EXPLORATION_BONUS_MODE_NONE,
+    exploration_bonus_weight: float = 0.0,
+    exploration_bonus_feature_source: str = xb.RND_FEATURE_SOURCE_POLICY_GRAY64_LATEST_V0,
+    exploration_bonus_rnd_batch_size: int = 64,
+    exploration_bonus_rnd_update_per_collect: int = xb.RND_DEFAULT_UPDATE_PER_COLLECT,
+    exploration_bonus_rnd_buffer_size: int = 100_000,
+    exploration_bonus_rnd_learning_rate: float = 3e-4,
+    exploration_bonus_rnd_weight_decay: float = 1e-4,
+    exploration_bonus_rnd_input_norm: bool = False,
+    require_rnd_metrics: bool = False,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     if mode not in MODE_CHOICES:
@@ -3704,6 +3833,17 @@ def _run_visual_survival_train(
     reward_policy = _reward_policy_for_variant(
         env_variant=env_variant,
         reward_variant=reward_variant,
+    )
+    exploration_bonus_spec = xb.normalize_exploration_bonus_spec(
+        mode=exploration_bonus_mode,
+        weight=exploration_bonus_weight,
+        feature_source=exploration_bonus_feature_source,
+        rnd_batch_size=exploration_bonus_rnd_batch_size,
+        rnd_update_per_collect=exploration_bonus_rnd_update_per_collect,
+        rnd_buffer_size=exploration_bonus_rnd_buffer_size,
+        rnd_learning_rate=exploration_bonus_rnd_learning_rate,
+        rnd_weight_decay=exploration_bonus_rnd_weight_decay,
+        rnd_input_norm=exploration_bonus_rnd_input_norm,
     )
     source_state_trail_render_mode = _validate_source_state_trail_render_mode(
         source_state_trail_render_mode
@@ -3854,6 +3994,8 @@ def _run_visual_survival_train(
     attempt_train_root = runs.volume_path(RUNS_MOUNT, attempt_train_ref)
     telemetry_path = attempt_train_root / "env_steps.jsonl"
     assignment_refresh_events_path = attempt_train_root / "opponent_assignment_refresh_events.jsonl"
+    rnd_metrics_latest_path = attempt_train_root / "rnd_reward_model_metrics_latest.json"
+    rnd_metrics_jsonl_path = attempt_train_root / "rnd_reward_model_metrics.jsonl"
     exp_name_ref = attempt_train_ref / "lightzero_exp"
     exp_name = Path(exp_name_ref.as_posix())
     env_spec = _env_variant_spec(env_variant)
@@ -3935,6 +4077,24 @@ def _run_visual_survival_train(
         "reward_schema_id": reward_policy["reward_schema_id"],
         "reward_policy": reward_policy,
         "lightzero_target_config": lightzero_target_config,
+        "exploration_bonus": exploration_bonus_spec.as_dict(),
+        "exploration_bonus_mode": exploration_bonus_spec.mode,
+        "exploration_bonus_weight": exploration_bonus_spec.weight,
+        "exploration_bonus_feature_source": exploration_bonus_spec.feature_source,
+        "exploration_bonus_rnd_batch_size": exploration_bonus_spec.rnd_batch_size,
+        "exploration_bonus_rnd_update_per_collect": (
+            exploration_bonus_spec.rnd_update_per_collect
+        ),
+        "exploration_bonus_rnd_buffer_size": exploration_bonus_spec.rnd_buffer_size,
+        "exploration_bonus_rnd_learning_rate": exploration_bonus_spec.rnd_learning_rate,
+        "exploration_bonus_rnd_weight_decay": exploration_bonus_spec.rnd_weight_decay,
+        "exploration_bonus_rnd_input_norm": exploration_bonus_spec.rnd_input_norm,
+        "require_rnd_metrics": bool(require_rnd_metrics),
+        "rnd_reward_model_metrics": {
+            "enabled": exploration_bonus_spec.enabled,
+            "latest_ref": runs.file_ref(rnd_metrics_latest_path, mount=RUNS_MOUNT),
+            "jsonl_ref": runs.file_ref(rnd_metrics_jsonl_path, mount=RUNS_MOUNT),
+        },
         "source_state_trail_render_mode": source_state_trail_render_mode,
         "source_state_bonus_render_mode": source_state_bonus_render_mode,
         "policy_observation_backend": policy_observation_backend,
@@ -4154,7 +4314,11 @@ def _run_visual_survival_train(
         exp_name_ref=exp_name_ref.as_posix(),
     )
     entry_module = importlib.import_module("lzero.entry")
-    train_muzero = entry_module.train_muzero
+    entrypoint_name = xb.lightzero_entrypoint_name(exploration_bonus_spec)
+    train_muzero = getattr(entry_module, entrypoint_name, None)
+    trainer_entrypoint_ref = xb.lightzero_trainer_entrypoint_ref(exploration_bonus_spec)
+    if train_muzero is None:
+        problems.append(f"LightZero entrypoint is missing: {trainer_entrypoint_ref}")
     patched = _build_visual_survival_configs(
         seed=seed,
         exp_name=exp_name,
@@ -4197,7 +4361,23 @@ def _run_visual_survival_train(
         source_state_bonus_render_mode=source_state_bonus_render_mode,
         policy_observation_backend=policy_observation_backend,
         learner_seat_mode=learner_seat_mode,
+        exploration_bonus=exploration_bonus_spec.as_dict(),
     )
+    if exploration_bonus_spec.enabled:
+        patched["patches"].append(
+            _set_or_add_path(
+                patched["main_config"],
+                ("reward_model", "curvyzero_metrics_latest_path"),
+                str(rnd_metrics_latest_path),
+            )
+        )
+        patched["patches"].append(
+            _set_or_add_path(
+                patched["main_config"],
+                ("reward_model", "curvyzero_metrics_jsonl_path"),
+                str(rnd_metrics_jsonl_path),
+            )
+        )
     auto_resume = _prepare_lightzero_auto_resume(
         run_id=run_id,
         attempt_id=attempt_id,
@@ -4341,8 +4521,13 @@ def _run_visual_survival_train(
         restore_progress_writer = None
         restore_resume_state = None
         restore_initial_policy_load_audit = None
+        restore_rnd_reward_model = None
         gpu_sampler = None
         try:
+            restore_rnd_reward_model = _install_curvyzero_rnd_reward_model(
+                train_muzero=train_muzero,
+                exploration_bonus_spec=exploration_bonus_spec,
+            )
             if initial_policy_load_audit is not None:
                 restore_initial_policy_load_audit = _install_initial_policy_checkpoint_load_audit(
                     initial_policy_load_audit
@@ -4508,6 +4693,8 @@ def _run_visual_survival_train(
                         initial_policy_load_audit.errors.append(
                             f"initial policy load audit restore failed: {type(exc).__name__}: {exc}"
                         )
+            if restore_rnd_reward_model is not None:
+                restore_rnd_reward_model()
             if gpu_sampler is not None:
                 gpu_stop_event, gpu_thread = gpu_sampler
                 gpu_stop_event.set()
@@ -4548,6 +4735,18 @@ def _run_visual_survival_train(
     runtime_compute = _runtime_compute_summary(requested_compute=compute)
     phase_profile = profiler.summary()
     target_audit_summary = target_audit.summary()
+    rnd_reward_model_metrics = _summarize_rnd_reward_model_metrics(
+        enabled=exploration_bonus_spec.enabled,
+        latest_path=rnd_metrics_latest_path,
+        jsonl_path=rnd_metrics_jsonl_path,
+    )
+    if bool(require_rnd_metrics) and exploration_bonus_spec.enabled:
+        problems.extend(
+            _validate_required_rnd_reward_model_metrics(
+                rnd_reward_model_metrics,
+                weight=exploration_bonus_spec.weight,
+            )
+        )
     summary = {
         "schema_id": "curvyzero_lightzero_curvytron_visual_survival_train_summary/v0",
         "task_id": TASK_ID,
@@ -4559,7 +4758,7 @@ def _run_visual_survival_train(
         "ok": not problems and (mode == "dry" or bool(train_result and train_result.get("ok"))),
         "problems": problems,
         "called_train_muzero": called_train_muzero,
-        "trainer_entrypoint": "lzero.entry.train_muzero",
+        "trainer_entrypoint": trainer_entrypoint_ref,
         "packages": packages,
         "runtime_compute": runtime_compute,
         "command": command,
@@ -4581,6 +4780,7 @@ def _run_visual_survival_train(
         "train_result": train_result,
         "phase_profile": phase_profile,
         "target_audit": target_audit_summary,
+        "rnd_reward_model_metrics": rnd_reward_model_metrics,
         "opponent_assignment_refresh": {
             "enabled": command["opponent_assignment_refresh"]["enabled"],
             "mode": command["opponent_assignment_refresh"]["mode"],
@@ -4755,6 +4955,7 @@ def _run_visual_survival_train(
         "run_id": run_id,
         "attempt_id": attempt_id,
         "called_train_muzero": called_train_muzero,
+        "trainer_entrypoint": trainer_entrypoint_ref,
         "summary_ref": summary_ref,
         "attempt_manifest": attempt_manifest,
         "latest_attempt": latest_attempt,
@@ -4769,6 +4970,7 @@ def _run_visual_survival_train(
         "final_volume_commit": final_volume_commit,
         "phase_profile": phase_profile,
         "target_audit": target_audit_summary,
+        "rnd_reward_model_metrics": rnd_reward_model_metrics,
         "artifact_refs": {
             "summary": runs.file_summary(summary_path, mount=RUNS_MOUNT),
             "config": runs.file_summary(config_path, mount=RUNS_MOUNT),
@@ -5974,6 +6176,7 @@ def _build_visual_survival_configs(
     source_state_bonus_render_mode: str = DEFAULT_SOURCE_STATE_BONUS_RENDER_MODE,
     policy_observation_backend: str = DEFAULT_POLICY_OBSERVATION_BACKEND_CHOICE,
     learner_seat_mode: str = DEFAULT_LEARNER_SEAT_MODE,
+    exploration_bonus: Mapping[str, Any] | None = None,
     policy_action_repeat_min: int = DEFAULT_POLICY_ACTION_REPEAT_MIN,
     policy_action_repeat_max: int = DEFAULT_POLICY_ACTION_REPEAT_MAX,
     policy_action_repeat_extra_probability: float = (
@@ -6021,6 +6224,7 @@ def _build_visual_survival_configs(
         reward_variant=reward_variant,
         source_max_steps=source_max_steps,
     )
+    exploration_bonus_spec = xb.normalize_exploration_bonus_config(exploration_bonus)
     action_space_size = int(env_spec.get("action_space_size", 3))
     main_config = copy.deepcopy(module.main_config)
     create_config = EasyDict(
@@ -6220,6 +6424,14 @@ def _build_visual_survival_configs(
             }
         )
     patches.append(_set_or_add_path(main_config, ("env",), env_cfg))
+    patches.extend(
+        xb.apply_lightzero_exploration_bonus_config(
+            main_config,
+            create_config,
+            exploration_bonus_spec,
+            seed=int(seed),
+        )
+    )
     surface = _extract_surface(
         main_config,
         create_config,
@@ -11151,6 +11363,16 @@ def lightzero_curvytron_visual_survival_cpu(
     background_gif_frame_size: int = DEFAULT_BACKGROUND_GIF_FRAME_SIZE,
     background_gif_collect_temperature: float = DEFAULT_BACKGROUND_GIF_COLLECT_TEMPERATURE,
     background_gif_collect_epsilon: float = DEFAULT_BACKGROUND_GIF_COLLECT_EPSILON,
+    exploration_bonus_mode: str = xb.EXPLORATION_BONUS_MODE_NONE,
+    exploration_bonus_weight: float = 0.0,
+    exploration_bonus_feature_source: str = xb.RND_FEATURE_SOURCE_POLICY_GRAY64_LATEST_V0,
+    exploration_bonus_rnd_batch_size: int = 64,
+    exploration_bonus_rnd_update_per_collect: int = xb.RND_DEFAULT_UPDATE_PER_COLLECT,
+    exploration_bonus_rnd_buffer_size: int = 100_000,
+    exploration_bonus_rnd_learning_rate: float = 3e-4,
+    exploration_bonus_rnd_weight_decay: float = 1e-4,
+    exploration_bonus_rnd_input_norm: bool = False,
+    require_rnd_metrics: bool = False,
 ) -> dict[str, Any]:
     return _run_visual_survival_train(
         mode=mode,
@@ -11227,6 +11449,16 @@ def lightzero_curvytron_visual_survival_cpu(
         background_gif_frame_size=background_gif_frame_size,
         background_gif_collect_temperature=background_gif_collect_temperature,
         background_gif_collect_epsilon=background_gif_collect_epsilon,
+        exploration_bonus_mode=exploration_bonus_mode,
+        exploration_bonus_weight=exploration_bonus_weight,
+        exploration_bonus_feature_source=exploration_bonus_feature_source,
+        exploration_bonus_rnd_batch_size=exploration_bonus_rnd_batch_size,
+        exploration_bonus_rnd_update_per_collect=exploration_bonus_rnd_update_per_collect,
+        exploration_bonus_rnd_buffer_size=exploration_bonus_rnd_buffer_size,
+        exploration_bonus_rnd_learning_rate=exploration_bonus_rnd_learning_rate,
+        exploration_bonus_rnd_weight_decay=exploration_bonus_rnd_weight_decay,
+        exploration_bonus_rnd_input_norm=exploration_bonus_rnd_input_norm,
+        require_rnd_metrics=require_rnd_metrics,
     )
 
 
@@ -11307,6 +11539,16 @@ def _apply_visual_survival_train_default_kwargs(kwargs: dict[str, Any]) -> None:
         "background_gif_frame_size": DEFAULT_BACKGROUND_GIF_FRAME_SIZE,
         "background_gif_collect_temperature": DEFAULT_BACKGROUND_GIF_COLLECT_TEMPERATURE,
         "background_gif_collect_epsilon": DEFAULT_BACKGROUND_GIF_COLLECT_EPSILON,
+        "exploration_bonus_mode": xb.EXPLORATION_BONUS_MODE_NONE,
+        "exploration_bonus_weight": 0.0,
+        "exploration_bonus_feature_source": xb.RND_FEATURE_SOURCE_POLICY_GRAY64_LATEST_V0,
+        "exploration_bonus_rnd_batch_size": 64,
+        "exploration_bonus_rnd_update_per_collect": xb.RND_DEFAULT_UPDATE_PER_COLLECT,
+        "exploration_bonus_rnd_buffer_size": 100_000,
+        "exploration_bonus_rnd_learning_rate": 3e-4,
+        "exploration_bonus_rnd_weight_decay": 1e-4,
+        "exploration_bonus_rnd_input_norm": False,
+        "require_rnd_metrics": False,
     }
     for key, value in defaults.items():
         kwargs.setdefault(key, value)
@@ -11410,6 +11652,16 @@ def lightzero_curvytron_visual_survival_gpu(
     background_gif_frame_size: int = DEFAULT_BACKGROUND_GIF_FRAME_SIZE,
     background_gif_collect_temperature: float = DEFAULT_BACKGROUND_GIF_COLLECT_TEMPERATURE,
     background_gif_collect_epsilon: float = DEFAULT_BACKGROUND_GIF_COLLECT_EPSILON,
+    exploration_bonus_mode: str = xb.EXPLORATION_BONUS_MODE_NONE,
+    exploration_bonus_weight: float = 0.0,
+    exploration_bonus_feature_source: str = xb.RND_FEATURE_SOURCE_POLICY_GRAY64_LATEST_V0,
+    exploration_bonus_rnd_batch_size: int = 64,
+    exploration_bonus_rnd_update_per_collect: int = xb.RND_DEFAULT_UPDATE_PER_COLLECT,
+    exploration_bonus_rnd_buffer_size: int = 100_000,
+    exploration_bonus_rnd_learning_rate: float = 3e-4,
+    exploration_bonus_rnd_weight_decay: float = 1e-4,
+    exploration_bonus_rnd_input_norm: bool = False,
+    require_rnd_metrics: bool = False,
 ) -> dict[str, Any]:
     return _run_visual_survival_train(
         mode=mode,
@@ -11486,6 +11738,16 @@ def lightzero_curvytron_visual_survival_gpu(
         background_gif_frame_size=background_gif_frame_size,
         background_gif_collect_temperature=background_gif_collect_temperature,
         background_gif_collect_epsilon=background_gif_collect_epsilon,
+        exploration_bonus_mode=exploration_bonus_mode,
+        exploration_bonus_weight=exploration_bonus_weight,
+        exploration_bonus_feature_source=exploration_bonus_feature_source,
+        exploration_bonus_rnd_batch_size=exploration_bonus_rnd_batch_size,
+        exploration_bonus_rnd_update_per_collect=exploration_bonus_rnd_update_per_collect,
+        exploration_bonus_rnd_buffer_size=exploration_bonus_rnd_buffer_size,
+        exploration_bonus_rnd_learning_rate=exploration_bonus_rnd_learning_rate,
+        exploration_bonus_rnd_weight_decay=exploration_bonus_rnd_weight_decay,
+        exploration_bonus_rnd_input_norm=exploration_bonus_rnd_input_norm,
+        require_rnd_metrics=require_rnd_metrics,
     )
 
 
@@ -11571,6 +11833,8 @@ def _compact_train_result_for_output(result: Any) -> Any:
     command = command if isinstance(command, dict) else {}
     action = action if isinstance(action, dict) else {}
     runtime = runtime if isinstance(runtime, dict) else {}
+    rnd_metrics = train_result.get("rnd_reward_model_metrics")
+    rnd_metrics = rnd_metrics if isinstance(rnd_metrics, dict) else {}
     timers = phase.get("timers_sec") if isinstance(phase.get("timers_sec"), dict) else {}
     counts = phase.get("counts") if isinstance(phase.get("counts"), dict) else {}
     derived = phase.get("derived_stats") if isinstance(phase.get("derived_stats"), dict) else {}
@@ -11601,11 +11865,37 @@ def _compact_train_result_for_output(result: Any) -> Any:
         "summary_ref": train_result.get("summary_ref"),
         "mode": train_result.get("mode"),
         "compute": train_result.get("compute"),
+        "trainer_entrypoint": train_result.get("trainer_entrypoint"),
         "called_train_muzero": train_result.get("called_train_muzero"),
         "initial_policy_checkpoint": train_result.get("initial_policy_checkpoint"),
         "command": {
             "env_variant": command.get("env_variant"),
             "reward_variant": command.get("reward_variant"),
+            "exploration_bonus": _to_plain(command.get("exploration_bonus")),
+            "exploration_bonus_mode": command.get("exploration_bonus_mode"),
+            "exploration_bonus_weight": command.get("exploration_bonus_weight"),
+            "exploration_bonus_feature_source": command.get(
+                "exploration_bonus_feature_source"
+            ),
+            "exploration_bonus_rnd_batch_size": command.get(
+                "exploration_bonus_rnd_batch_size"
+            ),
+            "exploration_bonus_rnd_update_per_collect": command.get(
+                "exploration_bonus_rnd_update_per_collect"
+            ),
+            "exploration_bonus_rnd_buffer_size": command.get(
+                "exploration_bonus_rnd_buffer_size"
+            ),
+            "exploration_bonus_rnd_learning_rate": command.get(
+                "exploration_bonus_rnd_learning_rate"
+            ),
+            "exploration_bonus_rnd_weight_decay": command.get(
+                "exploration_bonus_rnd_weight_decay"
+            ),
+            "exploration_bonus_rnd_input_norm": command.get(
+                "exploration_bonus_rnd_input_norm"
+            ),
+            "require_rnd_metrics": command.get("require_rnd_metrics"),
             "opponent_policy_kind": command.get("opponent_policy_kind"),
             "opponent_use_cuda": command.get("opponent_use_cuda"),
             "env_manager_type": command.get("env_manager_type"),
@@ -11687,6 +11977,17 @@ def _compact_train_result_for_output(result: Any) -> Any:
             "max_util_percent": gpu.get("max_gpu_util_percent"),
             "max_memory_used_mib": gpu.get("max_memory_used_mib"),
             "sample_count": gpu.get("sample_count"),
+        },
+        "rnd_reward_model_metrics": {
+            "enabled": rnd_metrics.get("enabled"),
+            "latest_ref": rnd_metrics.get("latest_ref"),
+            "jsonl_ref": rnd_metrics.get("jsonl_ref"),
+            "latest_exists": rnd_metrics.get("latest_exists"),
+            "jsonl_exists": rnd_metrics.get("jsonl_exists"),
+            "event_count": rnd_metrics.get("event_count"),
+            "last_event_reasons": rnd_metrics.get("last_event_reasons"),
+            "errors": rnd_metrics.get("errors"),
+            "latest": _to_plain(rnd_metrics.get("latest")),
         },
         "final_volume_commit": train_result.get("final_volume_commit"),
     }
@@ -11852,12 +12153,33 @@ def main(
     background_gif_frame_size: int = DEFAULT_BACKGROUND_GIF_FRAME_SIZE,
     background_gif_collect_temperature: float | None = None,
     background_gif_collect_epsilon: float | None = None,
+    exploration_bonus_mode: str = xb.EXPLORATION_BONUS_MODE_NONE,
+    exploration_bonus_weight: float = 0.0,
+    exploration_bonus_feature_source: str = xb.RND_FEATURE_SOURCE_POLICY_GRAY64_LATEST_V0,
+    exploration_bonus_rnd_batch_size: int = 64,
+    exploration_bonus_rnd_update_per_collect: int = xb.RND_DEFAULT_UPDATE_PER_COLLECT,
+    exploration_bonus_rnd_buffer_size: int = 100_000,
+    exploration_bonus_rnd_learning_rate: float = 3e-4,
+    exploration_bonus_rnd_weight_decay: float = 1e-4,
+    exploration_bonus_rnd_input_norm: bool = False,
+    require_rnd_metrics: bool = False,
     output_detail: str = OUTPUT_DETAIL_COMPACT,
 ) -> None:
     if output_detail not in OUTPUT_DETAIL_CHOICES:
         raise ValueError(
             f"output_detail must be one of {OUTPUT_DETAIL_CHOICES!r}; got {output_detail!r}"
         )
+    xb.normalize_exploration_bonus_spec(
+        mode=exploration_bonus_mode,
+        weight=exploration_bonus_weight,
+        feature_source=exploration_bonus_feature_source,
+        rnd_batch_size=exploration_bonus_rnd_batch_size,
+        rnd_update_per_collect=exploration_bonus_rnd_update_per_collect,
+        rnd_buffer_size=exploration_bonus_rnd_buffer_size,
+        rnd_learning_rate=exploration_bonus_rnd_learning_rate,
+        rnd_weight_decay=exploration_bonus_rnd_weight_decay,
+        rnd_input_norm=exploration_bonus_rnd_input_norm,
+    )
     resolved_background_gif_collect_temperature = (
         DEFAULT_BACKGROUND_GIF_COLLECT_TEMPERATURE
         if background_gif_collect_temperature is None
@@ -12195,6 +12517,16 @@ def main(
         "background_gif_frame_size": background_gif_frame_size,
         "background_gif_collect_temperature": resolved_background_gif_collect_temperature,
         "background_gif_collect_epsilon": resolved_background_gif_collect_epsilon,
+        "exploration_bonus_mode": exploration_bonus_mode,
+        "exploration_bonus_weight": exploration_bonus_weight,
+        "exploration_bonus_feature_source": exploration_bonus_feature_source,
+        "exploration_bonus_rnd_batch_size": exploration_bonus_rnd_batch_size,
+        "exploration_bonus_rnd_update_per_collect": exploration_bonus_rnd_update_per_collect,
+        "exploration_bonus_rnd_buffer_size": exploration_bonus_rnd_buffer_size,
+        "exploration_bonus_rnd_learning_rate": exploration_bonus_rnd_learning_rate,
+        "exploration_bonus_rnd_weight_decay": exploration_bonus_rnd_weight_decay,
+        "exploration_bonus_rnd_input_norm": exploration_bonus_rnd_input_norm,
+        "require_rnd_metrics": require_rnd_metrics,
     }
     exp_name_ref = (
         runs.attempt_train_ref(TASK_ID, run_id, attempt_id) / "lightzero_exp"
