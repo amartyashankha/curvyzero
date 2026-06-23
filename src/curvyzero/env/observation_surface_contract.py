@@ -23,6 +23,9 @@ POLICY_OBSERVATION_PERSPECTIVE_PLAYER_AXIS = (
     "single-agent obs is the selected controlled-player view; batched obs[b,p] "
     "is player p's controlled-player view"
 )
+POLICY_OBSERVATION_SEAT_MAPPING = (
+    "seat N receives observation[0,N] and controls player N"
+)
 
 POLICY_TRAIL_RENDER_MODE = TRAIL_RENDER_MODE_BROWSER_LINES
 POLICY_BONUS_RENDER_MODE = BONUS_RENDER_MODE_SIMPLE_SYMBOLS
@@ -80,11 +83,16 @@ def policy_observation_surface(
         "perspective": POLICY_OBSERVATION_PERSPECTIVE,
         "perspective_owner": POLICY_OBSERVATION_PERSPECTIVE_OWNER,
         "perspective_player_axis": POLICY_OBSERVATION_PERSPECTIVE_PLAYER_AXIS,
+        "seat_mapping": POLICY_OBSERVATION_SEAT_MAPPING,
         "trail_render_mode": trail_render_mode,
         "bonus_render_mode": bonus_render_mode,
         "surface_label": f"{trail_render_mode}+{bonus_render_mode}",
         "stack_shape": list(POLICY_STACK_SHAPE),
         "single_frame_shape": list(POLICY_SINGLE_FRAME_SHAPE),
+        "raw_dtype": POLICY_RAW_DTYPE,
+        "model_dtype": POLICY_MODEL_DTYPE,
+        "raw_value_range": list(POLICY_RAW_VALUE_RANGE),
+        "model_value_range": list(POLICY_MODEL_VALUE_RANGE),
         "source_frame_size": POLICY_SOURCE_FRAME_SIZE,
         "target_frame_size": POLICY_TARGET_FRAME_SIZE,
         "draw_order": list(POLICY_DRAW_ORDER),
@@ -137,6 +145,7 @@ __all__ = [
     "POLICY_OBSERVATION_PERSPECTIVE_OWNER",
     "POLICY_OBSERVATION_PERSPECTIVE_PLAYER_AXIS",
     "POLICY_OBSERVATION_PERSPECTIVE_SCHEMA_ID",
+    "POLICY_OBSERVATION_SEAT_MAPPING",
     "POLICY_RAW_DTYPE",
     "POLICY_RAW_VALUE_RANGE",
     "POLICY_RENDER_SURFACE_LABEL",

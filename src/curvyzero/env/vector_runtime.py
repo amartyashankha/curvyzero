@@ -33,6 +33,7 @@ EVENT_MODES = frozenset((EVENT_MODE_DEBUG, EVENT_MODE_NONE))
 DEATH_MODE_NORMAL = "normal"
 DEATH_MODE_PROFILE_NO_DEATH = "profile_no_death"
 DEATH_MODES = frozenset((DEATH_MODE_NORMAL, DEATH_MODE_PROFILE_NO_DEATH))
+_VISUAL_ARRAYS_UNSET = object()
 
 PRINT_MANAGER_RANDOM_HALF_PRINT_DISTANCE = 39.0
 PRINT_MANAGER_RANDOM_HALF_HOLE_DISTANCE = 5.25
@@ -509,6 +510,7 @@ class VectorStepInput:
     death_mode: str = DEATH_MODE_NORMAL
     death_immunity_mask: Any | None = None
     disabled_player_mask: Any | None = None
+    collect_collision_diagnostics: bool = True
 
     @classmethod
     def from_mapping(
@@ -527,11 +529,15 @@ class VectorStepInput:
         )
 
 
-def step_many(step_input: VectorStepInput) -> VectorStepCounters:
+def step_many(
+    step_input: VectorStepInput,
+    *,
+    phase_timers: dict[str, float] | None = None,
+) -> VectorStepCounters:
     """Run one source-ordered in-place array tick for B stacked rows."""
 
     validate_step_input(step_input)
-    return _step_many_kernel(step_input)
+    return _step_many_kernel(step_input, phase_timers=phase_timers)
 
 
 def _step_many_kernel(
@@ -554,7 +560,21 @@ def _step_many_kernel(
         row_count=row_count,
         player_count=player_count,
     )
+    started = _timer_start(phase_timers)
+    visual_arrays = _optional_visual_trail_arrays(
+        state,
+        row_count=row_count,
+        player_count=player_count,
+    )
+    body_append_context = _body_append_context(
+        state,
+        row_count=row_count,
+        player_count=player_count,
+        visual_arrays=visual_arrays,
+    )
+    _timer_add(phase_timers, "append_context_build_sec", started)
     death_enabled = step_input.death_mode == DEATH_MODE_NORMAL
+    collect_collision_diagnostics = bool(step_input.collect_collision_diagnostics)
     death_immunity_mask = _death_immunity_mask(
         step_input.death_immunity_mask,
         row_count=row_count,
@@ -593,12 +613,14 @@ def _step_many_kernel(
     _timer_add(phase_timers, "pre_step_timer_sec", started)
 
     if step_input.apply_source_moves:
+        started = _timer_start(phase_timers)
         apply_source_turn_inputs(
             state,
             source_moves=moves,
             player_count=player_count,
             disabled_player_mask=disabled_player_mask,
         )
+        _timer_add(phase_timers, "source_input_sec", started)
 
     frame_start_deaths = player_count - state["alive"][:, :player_count].sum(
         axis=1,
@@ -624,11 +646,14 @@ def _step_many_kernel(
         )
         _timer_add(phase_timers, "movement_sec", started)
 
+        started = _timer_start(phase_timers)
         _append_visual_trail_points_batched(
             state,
             player=player,
             write_mask=live_mask & state["printing"][:, player],
+            visual_arrays=visual_arrays,
         )
+        _timer_add(phase_timers, "visual_trail_append_sec", started)
 
         if events_enabled:
             started = _timer_start(phase_timers)
@@ -653,6 +678,7 @@ def _step_many_kernel(
             player=player,
             write_mask=should_draw,
             insert_kind=BODY_KIND_NORMAL,
+            body_context=body_append_context,
         )
         counters["normal_points_inserted"] += inserted
         counters["body_overflow_attempts"] += overflowed
@@ -672,24 +698,30 @@ def _step_many_kernel(
         counters["borderless_wraps"] += wrap_count
         _timer_add(phase_timers, "border_wrap_sec", started)
 
+        started = _timer_start(phase_timers)
         _append_visual_trail_points_batched(
             state,
             player=player,
             write_mask=wrapped_mask & state["printing"][:, player],
+            visual_arrays=visual_arrays,
         )
+        _timer_add(phase_timers, "visual_trail_append_sec", started)
 
         if events_enabled:
             started = _timer_start(phase_timers)
             _emit_position_events_batched(state, player, wrapped_mask)
             _timer_add(phase_timers, "event_emit_sec", started)
 
-        started = _timer_start(phase_timers)
-        wall_hit_mask = normal_wall_hit_mask(
-            state,
-            player=player,
-            live_mask=live_mask & ~wrapped_mask,
-        )
-        _timer_add(phase_timers, "wall_check_sec", started)
+        if death_enabled or collect_collision_diagnostics:
+            started = _timer_start(phase_timers)
+            wall_hit_mask = normal_wall_hit_mask(
+                state,
+                player=player,
+                live_mask=live_mask & ~wrapped_mask,
+            )
+            _timer_add(phase_timers, "wall_check_sec", started)
+        else:
+            wall_hit_mask = np.zeros(row_count, dtype=bool)
         player_death_enabled = death_enabled and not bool(death_immunity_mask[:, player].all())
         player_mortal_mask = ~death_immunity_mask[:, player]
         mortal_wall_hit_mask = wall_hit_mask & player_mortal_mask
@@ -722,6 +754,7 @@ def _step_many_kernel(
                 player=player,
                 write_mask=mortal_wall_hit_mask,
                 insert_kind=BODY_KIND_DEATH,
+                body_context=body_append_context,
             )
             counters["death_points_inserted"] += inserted
             counters["body_overflow_attempts"] += overflowed
@@ -738,6 +771,7 @@ def _step_many_kernel(
                 player=player,
                 death_mask=mortal_wall_hit_mask & death_stop_mode,
                 events_enabled=events_enabled,
+                body_context=body_append_context,
             )
             counters["print_manager_death_stops"] += stop_count
             counters["print_manager_death_stop_points"] += stop_points
@@ -755,20 +789,23 @@ def _step_many_kernel(
                 )
                 _timer_add(phase_timers, "event_emit_sec", started)
 
-        started = _timer_start(phase_timers)
         wall_block_mask = (
             mortal_wall_hit_mask if death_enabled else np.zeros(row_count, dtype=bool)
         )
-        collision_live_mask = live_mask & ~wrapped_mask & ~wall_block_mask
-        hit_rows, candidate_count, scanned_slots = _body_collision_rows(
-            state,
-            player,
-            collision_live_mask,
-        )
-        counters["body_candidates"] += candidate_count
-        counters["body_scan_slots"] += scanned_slots
-        _timer_add(phase_timers, "body_collision_sec", started)
         body_hit_mask = np.zeros(row_count, dtype=bool)
+        if death_enabled or collect_collision_diagnostics:
+            started = _timer_start(phase_timers)
+            collision_live_mask = live_mask & ~wrapped_mask & ~wall_block_mask
+            hit_rows, candidate_count, scanned_slots = _body_collision_rows(
+                state,
+                player,
+                collision_live_mask,
+            )
+            counters["body_candidates"] += candidate_count
+            counters["body_scan_slots"] += scanned_slots
+            _timer_add(phase_timers, "body_collision_sec", started)
+        else:
+            hit_rows = np.asarray([], dtype=np.int32)
         if hit_rows.size:
             detected_body_hit_mask = _rows_to_mask(hit_rows, row_count)
             started = _timer_start(phase_timers)
@@ -820,6 +857,7 @@ def _step_many_kernel(
                     player=player,
                     write_mask=body_hit_mask,
                     insert_kind=BODY_KIND_DEATH,
+                    body_context=body_append_context,
                 )
                 counters["death_points_inserted"] += inserted
                 counters["body_overflow_attempts"] += overflowed
@@ -836,6 +874,7 @@ def _step_many_kernel(
                     player=player,
                     death_mask=body_hit_mask & death_stop_mode,
                     events_enabled=events_enabled,
+                    body_context=body_append_context,
                 )
                 counters["print_manager_death_stops"] += stop_count
                 counters["print_manager_death_stop_points"] += stop_points
@@ -873,6 +912,7 @@ def _step_many_kernel(
                 player=player,
                 live_mask=print_manager_live_mask & toggle_mode,
                 events_enabled=events_enabled,
+                body_context=body_append_context,
             )
             counters["print_manager_no_toggle_updates"] += no_toggle
             counters["print_manager_toggle_updates"] += toggle
@@ -1090,6 +1130,7 @@ def advance_warmup_no_bonus_timers(
     *,
     player_count: int | None = None,
     max_timer_callbacks: int = 16,
+    row_mask: np.ndarray | None = None,
 ) -> dict[str, Any]:
     """Advance the no-bonus warmup lifecycle timer slice for 2P/3P/4P rows.
 
@@ -1105,6 +1146,7 @@ def advance_warmup_no_bonus_timers(
         advance_ms,
         player_count=player_count,
         max_timer_callbacks=max_timer_callbacks,
+        row_mask=row_mask,
         schema=WARMUP_TIMER_ADVANCE_NO_BONUS_INFO_SCHEMA_ID,
         surface=WARMUP_TIMER_ADVANCE_NO_BONUS_SURFACE,
     )
@@ -1123,6 +1165,7 @@ def advance_warmup_1v1_no_bonus_timers(
         advance_ms,
         player_count=SUPPORTED_WARMUP_PLAYER_COUNT,
         max_timer_callbacks=max_timer_callbacks,
+        row_mask=None,
         schema=WARMUP_TIMER_ADVANCE_INFO_SCHEMA_ID,
         surface=WARMUP_TIMER_ADVANCE_SURFACE,
     )
@@ -1274,6 +1317,7 @@ def _advance_warmup_no_bonus_timers_impl(
     *,
     player_count: int | None,
     max_timer_callbacks: int,
+    row_mask: np.ndarray | None,
     schema: str,
     surface: str,
 ) -> dict[str, Any]:
@@ -1287,6 +1331,12 @@ def _advance_warmup_no_bonus_timers_impl(
         or max_timer_callbacks < 1
     ):
         raise VectorRuntimeError("max_timer_callbacks must be a positive integer")
+    if row_mask is None:
+        selected_rows = np.ones(row_count, dtype=bool)
+    else:
+        selected_rows = np.asarray(row_mask)
+        if selected_rows.dtype != bool or selected_rows.shape != (row_count,):
+            raise VectorRuntimeError("row_mask must be a bool array with shape [B]")
 
     advance = _row_float_input(advance_ms, row_count, "advance_ms")
     timer_arrays = _warmup_timer_arrays(state, row_count=row_count)
@@ -1329,7 +1379,9 @@ def _advance_warmup_no_bonus_timers_impl(
     print_start_players: list[int] = []
     timer_overflow_rows: list[int] = []
 
-    active_rows = np.flatnonzero(~lifecycle_arrays["done"] & ~lifecycle_arrays["overflow"])
+    active_rows = np.flatnonzero(
+        selected_rows & ~lifecycle_arrays["done"] & ~lifecycle_arrays["overflow"]
+    )
     callback_count = 0
     for row in active_rows:
         row_int = int(row)
@@ -1797,10 +1849,19 @@ def _append_body_points_batched(
     player: int,
     write_mask: np.ndarray,
     insert_kind: int,
+    body_context: Mapping[str, Any] | None = None,
 ) -> tuple[int, int]:
     rows = np.flatnonzero(write_mask)
     if rows.size == 0:
         return 0, 0
+    if body_context is not None:
+        return _append_body_points_batched_prechecked(
+            body_context,
+            player=player,
+            write_mask=write_mask,
+            insert_kind=insert_kind,
+            rows=rows,
+        )
 
     capacity = state["body_active"].shape[1]
     cursor = state["body_write_cursor"][rows].astype(np.int64, copy=False)
@@ -1875,12 +1936,29 @@ def _append_visual_trail_points_batched(
     *,
     player: int,
     write_mask: np.ndarray,
+    visual_arrays: Mapping[str, np.ndarray] | None | object = _VISUAL_ARRAYS_UNSET,
 ) -> tuple[int, int]:
-    visual_arrays = _optional_visual_trail_arrays(
+    if visual_arrays is _VISUAL_ARRAYS_UNSET:
+        visual_arrays = _optional_visual_trail_arrays(
+            state,
+            row_count=state["tick"].shape[0],
+            player_count=state["pos"].shape[1],
+        )
+    return _append_visual_trail_points_batched_prechecked(
         state,
-        row_count=state["tick"].shape[0],
-        player_count=state["pos"].shape[1],
+        visual_arrays,
+        player=player,
+        write_mask=write_mask,
     )
+
+
+def _append_visual_trail_points_batched_prechecked(
+    state: Mapping[str, np.ndarray],
+    visual_arrays: Mapping[str, np.ndarray] | None,
+    *,
+    player: int,
+    write_mask: np.ndarray,
+) -> tuple[int, int]:
     if visual_arrays is None:
         return 0, 0
 
@@ -1914,6 +1992,161 @@ def _append_visual_trail_points_batched(
     return int(insert_rows.size), int(overflow_rows.size)
 
 
+def _body_append_context(
+    state: Mapping[str, np.ndarray],
+    *,
+    row_count: int,
+    player_count: int,
+    visual_arrays: Mapping[str, np.ndarray] | None,
+) -> dict[str, Any]:
+    body_active = _bool_array_shape(state, "body_active", ndim=2, row_count=row_count)
+    body_shape = body_active.shape
+    player_shape = (row_count, player_count)
+    context: dict[str, Any] = {
+        "active": body_active,
+        "pos": _numeric_array_shape(state, "body_pos", shape=(*body_shape, 2)),
+        "radius": _numeric_array_shape(state, "body_radius", shape=body_shape),
+        "owner": _integer_array_shape(state, "body_owner", shape=body_shape),
+        "num": _integer_array_shape(state, "body_num", shape=body_shape),
+        "insert_tick": _integer_array_shape(
+            state,
+            "body_insert_tick",
+            shape=body_shape,
+        ),
+        "insert_kind": _integer_array_shape(
+            state,
+            "body_insert_kind",
+            shape=body_shape,
+        ),
+        "write_cursor": _integer_array_shape(
+            state,
+            "body_write_cursor",
+            shape=(row_count,),
+        ),
+        "body_overflow": _bool_array_shape(state, "body_overflow", shape=(row_count,)),
+        "overflow": _bool_array_shape(state, "overflow", shape=(row_count,)),
+        "body_count": _integer_array_shape(
+            state,
+            "body_count",
+            shape=player_shape,
+        ),
+        "world_body_count": _integer_array_shape(
+            state,
+            "world_body_count",
+            shape=(row_count,),
+        ),
+        "state_pos": _numeric_array_shape(state, "pos", shape=(*player_shape, 2)),
+        "state_radius": _numeric_array_shape(state, "radius", shape=player_shape),
+        "tick": _integer_array_shape(state, "tick", shape=(row_count,)),
+        "visible_trail_count": _integer_array_shape(
+            state,
+            "visible_trail_count",
+            shape=player_shape,
+        ),
+        "has_visible_trail_last": _bool_array_shape(
+            state,
+            "has_visible_trail_last",
+            shape=player_shape,
+        ),
+        "visible_trail_last_pos": _numeric_array_shape(
+            state,
+            "visible_trail_last_pos",
+            shape=(*player_shape, 2),
+        ),
+        "has_draw_cursor": _bool_array_shape(
+            state,
+            "has_draw_cursor",
+            shape=player_shape,
+        ),
+        "draw_cursor_pos": _numeric_array_shape(
+            state,
+            "draw_cursor_pos",
+            shape=(*player_shape, 2),
+        ),
+        "visual_arrays": visual_arrays,
+    }
+    context["break_before"] = (
+        _bool_array_shape(state, "body_break_before", shape=body_shape)
+        if "body_break_before" in state
+        else None
+    )
+    context["birth_ms"] = (
+        _numeric_array_shape(state, "body_birth_ms", shape=body_shape)
+        if "body_birth_ms" in state
+        else None
+    )
+    context["elapsed_ms"] = (
+        _elapsed_ms_values(state, row_count=row_count)
+        if "body_birth_ms" in state
+        else None
+    )
+    return context
+
+
+def _append_body_points_batched_prechecked(
+    context: Mapping[str, Any],
+    *,
+    player: int,
+    write_mask: np.ndarray,
+    insert_kind: int,
+    rows: np.ndarray | None = None,
+) -> tuple[int, int]:
+    rows = np.flatnonzero(write_mask) if rows is None else rows
+    if rows.size == 0:
+        return 0, 0
+
+    capacity = context["active"].shape[1]
+    cursor = context["write_cursor"][rows].astype(np.int64, copy=False)
+    can_insert = cursor < capacity
+    overflow_rows = rows[~can_insert]
+    if overflow_rows.size:
+        context["body_overflow"][overflow_rows] = True
+        context["overflow"][overflow_rows] = True
+
+    insert_rows = rows[can_insert]
+    insert_cursor = cursor[can_insert]
+    if insert_rows.size == 0:
+        return 0, int(overflow_rows.size)
+
+    body_num = context["body_count"][insert_rows, player].copy()
+    break_before = context.get("break_before")
+    if break_before is not None:
+        break_before[insert_rows, insert_cursor] = ~context["has_draw_cursor"][
+            insert_rows,
+            player,
+        ]
+    state_pos = context["state_pos"]
+    context["active"][insert_rows, insert_cursor] = True
+    context["pos"][insert_rows, insert_cursor] = state_pos[insert_rows, player]
+    context["radius"][insert_rows, insert_cursor] = context["state_radius"][
+        insert_rows,
+        player,
+    ]
+    context["owner"][insert_rows, insert_cursor] = player
+    context["num"][insert_rows, insert_cursor] = body_num
+    context["insert_tick"][insert_rows, insert_cursor] = context["tick"][insert_rows]
+    context["insert_kind"][insert_rows, insert_cursor] = insert_kind
+    birth_ms = context.get("birth_ms")
+    if birth_ms is not None:
+        birth_ms[insert_rows, insert_cursor] = context["elapsed_ms"][insert_rows]
+    context["write_cursor"][insert_rows] += 1
+    context["world_body_count"][insert_rows] += 1
+    context["body_count"][insert_rows, player] += 1
+    context["visible_trail_count"][insert_rows, player] += 1
+    context["has_visible_trail_last"][insert_rows, player] = True
+    context["visible_trail_last_pos"][insert_rows, player] = state_pos[insert_rows, player]
+    context["has_draw_cursor"][insert_rows, player] = True
+    context["draw_cursor_pos"][insert_rows, player] = state_pos[insert_rows, player]
+    if insert_kind == BODY_KIND_IMPORTANT:
+        _append_visual_trail_points_batched_prechecked(
+            {"pos": state_pos, "radius": context["state_radius"]},
+            context["visual_arrays"],
+            player=player,
+            write_mask=write_mask,
+        )
+    return int(insert_rows.size), int(overflow_rows.size)
+
+
 def _update_print_manager_no_toggle_batched(
     state: Mapping[str, np.ndarray],
     *,
@@ -1941,6 +2174,7 @@ def _update_print_manager_toggle_batched(
     player: int,
     live_mask: np.ndarray,
     events_enabled: bool,
+    body_context: Mapping[str, Any] | None = None,
 ) -> tuple[int, int, int]:
     active = live_mask & state["print_manager_active"][:, player]
     if not active.any():
@@ -1964,6 +2198,7 @@ def _update_print_manager_toggle_batched(
             player=player,
             write_mask=toggle,
             insert_kind=BODY_KIND_IMPORTANT,
+            body_context=body_context,
         )
         if events_enabled:
             _emit_point_events_batched(state, player, toggle, important=True)
@@ -2113,6 +2348,7 @@ def _stop_print_manager_on_death_batched(
     player: int,
     death_mask: np.ndarray,
     events_enabled: bool,
+    body_context: Mapping[str, Any] | None = None,
 ) -> tuple[int, int, int]:
     active = death_mask & state["print_manager_active"][:, player]
     if not active.any():
@@ -2127,6 +2363,7 @@ def _stop_print_manager_on_death_batched(
             player=player,
             write_mask=important_stop,
             insert_kind=BODY_KIND_IMPORTANT,
+            body_context=body_context,
         )
         if events_enabled:
             _emit_point_events_batched(state, player, important_stop, important=True)
@@ -5652,19 +5889,33 @@ def _body_collision_rows(
     capacity = state["body_active"].shape[1]
     if capacity == 0:
         return np.asarray([], dtype=np.int64), 0, 0
+    live_count = int(live_mask.sum())
+    if live_count == 0:
+        return np.asarray([], dtype=np.int64), 0, 0
+
+    body_write_cursor = np.clip(
+        np.asarray(state["body_write_cursor"], dtype=np.int64),
+        0,
+        capacity,
+    )
+    live_cursors = body_write_cursor[live_mask]
+    scan_width = int(live_cursors.max()) if live_cursors.size else 0
+    if scan_width <= 0:
+        return np.asarray([], dtype=np.int64), 0, 0
 
     radius = state["radius"][:, player][:, None]
-    dx = state["body_pos"][:, :, 0] - state["pos"][:, player, 0][:, None]
-    dy = state["body_pos"][:, :, 1] - state["pos"][:, player, 1][:, None]
+    active_slots = np.arange(scan_width, dtype=np.int64)[None, :] < body_write_cursor[:, None]
+    dx = state["body_pos"][:, :scan_width, 0] - state["pos"][:, player, 0][:, None]
+    dy = state["body_pos"][:, :scan_width, 1] - state["pos"][:, player, 1][:, None]
     dist_sq = dx * dx + dy * dy
-    hit_radius_sq = (radius + state["body_radius"]) ** 2
-    own_body = state["body_owner"] == player
-    own_delta = state["live_body_num"][:, player][:, None] - state["body_num"]
+    hit_radius_sq = (radius + state["body_radius"][:, :scan_width]) ** 2
+    own_body = state["body_owner"][:, :scan_width] == player
+    own_delta = state["live_body_num"][:, player][:, None] - state["body_num"][:, :scan_width]
     own_too_young = own_body & (own_delta <= state["trail_latency"][:, player][:, None])
-    candidate = state["body_active"] & ~own_too_young
+    candidate = state["body_active"][:, :scan_width] & active_slots & ~own_too_young
     hit_mask = candidate & (dist_sq < hit_radius_sq)
     hit_rows = np.flatnonzero(live_mask & hit_mask.any(axis=1))
-    scanned_slots = int(live_mask.sum()) * capacity
+    scanned_slots = live_count * scan_width
     return hit_rows, int(candidate.sum()), scanned_slots
 
 
@@ -5805,7 +6056,8 @@ def _first_hit_body_owner_slot_in_source_island(
     island_count: int,
 ) -> tuple[int, int]:
     capacity = state["body_active"].shape[1]
-    for slot in range(capacity - 1, -1, -1):
+    cursor = int(np.clip(int(state["body_write_cursor"][row]), 0, capacity))
+    for slot in range(cursor - 1, -1, -1):
         if not bool(state["body_active"][row, slot]):
             continue
         if not _stored_body_has_source_island_corner(
@@ -5984,6 +6236,8 @@ def validate_step_input(step_input: VectorStepInput) -> None:
         raise VectorRuntimeError("death_mode must be 'normal' or 'profile_no_death'")
     if not isinstance(step_input.apply_source_moves, bool):
         raise VectorRuntimeError("apply_source_moves must be a bool")
+    if not isinstance(step_input.collect_collision_diagnostics, bool):
+        raise VectorRuntimeError("collect_collision_diagnostics must be a bool")
 
     tick = _state_array(step_input.state, "tick")
     if not np.issubdtype(tick.dtype, np.integer) or tick.ndim != 1:

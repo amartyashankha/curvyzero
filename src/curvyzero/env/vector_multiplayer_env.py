@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
 from typing import Any
 
 import numpy as np
@@ -10,6 +11,7 @@ import numpy as np
 from curvyzero.env import vector_lifecycle
 from curvyzero.env import vector_reset
 from curvyzero.env import vector_runtime
+from curvyzero.env import vector_spawn
 from curvyzero.env import vector_source_random
 from curvyzero.env.config import CurvyTronReferenceDefaults
 from curvyzero.env.trainer_contract import ACTION_ID_TO_SOURCE_MOVE
@@ -85,6 +87,36 @@ PUBLIC_LIFECYCLE_ARRAY_NAMES = (
     "match_done",
     "round_winner",
     "match_winner",
+)
+_RUNTIME_PHASE_TIMING_GROUPS = {
+    "runtime_step_many_sec": ("step_many_wall_sec",),
+    "runtime_natural_bonus_spawn_sec": ("natural_bonus_spawn_sec",),
+    "runtime_context_build_sec": ("append_context_build_sec",),
+    "runtime_source_input_sec": ("source_input_sec",),
+    "runtime_movement_sec": ("movement_sec", "border_wrap_sec"),
+    "runtime_visual_trail_append_sec": ("visual_trail_append_sec",),
+    "runtime_body_append_sec": ("normal_point_mask_sec", "normal_point_append_sec"),
+    "runtime_collision_sec": (
+        "wall_check_sec",
+        "wall_death_apply_sec",
+        "body_collision_sec",
+        "body_hit_owner_sec",
+        "body_death_apply_sec",
+        "terminal_score_state_sec",
+    ),
+    "runtime_print_manager_sec": (
+        "print_manager_update_sec",
+        "print_manager_death_stop_sec",
+    ),
+    "runtime_bonus_sec": ("natural_bonus_spawn_sec", "bonus_catch_sec"),
+    "runtime_timer_tick_sec": ("pre_step_timer_sec", "tick_sec"),
+    "runtime_event_sec": ("event_reset_sec", "event_emit_sec"),
+}
+_RUNTIME_PHASE_ACCOUNTED_KEYS = frozenset(
+    phase_key
+    for phase_keys in _RUNTIME_PHASE_TIMING_GROUPS.values()
+    for phase_key in phase_keys
+    if phase_key != "step_many_wall_sec"
 )
 
 DEBUG_METADATA_OBSERVATION_FIELDS = (
@@ -227,6 +259,28 @@ class VectorMultiplayerBatch:
     final_observation: np.ndarray | None
     final_reward: np.ndarray | None
     info: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class _VectorCompactProfileStep:
+    """Profile-only step result without public observation/info packaging."""
+
+    reward: np.ndarray
+    final_reward_map: np.ndarray
+    done: np.ndarray
+    terminated: np.ndarray
+    truncated: np.ndarray
+    terminal_reason: np.ndarray
+    death_count: np.ndarray
+    death_player: np.ndarray
+    death_cause: np.ndarray
+    death_hit_owner: np.ndarray
+    winner: np.ndarray
+    draw: np.ndarray
+    action_mask: np.ndarray
+    terminal_rows: np.ndarray
+    source_physics_substeps_executed: np.ndarray
+    source_physics_elapsed_ms: np.ndarray
 
 
 class VectorMultiplayerEnv:
@@ -379,6 +433,10 @@ class VectorMultiplayerEnv:
             trail_latency=self.trail_latency,
         )
         self.state = {name: array.copy() for name, array in self.reset_template.items()}
+        self._default_avatar_colors = np.tile(
+            np.arange(self.player_count, dtype=np.int16),
+            (self.batch_size, 1),
+        )
         self._seed_rng = np.random.default_rng(seed)
         self._has_reset = False
         self._needs_reset = np.zeros(self.batch_size, dtype=bool)
@@ -554,6 +612,45 @@ class VectorMultiplayerEnv:
             reset_api="autoreset_done_rows",
         )
 
+    def autoreset_done_rows_compact_profile(
+        self,
+        seed: int | np.ndarray | None = None,
+        *,
+        row_mask: np.ndarray | None = None,
+        present: np.ndarray | None = None,
+        source_fixture_random_tape_values: np.ndarray | None = None,
+        source_fixture_ref: str | None = None,
+        source_fixture_new_round_time_ms: float | None = None,
+        source_fixture_warmup_advance_ms: float | np.ndarray | None = None,
+        use_direct_reset: bool = False,
+    ) -> dict[str, Any]:
+        """Profile-only autoreset that mutates rows without public batch packing."""
+
+        self._require_reset()
+        if row_mask is None:
+            mask = self._needs_reset.copy()
+        else:
+            mask = self._row_mask(row_mask)
+            invalid_rows = mask & ~self._needs_reset
+            if bool(invalid_rows.any()):
+                rows = np.flatnonzero(invalid_rows).astype(np.int32)
+                raise VectorMultiplayerEnvError(
+                    "autoreset_done_rows_compact_profile row_mask can only select rows "
+                    f"with needs_reset; nonterminal rows={rows.tolist()}"
+                )
+        return self._reset_selected_rows_compact_profile(
+            seed=seed,
+            mask=mask,
+            scalar_seed_resets_rng=row_mask is None,
+            present=present,
+            source_fixture_random_tape_values=source_fixture_random_tape_values,
+            source_fixture_ref=source_fixture_ref,
+            source_fixture_new_round_time_ms=source_fixture_new_round_time_ms,
+            source_fixture_warmup_advance_ms=source_fixture_warmup_advance_ms,
+            reset_source=vector_reset.RESET_SOURCE_AUTORESET,
+            use_direct_reset=bool(use_direct_reset),
+        )
+
     def _reset_selected_rows(
         self,
         *,
@@ -722,6 +819,134 @@ class VectorMultiplayerEnv:
         )
         self.last_reset_info = batch.info
         return batch
+
+    def _reset_selected_rows_compact_profile(
+        self,
+        *,
+        seed: int | np.ndarray | None,
+        mask: np.ndarray,
+        scalar_seed_resets_rng: bool,
+        present: np.ndarray | None,
+        source_fixture_random_tape_values: np.ndarray | None,
+        source_fixture_ref: str | None,
+        source_fixture_new_round_time_ms: float | None,
+        source_fixture_warmup_advance_ms: float | np.ndarray | None,
+        reset_source: int,
+        use_direct_reset: bool = False,
+    ) -> dict[str, Any]:
+        present_array = self._present_array(present, mask)
+        fixture_random_tape_values = _source_fixture_random_tape_values(
+            source_fixture_random_tape_values,
+            batch_size=self.batch_size,
+            random_tape_capacity=self.random_tape_capacity,
+        )
+        fixture_ref = _source_fixture_ref(
+            source_fixture_ref,
+            has_fixture_random_tape=fixture_random_tape_values is not None,
+        )
+        fixture_new_round_time_ms = (
+            self.first_warmup_ms
+            if source_fixture_new_round_time_ms is None
+            else _nonnegative_finite(
+                source_fixture_new_round_time_ms,
+                "source_fixture_new_round_time_ms",
+            )
+        )
+        fixture_warmup_advance_ms = _source_fixture_warmup_advance_ms(
+            source_fixture_warmup_advance_ms,
+            batch_size=self.batch_size,
+        )
+        seed_input = seed
+        if scalar_seed_resets_rng and seed is not None and np.asarray(seed).ndim == 0:
+            self._seed_rng = np.random.default_rng(
+                _nonnegative_seed_scalar(np.asarray(seed).item(), "seed"),
+            )
+            seed_input = None
+        reset_seed = self._reset_seed_array(seed_input, mask)
+
+        reset_source_array = self._reset_source_array(mask, reset_source)
+        if bool(use_direct_reset):
+            reset_info = self._reset_spawn_warmup_rows_compact_profile_direct(
+                mask,
+                reset_seed=reset_seed,
+                reset_source=reset_source_array,
+                first_warmup_ms=fixture_new_round_time_ms,
+                present=present_array,
+                source_fixture_random_tape_values=fixture_random_tape_values,
+            )
+        else:
+            self._prepare_reset_template_rows(
+                mask,
+                reset_seed,
+                present=present_array,
+                source_fixture_random_tape_values=fixture_random_tape_values,
+            )
+            reset_info = self._reset_spawn_warmup_rows_compact_profile(
+                mask,
+                reset_seed=reset_seed,
+                reset_source=reset_source_array,
+                first_warmup_ms=fixture_new_round_time_ms,
+            )
+        self.state["round_id"][mask] = 1
+        if fixture_random_tape_values is None:
+            random_tape_source = RANDOM_TAPE_SOURCE_SEED_GENERATED
+            rng_impl_id = RNG_IMPL_ID_SEED_GENERATED
+            natural_multiplayer_reset_claim = True
+        else:
+            random_tape_source = RANDOM_TAPE_SOURCE_SOURCE_FIXTURE
+            rng_impl_id = RNG_IMPL_ID_SOURCE_FIXTURE
+            natural_multiplayer_reset_claim = False
+        self._random_tape_source[mask] = random_tape_source
+        self._rng_impl_id[mask] = rng_impl_id
+        self._source_fixture_ref[mask] = fixture_ref
+        self._natural_multiplayer_reset_claim[mask] = natural_multiplayer_reset_claim
+        self._clear_seeded_bonus_rows(mask)
+        natural_bonus_reset_info = self._reset_natural_bonus_spawn_rows(
+            mask,
+            first_warmup_ms=fixture_new_round_time_ms,
+        )
+        selected_warmup_advance_ms = self._selected_warmup_advance_ms(
+            mask,
+            first_warmup_ms=fixture_new_round_time_ms,
+            advance_ms=fixture_warmup_advance_ms,
+        )
+        warmup_info = self._advance_warmup_rows(
+            mask,
+            first_warmup_ms=fixture_new_round_time_ms,
+            advance_ms=selected_warmup_advance_ms,
+        )
+        natural_bonus_warmup_info = self._advance_natural_bonus_spawn_timers(
+            mask,
+            advance_ms=selected_warmup_advance_ms,
+            phase="reset_warmup",
+        )
+        self._needs_reset[mask] = False
+        self._has_reset = True
+        if self.death_mode == vector_runtime.DEATH_MODE_PROFILE_NO_DEATH:
+            self.state["borderless"][mask] = True
+
+        rows = np.flatnonzero(mask).astype(np.int32)
+        return {
+            "schema": "curvyzero_vector_multiplayer_compact_profile_autoreset/v0",
+            "reset_rows": rows,
+            "reset_count": int(rows.shape[0]),
+            "reset_can_compose": bool(reset_info.get("can_compose", False)),
+            "reset_direct_compact_profile": bool(
+                reset_info.get("direct_compact_profile", False)
+            ),
+            "reset_template_copy_skipped": bool(
+                reset_info.get("template_copy_skipped", False)
+            ),
+            "warmup_game_start_count": int(warmup_info.get("game_start_fires", 0)),
+            "warmup_print_manager_start_count": int(
+                warmup_info.get("print_manager_delayed_start_fires", 0)
+            ),
+            "natural_bonus_reset_enabled": bool(natural_bonus_reset_info.get("enabled", False)),
+            "natural_bonus_warmup_enabled": bool(
+                natural_bonus_warmup_info.get("enabled", False)
+            ),
+            "profile_only": True,
+        }
 
     def reset_from_state_arrays(
         self,
@@ -1006,9 +1231,11 @@ class VectorMultiplayerEnv:
         *,
         timer_advance_ms: float | np.ndarray | None = None,
         disabled_player_mask: np.ndarray | None = None,
+        profile_timers: dict[str, float] | None = None,
     ) -> VectorMultiplayerBatch:
         """Step one source-shaped decision for every row with int[B,P] actions."""
 
+        started = _profile_started(profile_timers)
         self._require_reset()
         if bool(self._needs_reset.any()):
             rows = np.flatnonzero(self._needs_reset).astype(np.int32)
@@ -1045,12 +1272,28 @@ class VectorMultiplayerEnv:
                 self.player_count * 4 * max(1, self.decision_source_frames or 1),
             ),
         )
+        _profile_add(profile_timers, "public_prepare_sec", started)
+
+        started = _profile_started(profile_timers)
+        runtime_phase_timers: dict[str, float] | None = (
+            {} if profile_timers is not None else None
+        )
         runtime_result = self._advance_runtime_for_public_step(
             pre_active=pre_active,
             source_moves=source_moves,
             timer_advance=timer_advance,
             disabled_player_mask=disabled_mask,
+            runtime_phase_timers=runtime_phase_timers,
         )
+        runtime_sec = _profile_elapsed(started) if profile_timers is not None else 0.0
+        _profile_add_elapsed(profile_timers, "runtime_sec", runtime_sec)
+        _profile_add_runtime_phase_timers(
+            profile_timers,
+            runtime_phase_timers,
+            runtime_sec=runtime_sec,
+        )
+
+        started = _profile_started(profile_timers)
         counters = runtime_result["step_counters"]
         natural_bonus_info = runtime_result["natural_bonus_info"]
         self._correct_leave_adjusted_death_scores(
@@ -1079,10 +1322,22 @@ class VectorMultiplayerEnv:
         done = self.state["done"].copy()
         terminated = self.state["terminated"].copy()
         truncated = self.state["truncated"].copy()
+        _profile_add(profile_timers, "post_runtime_bookkeeping_sec", started)
+
+        started = _profile_started(profile_timers)
         reward = self._reward()
+        _profile_add(profile_timers, "reward_sec", started)
+
+        started = _profile_started(profile_timers)
         final_observation = self._observe_array() if bool(public_terminal_mask.any()) else None
         final_reward = reward.copy() if bool(public_terminal_mask.any()) else None
         terminal_rows = np.flatnonzero(public_terminal_mask).astype(np.int32)
+        _profile_add(profile_timers, "final_observation_sec", started)
+
+        started = _profile_started(profile_timers)
+        public_info = self._public_info()
+        _profile_add(profile_timers, "public_info_sec", started)
+
         info = {
             "step_counters": counters,
             "joint_action": np.asarray(actions).copy(),
@@ -1100,8 +1355,9 @@ class VectorMultiplayerEnv:
             "terminal_rows": terminal_rows.copy(),
             "final_observation": final_observation,
             "final_reward_map": final_reward,
-            **self._public_info(),
+            **public_info,
         }
+        started = _profile_started(profile_timers)
         batch = self._batch(
             reward=reward,
             done=done,
@@ -1112,8 +1368,172 @@ class VectorMultiplayerEnv:
             final_row_mask=public_terminal_mask,
             info=info,
         )
+        _profile_add(profile_timers, "batch_pack_sec", started)
         self.last_step_info = batch.info
         return batch
+
+    def step_compact_profile(
+        self,
+        actions: np.ndarray,
+        *,
+        timer_advance_ms: float | np.ndarray | None = None,
+        disabled_player_mask: np.ndarray | None = None,
+        profile_timers: dict[str, float] | None = None,
+        collect_collision_diagnostics: bool = False,
+    ) -> _VectorCompactProfileStep:
+        """Step rows for the compact profile path without public batch packing.
+
+        This keeps the same runtime transition and reward bookkeeping as
+        ``step``. It deliberately skips the public debug observation, public
+        info dict, and ``VectorMultiplayerBatch`` construction because the
+        compact profile actor consumes only scalar sidecars and render state.
+        """
+
+        started = _profile_started(profile_timers)
+        self._require_reset()
+        if bool(self._needs_reset.any()):
+            rows = np.flatnonzero(self._needs_reset).astype(np.int32)
+            raise RuntimeError(
+                "reset must be called before stepping rows that ended; "
+                f"pending rows={rows.tolist()}"
+            )
+        warmdown_pending = self._warmdown_pending_mask()
+        if bool(warmdown_pending.any()):
+            rows = np.flatnonzero(warmdown_pending).astype(np.int32)
+            raise RuntimeError(
+                "advance_warmdown must be called before stepping rows between rounds; "
+                f"pending rows={rows.tolist()}"
+            )
+        pre_alive = self.state["alive"][:, : self.player_count].copy()
+        pre_death_count = self.state["death_count"].copy()
+        pre_active = ~self.state["done"].copy()
+        self.state["bonus_catch_count_step"][:, : self.player_count] = 0
+        source_moves, _action_sidecar = self._source_moves_and_action_sidecar(
+            actions,
+            pre_alive=pre_alive,
+        )
+        timer_advance = _step_timer_advance_ms(
+            timer_advance_ms,
+            batch_size=self.batch_size,
+        )
+        disabled_mask = self._disabled_player_mask(disabled_player_mask)
+        self._ensure_seed_generated_random_tape_headroom(
+            pre_active,
+            min_available=max(
+                16,
+                self.player_count * 4 * max(1, self.decision_source_frames or 1),
+            ),
+        )
+        _profile_add(profile_timers, "public_prepare_sec", started)
+
+        started = _profile_started(profile_timers)
+        runtime_phase_timers = {} if profile_timers is not None else None
+        runtime_result = self._advance_runtime_for_public_step(
+            pre_active=pre_active,
+            source_moves=source_moves,
+            timer_advance=timer_advance,
+            disabled_player_mask=disabled_mask,
+            collect_collision_diagnostics=bool(collect_collision_diagnostics),
+            runtime_phase_timers=runtime_phase_timers,
+        )
+        runtime_sec = _profile_elapsed(started) if profile_timers is not None else 0.0
+        _profile_add_elapsed(profile_timers, "runtime_sec", runtime_sec)
+        _profile_add_runtime_phase_timers(
+            profile_timers,
+            runtime_phase_timers,
+            runtime_sec=runtime_sec,
+        )
+
+        started = _profile_started(profile_timers)
+        self._correct_leave_adjusted_death_scores(
+            pre_alive=pre_alive,
+            pre_death_count=pre_death_count,
+        )
+        self._append_new_deaths(pre_alive)
+        self.state["episode_step"][pre_active] += 1
+        self._mark_overflow_truncations(pre_active)
+        self._mark_timeout_truncations(pre_active)
+
+        transition_mask = self.state["done"].copy()
+        round_transition_mask = (
+            transition_mask & self.state["terminated"] & ~self.state["truncated"]
+        )
+        if bool(round_transition_mask.any()):
+            if self.episode_end_mode == EPISODE_END_MODE_MATCH:
+                self._stage_match_mode_warmdown_rows(round_transition_mask)
+            else:
+                self._mark_public_round_warmdown_rows(round_transition_mask)
+        public_terminal_mask = self.state["done"].copy()
+        if bool(public_terminal_mask.any()):
+            self.state["in_round"][public_terminal_mask] = False
+            self._needs_reset |= public_terminal_mask
+
+        done = self.state["done"].copy()
+        terminated = self.state["terminated"].copy()
+        truncated = self.state["truncated"].copy()
+        terminal_reason = self.state["terminal_reason"].copy()
+        death_count = self.state["death_count"].copy()
+        death_player = self.state["death_player"].copy()
+        death_cause = self.state["death_cause"].copy()
+        death_hit_owner = self.state["death_hit_owner"].copy()
+        winner = self.state["winner"].copy()
+        draw = self.state["draw"].copy()
+        _profile_add(profile_timers, "post_runtime_bookkeeping_sec", started)
+
+        started = _profile_started(profile_timers)
+        reward = self._reward()
+        _profile_add(profile_timers, "reward_sec", started)
+
+        final_reward_map = np.zeros_like(reward, dtype=np.float32)
+        terminal_rows = np.flatnonzero(public_terminal_mask).astype(np.int32)
+        if bool(public_terminal_mask.any()):
+            final_reward_map[public_terminal_mask] = reward[public_terminal_mask]
+
+        started = _profile_started(profile_timers)
+        action_mask = self._action_mask()
+        _profile_add(profile_timers, "compact_action_mask_sec", started)
+
+        self.last_step_info = {
+            "compact_profile_step": True,
+            "joint_action": np.asarray(actions, dtype=np.int16).copy(),
+            "terminal_rows": terminal_rows.copy(),
+            "final_reward_map": final_reward_map.copy(),
+            "terminated": terminated.copy(),
+            "truncated": truncated.copy(),
+            "terminal_reason": terminal_reason.copy(),
+            "death_count": death_count.copy(),
+            "death_player": death_player.copy(),
+            "death_cause": death_cause.copy(),
+            "death_hit_owner": death_hit_owner.copy(),
+            "winner": winner.copy(),
+            "draw": draw.copy(),
+            "source_physics_substeps_executed": runtime_result[
+                "source_physics_substeps_executed"
+            ].copy(),
+            "source_physics_elapsed_ms": runtime_result[
+                "source_physics_elapsed_ms"
+            ].copy(),
+        }
+        return _VectorCompactProfileStep(
+            reward=np.asarray(reward, dtype=np.float32).copy(),
+            final_reward_map=final_reward_map,
+            done=done,
+            terminated=terminated,
+            truncated=truncated,
+            terminal_reason=terminal_reason,
+            death_count=death_count,
+            death_player=death_player,
+            death_cause=death_cause,
+            death_hit_owner=death_hit_owner,
+            winner=winner,
+            draw=draw,
+            action_mask=action_mask,
+            terminal_rows=terminal_rows,
+            source_physics_substeps_executed=runtime_result[
+                "source_physics_substeps_executed"
+            ].copy(),
+            source_physics_elapsed_ms=runtime_result["source_physics_elapsed_ms"].copy(),
+        )
 
     def _advance_runtime_for_public_step(
         self,
@@ -1122,13 +1542,18 @@ class VectorMultiplayerEnv:
         source_moves: np.ndarray,
         timer_advance: np.ndarray,
         disabled_player_mask: np.ndarray,
+        collect_collision_diagnostics: bool = True,
+        runtime_phase_timers: dict[str, float] | None = None,
     ) -> dict[str, Any]:
         if not self.source_frame_decision:
+            started = _profile_started(runtime_phase_timers)
             natural_bonus_info = self._advance_natural_bonus_spawn_timers(
                 pre_active,
                 advance_ms=timer_advance,
                 phase="step",
             )
+            _profile_add(runtime_phase_timers, "natural_bonus_spawn_sec", started)
+            started = _profile_started(runtime_phase_timers)
             counters = vector_runtime.step_many(
                 vector_runtime.VectorStepInput(
                     state=self._runtime_step_state(),
@@ -1145,8 +1570,11 @@ class VectorMultiplayerEnv:
                     death_mode=self.death_mode,
                     death_immunity_mask=self._death_immunity_mask(),
                     disabled_player_mask=disabled_player_mask,
-                )
+                    collect_collision_diagnostics=bool(collect_collision_diagnostics),
+                ),
+                phase_timers=runtime_phase_timers,
             )
+            _profile_add(runtime_phase_timers, "step_many_wall_sec", started)
             elapsed = np.where(pre_active, self.decision_ms, 0.0).astype(np.float64)
             self.state["elapsed_ms"] += elapsed
             return {
@@ -1175,6 +1603,7 @@ class VectorMultiplayerEnv:
             frame_timer_advance = np.where(active, frame_timer_advance, 0.0).astype(
                 np.float64,
             )
+            started = _profile_started(runtime_phase_timers)
             natural_bonus_infos.append(
                 self._advance_natural_bonus_spawn_timers(
                     active,
@@ -1182,6 +1611,8 @@ class VectorMultiplayerEnv:
                     phase=f"step_source_frame_{substep_index}",
                 )
             )
+            _profile_add(runtime_phase_timers, "natural_bonus_spawn_sec", started)
+            started = _profile_started(runtime_phase_timers)
             counters = vector_runtime.step_many(
                 vector_runtime.VectorStepInput(
                     state=self._runtime_step_state(),
@@ -1195,8 +1626,11 @@ class VectorMultiplayerEnv:
                     death_mode=self.death_mode,
                     death_immunity_mask=self._death_immunity_mask(),
                     disabled_player_mask=disabled_player_mask,
-                )
+                    collect_collision_diagnostics=bool(collect_collision_diagnostics),
+                ),
+                phase_timers=runtime_phase_timers,
             )
+            _profile_add(runtime_phase_timers, "step_many_wall_sec", started)
             for name in total_counters:
                 total_counters[name] += int(counters.get(name, 0))
             substeps_executed[active] += 1
@@ -1530,6 +1964,86 @@ class VectorMultiplayerEnv:
             raise VectorMultiplayerEnvError("state and reset_template cannot compose")
         return info
 
+    def _reset_spawn_warmup_rows_compact_profile(
+        self,
+        mask: np.ndarray,
+        *,
+        reset_seed: np.ndarray,
+        reset_source: np.ndarray,
+        first_warmup_ms: float,
+    ) -> dict[str, Any]:
+        info = vector_lifecycle.reset_spawn_warmup_no_bonus_rows_compact_profile(
+            self.state,
+            self.reset_template,
+            mask,
+            player_count=self.player_count,
+            reset_seed=reset_seed,
+            reset_source=reset_source,
+            first_warmup_ms=first_warmup_ms,
+        )
+        if not bool(info["can_compose"]):
+            raise VectorMultiplayerEnvError("state and reset_template cannot compose")
+        return info
+
+    def _reset_spawn_warmup_rows_compact_profile_direct(
+        self,
+        mask: np.ndarray,
+        *,
+        reset_seed: np.ndarray,
+        reset_source: np.ndarray,
+        first_warmup_ms: float,
+        present: np.ndarray,
+        source_fixture_random_tape_values: np.ndarray | None,
+    ) -> dict[str, Any]:
+        previous_episode_id = np.asarray(self.state["episode_id"])
+        if bool((previous_episode_id[mask] == np.iinfo(np.int64).max).any()):
+            raise VectorMultiplayerEnvError(
+                "episode_id values cannot be incremented without overflow"
+            )
+
+        reset_episode_id = previous_episode_id.copy()
+        reset_episode_id[mask] += 1
+        self._prepare_reset_template_rows(
+            mask,
+            reset_seed,
+            present=present,
+            source_fixture_random_tape_values=source_fixture_random_tape_values,
+            target=self.state,
+            reset_source=reset_source,
+            reset_episode_id=reset_episode_id,
+            in_round=True,
+        )
+        spawn_info = vector_spawn.spawn_round_rows(
+            self.state,
+            mask,
+            player_count=self.player_count,
+        )
+        timer_info = vector_lifecycle._schedule_game_start_timers(
+            self.state,
+            mask,
+            first_warmup_ms=float(first_warmup_ms),
+        )
+        rows = np.flatnonzero(mask).astype(np.int32)
+        return {
+            "schema": vector_lifecycle.RESET_SPAWN_WARMUP_NO_BONUS_INFO_SCHEMA_ID,
+            "surface": vector_lifecycle.RESET_SPAWN_WARMUP_NO_BONUS_SURFACE,
+            "full_lifecycle": False,
+            "profile_only": True,
+            "can_compose": True,
+            "direct_compact_profile": True,
+            "template_copy_skipped": True,
+            "player_count": self.player_count,
+            "row_count": int(mask.sum()),
+            "rows": rows,
+            "reset_count": int(mask.sum()),
+            "spawn_count": int(spawn_info["spawn_count"]),
+            "reset_rows": rows.copy(),
+            "spawn_rows": np.asarray(spawn_info["spawn_rows"]).copy(),
+            "first_warmup_ms": float(first_warmup_ms),
+            **timer_info,
+            "terminal_transition_snapshot": None,
+        }
+
     def _advance_warmup_rows(
         self,
         mask: np.ndarray,
@@ -1549,6 +2063,7 @@ class VectorMultiplayerEnv:
             selected_advance_ms,
             player_count=self.player_count,
             max_timer_callbacks=self._warmup_timer_callback_cap(mask),
+            row_mask=mask,
         )
 
     def _warmup_timer_callback_cap(self, mask: np.ndarray) -> int:
@@ -2868,9 +3383,20 @@ class VectorMultiplayerEnv:
         *,
         present: np.ndarray,
         source_fixture_random_tape_values: np.ndarray | None = None,
+        target: dict[str, np.ndarray] | None = None,
+        reset_source: int | np.ndarray = vector_reset.RESET_SOURCE_MANUAL,
+        reset_episode_id: np.ndarray | None = None,
+        in_round: bool = False,
     ) -> None:
         rows = np.flatnonzero(mask)
-        template = self.reset_template
+        template = self.reset_template if target is None else target
+        reset_source_array = np.asarray(reset_source, dtype=np.int16)
+        if reset_source_array.ndim == 0:
+            reset_source_values = reset_source_array
+        elif reset_source_array.shape == (self.batch_size,):
+            reset_source_values = reset_source_array[mask]
+        else:
+            raise VectorMultiplayerEnvError("reset_source must be scalar or shape [B]")
         template["episode_step"][mask] = 0
         template["env_active"][mask] = True
         template["reset_pending"][mask] = False
@@ -2883,8 +3409,13 @@ class VectorMultiplayerEnv:
         template["match_done"][mask] = False
         template["round_winner"][mask] = -1
         template["match_winner"][mask] = -1
+        if reset_episode_id is not None:
+            template["episode_id"][mask] = np.asarray(
+                reset_episode_id,
+                dtype=template["episode_id"].dtype,
+            )[mask]
         template["reset_seed"][mask] = reset_seed[mask]
-        template["reset_source"][mask] = vector_reset.RESET_SOURCE_MANUAL
+        template["reset_source"][mask] = reset_source_values
         template["tick"][mask] = 0
         template["elapsed_ms"][mask] = 0.0
         template["pos"][mask, ...] = 0.0
@@ -2894,8 +3425,8 @@ class VectorMultiplayerEnv:
         template["present"][mask, ...] = present[mask]
         template["map_size"][mask] = self.map_size
         template["max_score"][mask] = self.max_score
-        template["started"][mask] = False
-        template["in_round"][mask] = False
+        template["started"][mask] = bool(in_round)
+        template["in_round"][mask] = bool(in_round)
         template["world_active"][mask] = False
         template["world_body_count"][mask] = 0
         template["timer_active"][mask, ...] = False
@@ -2927,10 +3458,7 @@ class VectorMultiplayerEnv:
             template["invincible"][mask, ...] = False
             template["base_invincible"][mask, ...] = False
         if "avatar_color" in template:
-            default_colors = np.tile(
-                np.arange(self.player_count, dtype=np.int16),
-                (self.batch_size, 1),
-            )
+            default_colors = self._default_avatar_colors
             template["avatar_color"][mask, ...] = default_colors[mask]
             template["base_avatar_color"][mask, ...] = default_colors[mask]
         template["angular_velocity_per_ms"][mask, ...] = self.angular_velocity_per_ms
@@ -3003,10 +3531,7 @@ class VectorMultiplayerEnv:
             template["current_angular_velocity"][mask] = 0.0
             template["invincible"][mask] = False
             template["base_invincible"][mask] = False
-            default_colors = np.tile(
-                np.arange(self.player_count, dtype=np.int16),
-                (self.batch_size, 1),
-            )
+            default_colors = self._default_avatar_colors
             template["avatar_color"][mask] = default_colors[mask]
             template["base_avatar_color"][mask] = default_colors[mask]
             template["radius_power"][mask, ...] = 0
@@ -4044,6 +4569,67 @@ def _nonnegative_seed_scalar(value: object, name: str) -> int:
     if scalar < 0:
         raise VectorMultiplayerEnvError(f"{name} must be non-negative")
     return scalar
+
+
+def _profile_started(profile_timers: dict[str, float] | None) -> float:
+    return time.perf_counter() if profile_timers is not None else 0.0
+
+
+def _profile_elapsed(started: float) -> float:
+    return time.perf_counter() - started
+
+
+def _profile_add(
+    profile_timers: dict[str, float] | None,
+    key: str,
+    started: float,
+) -> None:
+    if profile_timers is not None:
+        _profile_add_elapsed(profile_timers, key, _profile_elapsed(started))
+
+
+def _profile_add_elapsed(
+    profile_timers: dict[str, float] | None,
+    key: str,
+    elapsed: float,
+) -> None:
+    if profile_timers is not None:
+        profile_timers[key] = profile_timers.get(key, 0.0) + float(elapsed)
+
+
+def _profile_add_runtime_phase_timers(
+    profile_timers: dict[str, float] | None,
+    phase_timers: dict[str, float] | None,
+    *,
+    runtime_sec: float,
+) -> None:
+    if profile_timers is None:
+        return
+    phases = phase_timers or {}
+    for output_key, phase_keys in _RUNTIME_PHASE_TIMING_GROUPS.items():
+        value = sum(float(phases.get(phase_key, 0.0)) for phase_key in phase_keys)
+        _profile_add_elapsed(profile_timers, output_key, value)
+    step_many_sec = float(phases.get("step_many_wall_sec", 0.0))
+    natural_bonus_spawn_sec = float(phases.get("natural_bonus_spawn_sec", 0.0))
+    outer_bookkeeping_sec = max(
+        0.0,
+        float(runtime_sec) - step_many_sec - natural_bonus_spawn_sec,
+    )
+    _profile_add_elapsed(
+        profile_timers,
+        "runtime_outer_bookkeeping_sec",
+        outer_bookkeeping_sec,
+    )
+    accounted = outer_bookkeeping_sec + sum(
+        float(phases.get(phase_key, 0.0))
+        for phase_key in _RUNTIME_PHASE_ACCOUNTED_KEYS
+    )
+    _profile_add_elapsed(profile_timers, "runtime_phase_accounted_sec", accounted)
+    _profile_add_elapsed(
+        profile_timers,
+        "runtime_phase_residual_sec",
+        max(0.0, float(runtime_sec) - accounted),
+    )
 
 
 __all__ = [

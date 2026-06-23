@@ -1,3 +1,5 @@
+import copy
+
 import numpy as np
 import pytest
 
@@ -45,6 +47,7 @@ from curvyzero.env.vector_visual_observation import (
     normalize_source_state_gray64,
     render_source_state_bonus64_stack4_player_perspective_v1,
     render_source_state_canvas_gray64,
+    render_source_state_canvas_gray64_player_perspectives,
     render_source_state_rgb_canvas_like,
     render_source_snapshot_canvas_gray64,
     render_source_snapshot_gray64,
@@ -83,6 +86,19 @@ def _small_source_state() -> dict[str, np.ndarray]:
         "terminal_reason": np.asarray([0], dtype=np.int16),
     }
     return state
+
+
+def _swap_two_player_identity(state: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+    swapped = copy.deepcopy(state)
+    for key in ("present", "alive", "pos", "radius"):
+        if key in swapped:
+            swapped[key] = swapped[key].copy()
+            swapped[key][:, [0, 1], ...] = swapped[key][:, [1, 0], ...]
+    for key in ("body_owner", "visual_trail_owner"):
+        if key in swapped:
+            owners = swapped[key].copy()
+            swapped[key] = np.where(owners == 0, 1, np.where(owners == 1, 0, owners))
+    return swapped
 
 
 def _trail_only_source_state(
@@ -884,6 +900,94 @@ def test_direct_fast_simple_bonus_symbols_are_distinct_and_not_remapped():
 
     assert len(set(hashes)) == len(vector_runtime.SOURCE_DEFAULT_BONUS_TYPE_CODES)
     assert len(set(crop_hashes)) == len(vector_runtime.SOURCE_DEFAULT_BONUS_TYPE_CODES)
+
+
+def test_canvas_gray64_controlled_player_view_is_identity_palette_swap():
+    state = _small_source_state()
+    state.update(
+        {
+            "bonus_active": np.asarray([[True]], dtype=bool),
+            "bonus_type": np.asarray(
+                [[vector_runtime.BONUS_TYPE_SELF_SMALL]],
+                dtype=np.int16,
+            ),
+            "bonus_pos": np.asarray([[[32.0, 32.0]]], dtype=np.float64),
+            "bonus_radius": np.asarray([[3.0]], dtype=np.float64),
+        }
+    )
+    swapped = _swap_two_player_identity(state)
+    self_rgb = (96, 96, 96)
+    other_rgb = (128, 128, 128)
+
+    player_0_view = render_source_state_canvas_gray64(
+        state,
+        player_rgb=(self_rgb, other_rgb),
+        bonus_render_mode=BONUS_RENDER_MODE_SIMPLE_SYMBOLS,
+    )
+    player_1_view = render_source_state_canvas_gray64(
+        state,
+        player_rgb=(other_rgb, self_rgb),
+        bonus_render_mode=BONUS_RENDER_MODE_SIMPLE_SYMBOLS,
+    )
+    swapped_player_1_view = render_source_state_canvas_gray64(
+        swapped,
+        player_rgb=(other_rgb, self_rgb),
+        bonus_render_mode=BONUS_RENDER_MODE_SIMPLE_SYMBOLS,
+    )
+    swapped_player_0_view = render_source_state_canvas_gray64(
+        swapped,
+        player_rgb=(self_rgb, other_rgb),
+        bonus_render_mode=BONUS_RENDER_MODE_SIMPLE_SYMBOLS,
+    )
+
+    assert not np.array_equal(player_0_view, player_1_view)
+    np.testing.assert_array_equal(player_0_view, swapped_player_1_view)
+    np.testing.assert_array_equal(player_1_view, swapped_player_0_view)
+
+
+def test_canvas_gray64_player_perspectives_match_direct_controlled_player_renders():
+    state = _small_source_state()
+    state.update(
+        {
+            "bonus_active": np.asarray([[True]], dtype=bool),
+            "bonus_type": np.asarray(
+                [[vector_runtime.BONUS_TYPE_SELF_SMALL]],
+                dtype=np.int16,
+            ),
+            "bonus_pos": np.asarray([[[32.0, 32.0]]], dtype=np.float64),
+            "bonus_radius": np.asarray([[3.0]], dtype=np.float64),
+        }
+    )
+    self_rgb = (96, 96, 96)
+    other_rgb = (128, 128, 128)
+    player_rgbs = (
+        (self_rgb, other_rgb),
+        (other_rgb, self_rgb),
+    )
+
+    batched = render_source_state_canvas_gray64_player_perspectives(
+        state,
+        player_rgbs=player_rgbs,
+        trail_render_mode=TRAIL_RENDER_MODE_BROWSER_LINES,
+        bonus_render_mode=BONUS_RENDER_MODE_SIMPLE_SYMBOLS,
+    )
+    direct_player_0 = render_source_state_canvas_gray64(
+        state,
+        player_rgb=player_rgbs[0],
+        trail_render_mode=TRAIL_RENDER_MODE_BROWSER_LINES,
+        bonus_render_mode=BONUS_RENDER_MODE_SIMPLE_SYMBOLS,
+    )
+    direct_player_1 = render_source_state_canvas_gray64(
+        state,
+        player_rgb=player_rgbs[1],
+        trail_render_mode=TRAIL_RENDER_MODE_BROWSER_LINES,
+        bonus_render_mode=BONUS_RENDER_MODE_SIMPLE_SYMBOLS,
+    )
+
+    assert batched.shape == (2, *SOURCE_STATE_CANVAS_GRAY64_SHAPE)
+    np.testing.assert_array_equal(batched[0], direct_player_0)
+    np.testing.assert_array_equal(batched[1], direct_player_1)
+    assert not np.array_equal(batched[0], batched[1])
 
 
 def test_direct_fast_simple_bonus_symbol_base_masks_keep_margin():

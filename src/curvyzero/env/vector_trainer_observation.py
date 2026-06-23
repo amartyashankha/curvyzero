@@ -451,10 +451,11 @@ def _cast_rays_batch_1v1(
     )
     origins = arrays["pos"].astype(np.float64, copy=False)
     directions = _ray_directions_batch(arrays["heading"].astype(np.float64, copy=False))
-    body_active = _active_body_slots(arrays)
-    body_pos = arrays["body_pos"].astype(np.float64, copy=False)
-    body_radius = arrays["body_radius"].astype(np.float64, copy=False)
-    body_owner = arrays["body_owner"]
+    body_arrays = _slice_body_arrays_to_batch_write_cursor(arrays)
+    body_active = _active_body_slots(body_arrays)
+    body_pos = body_arrays["body_pos"].astype(np.float64, copy=False)
+    body_radius = body_arrays["body_radius"].astype(np.float64, copy=False)
+    body_owner = body_arrays["body_owner"]
 
     fallback_owner_masks = _head_excluding_owner_body_masks(
         body_active,
@@ -463,7 +464,7 @@ def _cast_rays_batch_1v1(
         origins,
     )
     own_masks = _own_body_masks_batch(
-        arrays,
+        body_arrays,
         body_active,
         body_owner,
         fallback_owner_masks,
@@ -513,6 +514,28 @@ def _cast_rays_batch_1v1(
             arena_diagonal[wall_rows],
         )
     return rays
+
+
+def _slice_body_arrays_to_batch_write_cursor(
+    arrays: Mapping[str, np.ndarray],
+) -> Mapping[str, np.ndarray]:
+    if "body_write_cursor" not in arrays:
+        return arrays
+
+    body_capacity = int(arrays["body_active"].shape[1])
+    body_write_cursor = arrays["body_write_cursor"]
+    body_limit = int(np.max(body_write_cursor)) if body_write_cursor.size else 0
+    body_limit = max(0, min(body_limit, body_capacity))
+    if body_limit == body_capacity:
+        return arrays
+
+    trimmed = dict(arrays)
+    for name in ("body_active", "body_pos", "body_radius", "body_owner", "body_num"):
+        value = trimmed.get(name)
+        if value is None or value.ndim < 2 or int(value.shape[1]) != body_capacity:
+            continue
+        trimmed[name] = value[:, :body_limit, ...]
+    return trimmed
 
 
 def _ray_directions_batch(headings: np.ndarray) -> np.ndarray:

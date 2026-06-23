@@ -14,6 +14,11 @@ _UINT64_MASK = (1 << 64) - 1
 _SPLITMIX64_INCREMENT = 0x9E3779B97F4A7C15
 _SPLITMIX64_MUL_A = 0xBF58476D1CE4E5B9
 _SPLITMIX64_MUL_B = 0x94D049BB133111EB
+_UINT64_SHIFT_A = 30
+_UINT64_SHIFT_B = 27
+_UINT64_SHIFT_C = 31
+_RANDOM_FLOAT_SHIFT = 11
+_RANDOM_FLOAT_MASK = (1 << 53) - 1
 _FLOAT64_UNIT = 1.0 / float(1 << 53)
 
 
@@ -38,14 +43,14 @@ def seeded_source_math_random_history(
         raise VectorSourceRandomError("length must be a positive integer")
 
     seeds = _seed_rows(reset_seed)
-    history = np.empty((seeds.shape[0], length), dtype=np.float64)
-    for row, seed in enumerate(seeds):
-        state = int(seed) & _UINT64_MASK
-        for index in range(length):
-            state = (state + _SPLITMIX64_INCREMENT) & _UINT64_MASK
-            bits = _splitmix64(state)
-            history[row, index] = ((bits >> 11) & ((1 << 53) - 1)) * _FLOAT64_UNIT
-    return history
+    increments = (
+        np.arange(1, length + 1, dtype=np.uint64)
+        * np.uint64(_SPLITMIX64_INCREMENT)
+    )
+    states = seeds[:, np.newaxis] + increments[np.newaxis, :]
+    bits = _splitmix64_array(states)
+    mantissa = (bits >> np.uint64(_RANDOM_FLOAT_SHIFT)) & np.uint64(_RANDOM_FLOAT_MASK)
+    return mantissa.astype(np.float64, copy=False) * _FLOAT64_UNIT
 
 
 def _seed_rows(reset_seed: Any) -> np.ndarray:
@@ -67,6 +72,17 @@ def _splitmix64(value: int) -> int:
     mixed = (mixed ^ (mixed >> 30)) * _SPLITMIX64_MUL_A & _UINT64_MASK
     mixed = (mixed ^ (mixed >> 27)) * _SPLITMIX64_MUL_B & _UINT64_MASK
     return (mixed ^ (mixed >> 31)) & _UINT64_MASK
+
+
+def _splitmix64_array(values: np.ndarray) -> np.ndarray:
+    mixed = np.asarray(values, dtype=np.uint64)
+    mixed = (mixed ^ (mixed >> np.uint64(_UINT64_SHIFT_A))) * np.uint64(
+        _SPLITMIX64_MUL_A
+    )
+    mixed = (mixed ^ (mixed >> np.uint64(_UINT64_SHIFT_B))) * np.uint64(
+        _SPLITMIX64_MUL_B
+    )
+    return mixed ^ (mixed >> np.uint64(_UINT64_SHIFT_C))
 
 
 __all__ = [

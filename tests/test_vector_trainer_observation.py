@@ -327,6 +327,39 @@ def test_observe_vector_1v1_egocentric_rays_batch_arrays_preserve_trail_latency(
     np.testing.assert_allclose(observation[0], scalar.observation)
 
 
+def test_observe_vector_1v1_batch_arrays_trim_raycast_to_body_write_cursor(monkeypatch):
+    state = _state(batch_size=2, body_capacity=32)
+    state["body_active"][:] = True
+    state["body_owner"][:] = 0
+    state["body_write_cursor"] = np.asarray([2, 5], dtype=np.int32)
+    captured_circle_counts = []
+
+    def fake_nearest_circle_hits_batch(
+        origins,
+        directions,
+        centers,
+        radii,
+        mask,
+    ):
+        del centers, radii
+        captured_circle_counts.append(int(mask.shape[2]))
+        return np.full(directions.shape[:3], np.inf, dtype=np.float64)
+
+    monkeypatch.setattr(
+        vector_trainer_observation,
+        "_nearest_circle_hits_batch",
+        fake_nearest_circle_hits_batch,
+    )
+
+    vector_trainer_observation.observe_vector_1v1_egocentric_rays_batch_arrays_v0(
+        state,
+        decision_ms=300.0,
+        max_ticks=100,
+    )
+
+    assert captured_circle_counts == [5, 5, 1]
+
+
 def test_observe_vector_1v1_egocentric_rays_v0_ignores_slots_after_body_write_cursor():
     state = _state(batch_size=1, body_capacity=6)
     state["body_active"][0, :6] = True

@@ -15,6 +15,7 @@ import numpy as np
 
 
 RESET_INFO_SCHEMA_ID = "curvyzero_vector_reset_info/v1"
+COMPACT_PROFILE_RESET_INFO_SCHEMA_ID = "curvyzero_vector_compact_profile_reset_info/v1"
 TERMINAL_TRANSITION_SNAPSHOT_SCHEMA_ID = (
     "curvyzero_vector_terminal_transition_snapshot/v1"
 )
@@ -172,6 +173,69 @@ def reset_arrays(
         "reset_truncated": np.asarray(target["truncated"]).copy(),
         "reset_terminal_reason": np.asarray(target["terminal_reason"]).copy(),
         "terminal_transition_snapshot": snapshot,
+    }
+
+
+def reset_arrays_compact_profile(
+    target: Mapping[str, np.ndarray],
+    reset_template: Mapping[str, np.ndarray],
+    reset_mask: np.ndarray,
+    *,
+    reset_seed: np.ndarray | int,
+    reset_source: np.ndarray | int = RESET_SOURCE_AUTORESET,
+) -> dict[str, Any]:
+    """Reset selected rows without public reset metadata copies."""
+
+    mask = _bool_row_mask(reset_mask, "reset_mask")
+    batch_size = mask.shape[0]
+
+    _validate_reset_lifecycle_state(target, batch_size=batch_size, state_name="target")
+    _validate_reset_lifecycle_state(
+        reset_template,
+        batch_size=batch_size,
+        state_name="reset_template",
+    )
+    _validate_matching_state_arrays(target, reset_template, batch_size=batch_size)
+    _validate_optional_clock_rows(target, batch_size=batch_size)
+    _validate_optional_event_rows(target, batch_size=batch_size)
+    _validate_optional_timer_rows(target, batch_size=batch_size)
+
+    previous_episode_id = _row_array(target["episode_id"], "episode_id", np.int64)
+    if bool((previous_episode_id[mask] == np.iinfo(np.int64).max).any()):
+        raise VectorResetError("episode_id values cannot be incremented without overflow")
+
+    reset_seed_array = _row_array(reset_seed, "reset_seed", np.uint64)
+    reset_source_array = _row_array(reset_source, "reset_source", np.int16)
+    if reset_seed_array.shape != mask.shape:
+        raise VectorResetError("reset_seed must have shape [B]")
+    if reset_source_array.shape != mask.shape:
+        raise VectorResetError("reset_source must have shape [B]")
+    if not bool(np.isin(reset_source_array[mask], tuple(RESET_SOURCE_CODE_NAMES)).all()):
+        raise VectorResetError("reset_source values must be known reset source codes")
+
+    selected_episode_id = previous_episode_id[mask] + 1
+    for name, source_array in reset_template.items():
+        target[name][mask, ...] = source_array[mask, ...]
+
+    target["episode_id"][mask] = selected_episode_id
+    target["episode_step"][mask] = 0
+    target["env_active"][mask] = True
+    target["reset_pending"][mask] = False
+    target["done"][mask] = False
+    target["terminated"][mask] = False
+    target["truncated"][mask] = False
+    target["terminal_reason"][mask] = TERMINAL_REASON_NONE
+    target["reset_seed"][mask] = reset_seed_array[mask]
+    target["reset_source"][mask] = reset_source_array[mask]
+    _clear_optional_clock_rows(target, mask)
+    _clear_optional_event_rows(target, mask)
+    _clear_optional_timer_rows(target, mask)
+
+    return {
+        "schema": COMPACT_PROFILE_RESET_INFO_SCHEMA_ID,
+        "reset_count": int(mask.sum()),
+        "reset_rows": np.flatnonzero(mask).astype(np.int32),
+        "profile_only": True,
     }
 
 

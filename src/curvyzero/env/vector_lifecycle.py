@@ -241,6 +241,35 @@ def reset_spawn_warmup_no_bonus_rows(
         schema=RESET_SPAWN_WARMUP_NO_BONUS_INFO_SCHEMA_ID,
         surface=RESET_SPAWN_WARMUP_NO_BONUS_SURFACE,
         require_all_present=False,
+        compact_profile=False,
+    )
+
+
+def reset_spawn_warmup_no_bonus_rows_compact_profile(
+    target: Mapping[str, np.ndarray],
+    reset_template: Mapping[str, np.ndarray],
+    row_mask: np.ndarray,
+    *,
+    player_count: int,
+    reset_seed: np.ndarray | int,
+    reset_source: np.ndarray | int = vector_reset.RESET_SOURCE_AUTORESET,
+    first_warmup_ms: float = SOURCE_ROUND_WARMUP_MS,
+) -> dict[str, Any]:
+    """Profile-only reset/spawn/warmup without terminal snapshot metadata."""
+
+    return _reset_spawn_warmup_no_bonus_rows_impl(
+        target,
+        reset_template,
+        row_mask,
+        player_count=player_count,
+        reset_seed=reset_seed,
+        reset_source=reset_source,
+        first_warmup_ms=first_warmup_ms,
+        snapshot_array_names=None,
+        schema=RESET_SPAWN_WARMUP_NO_BONUS_INFO_SCHEMA_ID,
+        surface=RESET_SPAWN_WARMUP_NO_BONUS_SURFACE,
+        require_all_present=False,
+        compact_profile=True,
     )
 
 
@@ -274,6 +303,7 @@ def reset_spawn_warmup_1v1_no_bonus_rows(
         schema=RESET_SPAWN_WARMUP_INFO_SCHEMA_ID,
         surface=RESET_SPAWN_WARMUP_SURFACE,
         require_all_present=True,
+        compact_profile=False,
     )
 
 
@@ -513,6 +543,7 @@ def _reset_spawn_warmup_no_bonus_rows_impl(
     schema: str,
     surface: str,
     require_all_present: bool,
+    compact_profile: bool,
 ) -> dict[str, Any]:
     player_count = _validate_no_bonus_warmup_player_count(player_count)
     mask = _bool_row_mask(row_mask, "row_mask")
@@ -554,14 +585,23 @@ def _reset_spawn_warmup_no_bonus_rows_impl(
     _validate_round_local_warmup_arrays(target, mask, player_count=player_count)
     _validate_round_local_warmup_arrays(reset_template, mask, player_count=player_count)
 
-    reset_info = vector_reset.reset_arrays(
-        target,
-        reset_template,
-        mask,
-        reset_seed=reset_seed,
-        reset_source=reset_source,
-        snapshot_array_names=snapshot_array_names,
-    )
+    if compact_profile:
+        reset_info = vector_reset.reset_arrays_compact_profile(
+            target,
+            reset_template,
+            mask,
+            reset_seed=reset_seed,
+            reset_source=reset_source,
+        )
+    else:
+        reset_info = vector_reset.reset_arrays(
+            target,
+            reset_template,
+            mask,
+            reset_seed=reset_seed,
+            reset_source=reset_source,
+            snapshot_array_names=snapshot_array_names,
+        )
     if require_all_present:
         _validate_all_present_rows(target, mask, player_count=player_count)
     _clear_selected_round_local_arrays(target, mask)
@@ -575,6 +615,25 @@ def _reset_spawn_warmup_no_bonus_rows_impl(
         mask,
         first_warmup_ms=float(first_warmup_ms),
     )
+
+    if compact_profile:
+        return {
+            "schema": schema,
+            "surface": surface,
+            "full_lifecycle": False,
+            "profile_only": True,
+            "can_compose": True,
+            "player_count": player_count,
+            "row_count": int(mask.sum()),
+            "rows": rows,
+            "reset_count": int(reset_info["reset_count"]),
+            "spawn_count": int(spawn_info["spawn_count"]),
+            "reset_rows": np.asarray(reset_info["reset_rows"]).copy(),
+            "spawn_rows": np.asarray(spawn_info["spawn_rows"]).copy(),
+            "first_warmup_ms": float(first_warmup_ms),
+            **timer_info,
+            "terminal_transition_snapshot": None,
+        }
 
     return {
         **base_info,

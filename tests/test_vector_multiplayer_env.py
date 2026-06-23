@@ -3567,6 +3567,209 @@ def test_2p_public_autoreset_done_rows_preserves_final_metadata_and_live_rows():
         env.autoreset_done_rows(row_mask=np.asarray([False, True], dtype=bool))
 
 
+def test_2p_compact_profile_autoreset_matches_public_state_mutation():
+    state, actions, step_ms = _fixture_state_and_actions(
+        "scenarios/environment/source_normal_wall_death_step.json",
+        body_capacity=8,
+    )
+    batched_state = {
+        name: np.repeat(array, repeats=2, axis=0)
+        for name, array in state.items()
+    }
+    padded_random_tape = np.zeros((2, 16), dtype=np.float64)
+    padded_random_tape[:, : batched_state["random_tape_values"].shape[1]] = (
+        batched_state["random_tape_values"]
+    )
+    batched_state["random_tape_values"] = padded_random_tape
+    batched_state["pos"][1] = np.asarray([[20.0, 20.0], [60.0, 60.0]], dtype=np.float64)
+    batched_state["prev_pos"][1] = batched_state["pos"][1]
+    batched_state["heading"][1] = np.asarray([0.0, math.pi], dtype=np.float64)
+    batched_state["speed"][1] = np.asarray([0.0, 0.0], dtype=np.float64)
+
+    public_env = VectorMultiplayerEnv(
+        batch_size=2,
+        player_count=2,
+        decision_ms=step_ms,
+        body_capacity=8,
+        event_capacity=16,
+        timer_capacity=4,
+        random_tape_capacity=16,
+        event_mode="debug-event",
+    )
+    compact_env = VectorMultiplayerEnv(
+        batch_size=2,
+        player_count=2,
+        decision_ms=step_ms,
+        body_capacity=8,
+        event_capacity=16,
+        timer_capacity=4,
+        random_tape_capacity=16,
+        event_mode="debug-event",
+    )
+    direct_env = VectorMultiplayerEnv(
+        batch_size=2,
+        player_count=2,
+        decision_ms=step_ms,
+        body_capacity=8,
+        event_capacity=16,
+        timer_capacity=4,
+        random_tape_capacity=16,
+        event_mode="debug-event",
+    )
+    reset_seed = np.asarray([101, 202], dtype=np.uint64)
+    public_env.reset_from_state_arrays(batched_state, reset_seed=reset_seed)
+    compact_env.reset_from_state_arrays(batched_state, reset_seed=reset_seed)
+    direct_env.reset_from_state_arrays(batched_state, reset_seed=reset_seed)
+
+    public_step = public_env.step(np.repeat(actions, repeats=2, axis=0))
+    compact_step = compact_env.step(np.repeat(actions, repeats=2, axis=0))
+    direct_step = direct_env.step(np.repeat(actions, repeats=2, axis=0))
+    np.testing.assert_array_equal(public_step.done, compact_step.done)
+    np.testing.assert_array_equal(public_step.done, direct_step.done)
+    np.testing.assert_array_equal(public_step.done, np.asarray([True, False], dtype=bool))
+
+    autoreset_seed = np.asarray([303, 404], dtype=np.uint64)
+    with pytest.raises(VectorMultiplayerEnvError, match="only select rows with needs_reset"):
+        compact_env.autoreset_done_rows_compact_profile(
+            row_mask=np.asarray([False, True], dtype=bool)
+        )
+    public_reset = public_env.autoreset_done_rows(seed=autoreset_seed)
+    compact_info = compact_env.autoreset_done_rows_compact_profile(seed=autoreset_seed)
+    direct_info = direct_env.autoreset_done_rows_compact_profile(
+        seed=autoreset_seed,
+        use_direct_reset=True,
+    )
+
+    np.testing.assert_array_equal(compact_info["reset_rows"], public_reset.info["reset_rows"])
+    np.testing.assert_array_equal(direct_info["reset_rows"], public_reset.info["reset_rows"])
+    assert compact_info["profile_only"] is True
+    assert compact_info["reset_direct_compact_profile"] is False
+    assert compact_info["reset_template_copy_skipped"] is False
+    assert direct_info["profile_only"] is True
+    assert direct_info["reset_direct_compact_profile"] is True
+    assert direct_info["reset_template_copy_skipped"] is True
+    for name, public_array in public_env.state.items():
+        np.testing.assert_array_equal(compact_env.state[name], public_array, err_msg=name)
+        np.testing.assert_array_equal(direct_env.state[name], public_array, err_msg=name)
+    np.testing.assert_array_equal(compact_env._needs_reset, public_env._needs_reset)
+    np.testing.assert_array_equal(direct_env._needs_reset, public_env._needs_reset)
+    np.testing.assert_array_equal(
+        compact_env.last_step_info["final_observation"],
+        public_env.last_step_info["final_observation"],
+    )
+
+
+def test_2p_compact_profile_direct_autoreset_fixture_random_tape_matches_public_state():
+    state, actions, step_ms = _fixture_state_and_actions(
+        "scenarios/environment/source_normal_wall_death_step.json",
+        body_capacity=8,
+    )
+    batched_state = {
+        name: np.repeat(array, repeats=2, axis=0)
+        for name, array in state.items()
+    }
+    padded_random_tape = np.zeros((2, 16), dtype=np.float64)
+    padded_random_tape[:, : batched_state["random_tape_values"].shape[1]] = (
+        batched_state["random_tape_values"]
+    )
+    batched_state["random_tape_values"] = padded_random_tape
+    batched_state["pos"][1] = np.asarray([[20.0, 20.0], [60.0, 60.0]], dtype=np.float64)
+    batched_state["prev_pos"][1] = batched_state["pos"][1]
+    batched_state["heading"][1] = np.asarray([0.0, math.pi], dtype=np.float64)
+    batched_state["speed"][1] = np.asarray([0.0, 0.0], dtype=np.float64)
+    fixture_tape = np.asarray(
+        [
+            [
+                0.05,
+                0.15,
+                0.25,
+                0.35,
+                0.45,
+                0.55,
+                0.65,
+                0.75,
+                0.85,
+                0.95,
+                0.12,
+                0.22,
+                0.32,
+                0.42,
+                0.52,
+                0.62,
+            ],
+            [
+                0.95,
+                0.85,
+                0.75,
+                0.65,
+                0.55,
+                0.45,
+                0.35,
+                0.25,
+                0.15,
+                0.05,
+                0.88,
+                0.78,
+                0.68,
+                0.58,
+                0.48,
+                0.38,
+            ],
+        ],
+        dtype=np.float64,
+    )
+
+    public_env = VectorMultiplayerEnv(
+        batch_size=2,
+        player_count=2,
+        decision_ms=step_ms,
+        body_capacity=8,
+        event_capacity=16,
+        timer_capacity=4,
+        random_tape_capacity=16,
+        event_mode="debug-event",
+    )
+    compact_env = VectorMultiplayerEnv(
+        batch_size=2,
+        player_count=2,
+        decision_ms=step_ms,
+        body_capacity=8,
+        event_capacity=16,
+        timer_capacity=4,
+        random_tape_capacity=16,
+        event_mode="debug-event",
+    )
+    reset_seed = np.asarray([101, 202], dtype=np.uint64)
+    public_env.reset_from_state_arrays(batched_state, reset_seed=reset_seed)
+    compact_env.reset_from_state_arrays(batched_state, reset_seed=reset_seed)
+    public_env.step(np.repeat(actions, repeats=2, axis=0))
+    compact_env.step(np.repeat(actions, repeats=2, axis=0))
+
+    autoreset_seed = np.asarray([303, 404], dtype=np.uint64)
+    public_reset = public_env.autoreset_done_rows(
+        seed=autoreset_seed,
+        source_fixture_random_tape_values=fixture_tape,
+        source_fixture_ref="fixture-reset",
+    )
+    compact_info = compact_env.autoreset_done_rows_compact_profile(
+        seed=autoreset_seed,
+        source_fixture_random_tape_values=fixture_tape,
+        source_fixture_ref="fixture-reset",
+        use_direct_reset=True,
+    )
+
+    np.testing.assert_array_equal(compact_info["reset_rows"], public_reset.info["reset_rows"])
+    assert compact_info["reset_direct_compact_profile"] is True
+    for name, public_array in public_env.state.items():
+        np.testing.assert_array_equal(compact_env.state[name], public_array, err_msg=name)
+    np.testing.assert_array_equal(compact_env._needs_reset, public_env._needs_reset)
+    np.testing.assert_array_equal(
+        compact_env.state["random_tape_values"][0, : fixture_tape.shape[1]],
+        fixture_tape[0],
+    )
+    assert int(compact_env.state["random_tape_length"][0]) == fixture_tape.shape[1]
+
+
 def test_2p_public_reset_to_terminal_matches_source_long_wall_fixture():
     source_env, scenario, source_records = _run_source_long_1v1_no_bonus_wall_rollout()
     source_setup = scenario["source_setup"]

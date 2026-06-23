@@ -29,6 +29,53 @@ def _expected_source_angular_velocity_for_speed(speed: float) -> float:
     )
 
 
+def _body_collision_state_for_cursor_bound() -> dict[str, np.ndarray]:
+    capacity = 8
+    return {
+        "body_active": np.ones((1, capacity), dtype=bool),
+        "body_pos": np.zeros((1, capacity, 2), dtype=np.float64),
+        "body_radius": np.full((1, capacity), 0.5, dtype=np.float64),
+        "body_owner": np.full((1, capacity), 1, dtype=np.int16),
+        "body_num": np.arange(capacity, dtype=np.int32).reshape(1, capacity),
+        "body_write_cursor": np.asarray([2], dtype=np.int32),
+        "live_body_num": np.asarray([[10, 10]], dtype=np.int32),
+        "pos": np.asarray([[[10.0, 10.0], [0.0, 0.0]]], dtype=np.float64),
+        "radius": np.full((1, 2), 0.5, dtype=np.float64),
+        "trail_latency": np.zeros((1, 2), dtype=np.int32),
+    }
+
+
+def test_body_collision_rows_scans_only_live_cursor_prefix() -> None:
+    state = _body_collision_state_for_cursor_bound()
+    state["body_pos"][0, :2] = np.asarray([[50.0, 50.0], [60.0, 60.0]])
+    state["body_pos"][0, 6] = np.asarray([10.0, 10.0])
+
+    hit_rows, candidate_count, scanned_slots = vector_runtime._body_collision_rows(
+        state,
+        player=0,
+        live_mask=np.asarray([True]),
+    )
+
+    assert hit_rows.size == 0
+    assert candidate_count == 2
+    assert scanned_slots == 2
+
+
+def test_body_collision_rows_still_hits_inside_cursor_prefix() -> None:
+    state = _body_collision_state_for_cursor_bound()
+    state["body_pos"][0, 1] = np.asarray([10.0, 10.0])
+
+    hit_rows, candidate_count, scanned_slots = vector_runtime._body_collision_rows(
+        state,
+        player=0,
+        live_mask=np.asarray([True]),
+    )
+
+    np.testing.assert_array_equal(hit_rows, np.asarray([0], dtype=np.int64))
+    assert candidate_count == 2
+    assert scanned_slots == 2
+
+
 def _load_lifecycle_scenario(name: str) -> dict[str, object]:
     with (SCENARIO_DIR / name).open("r", encoding="utf-8") as handle:
         return json.load(handle)
@@ -980,6 +1027,45 @@ def test_step_many_profile_no_death_keeps_players_alive_on_wall_and_body_hits():
     )
 
 
+def test_step_many_profile_no_death_can_skip_collision_diagnostics():
+    state = _death_guard_state(row_count=2)
+    state["pos"][0, 0] = [0.3, 20.0]
+    state["prev_pos"][0, 0] = state["pos"][0, 0]
+    state["body_active"][1, 0] = True
+    state["body_pos"][1, 0] = state["pos"][1, 0]
+    state["body_radius"][1, 0] = 1.0
+    state["body_owner"][1, 0] = 1
+    state["body_num"][1, 0] = 0
+    state["body_insert_tick"][1, 0] = int(state["tick"][1])
+    state["body_insert_kind"][1, 0] = vector_runtime.BODY_KIND_NORMAL
+    state["body_write_cursor"][1] = 1
+    state["world_body_count"][1] = 1
+
+    counters = vector_runtime.step_many(
+        vector_runtime.VectorStepInput(
+            state=state,
+            step_ms=np.zeros(2, dtype=np.float64),
+            source_moves=np.zeros((2, 2), dtype=np.int8),
+            player_count=2,
+            death_mode=vector_runtime.DEATH_MODE_PROFILE_NO_DEATH,
+            event_mode=vector_runtime.EVENT_MODE_NONE,
+            collect_collision_diagnostics=False,
+        ),
+    )
+
+    assert counters["normal_wall_deaths"] == 0
+    assert counters["body_hits"] == 0
+    assert counters["body_candidates"] == 0
+    assert counters["body_scan_slots"] == 0
+    assert counters["death_points_inserted"] == 0
+    np.testing.assert_array_equal(state["alive"], np.ones((2, 2), dtype=bool))
+    np.testing.assert_array_equal(state["death_count"], np.zeros(2, dtype=np.int32))
+    np.testing.assert_array_equal(
+        state["death_player"],
+        np.full((2, 2), -1, dtype=np.int16),
+    )
+
+
 def test_step_many_death_immunity_mask_allows_mortal_peer_to_die_same_batch():
     state = _death_guard_state(row_count=1)
     state["pos"][0, 0] = [0.3, 20.0]
@@ -1117,6 +1203,40 @@ def test_phase_timer_helpers_tolerate_none_and_empty_timer_dict():
     assert phase_timers["phase_sec"] >= 0.0
 
 
+def test_step_many_phase_timers_do_not_change_counters_or_state():
+    fixture, initial_state = _runtime_fixture_state(
+        "scenarios/environment/source_normal_wall_3p_two_die_one_survivor_step.json",
+    )
+    prepared_step = vector_compare.prepare_fixture_array_step(fixture, step_index=0)
+    prepared_batch = _prepared_step_batch(prepared_step)
+    baseline_state = vector_compare.copy_array_state(initial_state)
+    timed_state = vector_compare.copy_array_state(initial_state)
+
+    baseline_counters = vector_runtime.step_many(
+        vector_runtime.VectorStepInput.from_mapping(
+            baseline_state,
+            prepared_batch,
+        )
+    )
+    phase_timers: dict[str, float] = {}
+    timed_counters = vector_runtime.step_many(
+        vector_runtime.VectorStepInput.from_mapping(
+            timed_state,
+            prepared_batch,
+        ),
+        phase_timers=phase_timers,
+    )
+
+    assert timed_counters == baseline_counters
+    assert phase_timers["movement_sec"] >= 0.0
+    assert phase_timers["source_input_sec"] >= 0.0
+    assert phase_timers["visual_trail_append_sec"] >= 0.0
+    assert phase_timers["normal_point_append_sec"] >= 0.0
+    assert phase_timers["wall_check_sec"] >= 0.0
+    for key, expected in baseline_state.items():
+        np.testing.assert_array_equal(timed_state[key], expected)
+
+
 def test_print_manager_random_distances_consume_row_local_tape_and_default_draws():
     state = _random_tape_state()
 
@@ -1198,6 +1318,33 @@ def test_natural_toggle_toggles_printing_and_updates_distance_like_toggle():
     assert counters["print_manager_toggle_updates"] == 2
     assert counters["print_manager_toggle_rows_unhandled"] == 2
     assert counters["print_manager_death_stops"] == 0
+
+
+def test_important_body_overflow_still_appends_visual_for_original_mask():
+    state = _print_manager_step_state(2, body_capacity=1)
+    state["print_manager_distance"][:, 0] = 1.0
+    state["body_active"][0, 0] = True
+    state["body_write_cursor"][0] = 1
+    state["body_count"][0, 0] = 1
+
+    counters = vector_runtime.step_many(
+        vector_runtime.VectorStepInput(
+            state=state,
+            step_ms=np.full(2, 1000.0, dtype=np.float64),
+            source_moves=np.zeros((2, 1), dtype=np.int8),
+            player_count=1,
+            print_manager_mode=np.asarray(["natural_toggle", "natural_toggle"], dtype=object),
+            event_mode=vector_runtime.EVENT_MODE_NONE,
+        ),
+    )
+
+    np.testing.assert_array_equal(state["body_overflow"], [True, False])
+    np.testing.assert_array_equal(state["overflow"], [True, False])
+    np.testing.assert_array_equal(state["body_count"][:, 0], [1, 1])
+    np.testing.assert_array_equal(state["visual_trail_active"][:, 0], [True, True])
+    np.testing.assert_array_equal(state["visual_trail_write_cursor"], [1, 1])
+    np.testing.assert_array_equal(state["visual_trail_owner"][:, 0], [0, 0])
+    assert counters["print_manager_toggle_updates"] == 2
 
 
 def test_step_many_marks_segment_break_when_inserting_after_cleared_draw_cursor():
@@ -1397,6 +1544,87 @@ def test_step_many_body_death_records_trail_owner_cause_in_no_event_mode(
     np.testing.assert_array_equal(
         state["death_hit_owner"],
         np.asarray([[body_owner, -1]], dtype=np.int16),
+    )
+
+
+def test_body_death_attribution_ignores_stale_slots_after_cursor() -> None:
+    pos = np.asarray([[[10.0, 10.0], [60.0, 60.0]]], dtype=np.float64)
+    state = {
+        "tick": np.zeros(1, dtype=np.int32),
+        "done": np.zeros(1, dtype=bool),
+        "overflow": np.zeros(1, dtype=bool),
+        "world_body_count": np.asarray([1], dtype=np.int32),
+        "alive": np.asarray([[True, True]], dtype=bool),
+        "death_tick": np.full((1, 2), -1, dtype=np.int32),
+        "death_count": np.zeros(1, dtype=np.int32),
+        "death_player": np.full((1, 2), -1, dtype=np.int16),
+        "death_cause": np.full(
+            (1, 2),
+            vector_runtime.DEATH_CAUSE_NONE,
+            dtype=np.int16,
+        ),
+        "death_hit_owner": np.full((1, 2), -1, dtype=np.int16),
+        "pos": pos.copy(),
+        "prev_pos": pos.copy(),
+        "heading": np.zeros((1, 2), dtype=np.float64),
+        "angular_velocity_per_ms": np.zeros((1, 2), dtype=np.float64),
+        "speed": np.asarray([[2.0, 0.0]], dtype=np.float64),
+        "live_body_num": np.zeros((1, 2), dtype=np.int32),
+        "trail_latency": np.zeros((1, 2), dtype=np.int32),
+        "borderless": np.zeros(1, dtype=bool),
+        "map_size": np.full(1, 100.0, dtype=np.float64),
+        "radius": np.full((1, 2), 0.5, dtype=np.float64),
+        "printing": np.zeros((1, 2), dtype=bool),
+        "print_manager_active": np.zeros((1, 2), dtype=bool),
+        "print_manager_distance": np.zeros((1, 2), dtype=np.float64),
+        "print_manager_last_pos": pos.copy(),
+        "body_active": np.asarray([[True, False, True]], dtype=bool),
+        "body_pos": np.asarray([[[12.0, 10.0], [0.0, 0.0], [12.0, 10.0]]]),
+        "body_radius": np.asarray([[1.0, 0.0, 1.0]], dtype=np.float64),
+        "body_owner": np.asarray([[1, -1, 0]], dtype=np.int16),
+        "body_num": np.asarray([[0, -1, 99]], dtype=np.int32),
+        "body_insert_tick": np.asarray([[0, -1, 99]], dtype=np.int32),
+        "body_insert_kind": np.asarray(
+            [[vector_runtime.BODY_KIND_NORMAL, -1, vector_runtime.BODY_KIND_NORMAL]],
+            dtype=np.int16,
+        ),
+        "body_write_cursor": np.asarray([1], dtype=np.int32),
+        "body_count": np.zeros((1, 2), dtype=np.int32),
+        "body_overflow": np.zeros(1, dtype=bool),
+        "visible_trail_count": np.zeros((1, 2), dtype=np.int32),
+        "has_visible_trail_last": np.zeros((1, 2), dtype=bool),
+        "visible_trail_last_pos": np.zeros((1, 2, 2), dtype=np.float64),
+        "has_draw_cursor": np.zeros((1, 2), dtype=bool),
+        "draw_cursor_pos": np.zeros((1, 2, 2), dtype=np.float64),
+        "score": np.zeros((1, 2), dtype=np.int32),
+        "round_score": np.zeros((1, 2), dtype=np.int32),
+        "event_count": np.zeros(1, dtype=np.int16),
+        "event_overflow_attempts": np.zeros(1, dtype=np.int32),
+        "random_tape_values": np.zeros((1, 1), dtype=np.float64),
+        "random_tape_length": np.ones(1, dtype=np.int32),
+        "random_tape_cursor": np.zeros(1, dtype=np.int32),
+        "random_tape_draw_count": np.zeros(1, dtype=np.int32),
+        "random_tape_exhausted": np.zeros(1, dtype=bool),
+    }
+
+    counters = vector_runtime.step_many(
+        vector_runtime.VectorStepInput(
+            state=state,
+            step_ms=np.asarray([1000.0], dtype=np.float64),
+            source_moves=np.zeros((1, 2), dtype=np.int8),
+            player_count=2,
+            event_mode=vector_runtime.EVENT_MODE_NONE,
+        ),
+    )
+
+    assert counters["body_hits"] == 1
+    np.testing.assert_array_equal(state["death_hit_owner"], np.asarray([[1, -1]]))
+    np.testing.assert_array_equal(
+        state["death_cause"],
+        np.asarray(
+            [[vector_runtime.DEATH_CAUSE_OPPONENT_TRAIL, vector_runtime.DEATH_CAUSE_NONE]],
+            dtype=np.int16,
+        ),
     )
 
 
@@ -2059,7 +2287,12 @@ def test_step_many_1v1_wall_death_marks_terminal_lifecycle_and_preserves_events(
         ),
     )
 
-    assert actual_counters == _expected_runtime_counters(expected_counters)
+    expected_runtime_counters = _expected_runtime_counters(expected_counters)
+    # Runtime collision broad-phase now reports slots actually scanned after
+    # cursor bounding, not the allocated body capacity used by the scalar fixture
+    # helper's coarse accounting.
+    expected_runtime_counters["body_scan_slots"] = 0
+    assert actual_counters == expected_runtime_counters
     assert actual_counters["normal_wall_deaths"] == 1
     assert actual_counters["terminal_score_rows"] == 1
     np.testing.assert_array_equal(actual_state["done"], np.asarray([True], dtype=bool))
@@ -4407,7 +4640,12 @@ def test_step_many_runs_supported_fixture_row_against_scalar_array_step():
         vector_runtime.VectorStepInput.from_mapping(actual_state, prepared_batch),
     )
 
-    assert actual_counters == _expected_runtime_counters(expected_counters)
+    expected_runtime_counters = _expected_runtime_counters(expected_counters)
+    # Runtime collision broad-phase now reports slots actually scanned after
+    # cursor bounding, not the allocated body capacity used by the scalar fixture
+    # helper's coarse accounting.
+    expected_runtime_counters["body_scan_slots"] = 0
+    assert actual_counters == expected_runtime_counters
     for name, expected_array in expected_state.items():
         actual_array = actual_state[name]
         if np.issubdtype(expected_array.dtype, np.floating):
