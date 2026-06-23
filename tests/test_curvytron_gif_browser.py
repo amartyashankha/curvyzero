@@ -473,23 +473,42 @@ def test_default_browser_lists_only_runs_with_picker_flag(tmp_path) -> None:
 
 def test_run_category_helpers_split_current_batch_from_archive() -> None:
     runs = [
+        {"run_id": "rnd-blank-current-w000-row-a"},
+        {"run_id": "rnd-blank-current-w005-row-a"},
+        {"run_id": "rnd-blank-gif2-w005-row-a"},
+        {"run_id": "cz26a-r001-row-a"},
+        {"run_id": "cz26b-r001-row-a"},
+        {"run_id": "cz26c-canary-row-a"},
         {"run_id": "curvy-r18v2-row-a"},
-        {"run_id": "curvy-loop18-old-row"},
+        {"run_id": "curvy-r18fresh-row-a"},
     ]
 
-    assert browser._run_category_id("curvy-r18v2-row-a") == "current"
-    assert browser._run_category_id("curvy-loop18-old-row") == "archive"
+    assert browser._run_category_id("rnd-blank-current-w000-row-a") == "current"
+    assert browser._run_category_id("rnd-blank-current-w005-row-a") == "current"
+    assert browser._run_category_id("rnd-blank-gif2-w005-row-a") == "archive"
+    assert browser._run_category_id("cz26a-r001-row-a") == "archive"
+    assert browser._run_category_id("cz26b-r001-row-a") == "archive"
+    assert browser._run_category_id("cz26c-canary-row-a") == "archive"
+    assert browser._run_category_id("curvy-r18v2-row-a") == "archive"
+    assert browser._run_category_id("curvy-r18fresh-row-a") == "archive"
     assert browser._run_category_counts(runs) == {
-        "current": 1,
-        "archive": 1,
-        "all": 2,
+        "current": 2,
+        "archive": 6,
+        "all": 8,
     }
     assert [
         run["run_id"] for run in browser._runs_for_category(runs, "current")
-    ] == ["curvy-r18v2-row-a"]
+    ] == ["rnd-blank-current-w000-row-a", "rnd-blank-current-w005-row-a"]
     assert [
         run["run_id"] for run in browser._runs_for_category(runs, "archive")
-    ] == ["curvy-loop18-old-row"]
+    ] == [
+        "rnd-blank-gif2-w005-row-a",
+        "cz26a-r001-row-a",
+        "cz26b-r001-row-a",
+        "cz26c-canary-row-a",
+        "curvy-r18v2-row-a",
+        "curvy-r18fresh-row-a",
+    ]
 
 
 def test_list_runs_uses_known_paths_without_recursive_rglob(tmp_path, monkeypatch) -> None:
@@ -864,12 +883,12 @@ def test_fastapi_index_and_api_accept_run_id_picker_selection(
     assert '<details class="run-picker">' in page_response.text
     assert "<summary>run-old</summary>" in page_response.text
     assert "confirm(" not in page_response.text
-    assert "Deleting" in page_response.text
+    assert "Archiving" in page_response.text
     assert "actionBusy" in page_response.text
     assert "setRunActionBusy" in page_response.text
     assert "loading run..." in page_response.text
     assert "refreshing..." in page_response.text
-    assert "deleting ${runName}" in page_response.text
+    assert "archiving ${runName}" in page_response.text
     assert 'body.action-busy .run-menu-link' in page_response.text
     assert 'headUrl.searchParams.delete("run_id")' in page_response.text
     assert "autoRefresh.disabled = true" in page_response.text
@@ -911,7 +930,7 @@ def test_fastapi_defaults_to_current_batch_category_and_reflects_it_in_url(
     from fastapi.testclient import TestClient
 
     monkeypatch.setattr(browser, "RUNS_MOUNT", tmp_path)
-    current_run = "curvy-v2real18-current-row"
+    current_run = "rnd-blank-current-w005-row"
     archive_run = "curvy-loop18-archive-row"
     _write_picker_flag(tmp_path, run_id=current_run, mtime=200)
     _write_picker_flag(tmp_path, run_id=archive_run, mtime=300)
@@ -1201,4 +1220,4 @@ def test_fastapi_hides_transient_open_file_reload_error(tmp_path, monkeypatch) -
     assert "Volume refresh failed" not in page_response.text
     assert api_response.status_code == 200
     assert api_response.json()["reload_error"] is None
-    assert volume.reload_count == 1
+    assert volume.reload_count == 2

@@ -302,6 +302,63 @@ def test_status_treats_partial_progress_latest_as_unreadable(monkeypatch, tmp_pa
     assert "invalid JSON" in row["progress_error"]
 
 
+def test_status_reads_learner_metrics_latest_when_progress_lacks_last_learner(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setattr(status_mod, "RUNS_MOUNT", tmp_path)
+    run_id = "run-learner-metrics"
+    attempt_id = "attempt-learner-metrics"
+    train_ref = runs.attempt_train_ref(status_mod.TASK_ID, run_id, attempt_id)
+    train_root = tmp_path / train_ref
+    train_root.mkdir(parents=True)
+    (train_root / "progress_latest.json").write_text(
+        json.dumps(
+            {
+                "schema_id": "curvyzero_lightzero_curvytron_train_progress_latest/v0",
+                "event": "checkpoint",
+                "iteration": 1000,
+                "elapsed_sec": 12.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    learner_row = {
+        "schema_id": "curvyzero_lightzero_learner_metrics/v0",
+        "learner_train_call_index": 7,
+        "train_iter_before": 6,
+        "train_iter_after": 7,
+        "train_iter_delta": 1,
+        "collector_envstep": 224,
+        "elapsed_sec": 0.5,
+        "model_parameters_changed": None,
+        "numeric_metrics": {"policy_loss": 2.5, "value_loss": 3.25},
+    }
+    (train_root / "learner_metrics_latest.json").write_text(
+        json.dumps(learner_row),
+        encoding="utf-8",
+    )
+    (train_root / "learner_metrics.jsonl").write_text(
+        json.dumps(learner_row) + "\n",
+        encoding="utf-8",
+    )
+
+    row = status_mod._run_status(
+        run_id,
+        attempt_id=attempt_id,
+        collapse_threshold=0.9,
+    )
+
+    assert row["progress_exists"] is True
+    assert row["learner_metrics_latest_exists"] is True
+    assert row["learner_metrics_point_count"] == 1
+    assert row["learner_train_call_index"] == 7
+    assert row["learner_train_iter_after"] == 7
+    assert row["learner_collector_envstep"] == 224
+    assert row["learner_numeric_metric_count"] == 2
+    assert row["learner_numeric_metrics"]["policy_loss"] == 2.5
+
+
 def test_checkpoint_summary_includes_checkpoint_mtimes(monkeypatch, tmp_path):
     monkeypatch.setattr(status_mod, "RUNS_MOUNT", tmp_path)
     run_id = "run-checkpoint-mtime"

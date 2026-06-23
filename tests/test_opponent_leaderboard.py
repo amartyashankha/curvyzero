@@ -389,7 +389,6 @@ def test_stable_slots_v1_outputs_parser_compatible_stable5_assignment_and_audit(
         profile="stable_5",
         sentinel="blank_canvas",
         expected_rating_context_hash="ctx-a",
-        checkpoint_death_mode="immortal",
     )
 
     assert assignment["schema_id"] == OPPONENT_ASSIGNMENT_SCHEMA_ID
@@ -405,7 +404,7 @@ def test_stable_slots_v1_outputs_parser_compatible_stable5_assignment_and_audit(
     assert {
         entry["opponent_policy_kind"] for entry in checkpoint_entries
     } == {"frozen_lightzero_checkpoint"}
-    assert {entry["opponent_immortal"] for entry in checkpoint_entries} == {True}
+    assert {entry["opponent_immortal"] for entry in checkpoint_entries} == {False}
     assert all("opponent_death_mode" not in entry for entry in assignment["entries"])
     assert assignment["entries"][-1]["opponent_policy_kind"] == "fixed_straight"
     assert assignment["entries"][-1]["opponent_runtime_mode"] == "blank_canvas_noop"
@@ -423,6 +422,25 @@ def test_stable_slots_v1_outputs_parser_compatible_stable5_assignment_and_audit(
     assert validate_assignment_audit(audit, assignment=assignment)["assignment_id"] == (
         "stable-slots-001"
     )
+
+
+def test_stable_slots_v1_rejects_bulk_immortal_checkpoint_slots():
+    snapshot = build_leaderboard_snapshot_from_rating_snapshot(
+        _rating_snapshot(),
+        leaderboard_id="curvytron-main",
+        snapshot_id="snapshot-001",
+        generation=7,
+    )
+
+    with pytest.raises(ValueError, match="explicit opponent-mixture recipes"):
+        select_stable_slots_v1_assignment(
+            snapshot,
+            assignment_id="stable-slots-001",
+            source_ref="tournaments/curvytron/leaderboards/main/snapshots/snapshot-001.json",
+            profile="stable_5",
+            sentinel="blank_canvas",
+            checkpoint_death_mode="immortal",
+        )
 
 
 def test_stable_slots_v1_uses_nested_recency_latest_for_run():

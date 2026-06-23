@@ -22,6 +22,7 @@ from curvyzero.infra.modal import run_management as run_mgmt
 from curvyzero.contracts.curvytron import (
     CURVYTRON_TRAINING_TASK_ID,
     curvytron_gif_browser_app_name,
+    curvytron_current_gif_run_prefixes,
     curvytron_runs_volume_name,
     modal_volume_kwargs_for_name,
 )
@@ -50,7 +51,7 @@ RUN_CATEGORY_LABELS = {
     RUN_CATEGORY_ARCHIVE: "Archive",
     RUN_CATEGORY_ALL: "All runs",
 }
-CURRENT_BATCH_RUN_PREFIXES = ("curvy-r18v2-",)
+CURRENT_BATCH_RUN_PREFIXES = curvytron_current_gif_run_prefixes()
 LISTING_CACHE_TTL_SECONDS = 10.0
 VOLUME_RELOAD_TTL_SECONDS = 30.0
 GIF_CACHE_MAX_AGE_SECONDS = 86_400
@@ -86,7 +87,7 @@ RUN_RECENCY_PATTERNS = (
 if modal is not None:
     image = (
         modal.Image.debian_slim(python_version="3.11")
-        .uv_pip_install("fastapi>=0.115")
+        .uv_pip_install("fastapi>=0.115", "numpy>=1.26")
         .env({"PYTHONPATH": str(REMOTE_ROOT / "src")})
         .add_local_dir(Path.cwd() / "src", remote_path=str(REMOTE_ROOT / "src"), copy=True)
     )
@@ -1253,7 +1254,7 @@ def _render_filters(
                 <form method="post" action="{_html_attr(delete_action)}" class="hide-run-form">
                     <button type="submit" class="danger compact" data-delete-run-id="{_html_attr(run_id)}">
                         <span class="spinner" aria-hidden="true"></span>
-                        <span class="button-label">Delete</span>
+                        <span class="button-label">Archive</span>
                     </button>
                 </form>
             </div>
@@ -1873,8 +1874,8 @@ def _render_page(
                 const label = form.querySelector(".button-label");
                 const runName = button?.dataset.deleteRunId || "run";
                 setRunActionBusy(true);
-                if (label) label.textContent = "Deleting";
-                setRefreshState(`deleting ${{runName}}...`);
+                if (label) label.textContent = "Archiving";
+                setRefreshState(`archiving ${{runName}}...`);
                 try {{
                     const response = await fetch(form.action, {{
                         method: "POST",
@@ -1883,21 +1884,21 @@ def _render_page(
                             "X-Requested-With": "fetch"
                         }}
                     }});
-                    if (!response.ok) throw new Error(`delete failed: ${{response.status}}`);
+                    if (!response.ok) throw new Error(`archive failed: ${{response.status}}`);
                     const payload = await response.json();
-                    if (!payload.ok) throw new Error("delete failed");
+                    if (!payload.ok) throw new Error("archive failed");
                     const runId = payload.run_id || runName || "";
                     const row = form.closest(".run-menu-row");
                     const picker = form.closest(".run-picker");
                     const selectedInput = document.querySelector(
                         'input[name="run_id"][form="filters-form"]'
                     );
-                    const deletedSelectedRun = selectedInput && selectedInput.value === runId;
+                    const archivedSelectedRun = selectedInput && selectedInput.value === runId;
                     if (row) row.remove();
                     for (const resultRow of document.querySelectorAll(".gif-card[data-run-id]")) {{
                         if (resultRow.dataset.runId === runId) resultRow.remove();
                     }}
-                    if (deletedSelectedRun) {{
+                    if (archivedSelectedRun) {{
                         selectedInput.remove();
                         const summary = picker?.querySelector("summary");
                         if (summary) summary.textContent = "Pick a run";
@@ -1916,11 +1917,11 @@ def _render_page(
                         url.searchParams.delete("run_id");
                         window.history.replaceState(null, "", url.pathname + url.search + url.hash);
                     }}
-                    setRefreshState(`deleted ${{runId}}`);
+                    setRefreshState(`archived ${{runId}}`);
                 }} catch (error) {{
                     form.classList.remove("is-deleting");
                     if (label) label.textContent = "Retry";
-                    setRefreshState("delete failed");
+                    setRefreshState("archive failed");
                 }} finally {{
                     setRunActionBusy(false);
                 }}
@@ -2240,7 +2241,7 @@ def _build_fastapi_app(volume: Any) -> Any:
     ) -> JSONResponse:
         reload_error = None
         if fresh:
-            reload_error = _maybe_reload_volume(volume)
+            reload_error = _maybe_reload_volume(volume, force=True)
         runs: list[dict[str, Any]] = []
         if run_id:
             try:

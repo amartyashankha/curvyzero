@@ -26,6 +26,18 @@ def _load_json(path: Path) -> dict[str, Any]:
     return payload
 
 
+def _load_refs_file(path: Path) -> list[tuple[int, str]]:
+    refs: list[tuple[int, str]] = []
+    for line_number, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        refs.append((line_number, line))
+    if not refs:
+        raise ValueError(f"{path} contains no checkpoint refs")
+    return refs
+
+
 def _as_mapping(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
@@ -156,6 +168,24 @@ def collect_checkpoint_refs(manifest: dict[str, Any]) -> tuple[list[dict[str, An
     )
 
 
+def collect_refs_file_checkpoint_refs(
+    refs_file: Path,
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    refs: dict[str, set[str]] = defaultdict(set)
+    skipped: list[dict[str, str]] = []
+    for line_number, ref in _load_refs_file(refs_file):
+        _add_ref(
+            refs,
+            ref=ref,
+            source=f"refs_file.line[{line_number}]",
+            skipped=skipped,
+        )
+    return (
+        [{"ref": ref, "sources": sorted(sources)} for ref, sources in sorted(refs.items())],
+        skipped,
+    )
+
+
 def _syntax_problem(ref: str, sources: Sequence[str]) -> str | None:
     if "latest" in ref or "ckpt_best" in ref:
         return "mutable checkpoint ref"
@@ -175,16 +205,35 @@ def _modal_ls_parent(
     modal_bin: str,
     volume_name: str,
     parent: str,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     command = [modal_bin, "volume", "ls", volume_name, parent, "--json"]
     result = subprocess.run(command, check=False, capture_output=True, text=True)
     if result.returncode != 0:
-        return []
+        return [], {
+            "parent": parent,
+            "returncode": result.returncode,
+            "stdout": result.stdout.strip(),
+            "stderr": result.stderr.strip(),
+        }
     try:
         payload = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        return []
-    return payload if isinstance(payload, list) else []
+    except json.JSONDecodeError as exc:
+        return [], {
+            "parent": parent,
+            "returncode": result.returncode,
+            "stdout": result.stdout.strip(),
+            "stderr": result.stderr.strip(),
+            "json_error": str(exc),
+        }
+    if not isinstance(payload, list):
+        return [], {
+            "parent": parent,
+            "returncode": result.returncode,
+            "stdout": result.stdout.strip(),
+            "stderr": result.stderr.strip(),
+            "json_error": "modal volume ls JSON payload was not a list",
+        }
+    return payload, None
 
 
 def _check_modal_exists(
@@ -192,19 +241,22 @@ def _check_modal_exists(
     *,
     modal_bin: str,
     volume_name: str,
-) -> dict[str, bool]:
+) -> tuple[dict[str, bool], list[dict[str, Any]]]:
     refs_by_parent: dict[str, set[str]] = defaultdict(set)
     for ref in refs:
         parent = str(PurePosixPath(ref).parent)
         refs_by_parent[parent].add(ref)
 
     exists: dict[str, bool] = {}
+    parent_errors: list[dict[str, Any]] = []
     for parent, parent_refs in sorted(refs_by_parent.items()):
-        listing = _modal_ls_parent(
+        listing, parent_error = _modal_ls_parent(
             modal_bin=modal_bin,
             volume_name=volume_name,
             parent=parent,
         )
+        if parent_error is not None:
+            parent_errors.append(parent_error)
         filenames = {
             str(item.get("Filename") or "").lstrip("/")
             for item in listing
@@ -212,29 +264,37 @@ def _check_modal_exists(
         }
         for ref in parent_refs:
             exists[ref] = ref.lstrip("/") in filenames
-    return exists
+    return exists, parent_errors
 
 
 def build_report(args: argparse.Namespace) -> dict[str, Any]:
-    manifest = _load_json(args.manifest)
+    if (args.manifest is None) == (args.refs_file is None):
+        raise ValueError("provide exactly one input: MANIFEST or --refs-file")
     runs_volume_name = str(args.runs_volume_name or curvytron_runs_volume_name()).strip()
     if not args.allow_non_v2_runs_volume and not runs_volume_name.endswith("-v2"):
         raise ValueError(f"runs volume must be all-v2 for launch audit: {runs_volume_name}")
 
-    refs, skipped = collect_checkpoint_refs(manifest)
+    if args.refs_file is not None:
+        input_kind = "refs_file"
+        input_path = args.refs_file
+        refs, skipped = collect_refs_file_checkpoint_refs(args.refs_file)
+    else:
+        input_kind = "manifest"
+        input_path = args.manifest
+        refs, skipped = collect_checkpoint_refs(_load_json(args.manifest))
     ref_texts = [entry["ref"] for entry in refs]
     local_exists = (
         _check_local_exists(ref_texts, args.runs_root) if args.runs_root is not None else {}
     )
-    modal_exists = (
-        _check_modal_exists(
+    modal_parent_errors: list[dict[str, Any]] = []
+    if args.check_modal:
+        modal_exists, modal_parent_errors = _check_modal_exists(
             ref_texts,
             modal_bin=args.modal_bin,
             volume_name=runs_volume_name,
         )
-        if args.check_modal
-        else {}
-    )
+    else:
+        modal_exists = {}
 
     checked_refs = []
     bad_refs = []
@@ -270,7 +330,10 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
     ok = not bad_refs and not missing_refs and (existence_checked or args.syntax_only)
     return {
         "schema_id": SCHEMA_ID,
-        "manifest": str(args.manifest),
+        "input_kind": input_kind,
+        "input_path": str(input_path),
+        "manifest": str(args.manifest) if args.manifest is not None else None,
+        "refs_file": str(args.refs_file) if args.refs_file is not None else None,
         "runs_volume_name": runs_volume_name,
         "runs_root": str(args.runs_root) if args.runs_root is not None else None,
         "check_modal": bool(args.check_modal),
@@ -280,9 +343,11 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         "ref_count": len(checked_refs),
         "bad_ref_count": len(bad_refs),
         "missing_ref_count": len(missing_refs),
+        "modal_parent_error_count": len(modal_parent_errors),
         "skipped_count": len(skipped),
         "bad_refs": bad_refs,
         "missing_refs": missing_refs,
+        "modal_parent_errors": modal_parent_errors,
         "refs": checked_refs,
         "skipped": skipped,
     }
@@ -290,7 +355,13 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("manifest", type=Path)
+    parser.add_argument("manifest", type=Path, nargs="?")
+    parser.add_argument(
+        "--refs-file",
+        type=Path,
+        default=None,
+        help="audit a newline-delimited checkpoint ref file instead of a launch manifest",
+    )
     parser.add_argument("--runs-root", type=Path, default=None)
     parser.add_argument("--runs-volume-name", default=curvytron_runs_volume_name())
     parser.add_argument("--check-modal", action="store_true")

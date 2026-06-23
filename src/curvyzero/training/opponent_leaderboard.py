@@ -15,7 +15,6 @@ from curvyzero.training.lightzero_checkpoints import (
     lightzero_iteration_from_checkpoint_name,
 )
 from curvyzero.training.opponent_mixture import (
-    OPPONENT_DEATH_MODE_IMMORTAL,
     OPPONENT_DEATH_MODE_NORMAL,
     OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
     OPPONENT_POLICY_KIND_FROZEN_LIGHTZERO_CHECKPOINT,
@@ -466,17 +465,11 @@ def select_stable_slots_v1_assignment(
             row,
             weight=float(weights.get(slot_name, 1.0)),
         )
-        entry["opponent_immortal"] = (
-            checkpoint_death_mode == OPPONENT_DEATH_MODE_IMMORTAL
-        )
+        entry["opponent_immortal"] = False
         entry["tags"] = [
             *entry.get("tags", []),
             "strategy:stable_slots_v1",
-            (
-                "checkpoint_death:immortal"
-                if checkpoint_death_mode == OPPONENT_DEATH_MODE_IMMORTAL
-                else "checkpoint_death:normal"
-            ),
+            "checkpoint_death:normal",
         ]
         assignment_entries.append(entry)
         evidence = {
@@ -771,10 +764,11 @@ def _validate_stable_sentinel(sentinel: str) -> str:
 
 def _validate_checkpoint_death_mode(checkpoint_death_mode: str) -> str:
     normalized = str(checkpoint_death_mode or OPPONENT_DEATH_MODE_NORMAL).strip()
-    if normalized not in {OPPONENT_DEATH_MODE_NORMAL, OPPONENT_DEATH_MODE_IMMORTAL}:
+    if normalized != OPPONENT_DEATH_MODE_NORMAL:
         raise ValueError(
             "stable_slots_v1 checkpoint_death_mode must be "
-            f"{OPPONENT_DEATH_MODE_NORMAL!r} or {OPPONENT_DEATH_MODE_IMMORTAL!r}"
+            f"{OPPONENT_DEATH_MODE_NORMAL!r}; use explicit opponent-mixture "
+            "recipes for small immortal frozen-checkpoint slices"
         )
     return normalized
 

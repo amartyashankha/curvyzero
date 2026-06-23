@@ -52,6 +52,7 @@ from curvyzero.infra.modal.lightzero_curvyzero_stacked_debug_visual_survival_tra
     DEFAULT_OPPONENT_RUNTIME_MODE,
     DEFAULT_OPPONENT_USE_CUDA,
     DEFAULT_OPPONENT_POLICY_KIND,
+    DEFAULT_REWARD_OUTCOME_ALPHA,
     DEFAULT_REWARD_VARIANT,
     DEFAULT_RUN_ID as TRAIN_DEFAULT_RUN_ID,
     DEFAULT_SAVE_CKPT_AFTER_ITER,
@@ -63,9 +64,7 @@ from curvyzero.infra.modal.lightzero_curvyzero_stacked_debug_visual_survival_tra
     TASK_ID,
     TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN,
     VOLUME_NAME,
-    _build_visual_survival_configs,
     _normalize_opponent_policy_kind_for_env,
-    _normalize_reward_variant_for_env,
     _resolve_opponent_checkpoint_for_env,
     _resolve_opponent_mixture_for_env,
     _to_plain,
@@ -75,6 +74,14 @@ from curvyzero.infra.modal.lightzero_curvyzero_stacked_debug_visual_survival_tra
 from curvyzero.infra.modal.lightzero_curvyzero_stacked_debug_visual_survival_train import (
     ENV_VARIANT_CHOICES,
     OPPONENT_POLICY_KIND_CHOICES,
+)
+from curvyzero.training.lightzero_config_builder import (
+    build_visual_survival_configs as _build_visual_survival_configs,
+    target_config_patches as _target_config_patches,
+)
+from curvyzero.training.reward_contracts import (
+    lightzero_target_config_for_reward as _lightzero_target_config_for_reward,
+    normalize_reward_variant_for_env as _normalize_reward_variant_for_env,
 )
 
 
@@ -700,8 +707,10 @@ def _make_policy_and_env(
     telemetry_path: Path,
     env_variant: str,
     reward_variant: str,
+    reward_outcome_alpha: float = DEFAULT_REWARD_OUTCOME_ALPHA,
     model_env_variant: str | None = None,
     model_reward_variant: str | None = None,
+    model_reward_outcome_alpha: float | None = None,
     opponent_policy_kind: str,
     opponent_checkpoint: dict[str, Any] | None,
     opponent_snapshot_ref: str | None,
@@ -739,6 +748,7 @@ def _make_policy_and_env(
         save_ckpt_after_iter=DEFAULT_SAVE_CKPT_AFTER_ITER,
         env_variant=env_variant,
         reward_variant=reward_variant,
+        reward_outcome_alpha=reward_outcome_alpha,
         ego_action_straight_override_probability=0.0,
         control_noise_profile_id="none",
         disable_death_for_profile=False,
@@ -757,17 +767,22 @@ def _make_policy_and_env(
     model_env_variant = model_env_variant or env_variant
     # Only used to rebuild the checkpoint model shape; survival scoring stays steps-based.
     model_reward_variant = model_reward_variant or reward_variant
+    model_reward_outcome_alpha = (
+        float(reward_outcome_alpha)
+        if model_reward_outcome_alpha is None
+        else float(model_reward_outcome_alpha)
+    )
     model_target_patches: list[dict[str, Any]] = []
-    if model_env_variant != env_variant or model_reward_variant != reward_variant:
-        from curvyzero.infra.modal.lightzero_curvyzero_stacked_debug_visual_survival_train import (
-            _lightzero_target_config_for_reward,
-            _target_config_patches,
-        )
-
+    if (
+        model_env_variant != env_variant
+        or model_reward_variant != reward_variant
+        or float(model_reward_outcome_alpha) != float(reward_outcome_alpha)
+    ):
         model_target_config = _lightzero_target_config_for_reward(
             env_variant=model_env_variant,
             reward_variant=model_reward_variant,
             source_max_steps=source_max_steps,
+            reward_outcome_alpha=float(model_reward_outcome_alpha),
         )
         model_target_patches.extend(
             _target_config_patches(
@@ -777,13 +792,10 @@ def _make_policy_and_env(
         )
         patched["surface"]["model_env_variant"] = model_env_variant
         patched["surface"]["model_reward_variant"] = model_reward_variant
+        patched["surface"]["model_reward_outcome_alpha"] = float(model_reward_outcome_alpha)
         patched["surface"]["model_lightzero_target_config"] = model_target_config
     inferred_support_config = _infer_model_support_config_from_state_dict(state_dict)
     if inferred_support_config:
-        from curvyzero.infra.modal.lightzero_curvyzero_stacked_debug_visual_survival_train import (
-            _target_config_patches,
-        )
-
         model_target_patches.extend(
             _target_config_patches(
                 patched["main_config"],
@@ -990,7 +1002,9 @@ def _eval_checkpoint(
     telemetry_path: Path,
     env_variant: str,
     eval_reward_variant: str,
+    reward_outcome_alpha: float,
     model_reward_variant: str | None,
+    model_reward_outcome_alpha: float | None,
     opponent_policy_kind: str,
     opponent_checkpoint: dict[str, Any] | None,
     opponent_snapshot_ref: str | None,
@@ -1021,7 +1035,9 @@ def _eval_checkpoint(
         telemetry_path=telemetry_path,
         env_variant=env_variant,
         reward_variant=eval_reward_variant,
+        reward_outcome_alpha=float(reward_outcome_alpha),
         model_reward_variant=model_reward_variant,
+        model_reward_outcome_alpha=model_reward_outcome_alpha,
         opponent_policy_kind=opponent_policy_kind,
         opponent_checkpoint=opponent_checkpoint,
         opponent_snapshot_ref=opponent_snapshot_ref,
@@ -1380,7 +1396,9 @@ def _run_eval(
     quiet_framework_logs: bool,
     env_variant: str,
     reward_variant: str = DEFAULT_REWARD_VARIANT,
+    reward_outcome_alpha: float = DEFAULT_REWARD_OUTCOME_ALPHA,
     model_reward_variant: str | None = None,
+    model_reward_outcome_alpha: float | None = None,
     opponent_policy_kind: str,
     opponent_checkpoint_ref: str | None,
     opponent_snapshot_ref: str | None,
@@ -1426,6 +1444,11 @@ def _run_eval(
             reward_variant=model_reward_variant,
         )
     effective_model_reward_variant = model_reward_variant or eval_reward_variant
+    effective_model_reward_outcome_alpha = (
+        float(reward_outcome_alpha)
+        if model_reward_outcome_alpha is None
+        else float(model_reward_outcome_alpha)
+    )
     if opponent_policy_kind not in OPPONENT_POLICY_KIND_CHOICES:
         raise ValueError(
             f"unknown opponent_policy_kind {opponent_policy_kind!r}; "
@@ -1471,9 +1494,14 @@ def _run_eval(
         "eval_reward_variant": eval_reward_variant,
         "env_reward_variant": eval_reward_variant,
         "reward_variant": eval_reward_variant,
+        "reward_outcome_alpha": float(reward_outcome_alpha),
         "reward_variant_role": "backward_compatible_alias_for_eval_reward_variant",
         "model_reward_variant": model_reward_variant,
         "effective_model_reward_variant": effective_model_reward_variant,
+        "model_reward_outcome_alpha": (
+            None if model_reward_outcome_alpha is None else float(model_reward_outcome_alpha)
+        ),
+        "effective_model_reward_outcome_alpha": float(effective_model_reward_outcome_alpha),
         "model_reward_variant_role": "checkpoint_model_reconstruction_only_not_scoring",
         "training_reward_telemetry_field": "episode.total_reward",
         "modal_task_id": os.environ.get("MODAL_TASK_ID"),
@@ -1505,7 +1533,9 @@ def _run_eval(
                 telemetry_path=telemetry_path,
                 env_variant=env_variant,
                 eval_reward_variant=eval_reward_variant,
+                reward_outcome_alpha=float(reward_outcome_alpha),
                 model_reward_variant=model_reward_variant,
+                model_reward_outcome_alpha=model_reward_outcome_alpha,
                 opponent_policy_kind=opponent_policy_kind,
                 opponent_checkpoint=opponent_checkpoint,
                 opponent_snapshot_ref=opponent_snapshot_ref,
@@ -1592,7 +1622,9 @@ def curvytron_visual_survival_eval_cpu(
     quiet_framework_logs: bool = DEFAULT_QUIET_FRAMEWORK_LOGS,
     env_variant: str = DEFAULT_ENV_VARIANT,
     reward_variant: str = DEFAULT_REWARD_VARIANT,
+    reward_outcome_alpha: float = DEFAULT_REWARD_OUTCOME_ALPHA,
     model_reward_variant: str | None = None,
+    model_reward_outcome_alpha: float | None = None,
     opponent_policy_kind: str = DEFAULT_OPPONENT_POLICY_KIND,
     opponent_checkpoint_ref: str | None = None,
     opponent_snapshot_ref: str | None = None,
@@ -1621,7 +1653,9 @@ def curvytron_visual_survival_eval_cpu(
         quiet_framework_logs=quiet_framework_logs,
         env_variant=env_variant,
         reward_variant=reward_variant,
+        reward_outcome_alpha=reward_outcome_alpha,
         model_reward_variant=model_reward_variant,
+        model_reward_outcome_alpha=model_reward_outcome_alpha,
         opponent_policy_kind=opponent_policy_kind,
         opponent_checkpoint_ref=opponent_checkpoint_ref,
         opponent_snapshot_ref=opponent_snapshot_ref,
@@ -1659,7 +1693,9 @@ def curvytron_visual_survival_eval_gpu(
     quiet_framework_logs: bool = DEFAULT_QUIET_FRAMEWORK_LOGS,
     env_variant: str = DEFAULT_ENV_VARIANT,
     reward_variant: str = DEFAULT_REWARD_VARIANT,
+    reward_outcome_alpha: float = DEFAULT_REWARD_OUTCOME_ALPHA,
     model_reward_variant: str | None = None,
+    model_reward_outcome_alpha: float | None = None,
     opponent_policy_kind: str = DEFAULT_OPPONENT_POLICY_KIND,
     opponent_checkpoint_ref: str | None = None,
     opponent_snapshot_ref: str | None = None,
@@ -1688,7 +1724,9 @@ def curvytron_visual_survival_eval_gpu(
         quiet_framework_logs=quiet_framework_logs,
         env_variant=env_variant,
         reward_variant=reward_variant,
+        reward_outcome_alpha=reward_outcome_alpha,
         model_reward_variant=model_reward_variant,
+        model_reward_outcome_alpha=model_reward_outcome_alpha,
         opponent_policy_kind=opponent_policy_kind,
         opponent_checkpoint_ref=opponent_checkpoint_ref,
         opponent_snapshot_ref=opponent_snapshot_ref,
@@ -1726,7 +1764,9 @@ def curvytron_visual_survival_eval_gpu_cpu40(
     quiet_framework_logs: bool = DEFAULT_QUIET_FRAMEWORK_LOGS,
     env_variant: str = DEFAULT_ENV_VARIANT,
     reward_variant: str = DEFAULT_REWARD_VARIANT,
+    reward_outcome_alpha: float = DEFAULT_REWARD_OUTCOME_ALPHA,
     model_reward_variant: str | None = None,
+    model_reward_outcome_alpha: float | None = None,
     opponent_policy_kind: str = DEFAULT_OPPONENT_POLICY_KIND,
     opponent_checkpoint_ref: str | None = None,
     opponent_snapshot_ref: str | None = None,
@@ -1755,7 +1795,9 @@ def curvytron_visual_survival_eval_gpu_cpu40(
         quiet_framework_logs=quiet_framework_logs,
         env_variant=env_variant,
         reward_variant=reward_variant,
+        reward_outcome_alpha=reward_outcome_alpha,
         model_reward_variant=model_reward_variant,
+        model_reward_outcome_alpha=model_reward_outcome_alpha,
         opponent_policy_kind=opponent_policy_kind,
         opponent_checkpoint_ref=opponent_checkpoint_ref,
         opponent_snapshot_ref=opponent_snapshot_ref,

@@ -21,6 +21,7 @@ from curvyzero.env.observation_surface_contract import (
     POLICY_OBSERVATION_PERSPECTIVE,
     POLICY_OBSERVATION_PERSPECTIVE_PLAYER_AXIS,
     POLICY_OBSERVATION_PERSPECTIVE_SCHEMA_ID,
+    POLICY_OBSERVATION_SEAT_MAPPING,
     is_policy_surface,
     policy_observation_surface,
 )
@@ -161,6 +162,71 @@ def checkpoint_metadata_from_ref(ref: str) -> dict[str, Any]:
         "attempt_id": attempt_id,
         "iteration": iteration,
     }
+
+
+CHECKPOINT_POLICY_METADATA_SIDECAR_SCHEMA_ID = "curvyzero_checkpoint_policy_metadata/v0"
+
+
+def checkpoint_policy_metadata_sidecar_ref(checkpoint_ref: str) -> PurePosixPath:
+    """Return the durable metadata sidecar ref for one exact checkpoint ref."""
+
+    path = runs.require_relative_ref(checkpoint_ref)
+    return PurePosixPath(f"{path.as_posix()}.metadata.json")
+
+
+def _checkpoint_metadata_payload_refs(checkpoint_ref: str) -> list[PurePosixPath]:
+    path = runs.require_relative_ref(checkpoint_ref)
+    parts = path.parts
+    metadata_refs: list[PurePosixPath] = [
+        checkpoint_policy_metadata_sidecar_ref(path.as_posix()),
+    ]
+    if len(parts) >= 5 and parts[0] == "training" and parts[3] == "attempts":
+        attempt_root = PurePosixPath(*parts[:5])
+        metadata_refs.append(attempt_root / "command.json")
+        metadata_refs.append(attempt_root / "attempt.json")
+    if len(parts) >= 3 and parts[0] == "training":
+        run_root = PurePosixPath(*parts[:3])
+        metadata_refs.append(run_root / "run.json")
+    return metadata_refs
+
+
+def _checkpoint_metadata_payloads_from_ref(
+    checkpoint_ref: str,
+    *,
+    mount: Path,
+) -> list[dict[str, Any]]:
+    payloads: list[dict[str, Any]] = []
+    for ref in _checkpoint_metadata_payload_refs(checkpoint_ref):
+        metadata_path = runs.volume_path(mount, ref)
+        if not metadata_path.exists():
+            continue
+        try:
+            with metadata_path.open("r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except Exception:
+            continue
+        if isinstance(payload, dict):
+            payloads.append(payload)
+    return payloads
+
+
+def checkpoint_policy_metadata_from_ref(
+    checkpoint_ref: str,
+    *,
+    mount: Path,
+) -> dict[str, Any]:
+    sidecar_path = runs.volume_path(
+        mount,
+        checkpoint_policy_metadata_sidecar_ref(checkpoint_ref),
+    )
+    if not sidecar_path.exists():
+        return {}
+    try:
+        with sidecar_path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except Exception:
+        return {}
+    return dict(payload) if isinstance(payload, Mapping) else {}
 
 
 def _checkpoint_label_disambiguator(ref: str) -> str:
@@ -1118,6 +1184,12 @@ def _compact_game_result(result: Mapping[str, Any]) -> dict[str, Any]:
         "worker_timing": result.get("worker_timing"),
         "error": result.get("error"),
         "error_type": result.get("error_type"),
+        "checkpoint_reload_error": result.get("checkpoint_reload_error"),
+        "commit_error": result.get("commit_error"),
+        "summary_timing_rewrite_error": result.get("summary_timing_rewrite_error"),
+        "failure_summary_write_error": result.get("failure_summary_write_error"),
+        "failure_summary_write_error_type": result.get("failure_summary_write_error_type"),
+        "intended_summary_ref": result.get("intended_summary_ref"),
     }
 
 
@@ -1309,6 +1381,15 @@ def normalize_rating_spec(raw: Mapping[str, Any] | None = None) -> dict[str, Any
             backend=str(checkpoint["policy_observation_backend"]),
             context=f"checkpoint {checkpoint['checkpoint_id']}",
         )
+    raw_decision_source_frames = spec.get(
+        "decision_source_frames",
+        DEFAULT_DECISION_SOURCE_FRAMES,
+    )
+    if raw_decision_source_frames in (None, "", 0, "0"):
+        raw_decision_source_frames = DEFAULT_DECISION_SOURCE_FRAMES
+    decision_source_frames = int(raw_decision_source_frames)
+    if decision_source_frames < 1:
+        raise ValueError("decision_source_frames must be positive")
     return {
         "schema_id": RATING_CONFIG_SCHEMA_ID,
         "formula_version": RATING_FORMULA_VERSION,
@@ -1343,7 +1424,7 @@ def normalize_rating_spec(raw: Mapping[str, Any] | None = None) -> dict[str, Any
         "seed": int(spec.get("seed", 0)),
         "max_steps": int(spec.get("max_steps", DEFAULT_MAX_STEPS)),
         "decision_ms": float(spec.get("decision_ms", DEFAULT_DECISION_MS)),
-        "decision_source_frames": spec.get("decision_source_frames"),
+        "decision_source_frames": decision_source_frames,
         "source_physics_step_ms": float(
             spec.get("source_physics_step_ms", DEFAULT_SOURCE_PHYSICS_STEP_MS)
         ),
@@ -1690,11 +1771,9 @@ def select_adaptive_v0_pair_slots(
         for row in rows
         if int(row["index"]) not in coverage_target_indices
     ]
-    first_touch_floor = 0
     placement_max_need = 0
     if coverage_target_indices:
         total_coverage_deficit = sum(coverage_deficit_by_index.values())
-        first_touch_floor = math.ceil(len(coverage_target_indices) / 2.0)
         placement_max_need = int(total_coverage_deficit)
     if spec["include_self_pairs"]:
         max_pair_count = len(checkpoints) * (len(checkpoints) + 1) // 2
@@ -1702,7 +1781,7 @@ def select_adaptive_v0_pair_slots(
         max_pair_count = len(checkpoints) * (len(checkpoints) - 1) // 2
     effective_round_budget = min(
         max_pair_count,
-        max(requested_budget, first_touch_floor),
+        requested_budget,
     )
     budget = effective_round_budget
     anchor_indices = []
@@ -1784,7 +1863,12 @@ def select_adaptive_v0_pair_slots(
     ]
 
     def sigmoid(value: float) -> float:
-        return 1.0 / (1.0 + math.exp(-float(value)))
+        x = float(value)
+        if x >= 0.0:
+            z = math.exp(-x)
+            return 1.0 / (1.0 + z)
+        z = math.exp(x)
+        return z / (1.0 + z)
 
     def top_band_boost(index: int) -> float:
         rank = int(rank_by_index.get(index, len(rows)))
@@ -2814,6 +2898,95 @@ def _checkpoint_policy_observation_backend_from_payload(payload: Any) -> str | N
     return None
 
 
+def _checkpoint_policy_observation_contract_id_from_payload(
+    payload: Any,
+) -> str | None:
+    if not isinstance(payload, Mapping):
+        return None
+    candidates: list[Any] = []
+    metadata = payload.get("metadata")
+    if isinstance(metadata, Mapping):
+        candidates.extend(
+            [
+                metadata.get("policy_observation_contract_id"),
+                metadata.get("observation_contract_id"),
+            ]
+        )
+        observation_contract = metadata.get("observation_contract")
+        if isinstance(observation_contract, Mapping):
+            candidates.append(observation_contract.get("contract_id"))
+    config = payload.get("config")
+    if isinstance(config, Mapping):
+        candidates.extend(
+            [
+                config.get("policy_observation_contract_id"),
+                config.get("observation_contract_id"),
+            ]
+        )
+        observation_contract = config.get("observation_contract")
+        if isinstance(observation_contract, Mapping):
+            candidates.append(observation_contract.get("contract_id"))
+    observation_contract = payload.get("observation_contract")
+    if isinstance(observation_contract, Mapping):
+        candidates.append(observation_contract.get("contract_id"))
+    candidates.extend(
+        [
+            payload.get("policy_observation_contract_id"),
+            payload.get("observation_contract_id"),
+        ]
+    )
+    for value in candidates:
+        if value:
+            return str(value)
+    return None
+
+
+def _checkpoint_policy_observation_perspective_schema_id_from_payload(
+    payload: Any,
+) -> str | None:
+    if not isinstance(payload, Mapping):
+        return None
+    candidates: list[Any] = []
+    metadata = payload.get("metadata")
+    if isinstance(metadata, Mapping):
+        candidates.extend(
+            [
+                metadata.get("policy_observation_perspective_schema_id"),
+                metadata.get("player_perspective_schema_id"),
+                metadata.get("perspective_schema_id"),
+            ]
+        )
+        observation_contract = metadata.get("observation_contract")
+        if isinstance(observation_contract, Mapping):
+            candidates.append(observation_contract.get("perspective_schema_id"))
+    config = payload.get("config")
+    if isinstance(config, Mapping):
+        candidates.extend(
+            [
+                config.get("policy_observation_perspective_schema_id"),
+                config.get("player_perspective_schema_id"),
+                config.get("perspective_schema_id"),
+            ]
+        )
+        observation_contract = config.get("observation_contract")
+        if isinstance(observation_contract, Mapping):
+            candidates.append(observation_contract.get("perspective_schema_id"))
+    observation_contract = payload.get("observation_contract")
+    if isinstance(observation_contract, Mapping):
+        candidates.append(observation_contract.get("perspective_schema_id"))
+    candidates.extend(
+        [
+            payload.get("policy_observation_perspective_schema_id"),
+            payload.get("player_perspective_schema_id"),
+            payload.get("perspective_schema_id"),
+        ]
+    )
+    for value in candidates:
+        if value:
+            return str(value)
+    return None
+
+
 def _checkpoint_runtime_settings_from_payload(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, Mapping):
         return {}
@@ -2825,7 +2998,13 @@ def _checkpoint_runtime_settings_from_payload(payload: Any) -> dict[str, Any]:
     candidates.append(payload)
     settings: dict[str, Any] = {}
     for candidate in candidates:
-        for key in ("decision_source_frames", "source_physics_step_ms", "decision_ms"):
+        for key in (
+            "decision_source_frames",
+            "source_physics_step_ms",
+            "decision_ms",
+            "source_max_steps",
+            "source_max_steps_semantics",
+        ):
             if key in settings:
                 continue
             value = candidate.get(key)
@@ -2877,27 +3056,8 @@ def _checkpoint_model_contract_from_ref(
     *,
     mount: Path,
 ) -> dict[str, Any]:
-    path = runs.require_relative_ref(checkpoint_ref)
-    parts = path.parts
-    metadata_refs: list[PurePosixPath] = []
-    if len(parts) >= 5 and parts[0] == "training" and parts[3] == "attempts":
-        attempt_root = PurePosixPath(*parts[:5])
-        metadata_refs.append(attempt_root / "command.json")
-        metadata_refs.append(attempt_root / "attempt.json")
-    if len(parts) >= 3 and parts[0] == "training":
-        run_root = PurePosixPath(*parts[:3])
-        metadata_refs.append(run_root / "run.json")
-
     contract: dict[str, Any] = {}
-    for ref in metadata_refs:
-        metadata_path = runs.volume_path(mount, ref)
-        if not metadata_path.exists():
-            continue
-        try:
-            with metadata_path.open("r", encoding="utf-8") as handle:
-                payload = json.load(handle)
-        except Exception:
-            continue
+    for payload in _checkpoint_metadata_payloads_from_ref(checkpoint_ref, mount=mount):
         payload_contract = _checkpoint_model_contract_from_payload(payload)
         for key, value in payload_contract.items():
             contract.setdefault(key, value)
@@ -2909,25 +3069,7 @@ def _checkpoint_policy_trail_render_mode_from_ref(
     *,
     mount: Path,
 ) -> str | None:
-    path = runs.require_relative_ref(checkpoint_ref)
-    parts = path.parts
-    metadata_refs: list[PurePosixPath] = []
-    if len(parts) >= 3 and parts[0] == "training":
-        run_root = PurePosixPath(*parts[:3])
-        metadata_refs.append(run_root / "run.json")
-    if len(parts) >= 5 and parts[0] == "training" and parts[3] == "attempts":
-        attempt_root = PurePosixPath(*parts[:5])
-        metadata_refs.append(attempt_root / "attempt.json")
-        metadata_refs.append(attempt_root / "command.json")
-    for ref in metadata_refs:
-        metadata_path = runs.volume_path(mount, ref)
-        if not metadata_path.exists():
-            continue
-        try:
-            with metadata_path.open("r", encoding="utf-8") as handle:
-                payload = json.load(handle)
-        except Exception:
-            continue
+    for payload in _checkpoint_metadata_payloads_from_ref(checkpoint_ref, mount=mount):
         mode = _checkpoint_policy_trail_render_mode_from_payload(payload)
         if mode:
             return mode
@@ -2939,29 +3081,165 @@ def _checkpoint_policy_bonus_render_mode_from_ref(
     *,
     mount: Path,
 ) -> str | None:
-    path = runs.require_relative_ref(checkpoint_ref)
-    parts = path.parts
-    metadata_refs: list[PurePosixPath] = []
-    if len(parts) >= 3 and parts[0] == "training":
-        run_root = PurePosixPath(*parts[:3])
-        metadata_refs.append(run_root / "run.json")
-    if len(parts) >= 5 and parts[0] == "training" and parts[3] == "attempts":
-        attempt_root = PurePosixPath(*parts[:5])
-        metadata_refs.append(attempt_root / "attempt.json")
-        metadata_refs.append(attempt_root / "command.json")
-    for ref in metadata_refs:
-        metadata_path = runs.volume_path(mount, ref)
-        if not metadata_path.exists():
-            continue
-        try:
-            with metadata_path.open("r", encoding="utf-8") as handle:
-                payload = json.load(handle)
-        except Exception:
-            continue
+    for payload in _checkpoint_metadata_payloads_from_ref(checkpoint_ref, mount=mount):
         mode = _checkpoint_policy_bonus_render_mode_from_payload(payload)
         if mode:
             return mode
     return None
+
+
+def _checkpoint_policy_observation_backend_from_ref(
+    checkpoint_ref: str,
+    *,
+    mount: Path,
+) -> str | None:
+    for payload in _checkpoint_metadata_payloads_from_ref(checkpoint_ref, mount=mount):
+        backend = _checkpoint_policy_observation_backend_from_payload(payload)
+        if backend:
+            return backend
+    return None
+
+
+def _checkpoint_policy_observation_contract_id_from_ref(
+    checkpoint_ref: str,
+    *,
+    mount: Path,
+) -> str | None:
+    for payload in _checkpoint_metadata_payloads_from_ref(checkpoint_ref, mount=mount):
+        contract_id = _checkpoint_policy_observation_contract_id_from_payload(payload)
+        if contract_id:
+            return contract_id
+    return None
+
+
+def _checkpoint_policy_observation_perspective_schema_id_from_ref(
+    checkpoint_ref: str,
+    *,
+    mount: Path,
+) -> str | None:
+    for payload in _checkpoint_metadata_payloads_from_ref(checkpoint_ref, mount=mount):
+        schema_id = _checkpoint_policy_observation_perspective_schema_id_from_payload(
+            payload
+        )
+        if schema_id:
+            return schema_id
+    return None
+
+
+def _require_loaded_policy_observation_metadata(
+    *,
+    checkpoint_ref: str,
+    policy_trail_render_mode: str | None,
+    policy_bonus_render_mode: str | None,
+    policy_observation_backend: str | None,
+    policy_observation_contract_id: str | None,
+    policy_observation_perspective_schema_id: str | None,
+) -> None:
+    missing = [
+        name
+        for name, value in (
+            ("policy_trail_render_mode", policy_trail_render_mode),
+            ("policy_bonus_render_mode", policy_bonus_render_mode),
+            ("policy_observation_backend", policy_observation_backend),
+            ("policy_observation_contract_id", policy_observation_contract_id),
+            (
+                "policy_observation_perspective_schema_id",
+                policy_observation_perspective_schema_id,
+            ),
+        )
+        if not value
+    ]
+    if missing:
+        raise ValueError(
+            "checkpoint is missing required policy observation metadata: "
+            f"{', '.join(missing)} for {checkpoint_ref!r}. Fresh tournament "
+            "evaluation requires explicit checkpoint metadata so the policy sees "
+            "the same observation surface it was trained on."
+        )
+    _require_policy_surface(
+        trail_render_mode=str(policy_trail_render_mode),
+        bonus_render_mode=str(policy_bonus_render_mode),
+        context=f"loaded checkpoint {checkpoint_ref}",
+    )
+    _require_policy_observation_backend(
+        backend=str(policy_observation_backend),
+        context=f"loaded checkpoint {checkpoint_ref}",
+    )
+    if str(policy_observation_contract_id) != DEFAULT_POLICY_OBSERVATION_CONTRACT_ID:
+        raise ValueError(
+            f"loaded checkpoint {checkpoint_ref} policy observation contract must be "
+            f"{DEFAULT_POLICY_OBSERVATION_CONTRACT_ID!r}; got "
+            f"{policy_observation_contract_id!r}."
+        )
+    if (
+        str(policy_observation_perspective_schema_id)
+        != POLICY_OBSERVATION_PERSPECTIVE_SCHEMA_ID
+    ):
+        raise ValueError(
+            f"loaded checkpoint {checkpoint_ref} policy observation perspective schema "
+            f"must be {POLICY_OBSERVATION_PERSPECTIVE_SCHEMA_ID!r}; got "
+            f"{policy_observation_perspective_schema_id!r}."
+        )
+
+
+def _iter_checkpoint_observation_contracts(
+    payload: Mapping[str, Any],
+) -> list[Mapping[str, Any]]:
+    contracts: list[Mapping[str, Any]] = []
+    for container in (
+        payload,
+        payload.get("metadata"),
+        payload.get("config"),
+    ):
+        if not isinstance(container, Mapping):
+            continue
+        contract = container.get("observation_contract")
+        if isinstance(contract, Mapping):
+            contracts.append(contract)
+    return contracts
+
+
+def _require_loaded_policy_observation_contracts_consistent(
+    *,
+    checkpoint_ref: str,
+    payloads: Sequence[Mapping[str, Any]],
+    policy_trail_render_mode: str,
+    policy_bonus_render_mode: str,
+    policy_observation_backend: str,
+    policy_observation_contract_id: str,
+    policy_observation_perspective_schema_id: str,
+) -> None:
+    expected_values = {
+        "contract_id": policy_observation_contract_id,
+        "perspective_schema_id": policy_observation_perspective_schema_id,
+        "perspective": POLICY_OBSERVATION_PERSPECTIVE,
+        "seat_mapping": POLICY_OBSERVATION_SEAT_MAPPING,
+        "trail_render_mode": policy_trail_render_mode,
+        "bonus_render_mode": policy_bonus_render_mode,
+        "backend": policy_observation_backend,
+        "stack_shape": list(DEFAULT_POLICY_OBSERVATION_SURFACE["stack_shape"]),
+        "single_frame_shape": list(
+            DEFAULT_POLICY_OBSERVATION_SURFACE["single_frame_shape"]
+        ),
+    }
+    for payload in payloads:
+        for contract in _iter_checkpoint_observation_contracts(payload):
+            for key, expected in expected_values.items():
+                if key not in contract:
+                    continue
+                actual = contract.get(key)
+                if isinstance(expected, list):
+                    if list(actual) != expected:
+                        raise ValueError(
+                            f"loaded checkpoint {checkpoint_ref} observation_contract."
+                            f"{key} must be {expected!r}; got {actual!r}."
+                        )
+                    continue
+                if str(actual) != str(expected):
+                    raise ValueError(
+                        f"loaded checkpoint {checkpoint_ref} observation_contract."
+                        f"{key} must be {expected!r}; got {actual!r}."
+                    )
 
 
 def _checkpoint_runtime_settings_from_ref(
@@ -2969,25 +3247,7 @@ def _checkpoint_runtime_settings_from_ref(
     *,
     mount: Path,
 ) -> dict[str, Any]:
-    path = runs.require_relative_ref(checkpoint_ref)
-    parts = path.parts
-    metadata_refs: list[PurePosixPath] = []
-    if len(parts) >= 3 and parts[0] == "training":
-        run_root = PurePosixPath(*parts[:3])
-        metadata_refs.append(run_root / "run.json")
-    if len(parts) >= 5 and parts[0] == "training" and parts[3] == "attempts":
-        attempt_root = PurePosixPath(*parts[:5])
-        metadata_refs.append(attempt_root / "attempt.json")
-        metadata_refs.append(attempt_root / "command.json")
-    for ref in metadata_refs:
-        metadata_path = runs.volume_path(mount, ref)
-        if not metadata_path.exists():
-            continue
-        try:
-            with metadata_path.open("r", encoding="utf-8") as handle:
-                payload = json.load(handle)
-        except Exception:
-            continue
+    for payload in _checkpoint_metadata_payloads_from_ref(checkpoint_ref, mount=mount):
         settings = _checkpoint_runtime_settings_from_payload(payload)
         if settings:
             return settings
@@ -3032,7 +3292,43 @@ def _load_policy_from_checkpoint(
     )
     policy_observation_backend = (
         _checkpoint_policy_observation_backend_from_payload(payload)
-        or DEFAULT_TOURNAMENT_POLICY_OBSERVATION_BACKEND
+        or _checkpoint_policy_observation_backend_from_ref(checkpoint_ref, mount=mount)
+    )
+    policy_observation_contract_id = (
+        _checkpoint_policy_observation_contract_id_from_payload(payload)
+        or _checkpoint_policy_observation_contract_id_from_ref(
+            checkpoint_ref,
+            mount=mount,
+        )
+    )
+    policy_observation_perspective_schema_id = (
+        _checkpoint_policy_observation_perspective_schema_id_from_payload(payload)
+        or _checkpoint_policy_observation_perspective_schema_id_from_ref(
+            checkpoint_ref,
+            mount=mount,
+        )
+    )
+    _require_loaded_policy_observation_metadata(
+        checkpoint_ref=checkpoint_ref,
+        policy_trail_render_mode=policy_trail_render_mode,
+        policy_bonus_render_mode=policy_bonus_render_mode,
+        policy_observation_backend=policy_observation_backend,
+        policy_observation_contract_id=policy_observation_contract_id,
+        policy_observation_perspective_schema_id=(
+            policy_observation_perspective_schema_id
+        ),
+    )
+    metadata_payloads = _checkpoint_metadata_payloads_from_ref(checkpoint_ref, mount=mount)
+    _require_loaded_policy_observation_contracts_consistent(
+        checkpoint_ref=checkpoint_ref,
+        payloads=[payload, *metadata_payloads],
+        policy_trail_render_mode=str(policy_trail_render_mode),
+        policy_bonus_render_mode=str(policy_bonus_render_mode),
+        policy_observation_backend=str(policy_observation_backend),
+        policy_observation_contract_id=str(policy_observation_contract_id),
+        policy_observation_perspective_schema_id=str(
+            policy_observation_perspective_schema_id
+        ),
     )
     payload_model_contract = _checkpoint_model_contract_from_payload(payload)
     ref_model_contract = _checkpoint_model_contract_from_ref(checkpoint_ref, mount=mount)
@@ -3064,7 +3360,20 @@ def _load_policy_from_checkpoint(
         state_dict=state_dict,
         seed=int(seed),
         use_cuda=False,
-        source_max_steps=int(source_max_steps),
+        source_max_steps=int(runtime_settings.get("source_max_steps") or source_max_steps),
+        decision_ms=float(runtime_settings.get("decision_ms") or DEFAULT_DECISION_MS),
+        decision_source_frames=int(
+            runtime_settings.get("decision_source_frames")
+            or DEFAULT_DECISION_SOURCE_FRAMES
+        ),
+        source_physics_step_ms=float(
+            runtime_settings.get("source_physics_step_ms")
+            or DEFAULT_SOURCE_PHYSICS_STEP_MS
+        ),
+        source_max_steps_semantics=str(
+            runtime_settings.get("source_max_steps_semantics")
+            or "source_physics_steps"
+        ),
         num_simulations=int(num_simulations),
         batch_size=int(batch_size),
         telemetry_path=telemetry_path,
@@ -3099,6 +3408,10 @@ def _load_policy_from_checkpoint(
         "policy_trail_render_mode": policy_trail_render_mode,
         "policy_bonus_render_mode": policy_bonus_render_mode,
         "policy_observation_backend": policy_observation_backend,
+        "policy_observation_contract_id": policy_observation_contract_id,
+        "policy_observation_perspective_schema_id": (
+            policy_observation_perspective_schema_id
+        ),
         "runtime_settings": runtime_settings,
         "model_env_variant": (
             str(effective_model_env_variant) if effective_model_env_variant else None
@@ -3151,6 +3464,19 @@ def _preloaded_policy_entries_for_players(
         used.add(match_index)
         ordered.append(entries[match_index])
     return ordered
+
+
+def _policy_metadata_value_for_player(
+    player: Mapping[str, Any],
+    load: Mapping[str, Any],
+    key: str,
+    default: Any = None,
+) -> Any:
+    # A raw checkpoint ref gets a default policy surface while the exact
+    # checkpoint is still loading. Once loaded, checkpoint metadata wins.
+    if str(player.get("policy_surface_source") or "") == "default_policy_observation_contract":
+        return load.get(key) or player.get(key) or default
+    return player.get(key) or load.get(key) or default
 
 
 def load_policy_entries_for_game(
@@ -3489,15 +3815,19 @@ def run_checkpoint_game(
     for player, load in zip(pair["players"], policy_entries, strict=True):
         trail_mode = validate_stack_trail_render_mode(
             str(
-                player.get("policy_trail_render_mode")
-                or load.get("policy_trail_render_mode")
-                or default_policy_trail_render_mode
+                _policy_metadata_value_for_player(
+                    player,
+                    load,
+                    "policy_trail_render_mode",
+                    default_policy_trail_render_mode,
+                )
             )
         )
-        raw_bonus_mode = (
-            player.get("policy_bonus_render_mode")
-            or load.get("policy_bonus_render_mode")
-            or default_policy_bonus_render_mode
+        raw_bonus_mode = _policy_metadata_value_for_player(
+            player,
+            load,
+            "policy_bonus_render_mode",
+            default_policy_bonus_render_mode,
         )
         bonus_mode = resolve_stack_bonus_render_mode(
             trail_render_mode=trail_mode,
@@ -3509,9 +3839,12 @@ def run_checkpoint_game(
             context=f"game seat {player['seat']}",
         )
         backend = str(
-            player.get("policy_observation_backend")
-            or load.get("policy_observation_backend")
-            or DEFAULT_TOURNAMENT_POLICY_OBSERVATION_BACKEND
+            _policy_metadata_value_for_player(
+                player,
+                load,
+                "policy_observation_backend",
+                DEFAULT_TOURNAMENT_POLICY_OBSERVATION_BACKEND,
+            )
         )
         _require_policy_observation_backend(
             backend=backend,
@@ -3732,7 +4065,7 @@ def run_checkpoint_game(
         "policy_observation_perspective": {
             "schema_id": POLICY_OBSERVATION_PERSPECTIVE_SCHEMA_ID,
             "perspective": POLICY_OBSERVATION_PERSPECTIVE,
-            "seat_mapping": "seat N receives observation[0,N] and controls player N",
+            "seat_mapping": POLICY_OBSERVATION_SEAT_MAPPING,
             "player_axis": POLICY_OBSERVATION_PERSPECTIVE_PLAYER_AXIS,
         },
         "policy_observation_contracts": {
@@ -3769,9 +4102,7 @@ def run_checkpoint_game(
                 POLICY_OBSERVATION_PERSPECTIVE_SCHEMA_ID
             ),
             "policy_observation_perspective": POLICY_OBSERVATION_PERSPECTIVE,
-            "policy_observation_seat_mapping": (
-                "seat N receives observation[0,N] and controls player N"
-            ),
+            "policy_observation_seat_mapping": POLICY_OBSERVATION_SEAT_MAPPING,
             "gif": "full_704_rgb_canvas_like_browser_lines",
             "gif_frame_size": frame_size,
             "gif_trail_render_mode": gif_trail_render_mode,
@@ -3787,6 +4118,32 @@ def run_checkpoint_game(
     return summary
 
 
+def failure_game_summary_payload(
+    spec: Mapping[str, Any],
+    exc: BaseException,
+) -> dict[str, Any]:
+    game = dict(spec)
+    pair = normalize_pair_spec({**game, "games_per_pair": 1})
+    game_id = _safe_id(str(game.get("game_id") or "game-000000"), label="game_id")
+    summary_ref = game_summary_ref(pair["tournament_id"], pair["battle_id"], game_id)
+    return {
+        "schema_id": GAME_SCHEMA_ID,
+        "ok": False,
+        "tournament_id": pair["tournament_id"],
+        "battle_id": pair["battle_id"],
+        "pair_index": pair["pair_index"],
+        "game_id": game_id,
+        "game_index": int(game.get("game_index", 0)),
+        "seed": int(game.get("seed", pair["seed"])),
+        "players": pair["players"],
+        "battle_players": game.get("battle_players"),
+        "seat_order": game.get("seat_order"),
+        "seat_order_mode": game.get("seat_order_mode", pair["seat_order_mode"]),
+        "summary_ref": summary_ref.as_posix(),
+        **exception_payload(exc),
+    }
+
+
 def failure_game_summary(
     spec: Mapping[str, Any],
     exc: BaseException,
@@ -3798,24 +4155,8 @@ def failure_game_summary(
         artifact_mount = artifact_mount or mount
     if artifact_mount is None:
         raise ValueError("failure_game_summary needs artifact_mount")
-    game = dict(spec)
-    pair = normalize_pair_spec({**game, "games_per_pair": 1})
-    game_id = _safe_id(str(game.get("game_id") or "game-000000"), label="game_id")
-    summary_ref = game_summary_ref(pair["tournament_id"], pair["battle_id"], game_id)
-    summary_path = runs.volume_path(artifact_mount, summary_ref)
-    summary = {
-        "schema_id": GAME_SCHEMA_ID,
-        "ok": False,
-        "tournament_id": pair["tournament_id"],
-        "battle_id": pair["battle_id"],
-        "game_id": game_id,
-        "game_index": int(game.get("game_index", 0)),
-        "players": pair["players"],
-        "battle_players": game.get("battle_players"),
-        "seat_order": game.get("seat_order"),
-        "seat_order_mode": game.get("seat_order_mode", pair["seat_order_mode"]),
-        "summary_ref": summary_ref.as_posix(),
-        **exception_payload(exc),
-    }
+    summary = failure_game_summary_payload(spec, exc)
+    summary_ref = summary.get("summary_ref")
+    summary_path = runs.volume_path(artifact_mount, Path(str(summary_ref)))
     runs.write_json(summary_path, _to_plain(summary))
     return summary

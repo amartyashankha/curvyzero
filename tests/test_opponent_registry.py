@@ -21,7 +21,7 @@ def test_opponent_assignment_snapshot_parses_to_existing_mixture_contract():
             "entries": [
                 {
                     "name": "recent_winner",
-                    "weight": 50,
+                    "weight": 32,
                     "age_label": "recent",
                     "tags": ["tournament_winner"],
                     "opponent_policy_kind": "frozen_lightzero_checkpoint",
@@ -31,7 +31,7 @@ def test_opponent_assignment_snapshot_parses_to_existing_mixture_contract():
                 },
                 {
                     "name": "blank_canvas",
-                    "weight": 50,
+                    "weight": 32,
                     "opponent_policy_kind": "fixed_straight",
                     "opponent_runtime_mode": "blank_canvas_noop",
                     "opponent_immortal": True,
@@ -47,7 +47,7 @@ def test_opponent_assignment_snapshot_parses_to_existing_mixture_contract():
     mixture = assignment["opponent_mixture"]
     assert mixture["schema_id"] == OPPONENT_MIXTURE_SCHEMA_ID
     assert mixture["seed"] == 7
-    assert mixture["total_weight"] == 100.0
+    assert mixture["total_weight"] == 64.0
     assert [entry["name"] for entry in mixture["entries"]] == [
         "recent_winner",
         "blank_canvas",
@@ -65,6 +65,7 @@ def test_opponent_assignment_snapshot_accepts_json_string():
                         "name": "blank",
                         "weight": 1,
                         "opponent_policy_kind": "fixed_straight",
+                        "opponent_immortal": True,
                     }
                 ],
             }
@@ -156,6 +157,7 @@ def test_canonical_assignment_json_sha256_is_stable_and_sensitive():
                 "name": "blank",
                 "weight": 1,
                 "opponent_policy_kind": "fixed_straight",
+                "opponent_immortal": True,
             }
         ],
     }
@@ -163,6 +165,7 @@ def test_canonical_assignment_json_sha256_is_stable_and_sensitive():
         "entries": [
             {
                 "opponent_policy_kind": "fixed_straight",
+                "opponent_immortal": True,
                 "weight": 1,
                 "name": "blank",
             }
@@ -178,6 +181,7 @@ def test_canonical_assignment_json_sha256_is_stable_and_sensitive():
                 "name": "blank",
                 "weight": 2,
                 "opponent_policy_kind": "fixed_straight",
+                "opponent_immortal": True,
             }
         ],
     }

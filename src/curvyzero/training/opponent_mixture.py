@@ -11,6 +11,9 @@ from typing import Any
 
 OPPONENT_MIXTURE_SCHEMA_ID = "curvyzero_episode_opponent_mixture/v0"
 OPPONENT_MIXTURE_SELECTION_UNIT = "episode_reset"
+OPPONENT_SPLIT_PLAN_SCHEMA_ID = "curvyzero_collector_opponent_split_plan/v0"
+OPPONENT_SPLIT_UNIT_COLLECTOR_ENV = "collector_env"
+OPPONENT_SPLIT_MODE_EXPLICIT_SLOT_COUNT_BAG_SHUFFLED = "explicit_slot_count_bag_shuffled"
 
 OPPONENT_POLICY_KIND_FIXED_STRAIGHT = "fixed_straight"
 OPPONENT_POLICY_KIND_PROACTIVE_WALL_AVOIDANT = "proactive_wall_avoidant"
@@ -139,6 +142,107 @@ def select_opponent_mixture_entry(
     raise RuntimeError("opponent mixture selection failed despite positive total weight")
 
 
+def deterministic_collector_env_mixture_plan(
+    mixture: dict[str, Any],
+    *,
+    env_num: int,
+    seed_context: Any | None = None,
+) -> dict[str, Any]:
+    """Resolve explicit slot counts into deterministic collector env assignments."""
+
+    env_count = int(env_num)
+    if env_count < 1:
+        raise ValueError("env_num must be at least 1")
+    validated = validate_opponent_mixture(mixture)
+    slot_counts_raw = _explicit_slot_counts_from_entry_weights(validated["entries"])
+    slot_count_total = sum(slot_counts_raw)
+    if not _is_power_of_two(slot_count_total):
+        raise ValueError(
+            "deterministic opponent split slot counts must sum to a power of two; "
+            f"got {slot_count_total}"
+        )
+    if slot_count_total > env_count:
+        raise ValueError(
+            "deterministic opponent split slot count total cannot exceed env_num; "
+            f"got slot_count_total={slot_count_total}, env_num={env_count}"
+        )
+    if env_count % slot_count_total != 0:
+        raise ValueError(
+            "deterministic opponent split slot count total must divide env_num; "
+            f"got slot_count_total={slot_count_total}, env_num={env_count}"
+        )
+    repetition_count = env_count // slot_count_total
+    entry_indices: list[int] = []
+    for entry_index, slot_count in enumerate(slot_counts_raw):
+        entry_indices.extend([entry_index] * slot_count * repetition_count)
+    rng = random.Random(
+        _split_plan_seed(
+            mixture=validated,
+            env_num=env_count,
+            seed_context=seed_context,
+            slot_count_total=slot_count_total,
+        )
+    )
+    rng.shuffle(entry_indices)
+    assignments = [
+        {
+            "env_id": env_id,
+            "entry_index": entry_index,
+            "entry_name": validated["entries"][entry_index]["name"],
+        }
+        for env_id, entry_index in enumerate(entry_indices)
+    ]
+    slot_counts = [
+        {
+            "entry_index": entry_index,
+            "entry_name": entry["name"],
+            "slot_count": int(slot_counts_raw[entry_index]),
+            "slot_fraction": float(slot_counts_raw[entry_index]) / float(slot_count_total),
+            "count": int(slot_counts_raw[entry_index] * repetition_count),
+            "actual_fraction": float(slot_counts_raw[entry_index] * repetition_count)
+            / float(env_count),
+        }
+        for entry_index, entry in enumerate(validated["entries"])
+    ]
+    plan_payload = {
+        "schema_id": OPPONENT_SPLIT_PLAN_SCHEMA_ID,
+        "unit": OPPONENT_SPLIT_UNIT_COLLECTOR_ENV,
+        "mode": OPPONENT_SPLIT_MODE_EXPLICIT_SLOT_COUNT_BAG_SHUFFLED,
+        "env_num": env_count,
+        "slot_count_total": int(slot_count_total),
+        "repetition_count": int(repetition_count),
+        "mixture_seed": int(validated.get("seed", 0)),
+        "seed_context": seed_context,
+        "slot_counts": slot_counts,
+        "assignments": assignments,
+    }
+    plan_payload["plan_sha256"] = _json_sha256(plan_payload)
+    return plan_payload
+
+
+def singleton_mixture_for_split_entry(
+    mixture: dict[str, Any],
+    *,
+    entry_index: int,
+) -> dict[str, Any]:
+    """Return a mixture that always selects one entry from a validated mixture."""
+
+    validated = validate_opponent_mixture(mixture)
+    index = int(entry_index)
+    if index < 0 or index >= len(validated["entries"]):
+        raise IndexError(f"opponent mixture entry_index out of range: {entry_index}")
+    entry = dict(validated["entries"][index])
+    entry["weight"] = 1.0
+    return validate_opponent_mixture(
+        {
+            "schema_id": OPPONENT_MIXTURE_SCHEMA_ID,
+            "selection_unit": OPPONENT_MIXTURE_SELECTION_UNIT,
+            "seed": int(validated.get("seed", 0)),
+            "entries": [entry],
+        }
+    )
+
+
 def _validate_entry(raw_entry: Any, *, index: int) -> dict[str, Any]:
     if not isinstance(raw_entry, dict):
         raise ValueError(f"opponent mixture entry {index} must be an object")
@@ -150,9 +254,7 @@ def _validate_entry(raw_entry: Any, *, index: int) -> dict[str, Any]:
         )
     unknown = set(raw_entry) - ALLOWED_ENTRY_KEYS
     if unknown:
-        raise ValueError(
-            f"opponent mixture entry {index} has unknown keys {sorted(unknown)!r}"
-        )
+        raise ValueError(f"opponent mixture entry {index} has unknown keys {sorted(unknown)!r}")
     name = raw_entry.get("name")
     if not isinstance(name, str) or not name.strip():
         raise ValueError(f"opponent mixture entry {index} requires non-empty name")
@@ -162,14 +264,11 @@ def _validate_entry(raw_entry: Any, *, index: int) -> dict[str, Any]:
     if not math.isfinite(weight) or weight <= 0.0:
         raise ValueError(f"opponent mixture entry {name!r} weight must be positive")
     if "opponent_policy_kind" not in raw_entry:
-        raise ValueError(
-            f"opponent mixture entry {name!r} requires opponent_policy_kind"
-        )
+        raise ValueError(f"opponent mixture entry {name!r} requires opponent_policy_kind")
     policy_kind = str(raw_entry["opponent_policy_kind"])
     if policy_kind not in SUPPORTED_OPPONENT_POLICY_KINDS:
         raise ValueError(
-            f"opponent mixture entry {name!r} has unsupported opponent_policy_kind "
-            f"{policy_kind!r}"
+            f"opponent mixture entry {name!r} has unsupported opponent_policy_kind {policy_kind!r}"
         )
     runtime_mode = str(raw_entry.get("opponent_runtime_mode", OPPONENT_RUNTIME_MODE_NORMAL))
     if runtime_mode not in SUPPORTED_OPPONENT_RUNTIME_MODES:
@@ -181,19 +280,14 @@ def _validate_entry(raw_entry: Any, *, index: int) -> dict[str, Any]:
     if isinstance(raw_immortal, bool):
         immortal = bool(raw_immortal)
     else:
-        raise ValueError(
-            f"opponent mixture entry {name!r} opponent_immortal must be a boolean"
-        )
+        raise ValueError(f"opponent mixture entry {name!r} opponent_immortal must be a boolean")
     death_mode = OPPONENT_DEATH_MODE_IMMORTAL if immortal else OPPONENT_DEATH_MODE_NORMAL
     if runtime_mode == OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP:
         if policy_kind != OPPONENT_POLICY_KIND_FIXED_STRAIGHT:
-            raise ValueError(
-                f"blank_canvas_noop mixture entry {name!r} must use fixed_straight"
-            )
+            raise ValueError(f"blank_canvas_noop mixture entry {name!r} must use fixed_straight")
         if not immortal:
             raise ValueError(
-                f"blank_canvas_noop mixture entry {name!r} must set "
-                "opponent_immortal=true"
+                f"blank_canvas_noop mixture entry {name!r} must set opponent_immortal=true"
             )
     has_checkpoint_ref = bool(raw_entry.get("opponent_checkpoint_ref"))
     has_checkpoint_path = bool(raw_entry.get("opponent_checkpoint_path"))
@@ -204,13 +298,9 @@ def _validate_entry(raw_entry: Any, *, index: int) -> dict[str, Any]:
                 "or resolved opponent_checkpoint_path"
             )
         if runtime_mode != OPPONENT_RUNTIME_MODE_NORMAL:
-            raise ValueError(
-                f"frozen mixture entry {name!r} must use normal opponent_runtime_mode"
-            )
+            raise ValueError(f"frozen mixture entry {name!r} must use normal opponent_runtime_mode")
     elif has_checkpoint_ref or has_checkpoint_path:
-        raise ValueError(
-            f"non-frozen mixture entry {name!r} cannot set opponent checkpoint fields"
-        )
+        raise ValueError(f"non-frozen mixture entry {name!r} cannot set opponent checkpoint fields")
     entry = dict(raw_entry)
     entry["name"] = name.strip()
     entry["weight"] = weight
@@ -253,3 +343,59 @@ def _selection_seed(*, mixture_seed: int, episode_seed: int, reset_index: int) -
     ).encode("utf-8")
     digest = hashlib.sha256(payload).digest()
     return int.from_bytes(digest[:8], byteorder="big", signed=False)
+
+
+def _explicit_slot_counts_from_entry_weights(entries: list[dict[str, Any]]) -> list[int]:
+    slot_counts: list[int] = []
+    for entry in entries:
+        weight = float(entry["weight"])
+        slot_count = int(weight)
+        if not math.isfinite(weight) or weight != float(slot_count):
+            raise ValueError(
+                "deterministic opponent split requires integer entry weights as "
+                f"slot counts; entry {entry['name']!r} has weight {entry['weight']!r}"
+            )
+        if slot_count < 1:
+            raise ValueError(
+                "deterministic opponent split entry slot counts must be positive; "
+                f"entry {entry['name']!r} has {slot_count}"
+            )
+        slot_counts.append(slot_count)
+    return slot_counts
+
+
+def _is_power_of_two(value: int) -> bool:
+    value = int(value)
+    return value > 0 and (value & (value - 1)) == 0
+
+
+def _split_plan_seed(
+    *,
+    mixture: dict[str, Any],
+    env_num: int,
+    seed_context: Any | None,
+    slot_count_total: int,
+) -> int:
+    payload = {
+        "schema_id": OPPONENT_SPLIT_PLAN_SCHEMA_ID,
+        "mode": OPPONENT_SPLIT_MODE_EXPLICIT_SLOT_COUNT_BAG_SHUFFLED,
+        "mixture_schema_id": OPPONENT_MIXTURE_SCHEMA_ID,
+        "mixture_seed": int(mixture.get("seed", 0)),
+        "env_num": int(env_num),
+        "slot_count_total": int(slot_count_total),
+        "seed_context": seed_context,
+        "entries": [
+            {"name": entry["name"], "weight": float(entry["weight"])}
+            for entry in mixture["entries"]
+        ],
+    }
+    digest = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).digest()
+    return int.from_bytes(digest[:8], byteorder="big", signed=False)
+
+
+def _json_sha256(payload: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()

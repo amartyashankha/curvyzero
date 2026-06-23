@@ -395,7 +395,7 @@ def _render_page(
     rating_html = ""
     if rating_rows:
         provisional = bool(rating_snapshot.get("provisional"))
-        ranking_title = "Live Rankings" if provisional else "Rankings"
+        ranking_title = "Live Leaderboard" if provisional else "Leaderboard"
         ranking_status = (
             "updating from finished games"
             if provisional
@@ -448,16 +448,16 @@ def _render_page(
             rating_html = f"""
             <section class="panel">
               <div class="panel-head">
-                <h2>Rankings</h2>
+                <h2>Leaderboard</h2>
                 <span>{html.escape(friendly_status)}</span>
               </div>
-              <p class="in-panel">Rankings will appear as soon as finished games are visible. This page keeps updating while the tournament runs.</p>
+              <p class="in-panel">Leaderboard rows will appear after this rating round writes its first rating snapshot. This arena is selected and running; the leaderboard is pending, not missing.</p>
             </section>
             """
         else:
             rating_html = """
             <section class="panel">
-              <div class="panel-head"><h2>Rankings</h2><span>empty</span></div>
+              <div class="panel-head"><h2>Leaderboard</h2><span>empty</span></div>
               <p class="in-panel">This rating run exists, but no rating rows were found.</p>
             </section>
             """

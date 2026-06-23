@@ -40,6 +40,10 @@ def _load_submitter_module():
     return module
 
 
+def _expanded_train_kwargs(module, row: dict) -> dict:
+    return module._expand_train_kwargs_for_manifest(row["train_kwargs"])
+
+
 def _ratings_snapshot(path: Path) -> Path:
     path.write_text(
         json.dumps(
@@ -70,6 +74,24 @@ def _ratings_snapshot(path: Path) -> Path:
     return path
 
 
+def _checkpoint_refs_file(path: Path) -> Path:
+    path.write_text(
+        "\n".join(
+            [
+                (
+                    "training/lightzero-curvytron-visual-survival/"
+                    f"curated-run-{rank}/attempts/curated-attempt-{rank}/train/"
+                    f"lightzero_exp/ckpt/iteration_{10000 * rank}.pth.tar"
+                )
+                for rank in range(1, 5)
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
 def test_tonight18_manifest_uses_normal_checkpoints_plus_small_immortal_wall_slot(
     tmp_path: Path,
 ):
@@ -92,35 +114,52 @@ def test_tonight18_manifest_uses_normal_checkpoints_plus_small_immortal_wall_slo
 
     assert len(manifest["rows"]) == 18
     assert [recipe["recipe_id"] for recipe in manifest["axes"]["opponent_recipes"]] == [
-        "blank10-wall10-rank2_25-rank1_55",
-        "blank10-wall15-rank4_10-rank3_15-rank2_20-rank1_30",
-        "blank20-wall20-rank1_60",
+        "slot64-blank8-wall8-rank2_16-rank1_32",
+        "slot64-blank8-wall8-rank4_6-rank3_8-rank2_12-rank1_20-rank1imm2",
+        "slot64-blank12-wall4-rank1_46-rank1imm2",
     ]
     assert manifest["fixed_knobs"]["learner_seat_mode"] == "random_per_episode"
+    assert manifest["fixed_knobs"]["compute"] == "gpu-l4-t4-cpu40"
+    assert manifest["fixed_knobs"]["collector_env_num"] == 256
+    assert manifest["fixed_knobs"]["n_episode"] == 256
+    assert manifest["fixed_knobs"]["num_simulations"] == 8
+    assert manifest["fixed_knobs"]["batch_size"] == 64
 
     for row in manifest["rows"]:
         assert len(row["run_id"]) <= module.MAX_MODAL_RUN_ID_LEN
         assert len(row["attempt_id"]) <= module.MAX_MODAL_RUN_ID_LEN
         assert row["source_max_steps"] == 1_048_576
-        train_kwargs = row["train_kwargs"]
+        assert row["compute"] == "gpu-l4-t4-cpu40"
+        assert (
+            row["deployed_app_submission"]["train_function"]
+            == "lightzero_curvytron_visual_survival_gpu_cpu40"
+        )
+        raw_train_kwargs = row["train_kwargs"]
+        train_kwargs = _expanded_train_kwargs(module, row)
         poller_kwargs = row["poller_kwargs"]
+        assert row["train_kwargs_schema_id"] == module.TONIGHT18_COMPACT_TRAIN_KWARGS_SCHEMA_ID
+        assert "collector_env_num" not in raw_train_kwargs
+        assert "source_max_steps" not in raw_train_kwargs
+        assert "learner_seat_mode" not in raw_train_kwargs
+        assert "source_state_trail_render_mode" not in raw_train_kwargs
+        assert "source_state_bonus_render_mode" not in raw_train_kwargs
+        assert train_kwargs["collector_env_num"] == 256
+        assert train_kwargs["n_episode"] == 256
+        assert train_kwargs["num_simulations"] == 8
+        assert train_kwargs["batch_size"] == 64
         assert train_kwargs["source_max_steps"] == 1_048_576
         assert poller_kwargs["source_max_steps"] == 1_048_576
         assert row["learner_seat_mode"] == "random_per_episode"
         assert train_kwargs["learner_seat_mode"] == "random_per_episode"
         assert "learner_seat_mode" not in poller_kwargs
         assert row["initial_policy_checkpoint_ref"].endswith("iteration_10000.pth.tar")
-        assert train_kwargs["initial_policy_checkpoint_ref"] == row[
-            "initial_policy_checkpoint_ref"
-        ]
+        assert train_kwargs["initial_policy_checkpoint_ref"] == row["initial_policy_checkpoint_ref"]
         assert train_kwargs["initial_policy_checkpoint_load_mode"] == "matching_shape"
         assert "initial_policy_checkpoint_ref" not in poller_kwargs
         mixture = row["opponent_mixture_spec"]
-        assert mixture["total_weight"] == 100.0
+        assert mixture["total_weight"] == 64.0
         wall_entries = [
-            entry
-            for entry in mixture["entries"]
-            if entry["name"] == "wall_avoidant_immortal"
+            entry for entry in mixture["entries"] if entry["name"] == "wall_avoidant_immortal"
         ]
         assert len(wall_entries) == 1
         assert wall_entries[0]["opponent_policy_kind"] == "proactive_wall_avoidant"
@@ -136,14 +175,21 @@ def test_tonight18_manifest_uses_normal_checkpoints_plus_small_immortal_wall_slo
             for entry in mixture["entries"]
             if entry["name"] in {"blank", "wall_avoidant_immortal"}
         )
-        assert pressure >= 20.0
+        assert pressure / mixture["total_weight"] >= 0.20
+        immortal_pressure = sum(
+            entry["weight"] for entry in mixture["entries"] if entry["opponent_immortal"]
+        )
+        assert 0.20 <= immortal_pressure / mixture["total_weight"] <= 0.30
         frozen_entries = [
             entry
             for entry in mixture["entries"]
             if entry["opponent_policy_kind"] == "frozen_lightzero_checkpoint"
         ]
         assert frozen_entries
-        assert {entry["opponent_immortal"] for entry in frozen_entries} == {False}
+        assert all(
+            (not entry["opponent_immortal"]) or entry["name"].endswith("_immortal")
+            for entry in frozen_entries
+        )
         assert all("opponent_death_mode" not in entry for entry in frozen_entries)
 
 
@@ -171,7 +217,7 @@ def test_tonight18_manifest_defaults_to_control_assignments_with_refresh(
         == module.ASSIGNMENT_REFRESH_INTERVAL_TRAIN_ITER
     )
     for row in manifest["rows"]:
-        train_kwargs = row["train_kwargs"]
+        train_kwargs = _expanded_train_kwargs(module, row)
         assert row["opponent_mixture_spec"] is None
         assert row["opponent_assignment_ref"].startswith("control:")
         assert row["opponent_assignment_refresh_ref"].startswith("control:")
@@ -184,6 +230,95 @@ def test_tonight18_manifest_defaults_to_control_assignments_with_refresh(
             train_kwargs["opponent_assignment_refresh_interval_train_iter"]
             == module.ASSIGNMENT_REFRESH_INTERVAL_TRAIN_ITER
         )
+
+
+def test_tonight18_manifest_can_bootstrap_from_explicit_checkpoint_refs(
+    tmp_path: Path,
+):
+    module = _load_module()
+    refs_file = _checkpoint_refs_file(tmp_path / "refs.txt")
+    args = module.parse_args(
+        [
+            "--checkpoint-refs-file",
+            str(refs_file),
+            "--output-root",
+            str(tmp_path / "out"),
+        ]
+    )
+
+    manifest = module.build_manifest(args)
+
+    assert manifest["ratings_snapshot_path"] is None
+    assert manifest["checkpoint_refs_file_path"] == str(refs_file)
+    assert (
+        manifest["fixed_knobs"]["initial_policy_checkpoint_source"]
+        == "rank1_checkpoint_from_checkpoint_refs_file"
+    )
+    assert manifest["top_checkpoint_source"]["rank1"]["status"] == "curated_exact_ref"
+    assert manifest["top_checkpoint_source"]["rank1"]["iteration"] == 10000
+    assert manifest["top_checkpoint_source"]["rank4"]["iteration"] == 40000
+    for row in manifest["rows"]:
+        assert row["initial_policy_checkpoint_source"]["source"] == (
+            "checkpoint_refs_file_rank1_at_manifest_build_time"
+        )
+        assert row["initial_policy_checkpoint_ref"].endswith("iteration_10000.pth.tar")
+        assert row["opponent_assignment_ref"].startswith("control:")
+        entries = row["opponent_assignment_preview"]["entries"]
+        assert any(entry["name"] == "rank1_immortal" for entry in entries) or any(
+            entry["name"] == "wall_avoidant_immortal" for entry in entries
+        )
+        immortal_pressure = sum(entry["weight"] for entry in entries if entry["opponent_immortal"])
+        total_slots = sum(entry["weight"] for entry in entries)
+        assert total_slots == 64
+        assert 0.20 <= immortal_pressure / total_slots <= 0.30
+
+
+def test_tonight18_manifest_can_scratch_bootstrap_without_deleted_checkpoint_refs(
+    tmp_path: Path,
+):
+    module = _load_module()
+    args = module.parse_args(
+        [
+            "--scratch-bootstrap",
+            "--output-root",
+            str(tmp_path / "out"),
+        ]
+    )
+
+    manifest = module.build_manifest(args)
+
+    assert manifest["scratch_bootstrap"] is True
+    assert manifest["ratings_snapshot_path"] is None
+    assert manifest["checkpoint_refs_file_path"] is None
+    assert manifest["top_checkpoint_source"] == {}
+    assert (
+        manifest["fixed_knobs"]["initial_policy_checkpoint_source"]
+        == "scratch_random_initialization"
+    )
+    assert manifest["opponent_source"] == "assignment"
+    assert manifest["assignment_bank"]["source_ref"] == "scratch_bootstrap"
+    for row in manifest["rows"]:
+        assert row["initial_policy_checkpoint_ref"] is None
+        assert "initial_policy_checkpoint_ref" not in row["train_kwargs"]
+        assert _expanded_train_kwargs(module, row)["initial_policy_checkpoint_ref"] is None
+        assert row["initial_policy_checkpoint_source"] == {
+            "source": "scratch_random_initialization",
+            "checkpoint_ref": None,
+        }
+        assert "initial_policy_checkpoint_ref" not in row["poller_kwargs"]
+        entries = row["opponent_assignment_preview"]["entries"]
+        rank_entries = [entry for entry in entries if str(entry["name"]).startswith("rank")]
+        assert rank_entries
+        assert all(
+            entry["opponent_policy_kind"] == "proactive_wall_avoidant" for entry in rank_entries
+        )
+        assert all("opponent_checkpoint_ref" not in entry for entry in rank_entries)
+        assert {entry["tags"]["rank"] for entry in rank_entries} <= {1, 2, 3, 4}
+        assert all(entry["tags"]["scratch_bootstrap_placeholder"] is True for entry in rank_entries)
+        immortal_pressure = sum(entry["weight"] for entry in entries if entry["opponent_immortal"])
+        total_slots = sum(entry["weight"] for entry in entries)
+        assert total_slots == 64
+        assert 0.20 <= immortal_pressure / total_slots <= 0.30
 
 
 def test_tonight18_manifest_can_use_assignment_refs_without_inline_mixtures(
@@ -224,25 +359,26 @@ def test_tonight18_manifest_can_use_assignment_refs_without_inline_mixtures(
     assert manifest["opponent_source"] == "assignment"
     assert manifest["assignment_bank"]["run_id"] == "curvy-n18conn-test-assignments"
     assert set(manifest["assignment_bank"]["assignments"]) == {
-        "blank10-wall10-rank2_25-rank1_55",
-        "blank10-wall15-rank4_10-rank3_15-rank2_20-rank1_30",
-        "blank20-wall20-rank1_60",
+        "slot64-blank8-wall8-rank2_16-rank1_32",
+        "slot64-blank8-wall8-rank4_6-rank3_8-rank2_12-rank1_20-rank1imm2",
+        "slot64-blank12-wall4-rank1_46-rank1imm2",
     }
     assert Path(outputs["assignments_index_json"]).exists()
 
     for row in manifest["rows"]:
-        train_kwargs = row["train_kwargs"]
+        raw_train_kwargs = row["train_kwargs"]
+        train_kwargs = _expanded_train_kwargs(module, row)
         poller_kwargs = row["poller_kwargs"]
         assert row["source_max_steps"] == 1_048_576
+        assert "source_max_steps" not in raw_train_kwargs
+        assert "learner_seat_mode" not in raw_train_kwargs
         assert train_kwargs["source_max_steps"] == 1_048_576
         assert poller_kwargs["source_max_steps"] == 1_048_576
         assert row["learner_seat_mode"] == "random_per_episode"
         assert train_kwargs["learner_seat_mode"] == "random_per_episode"
         assert "learner_seat_mode" not in poller_kwargs
         assert row["initial_policy_checkpoint_ref"].endswith("iteration_10000.pth.tar")
-        assert train_kwargs["initial_policy_checkpoint_ref"] == row[
-            "initial_policy_checkpoint_ref"
-        ]
+        assert train_kwargs["initial_policy_checkpoint_ref"] == row["initial_policy_checkpoint_ref"]
         assert train_kwargs["initial_policy_checkpoint_load_mode"] == "matching_shape"
         assert "initial_policy_checkpoint_ref" not in poller_kwargs
         assert row["opponent_mixture_enabled"] is False
@@ -250,9 +386,7 @@ def test_tonight18_manifest_can_use_assignment_refs_without_inline_mixtures(
         assert train_kwargs["opponent_mixture_spec"] is None
         assert poller_kwargs["opponent_mixture_spec"] is None
         assert train_kwargs["opponent_assignment_ref"]
-        assert train_kwargs["opponent_assignment_ref"] == poller_kwargs[
-            "opponent_assignment_ref"
-        ]
+        assert train_kwargs["opponent_assignment_ref"] == poller_kwargs["opponent_assignment_ref"]
         assignment = row["opponent_assignment_preview"]
         entries = assignment["entries"]
         assert {entry["name"] for entry in entries} >= {"wall_avoidant_immortal"}
@@ -260,6 +394,10 @@ def test_tonight18_manifest_can_use_assignment_refs_without_inline_mixtures(
         assert wall["opponent_policy_kind"] == "proactive_wall_avoidant"
         assert wall["opponent_immortal"] is True
         assert "opponent_death_mode" not in wall
+        immortal_pressure = sum(entry["weight"] for entry in entries if entry["opponent_immortal"])
+        total_slots = sum(entry["weight"] for entry in entries)
+        assert total_slots == 64
+        assert 0.20 <= immortal_pressure / total_slots <= 0.30
 
 
 def test_assignment_manifest_can_use_per_recipe_control_refresh_pointers(
@@ -313,7 +451,7 @@ def test_assignment_manifest_can_use_per_recipe_control_refresh_pointers(
     refresh_refs = set()
     assignment_refs = set()
     for row in manifest["rows"]:
-        train_kwargs = row["train_kwargs"]
+        train_kwargs = _expanded_train_kwargs(module, row)
         assignment_ref = train_kwargs["opponent_assignment_ref"]
         refresh_ref = train_kwargs["opponent_assignment_refresh_ref"]
         assignment_refs.add(assignment_ref)
@@ -361,6 +499,92 @@ def test_tonight18_manifest_can_emit_explicit_fixed_seat_diagnostic_mode(
         assert "learner_seat_mode" not in row["poller_kwargs"]
 
 
+def test_tonight18_manifest_can_override_lightzero_cadence_and_target_knobs(
+    tmp_path: Path,
+):
+    module = _load_module()
+    refs_file = _checkpoint_refs_file(tmp_path / "refs.txt")
+    args = module.parse_args(
+        [
+            "--checkpoint-refs-file",
+            str(refs_file),
+            "--output-root",
+            str(tmp_path / "out"),
+            "--collector-env-num",
+            "64",
+            "--num-simulations",
+            "25",
+            "--batch-size",
+            "128",
+            "--model-support-cap",
+            "2048",
+            "--td-steps",
+            "50",
+            "--background-eval-num-simulations",
+            "16",
+            "--background-eval-batch-size",
+            "128",
+        ]
+    )
+
+    manifest = module.build_manifest(args)
+
+    assert manifest["fixed_knobs"]["collector_env_num"] == 64
+    assert manifest["fixed_knobs"]["n_episode"] == 64
+    assert manifest["fixed_knobs"]["num_simulations"] == 25
+    assert manifest["fixed_knobs"]["batch_size"] == 128
+    assert manifest["fixed_knobs"]["model_support_cap"] == 2048
+    assert manifest["fixed_knobs"]["td_steps"] == 50
+    for row in manifest["rows"]:
+        train_kwargs = row["train_kwargs"]
+        poller_kwargs = row["poller_kwargs"]
+        assert train_kwargs["collector_env_num"] == 64
+        assert train_kwargs["n_episode"] == 64
+        assert train_kwargs["num_simulations"] == 25
+        assert train_kwargs["batch_size"] == 128
+        assert train_kwargs["model_support_cap"] == 2048
+        assert train_kwargs["td_steps"] == 50
+        assert poller_kwargs["background_eval_num_simulations"] == 16
+        assert poller_kwargs["background_eval_batch_size"] == 128
+
+
+def test_tonight18_manifest_can_emit_own_checkpoint_refresh_control(
+    tmp_path: Path,
+):
+    module = _load_module()
+    refs_file = _checkpoint_refs_file(tmp_path / "refs.txt")
+    args = module.parse_args(
+        [
+            "--checkpoint-refs-file",
+            str(refs_file),
+            "--output-root",
+            str(tmp_path / "out"),
+            "--opponent-source",
+            "mixture",
+            "--assignment-refresh-interval-train-iter",
+            "2000",
+            "--own-checkpoint-opponent-refresh",
+        ]
+    )
+
+    manifest = module.build_manifest(args)
+
+    assert manifest["fixed_knobs"]["own_checkpoint_opponent_refresh_enabled"] is True
+    assert manifest["assignment_bank"] is None
+    for row in manifest["rows"]:
+        raw_train_kwargs = row["train_kwargs"]
+        train_kwargs = _expanded_train_kwargs(module, row)
+        assert row["opponent_source"] == "mixture"
+        assert row["opponent_assignment_ref"] is None
+        assert row["opponent_assignment_refresh_ref"] is None
+        assert "opponent_assignment_ref" not in raw_train_kwargs
+        assert train_kwargs["opponent_mixture_spec"] is not None
+        assert train_kwargs["opponent_assignment_ref"] is None
+        assert "opponent_assignment_refresh_ref" not in train_kwargs
+        assert train_kwargs["opponent_assignment_refresh_interval_train_iter"] == 2000
+        assert train_kwargs["own_checkpoint_opponent_refresh_enabled"] is True
+
+
 def test_grouped_submit_dry_run_validates_assignment_bank_and_initial_checkpoint(
     tmp_path: Path,
 ):
@@ -403,6 +627,37 @@ def test_grouped_submit_dry_run_validates_assignment_bank_and_initial_checkpoint
     assert payload["row_count"] == 18
     assert payload["assignment_write_count"] == 3
     assert {record["status"] for record in payload["assignment_records"]} == {"dry_run"}
+
+
+def test_grouped_submit_dry_run_accepts_scratch_bootstrap_initialization(
+    tmp_path: Path,
+):
+    builder = _load_module()
+    submitter = _load_submitter_module()
+    matrix_name = "curvy-night18-scratch-test"
+    args = builder.parse_args(
+        [
+            "--scratch-bootstrap",
+            "--output-root",
+            str(tmp_path / "out"),
+            "--matrix-name",
+            matrix_name,
+        ]
+    )
+    manifest = builder.build_manifest(args)
+    outputs = builder._write_outputs(
+        manifest,
+        output_root=tmp_path / "out",
+        matrix_name=matrix_name,
+    )
+    output_path = tmp_path / "submission.json"
+
+    submitter.main([outputs["manifest_json"], "--output", str(output_path)])
+
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["dry_run"] is True
+    assert payload["row_count"] == 18
+    assert payload["records"][0]["status"] == "dry_run"
 
 
 def test_grouped_submit_writes_assignments_before_spawning_selected_rows(
@@ -520,6 +775,7 @@ def test_grouped_submit_writes_assignments_before_spawning_selected_rows(
             "--allow-launch",
             "--limit",
             "1",
+            "--allow-partial-launch",
             "--modal-env",
             "shankha-dev",
             "--output",
@@ -551,14 +807,14 @@ def test_grouped_submit_writes_assignments_before_spawning_selected_rows(
     )
     assert events[6] == (
         "function_from_name",
-        "lightzero_curvytron_visual_survival_h100_cpu40",
+        "lightzero_curvytron_visual_survival_gpu_cpu40",
         "shankha-dev",
     )
     assert events[7][0:2] == (
         "spawn",
         "lightzero_curvytron_visual_survival_checkpoint_eval_poller",
     )
-    assert events[8][0:2] == ("spawn", "lightzero_curvytron_visual_survival_h100_cpu40")
+    assert events[8][0:2] == ("spawn", "lightzero_curvytron_visual_survival_gpu_cpu40")
     payload = json.loads(output_path.read_text(encoding="utf-8"))
     assert payload["modal_env"] == "shankha-dev"
     assert payload["assignment_write_count"] == 1
@@ -672,6 +928,7 @@ def test_grouped_submit_can_publish_assignments_without_spawning_rows(
             "--allow-launch",
             "--limit",
             "1",
+            "--allow-partial-launch",
             "--modal-env",
             "shankha-dev",
             "--publish-assignments-only",
@@ -752,6 +1009,39 @@ def test_grouped_submit_rejects_train_only_initial_checkpoint_in_poller_kwargs(
         assert "unsupported keys" in str(exc)
     else:  # pragma: no cover - assertion helper
         raise AssertionError("expected unsupported poller key to fail")
+
+
+def test_grouped_submit_accepts_compact_train_kwargs_with_current_defaults():
+    submitter = _load_submitter_module()
+    row = {
+        "row_id": "compact-default-row",
+        "label": "compact defaults",
+        "run_id": "compact-default-run",
+        "attempt_id": "compact-default-attempt",
+        "initial_policy_checkpoint_source": {
+            "source": "scratch_random_initialization",
+            "checkpoint_ref": None,
+        },
+        "deployed_app_submission": {
+            "app_name": "curvyzero-lightzero-curvytron-visual-survival-train-v2",
+            "train_function": "lightzero_curvytron_visual_survival_gpu_cpu40",
+            "poller_function": "lightzero_curvytron_visual_survival_checkpoint_eval_poller",
+        },
+        "train_kwargs": {
+            "mode": "train",
+            "seed": 11,
+            "run_id": "compact-default-run",
+            "attempt_id": "compact-default-attempt",
+        },
+        "poller_kwargs": {},
+    }
+
+    assert submitter._launch_row(
+        row,
+        app_name="curvyzero-lightzero-curvytron-visual-survival-train-v2",
+        modal_env=None,
+        dry_run=True,
+    )["status"] == "dry_run"
 
 
 def test_grouped_submit_rejects_mutable_initial_checkpoint_ref(tmp_path: Path):

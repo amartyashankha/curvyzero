@@ -3,14 +3,25 @@
 from __future__ import annotations
 
 import copy
+import json
 import math
 from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import numpy as np
 
+from curvyzero.env.observation_surface_contract import (
+    DEFAULT_POLICY_OBSERVATION_BACKEND,
+    POLICY_BONUS_RENDER_MODE,
+    POLICY_OBSERVATION_CONTRACT_ID,
+    POLICY_OBSERVATION_PERSPECTIVE,
+    POLICY_OBSERVATION_PERSPECTIVE_SCHEMA_ID,
+    POLICY_OBSERVATION_SEAT_MAPPING,
+    POLICY_STACK_SHAPE,
+    POLICY_TRAIL_RENDER_MODE,
+)
 from curvyzero.training.curvytron_visual_observation import (
     DEBUG_OCCUPANCY_GRAY64_STACK_SHAPE,
 )
@@ -24,6 +35,54 @@ LIGHTZERO_CHECKPOINT_OPPONENT_PROVIDER_ID = (
     "curvyzero_lightzero_checkpoint_opponent_provider"
 )
 LIGHTZERO_CHECKPOINT_OPPONENT_PROVIDER_VERSION = "v0.2026-05-10"
+
+_POLICY_OBSERVATION_METADATA_FIELD_SOURCES = {
+    "policy_trail_render_mode": (
+        "policy_trail_render_mode",
+        "trail_render_mode",
+        "source_state_trail_render_mode",
+    ),
+    "policy_bonus_render_mode": (
+        "policy_bonus_render_mode",
+        "bonus_render_mode",
+        "source_state_bonus_render_mode",
+    ),
+    "policy_observation_backend": (
+        "policy_observation_backend",
+        "observation_backend",
+    ),
+    "policy_observation_contract_id": (
+        "policy_observation_contract_id",
+        "observation_contract_id",
+    ),
+    "policy_observation_perspective_schema_id": (
+        "policy_observation_perspective_schema_id",
+        "player_perspective_schema_id",
+        "perspective_schema_id",
+    ),
+}
+
+_POLICY_OBSERVATION_CONTRACT_FIELD_SOURCES = {
+    "policy_trail_render_mode": "trail_render_mode",
+    "policy_bonus_render_mode": "bonus_render_mode",
+    "policy_observation_backend": "backend",
+    "policy_observation_contract_id": "contract_id",
+    "policy_observation_perspective_schema_id": "perspective_schema_id",
+    "policy_observation_perspective": "perspective",
+    "policy_observation_seat_mapping": "seat_mapping",
+    "policy_observation_stack_shape": "stack_shape",
+}
+
+_POLICY_OBSERVATION_EXPECTED_VALUES = {
+    "policy_trail_render_mode": POLICY_TRAIL_RENDER_MODE,
+    "policy_bonus_render_mode": POLICY_BONUS_RENDER_MODE,
+    "policy_observation_backend": DEFAULT_POLICY_OBSERVATION_BACKEND,
+    "policy_observation_contract_id": POLICY_OBSERVATION_CONTRACT_ID,
+    "policy_observation_perspective_schema_id": POLICY_OBSERVATION_PERSPECTIVE_SCHEMA_ID,
+    "policy_observation_perspective": POLICY_OBSERVATION_PERSPECTIVE,
+    "policy_observation_seat_mapping": POLICY_OBSERVATION_SEAT_MAPPING,
+    "policy_observation_stack_shape": list(POLICY_STACK_SHAPE),
+}
 
 
 @dataclass(slots=True)
@@ -113,6 +172,135 @@ class LightZeroCheckpointOpponentProvider:
         self._device = device
         self._load_summary = load_summary
         return policy
+
+
+def checkpoint_policy_metadata_sidecar_path(checkpoint_path: str | Path) -> Path:
+    path = Path(checkpoint_path)
+    return path.with_name(f"{path.name}.metadata.json")
+
+
+def _load_checkpoint_policy_metadata_sidecar(checkpoint_path: Path) -> dict[str, Any]:
+    sidecar_path = checkpoint_policy_metadata_sidecar_path(checkpoint_path)
+    if not sidecar_path.is_file():
+        return {}
+    try:
+        with sidecar_path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except Exception as exc:
+        raise ValueError(
+            f"could not read LightZero checkpoint policy metadata sidecar "
+            f"{sidecar_path}: {exc}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise ValueError(
+            f"LightZero checkpoint policy metadata sidecar {sidecar_path} "
+            "must contain a JSON object"
+        )
+    return payload
+
+
+def _policy_observation_metadata_containers(
+    payload: Mapping[str, Any],
+) -> list[Mapping[str, Any]]:
+    containers: list[Mapping[str, Any]] = [payload]
+    for key in ("metadata", "config"):
+        value = payload.get(key)
+        if isinstance(value, Mapping):
+            containers.append(value)
+    return containers
+
+
+def _collect_policy_observation_metadata_values(
+    payloads: list[Mapping[str, Any]],
+) -> dict[str, list[tuple[str, Any]]]:
+    values: dict[str, list[tuple[str, Any]]] = {
+        key: [] for key in _POLICY_OBSERVATION_EXPECTED_VALUES
+    }
+    for payload_index, payload in enumerate(payloads):
+        for container_index, container in enumerate(
+            _policy_observation_metadata_containers(payload)
+        ):
+            prefix = f"payload[{payload_index}].container[{container_index}]"
+            for (
+                metadata_field,
+                source_keys,
+            ) in _POLICY_OBSERVATION_METADATA_FIELD_SOURCES.items():
+                for source_key in source_keys:
+                    if container.get(source_key) is not None:
+                        values[metadata_field].append(
+                            (f"{prefix}.{source_key}", container[source_key])
+                        )
+            contract = container.get("observation_contract")
+            if not isinstance(contract, Mapping):
+                continue
+            for (
+                metadata_field,
+                contract_key,
+            ) in _POLICY_OBSERVATION_CONTRACT_FIELD_SOURCES.items():
+                if contract.get(contract_key) is not None:
+                    values[metadata_field].append(
+                        (
+                            f"{prefix}.observation_contract.{contract_key}",
+                            contract[contract_key],
+                        )
+                    )
+    return values
+
+
+def _metadata_value_matches_expected(value: Any, expected: Any) -> bool:
+    if isinstance(expected, list):
+        try:
+            return list(value) == expected
+        except TypeError:
+            return False
+    return str(value) == str(expected)
+
+
+def require_checkpoint_policy_observation_metadata(
+    *,
+    checkpoint_path: str | Path,
+    checkpoint_payload: Any,
+) -> dict[str, Any]:
+    """Validate the frozen checkpoint sees the current model-facing tensor."""
+
+    path = Path(checkpoint_path)
+    payloads: list[Mapping[str, Any]] = []
+    if isinstance(checkpoint_payload, Mapping):
+        payloads.append(checkpoint_payload)
+    sidecar = _load_checkpoint_policy_metadata_sidecar(path)
+    if sidecar:
+        payloads.append(sidecar)
+    values = _collect_policy_observation_metadata_values(payloads)
+    required_fields = (
+        "policy_trail_render_mode",
+        "policy_bonus_render_mode",
+        "policy_observation_backend",
+        "policy_observation_contract_id",
+        "policy_observation_perspective_schema_id",
+    )
+    missing = [field for field in required_fields if not values[field]]
+    if missing:
+        raise ValueError(
+            "LightZero checkpoint opponent is missing required policy observation "
+            f"metadata: {', '.join(missing)} for {path}. Frozen checkpoint "
+            "opponents must declare the tensor surface they were trained on."
+        )
+    for metadata_field, expected in _POLICY_OBSERVATION_EXPECTED_VALUES.items():
+        for source, actual in values[metadata_field]:
+            if not _metadata_value_matches_expected(actual, expected):
+                raise ValueError(
+                    "LightZero checkpoint opponent policy observation metadata "
+                    f"{source} must be {expected!r}; got {actual!r} for {path}."
+                )
+    return {
+        "policy_trail_render_mode": POLICY_TRAIL_RENDER_MODE,
+        "policy_bonus_render_mode": POLICY_BONUS_RENDER_MODE,
+        "policy_observation_backend": DEFAULT_POLICY_OBSERVATION_BACKEND,
+        "policy_observation_contract_id": POLICY_OBSERVATION_CONTRACT_ID,
+        "policy_observation_perspective_schema_id": (
+            POLICY_OBSERVATION_PERSPECTIVE_SCHEMA_ID
+        ),
+    }
 
 
 def snapshot_backed_lightzero_checkpoint_opponent_policy(
@@ -219,6 +407,10 @@ def load_lightzero_curvytron_visual_survival_policy(
         raise FileNotFoundError(f"LightZero checkpoint does not exist: {path}")
 
     payload = _torch_load(torch, path)
+    policy_observation_metadata = require_checkpoint_policy_observation_metadata(
+        checkpoint_path=path,
+        checkpoint_payload=payload,
+    )
     found_key, state_dict = _state_dict_from_payload(payload, state_key=state_key)
     inferred_support_config = _infer_model_support_config_from_state_dict(state_dict)
 
@@ -262,6 +454,7 @@ def load_lightzero_curvytron_visual_survival_policy(
             "use_cuda": bool(use_cuda),
             "device": str(device),
             "checkpoint_inferred_model_support_config": inferred_support_config,
+            **policy_observation_metadata,
         }
     )
     return policy, device, load_summary
@@ -563,6 +756,8 @@ __all__ = [
     "LIGHTZERO_CHECKPOINT_OPPONENT_PROVIDER_VERSION",
     "LightZeroCheckpointOpponentProvider",
     "build_lightzero_checkpoint_multiplayer_ego_wrapper",
+    "checkpoint_policy_metadata_sidecar_path",
     "load_lightzero_curvytron_visual_survival_policy",
+    "require_checkpoint_policy_observation_metadata",
     "snapshot_backed_lightzero_checkpoint_opponent_policy",
 ]

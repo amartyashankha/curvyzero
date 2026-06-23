@@ -43,7 +43,7 @@ import traceback
 from collections import Counter
 from functools import lru_cache
 from importlib import metadata
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
 import modal
@@ -81,6 +81,13 @@ from curvyzero.env.vector_visual_observation import (
 )
 from curvyzero.env.vector_visual_observation import TRAIL_RENDER_MODE_DEFAULT
 from curvyzero.contracts.curvytron import (
+    CURVYTRON_DEFAULT_COLLECTOR_ENV_NUM,
+    CURVYTRON_DEFAULT_MAX_ENV_STEP,
+    CURVYTRON_DEFAULT_MAX_TRAIN_ITER,
+    CURVYTRON_DEFAULT_N_EPISODE,
+    CURVYTRON_DEFAULT_NUM_SIMULATIONS,
+    CURVYTRON_DEFAULT_TRAIN_BATCH_SIZE,
+    CURVYTRON_DEFAULT_TRAIN_COMPUTE,
     CURVYTRON_BACKGROUND_GIF_FPS,
     CURVYTRON_COMMIT_ON_CHECKPOINT,
     CURVYTRON_SAVE_CKPT_AFTER_ITER,
@@ -92,8 +99,31 @@ from curvyzero.contracts.curvytron import (
     modal_volume_kwargs_for_name,
 )
 from curvyzero.infra.modal import run_management as runs
-from curvyzero.training import exploration_bonus as xb
+from curvyzero.observability.feedback_loop_lineage import (
+    append_lineage_event,
+    lineage_events_path,
+)
+from curvyzero.training import lightzero_config_builder as lz_config
 from curvyzero.training import lightzero_checkpoints as lz_checkpoints
+from curvyzero.training import exploration_bonus as xb
+from curvyzero.training.reward_contracts import (
+    DEFAULT_MODEL_SUPPORT_CAP,
+    DEFAULT_REWARD_OUTCOME_ALPHA,
+    DEFAULT_REWARD_VARIANT,
+    DEFAULT_TD_STEPS,
+    REWARD_VARIANT_ALL_PLAYERS_ALIVE_DIAGNOSTIC,
+    REWARD_VARIANT_AUTO,
+    REWARD_VARIANT_CHOICES,
+    REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME,
+    REWARD_VARIANT_SPARSE_OUTCOME,
+    REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME,
+    REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME,
+    all_players_alive_diagnostic_reward_policy,
+    lightzero_target_config_for_reward,
+    normalize_reward_outcome_alpha,
+    normalize_reward_variant_for_env,
+    reward_policy_for_variant,
+)
 from curvyzero.training.curvytron_current_policy_selfplay_smoke import (
     STACK_RENDER_MODE_ORDER,
 )
@@ -148,9 +178,6 @@ from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env imp
     CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv,
 )
 from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
-    DENSE_SURVIVAL_PLUS_OUTCOME_REWARD_SCHEMA_ID,
-)
-from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
     DEFAULT_DECISION_SOURCE_FRAMES as SOURCE_STATE_DEFAULT_DECISION_SOURCE_FRAMES,
 )
 from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
@@ -201,39 +228,15 @@ from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env imp
 from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
     LIGHTZERO_SOURCE_STATE_VISUAL_JOINT_ACTION_IMPORT_NAMES,
 )
-from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
-    REWARD_VARIANT_ALL_PLAYERS_ALIVE_DIAGNOSTIC,
-)
-from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
-    REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME,
-)
-from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
-    REWARD_VARIANT_SPARSE_OUTCOME,
-)
-from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
-    REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME,
-)
-from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
-    REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME,
-)
-from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
-    SOURCE_STATE_FIXED_OPPONENT_REWARD_VARIANTS,
-)
-from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
-    SURVIVAL_PLUS_BONUS_NO_OUTCOME_BONUS_REWARD,
-)
-from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
-    SURVIVAL_PLUS_BONUS_NO_OUTCOME_REWARD_SCHEMA_ID,
-)
-from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
-    SURVIVAL_PLUS_BONUS_PLUS_OUTCOME_REWARD_SCHEMA_ID,
-)
 from curvyzero.training.opponent_mixture import (
     OPPONENT_MIXTURE_SCHEMA_ID,
+    deterministic_collector_env_mixture_plan,
     parse_opponent_mixture_spec,
+    singleton_mixture_for_split_entry,
 )
 from curvyzero.training.opponent_leaderboard import validate_assignment_audit
 from curvyzero.training.opponent_registry import (
+    OPPONENT_ASSIGNMENT_SCHEMA_ID,
     canonical_assignment_json_sha256,
     parse_opponent_assignment_snapshot,
 )
@@ -260,6 +263,7 @@ from curvyzero.env.observation_surface_contract import (
     POLICY_BONUS_RENDER_MODE,
     POLICY_OBSERVATION_BACKENDS,
     POLICY_OBSERVATION_CONTRACT_ID,
+    POLICY_OBSERVATION_PERSPECTIVE_SCHEMA_ID,
     POLICY_TRAIL_RENDER_MODE,
     policy_observation_surface,
 )
@@ -382,17 +386,17 @@ _RUNS_REF_PREFIX = "runs:"
 _CONTROL_REF_PREFIX = "control:"
 
 DEFAULT_MODE = "dry"
-DEFAULT_COMPUTE = "gpu-l4-t4"
+DEFAULT_COMPUTE = CURVYTRON_DEFAULT_TRAIN_COMPUTE
 DEFAULT_SEED = 0
-DEFAULT_MAX_ENV_STEP = 8192
-DEFAULT_MAX_TRAIN_ITER = 64
+DEFAULT_MAX_ENV_STEP = CURVYTRON_DEFAULT_MAX_ENV_STEP
+DEFAULT_MAX_TRAIN_ITER = CURVYTRON_DEFAULT_MAX_TRAIN_ITER
 DEFAULT_SOURCE_MAX_STEPS = CURVYTRON_SOURCE_MAX_STEPS
-DEFAULT_COLLECTOR_ENV_NUM = 1
+DEFAULT_COLLECTOR_ENV_NUM = CURVYTRON_DEFAULT_COLLECTOR_ENV_NUM
 DEFAULT_EVALUATOR_ENV_NUM = 1
 DEFAULT_N_EVALUATOR_EPISODE = 1
-DEFAULT_N_EPISODE = 1
-DEFAULT_NUM_SIMULATIONS = 8
-DEFAULT_BATCH_SIZE = 16
+DEFAULT_N_EPISODE = CURVYTRON_DEFAULT_N_EPISODE
+DEFAULT_NUM_SIMULATIONS = CURVYTRON_DEFAULT_NUM_SIMULATIONS
+DEFAULT_BATCH_SIZE = CURVYTRON_DEFAULT_TRAIN_BATCH_SIZE
 DEFAULT_LIGHTZERO_EVAL_FREQ = 0
 DEFAULT_SKIP_LIGHTZERO_EVAL_IN_PROFILE = True
 DEFAULT_LIGHTZERO_MULTI_GPU = False
@@ -406,41 +410,49 @@ DEFAULT_SAVE_CKPT_AFTER_ITER = CURVYTRON_SAVE_CKPT_AFTER_ITER
 DEFAULT_STOP_AFTER_LEARNER_TRAIN_CALLS = 0
 DEFAULT_COMMIT_ON_CHECKPOINT = CURVYTRON_COMMIT_ON_CHECKPOINT
 DEFAULT_OPPONENT_ASSIGNMENT_REFRESH_INTERVAL_TRAIN_ITER = 0
-OPPONENT_ASSIGNMENT_REFRESH_POINTER_SCHEMA_ID = (
-    "curvyzero_opponent_assignment_refresh_pointer/v0"
-)
+OPPONENT_ASSIGNMENT_REFRESH_POINTER_SCHEMA_ID = "curvyzero_opponent_assignment_refresh_pointer/v0"
+DEFAULT_OWN_CHECKPOINT_OPPONENT_REFRESH_ENABLED = False
 DEFAULT_DECISION_SOURCE_FRAMES = SOURCE_STATE_DEFAULT_DECISION_SOURCE_FRAMES
 DEFAULT_DECISION_MS = SOURCE_STATE_DEFAULT_DECISION_MS
 DEFAULT_SOURCE_PHYSICS_STEP_MS = DEFAULT_DECISION_MS / DEFAULT_DECISION_SOURCE_FRAMES
 DEFAULT_ENV_TELEMETRY_STRIDE = 1
 DEFAULT_ENV_MANAGER_TYPE = "subprocess"
-ENV_MANAGER_TYPE_CHOICES = ("base", "subprocess")
+CURVYZERO_BATCHED_PROFILE_ENV_MANAGER_TYPE = "curvyzero_batched_profile"
+CURVYZERO_BATCHED_ZERO_OBS_PROFILE_ENV_MANAGER_TYPE = "curvyzero_batched_zero_obs_profile"
+CURVYZERO_BATCHED_PROFILE_ENV_MANAGER_TYPES = (
+    CURVYZERO_BATCHED_PROFILE_ENV_MANAGER_TYPE,
+    CURVYZERO_BATCHED_ZERO_OBS_PROFILE_ENV_MANAGER_TYPE,
+)
+ENV_MANAGER_TYPE_CHOICES = (
+    "base",
+    "subprocess",
+    *CURVYZERO_BATCHED_PROFILE_ENV_MANAGER_TYPES,
+)
+COLLECT_SEARCH_BACKEND_STOCK = "stock"
+COLLECT_SEARCH_BACKEND_DIRECT_CTREE_GPU_LATENT = "direct_ctree_gpu_latent"
+COLLECT_SEARCH_BACKEND_CHOICES = (
+    COLLECT_SEARCH_BACKEND_STOCK,
+    COLLECT_SEARCH_BACKEND_DIRECT_CTREE_GPU_LATENT,
+)
+DEFAULT_COLLECT_SEARCH_BACKEND = COLLECT_SEARCH_BACKEND_STOCK
+COLLECT_SEARCH_CTREE_BACKEND_LIGHTZERO = "lightzero"
+COLLECT_SEARCH_CTREE_BACKEND_FLAT_A3 = "flat_a3"
+COLLECT_SEARCH_CTREE_BACKEND_CHOICES = (
+    COLLECT_SEARCH_CTREE_BACKEND_LIGHTZERO,
+    COLLECT_SEARCH_CTREE_BACKEND_FLAT_A3,
+)
+DEFAULT_COLLECT_SEARCH_CTREE_BACKEND = COLLECT_SEARCH_CTREE_BACKEND_LIGHTZERO
 DEFAULT_RUN_ID = "curvytron-stock-loop-control-s0"
 DEFAULT_ATTEMPT_ID = "stock-loop-control"
-ENV_VARIANT_FIXED_OPPONENT = "fixed_opponent"
-ENV_VARIANT_TURN_COMMIT = "turn_commit"
-ENV_VARIANT_SOURCE_STATE_TURN_COMMIT = "source_state_turn_commit"
-ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT = "source_state_fixed_opponent"
-ENV_VARIANT_SOURCE_STATE_JOINT_ACTION = "source_state_joint_action"
-ENV_VARIANT_CHOICES = (
-    ENV_VARIANT_FIXED_OPPONENT,
-    ENV_VARIANT_TURN_COMMIT,
-    ENV_VARIANT_SOURCE_STATE_TURN_COMMIT,
-    ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT,
-    ENV_VARIANT_SOURCE_STATE_JOINT_ACTION,
-)
-DEFAULT_ENV_VARIANT = ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT
-OPPONENT_TRAINING_RELATION_WEIGHTED_EPISODE_MIXTURE = "learner_vs_weighted_episode_opponent_mixture"
-REWARD_VARIANT_AUTO = "auto"
-DEFAULT_REWARD_VARIANT = REWARD_VARIANT_AUTO
-SOURCE_STATE_FIXED_OPPONENT_MAX_MODEL_SUPPORT_SCALE = 300
-REWARD_VARIANT_CHOICES = (
-    REWARD_VARIANT_AUTO,
-    REWARD_VARIANT_SPARSE_OUTCOME,
-    REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME,
-    REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME,
-    REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME,
-    REWARD_VARIANT_ALL_PLAYERS_ALIVE_DIAGNOSTIC,
+ENV_VARIANT_FIXED_OPPONENT = lz_config.ENV_VARIANT_FIXED_OPPONENT
+ENV_VARIANT_TURN_COMMIT = lz_config.ENV_VARIANT_TURN_COMMIT
+ENV_VARIANT_SOURCE_STATE_TURN_COMMIT = lz_config.ENV_VARIANT_SOURCE_STATE_TURN_COMMIT
+ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT = lz_config.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT
+ENV_VARIANT_SOURCE_STATE_JOINT_ACTION = lz_config.ENV_VARIANT_SOURCE_STATE_JOINT_ACTION
+ENV_VARIANT_CHOICES = lz_config.ENV_VARIANT_CHOICES
+DEFAULT_ENV_VARIANT = lz_config.DEFAULT_ENV_VARIANT
+OPPONENT_TRAINING_RELATION_WEIGHTED_EPISODE_MIXTURE = (
+    lz_config.OPPONENT_TRAINING_RELATION_WEIGHTED_EPISODE_MIXTURE
 )
 DEFAULT_EGO_ACTION_STRAIGHT_OVERRIDE_PROBABILITY = 0.0
 DEFAULT_POLICY_ACTION_REPEAT_MIN = SOURCE_STATE_DEFAULT_POLICY_ACTION_REPEAT_MIN
@@ -569,43 +581,40 @@ def _normalize_opponent_policy_kind_for_env(
 
 
 def _normalize_reward_variant_for_env(*, env_variant: str, reward_variant: str) -> str:
-    if reward_variant == REWARD_VARIANT_AUTO:
-        if env_variant == ENV_VARIANT_SOURCE_STATE_JOINT_ACTION:
-            return REWARD_VARIANT_ALL_PLAYERS_ALIVE_DIAGNOSTIC
-        if env_variant == ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT:
-            return REWARD_VARIANT_SPARSE_OUTCOME
-        return REWARD_VARIANT_AUTO
-    return reward_variant
+    return normalize_reward_variant_for_env(
+        env_variant=env_variant,
+        reward_variant=reward_variant,
+    )
 
 
 def _validate_source_state_trail_render_mode(value: str) -> str:
-    mode = str(value)
-    if mode not in SOURCE_STATE_TRAIL_RENDER_MODE_CHOICES:
-        raise ValueError(
-            "source_state_trail_render_mode must be one of "
-            f"{SOURCE_STATE_TRAIL_RENDER_MODE_CHOICES!r}; got {mode!r}"
-        )
-    return mode
+    return lz_config.validate_source_state_trail_render_mode(value)
 
 
 def _validate_source_state_bonus_render_mode(value: str) -> str:
-    mode = str(value)
-    if mode not in SOURCE_STATE_BONUS_RENDER_MODE_CHOICES:
-        raise ValueError(
-            "source_state_bonus_render_mode must be one of "
-            f"{SOURCE_STATE_BONUS_RENDER_MODE_CHOICES!r}; got {mode!r}"
-        )
-    return mode
+    return lz_config.validate_source_state_bonus_render_mode(value)
 
 
 def _validate_policy_observation_backend(value: str) -> str:
-    backend = str(value)
-    if backend not in POLICY_OBSERVATION_BACKEND_CHOICES:
+    return lz_config.validate_policy_observation_backend(value)
+
+
+def _validate_collect_search_backend(value: str) -> str:
+    if value not in COLLECT_SEARCH_BACKEND_CHOICES:
         raise ValueError(
-            "policy_observation_backend must be one of "
-            f"{POLICY_OBSERVATION_BACKEND_CHOICES!r}; got {backend!r}"
+            "collect_search_backend must be one of "
+            f"{COLLECT_SEARCH_BACKEND_CHOICES!r}; got {value!r}"
         )
-    return backend
+    return value
+
+
+def _validate_collect_search_ctree_backend(value: str) -> str:
+    if value not in COLLECT_SEARCH_CTREE_BACKEND_CHOICES:
+        raise ValueError(
+            "collect_search_ctree_backend must be one of "
+            f"{COLLECT_SEARCH_CTREE_BACKEND_CHOICES!r}; got {value!r}"
+        )
+    return value
 
 
 def _validate_learner_seat_mode(
@@ -613,124 +622,28 @@ def _validate_learner_seat_mode(
     *,
     absent_default: str = DEFAULT_LEARNER_SEAT_MODE,
 ) -> str:
-    mode = str(absent_default if value is None else value)
-    if mode not in LEARNER_SEAT_MODE_CHOICES:
-        raise ValueError(
-            "learner_seat_mode must be one of "
-            f"{LEARNER_SEAT_MODE_CHOICES!r}; got {mode!r}"
-        )
-    return mode
+    return lz_config.validate_learner_seat_mode(value, absent_default=absent_default)
 
 
-def _reward_policy_for_variant(*, env_variant: str, reward_variant: str) -> dict[str, Any]:
-    reward_variant = _normalize_reward_variant_for_env(
-        env_variant=env_variant,
-        reward_variant=reward_variant,
-    )
-    if env_variant == ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT:
-        if reward_variant == REWARD_VARIANT_SPARSE_OUTCOME:
-            return {
-                "reward_variant": reward_variant,
-                "reward_schema_id": SPARSE_ROUND_OUTCOME_REWARD_SCHEMA_ID,
-                "survival_length_is_eval_metric": True,
-                "dense_survival_reward": False,
-                "sparse_outcome_reward": True,
-                "survival_only": False,
-                "diagnostic_all_players_alive": False,
-                "centralized_joint_action_control": False,
-                "per_player_reward": True,
-                "zero_sum_reward": True,
-                "nonterminal_reward": 0.0,
-                "winner_bonus": 1.0,
-                "loser_penalty": -1.0,
-                "draw_bonus": 0.0,
-                "truncation_bonus": 0.0,
-            }
-        if reward_variant == REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME:
-            return {
-                "reward_variant": reward_variant,
-                "reward_schema_id": DENSE_SURVIVAL_PLUS_OUTCOME_REWARD_SCHEMA_ID,
-                "survival_length_is_eval_metric": True,
-                "dense_survival_reward": True,
-                "dense_alive_helper": 1.0,
-                "sparse_outcome_reward": True,
-                "survival_only": False,
-                "diagnostic_all_players_alive": False,
-                "centralized_joint_action_control": False,
-                "per_player_reward": True,
-                "zero_sum_reward": False,
-                "post_transition_alive_reward": 1.0,
-                "post_transition_dead_reward": 0.0,
-                "winner_bonus": 1.0,
-                "loser_penalty": -1.0,
-                "draw_bonus": 0.0,
-                "truncation_bonus": 0.0,
-            }
-        if reward_variant == REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME:
-            return {
-                "reward_variant": reward_variant,
-                "reward_schema_id": SURVIVAL_PLUS_BONUS_NO_OUTCOME_REWARD_SCHEMA_ID,
-                "survival_length_is_eval_metric": True,
-                "dense_survival_reward": True,
-                "dense_alive_helper": 1.0,
-                "same_step_bonus_pickup_reward": True,
-                "bonus_pickup_reward_per_catch": (SURVIVAL_PLUS_BONUS_NO_OUTCOME_BONUS_REWARD),
-                "bonus_pickup_source": "bonus_catch_count_step[0, ego_player_index]",
-                "sparse_outcome_reward": False,
-                "sparse_outcome_telemetry_only": True,
-                "survival_only": False,
-                "diagnostic_all_players_alive": False,
-                "centralized_joint_action_control": False,
-                "per_player_reward": True,
-                "zero_sum_reward": False,
-                "post_transition_alive_reward": 1.0,
-                "post_transition_dead_reward": 0.0,
-                "terminal_outcome_bonus": 0.0,
-                "winner_bonus": 0.0,
-                "loser_penalty": 0.0,
-                "draw_bonus": 0.0,
-                "truncation_bonus": 0.0,
-            }
-        if reward_variant == REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME:
-            return {
-                "reward_variant": reward_variant,
-                "reward_schema_id": SURVIVAL_PLUS_BONUS_PLUS_OUTCOME_REWARD_SCHEMA_ID,
-                "survival_length_is_eval_metric": True,
-                "dense_survival_reward": True,
-                "dense_alive_helper": 1.0,
-                "same_step_bonus_pickup_reward": True,
-                "bonus_pickup_reward_per_catch": (
-                    SURVIVAL_PLUS_BONUS_NO_OUTCOME_BONUS_REWARD
-                ),
-                "bonus_pickup_source": "bonus_catch_count_step[0, ego_player_index]",
-                "sparse_outcome_reward": True,
-                "sparse_outcome_telemetry_only": False,
-                "terminal_outcome_scaled_by_episode_source_steps": True,
-                "terminal_outcome_scale": "episode_source_step_count",
-                "survival_only": False,
-                "diagnostic_all_players_alive": False,
-                "centralized_joint_action_control": False,
-                "per_player_reward": True,
-                "zero_sum_reward": False,
-                "post_transition_alive_reward": 1.0,
-                "post_transition_dead_reward": 0.0,
-                "terminal_outcome_bonus": 1.0,
-                "winner_bonus": 1.0,
-                "loser_penalty": -1.0,
-                "draw_bonus": 0.0,
-                "truncation_bonus": 0.0,
-            }
-        raise ValueError(
-            "source_state_fixed_opponent reward_variant must be one of "
-            f"{SOURCE_STATE_FIXED_OPPONENT_REWARD_VARIANTS!r}; got {reward_variant!r}"
+def _normalize_reward_outcome_alpha(value: float) -> float:
+    return normalize_reward_outcome_alpha(value)
+
+
+def _reward_policy_for_variant(
+    *,
+    env_variant: str,
+    reward_variant: str,
+    reward_outcome_alpha: float = DEFAULT_REWARD_OUTCOME_ALPHA,
+) -> dict[str, Any]:
+    if env_variant in (
+        ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT,
+        ENV_VARIANT_SOURCE_STATE_JOINT_ACTION,
+    ):
+        return reward_policy_for_variant(
+            env_variant=env_variant,
+            reward_variant=reward_variant,
+            reward_outcome_alpha=reward_outcome_alpha,
         )
-    if env_variant == ENV_VARIANT_SOURCE_STATE_JOINT_ACTION:
-        if reward_variant != REWARD_VARIANT_ALL_PLAYERS_ALIVE_DIAGNOSTIC:
-            raise ValueError(
-                "source_state_joint_action only supports reward_variant="
-                f"{REWARD_VARIANT_ALL_PLAYERS_ALIVE_DIAGNOSTIC!r}; got {reward_variant!r}"
-            )
-        return _all_players_alive_diagnostic_reward_policy()
     env_spec = _env_variant_spec(env_variant)
     if reward_variant != REWARD_VARIANT_AUTO:
         raise ValueError(
@@ -752,70 +665,18 @@ def _lightzero_target_config_for_reward(
     env_variant: str,
     reward_variant: str,
     source_max_steps: int,
+    reward_outcome_alpha: float = DEFAULT_REWARD_OUTCOME_ALPHA,
+    model_support_cap: int | None = DEFAULT_MODEL_SUPPORT_CAP,
+    td_steps: int | None = DEFAULT_TD_STEPS,
 ) -> dict[str, Any]:
-    reward_variant = _normalize_reward_variant_for_env(
+    return lightzero_target_config_for_reward(
         env_variant=env_variant,
         reward_variant=reward_variant,
+        source_max_steps=source_max_steps,
+        reward_outcome_alpha=reward_outcome_alpha,
+        model_support_cap=model_support_cap,
+        td_steps=td_steps,
     )
-    if env_variant == ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT:
-        reward_support_scale = 1
-        value_support_scale = 1
-        if reward_variant == REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME:
-            reward_support_scale = 2
-            value_support_scale = int(source_max_steps) + 1
-        if reward_variant == REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME:
-            reward_support_scale = int(1.0 + SURVIVAL_PLUS_BONUS_NO_OUTCOME_BONUS_REWARD)
-            value_support_scale = int(
-                source_max_steps * (1.0 + SURVIVAL_PLUS_BONUS_NO_OUTCOME_BONUS_REWARD)
-            )
-        if reward_variant == REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME:
-            reward_support_scale = int(
-                source_max_steps + 1.0 + SURVIVAL_PLUS_BONUS_NO_OUTCOME_BONUS_REWARD
-            )
-            value_support_scale = int(
-                source_max_steps
-                * (2.0 + SURVIVAL_PLUS_BONUS_NO_OUTCOME_BONUS_REWARD)
-            )
-        max_support_scale = SOURCE_STATE_FIXED_OPPONENT_MAX_MODEL_SUPPORT_SCALE
-        capped_reward_support_scale = min(int(reward_support_scale), max_support_scale)
-        capped_value_support_scale = min(int(value_support_scale), max_support_scale)
-        model_support_scale = max(capped_reward_support_scale, capped_value_support_scale)
-        model_support_size = int(2 * model_support_scale + 1)
-        model_support_range = (
-            -float(model_support_scale),
-            float(model_support_scale + 1),
-            1.0,
-        )
-        return {
-            "discount_factor": 1.0,
-            # source_max_steps is the environment/game cap. It is not a MuZero
-            # bootstrap horizon; keep LightZero's stock td_steps unless a
-            # separate explicit target-horizon knob is added later.
-            "model_support_scale": int(model_support_scale),
-            "model_reward_support_size": model_support_size,
-            "model_value_support_size": model_support_size,
-            "model_reward_support_range": model_support_range,
-            "model_value_support_range": model_support_range,
-            "model_support_cap": int(max_support_scale),
-            "model_reward_support_capped": (int(reward_support_scale) > max_support_scale),
-            "model_value_support_capped": (int(value_support_scale) > max_support_scale),
-            "model_reward_support_requested_scale": int(reward_support_scale),
-            "model_value_support_requested_scale": int(value_support_scale),
-            "model_reward_support_effective_scale": int(model_support_scale),
-            "model_value_support_effective_scale": int(model_support_scale),
-            "uncapped_model_reward_support_scale": int(reward_support_scale),
-            "uncapped_model_value_support_scale": int(value_support_scale),
-        }
-    if env_variant == ENV_VARIANT_SOURCE_STATE_JOINT_ACTION:
-        support_scale = max(1, int(source_max_steps))
-        return {
-            "discount_factor": 1.0,
-            "td_steps": int(source_max_steps),
-            "model_support_scale": int(support_scale),
-            "model_reward_support_size": int(2 * support_scale + 1),
-            "model_value_support_size": int(2 * support_scale + 1),
-        }
-    return {}
 
 
 def _validate_trusted_source_state_action_cadence(
@@ -827,34 +688,13 @@ def _validate_trusted_source_state_action_cadence(
     source_max_steps_semantics: str = "source_physics_steps",
     context: str,
 ) -> None:
-    if env_variant != ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT:
-        return
-    if (
-        int(decision_source_frames) == int(DEFAULT_DECISION_SOURCE_FRAMES)
-        and math.isclose(
-            float(source_physics_step_ms),
-            float(DEFAULT_SOURCE_PHYSICS_STEP_MS),
-            rel_tol=0.0,
-            abs_tol=1e-6,
-        )
-        and str(source_max_steps_semantics) == "source_physics_steps"
-        and math.isclose(
-            float(decision_ms),
-            float(DEFAULT_DECISION_MS),
-            rel_tol=0.0,
-            abs_tol=1e-6,
-        )
-    ):
-        return
-    raise ValueError(
-        f"{context} uses the trusted source_state_fixed_opponent lane, where "
-        "one LightZero policy action must advance exactly one CurvyTron source "
-        f"physics step. decision_ms must be {DEFAULT_DECISION_MS:g}; got "
-        f"{float(decision_ms):g}; decision_source_frames must be "
-        f"{DEFAULT_DECISION_SOURCE_FRAMES}; got {int(decision_source_frames)}; "
-        f"source_physics_step_ms must be {DEFAULT_SOURCE_PHYSICS_STEP_MS:g}; got "
-        f"{float(source_physics_step_ms):g}. Use policy_action_repeat_* for "
-        "explicit action repeat instead of hiding repeat in cadence fields."
+    return lz_config.validate_trusted_source_state_action_cadence(
+        env_variant=env_variant,
+        decision_ms=decision_ms,
+        decision_source_frames=decision_source_frames,
+        source_physics_step_ms=source_physics_step_ms,
+        source_max_steps_semantics=source_max_steps_semantics,
+        context=context,
     )
 
 
@@ -897,10 +737,14 @@ PROFILE_COUNT_KEYS = (
     "learner_train_iter_delta",
     "learner_save_checkpoint_calls",
     "evaluator_eval_calls",
+    "evaluator_eval_skipped_calls",
     "env_reset_calls",
     "env_step_calls",
     "env_vector_step_calls",
     "env_runtime_step_many_calls",
+    "env_registered_step_calls",
+    "env_step_info_calls",
+    "env_base_info_calls",
     "env_obs_pack_calls",
     "env_stack_update_calls",
     "env_render_gray64_calls",
@@ -916,11 +760,83 @@ PROFILE_COUNT_KEYS = (
     "mcts_search_root_sum",
     "mcts_search_simulation_budget_sum",
     "mcts_search_node_budget_sum",
+    "collect_search_backend_direct_ctree_gpu_latent_calls",
+    "collect_search_backend_fallback_calls",
+    "collect_search_backend_output_fast_path_calls",
+    "collect_search_backend_output_rows",
+    "collect_search_backend_ctree_traverse_calls",
+    "collect_search_backend_ctree_backpropagate_calls",
+    "collect_search_backend_recurrent_inference_calls",
+    "collect_search_backend_model_output_d2h_bytes",
+    "rnd_collect_data_calls",
+    "rnd_train_with_data_calls",
+    "rnd_estimate_calls",
+    "rnd_metrics_snapshot_calls",
+    "rnd_metrics_write_snapshot_calls",
+    "rnd_state_hash_calls",
 )
 
 
 def _compute_uses_cuda(compute: str) -> bool:
     return compute.startswith("gpu-")
+
+
+def _import_collect_search_tree_muzero(ctree_backend: str) -> Any:
+    if ctree_backend == COLLECT_SEARCH_CTREE_BACKEND_LIGHTZERO:
+        import lzero.mcts.tree_search.mcts_ctree as mcts_ctree
+
+        return mcts_ctree.tree_muzero
+    if ctree_backend != COLLECT_SEARCH_CTREE_BACKEND_FLAT_A3:
+        raise ValueError(f"unsupported collect_search_ctree_backend {ctree_backend!r}")
+
+    def prefer_repo_curvyzero_path() -> None:
+        import importlib
+        import sys
+
+        repo_src = str(REMOTE_ROOT / "src")
+        if repo_src in sys.path:
+            sys.path.remove(repo_src)
+        sys.path.insert(0, repo_src)
+
+        package_paths = {
+            "curvyzero": REMOTE_ROOT / "src" / "curvyzero",
+            "curvyzero.vendor": REMOTE_ROOT / "src" / "curvyzero" / "vendor",
+            "curvyzero.vendor.lightzero_ctree_a3": (
+                REMOTE_ROOT / "src" / "curvyzero" / "vendor" / "lightzero_ctree_a3"
+            ),
+            "curvyzero.vendor.lightzero_ctree_a3.ctree_muzero": (
+                REMOTE_ROOT
+                / "src"
+                / "curvyzero"
+                / "vendor"
+                / "lightzero_ctree_a3"
+                / "ctree_muzero"
+            ),
+        }
+        for package_name, package_path in package_paths.items():
+            module = sys.modules.get(package_name)
+            if module is None:
+                continue
+            module_path = getattr(module, "__path__", None)
+            if module_path is None:
+                continue
+            repo_package_path = str(package_path)
+            if repo_package_path in module_path:
+                module_path.remove(repo_package_path)
+            module_path.insert(0, repo_package_path)
+        importlib.invalidate_caches()
+
+    def import_flat_a3() -> Any:
+        from curvyzero.vendor.lightzero_ctree_a3.ctree_muzero import mz_tree_a3
+
+        return mz_tree_a3
+
+    prefer_repo_curvyzero_path()
+    try:
+        return import_flat_a3()
+    except ImportError:
+        prefer_repo_curvyzero_path()
+        return import_flat_a3()
 
 
 def _should_install_lightzero_phase_profile(
@@ -929,10 +845,96 @@ def _should_install_lightzero_phase_profile(
     return mode == "profile" or int(stop_after_learner_train_calls) > 0
 
 
+def _collect_search_backend_proof(
+    *,
+    command: Mapping[str, Any],
+    phase_profile: Mapping[str, Any],
+) -> dict[str, Any]:
+    counts = phase_profile.get("counts") if isinstance(phase_profile, Mapping) else {}
+    samples = phase_profile.get("samples") if isinstance(phase_profile, Mapping) else {}
+    counts = counts if isinstance(counts, Mapping) else {}
+    samples = samples if isinstance(samples, Mapping) else {}
+    observed_backends = sorted(
+        {
+            str(value)
+            for value in samples.get("collect_search_backend", [])
+            if value is not None
+        }
+    )
+    observed_ctree_backends = sorted(
+        {
+            str(value)
+            for value in samples.get("collect_search_ctree_backend", [])
+            if value is not None
+        }
+    )
+    return {
+        "schema_id": "curvyzero_collect_search_backend_proof/v0",
+        "requested_backend": command.get("collect_search_backend"),
+        "requested_ctree_backend": command.get("collect_search_ctree_backend"),
+        "fallback_policy": command.get("collect_search_backend_fallback_policy"),
+        "observed_collect_search_backends": observed_backends,
+        "observed_collect_search_ctree_backends": observed_ctree_backends,
+        "direct_ctree_gpu_latent_calls": counts.get(
+            "collect_search_backend_direct_ctree_gpu_latent_calls"
+        ),
+        "fallback_calls": counts.get("collect_search_backend_fallback_calls"),
+        "output_rows": counts.get("collect_search_backend_output_rows"),
+        "recurrent_inference_calls": counts.get(
+            "collect_search_backend_recurrent_inference_calls"
+        ),
+        "model_output_d2h_bytes": counts.get("collect_search_backend_model_output_d2h_bytes"),
+    }
+
+
+def _validate_train_collect_search_backend_proof(
+    *,
+    command: Mapping[str, Any],
+    proof: Mapping[str, Any],
+) -> list[str]:
+    if command.get("mode") != "train":
+        return []
+    requested = command.get("collect_search_backend")
+    if requested == COLLECT_SEARCH_BACKEND_STOCK:
+        return []
+    problems: list[str] = []
+    if proof.get("fallback_policy") != "fail_closed_when_non_stock":
+        problems.append("non-stock train collect_search_backend must fail closed on fallback")
+    if proof.get("fallback_calls") != 0:
+        problems.append("non-stock train collect_search_backend fallback was used")
+    direct_calls = _compact_int(proof.get("direct_ctree_gpu_latent_calls"))
+    if direct_calls is None or direct_calls <= 0:
+        problems.append("non-stock train collect_search_backend was not observed")
+    output_rows = _compact_int(proof.get("output_rows"))
+    if output_rows is None or output_rows <= 0:
+        problems.append("non-stock train collect_search_backend produced no output rows")
+    observed = proof.get("observed_collect_search_backends")
+    if not isinstance(observed, list) or str(requested) not in observed:
+        problems.append("non-stock train collect_search_backend sample was not observed")
+    requested_ctree = command.get("collect_search_ctree_backend")
+    observed_ctree = proof.get("observed_collect_search_ctree_backends")
+    if not isinstance(observed_ctree, list) or str(requested_ctree) not in observed_ctree:
+        problems.append("non-stock train collect_search_ctree_backend sample was not observed")
+    num_simulations = _compact_int(command.get("num_simulations"))
+    if num_simulations is not None and num_simulations > 0:
+        recurrent_calls = _compact_int(proof.get("recurrent_inference_calls"))
+        if recurrent_calls is None or recurrent_calls <= 0:
+            problems.append(
+                "non-stock train collect_search_backend did not run recurrent inference"
+            )
+        d2h_bytes = _compact_int(proof.get("model_output_d2h_bytes"))
+        if d2h_bytes is None or d2h_bytes <= 0:
+            problems.append(
+                "non-stock train collect_search_backend did not materialize model outputs"
+            )
+    return problems
+
+
 LIGHTZERO_RESUME_STATE_DIRNAME = "lightzero_resume_state"
 TARGET_AUDIT_MAX_SEGMENTS = 4
 TARGET_AUDIT_MAX_STEPS_PER_SEGMENT = 8
 TARGET_AUDIT_MAX_REPLAY_SAMPLES = 3
+TORCH_CUDA12_VERSION = "2.8.0"
 CURVYTRON_BONUS_SPRITE_SHEET_LOCAL_PATH = (
     Path.cwd() / SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_SPRITE_SHEET_RELATIVE_PATH
 )
@@ -945,6 +947,7 @@ image = (
     .uv_pip_install(
         f"LightZero=={LIGHTZERO_VERSION}",
         f"jax[cuda12]=={JAX_VERSION}",
+        f"torch=={TORCH_CUDA12_VERSION}",
         "numpy>=1.26",
         "cloudpickle>=3",
         "pillow>=10",
@@ -955,6 +958,17 @@ image = (
         CURVYTRON_BONUS_SPRITE_SHEET_LOCAL_PATH,
         remote_path=str(CURVYTRON_BONUS_SPRITE_SHEET_REMOTE_PATH),
         copy=True,
+    )
+)
+ctree_a3_image = (
+    image.uv_pip_install("Cython>=3")
+    .add_local_file(
+        Path.cwd() / "scripts/build_lightzero_ctree_a3.py",
+        remote_path=str(REMOTE_ROOT / "scripts/build_lightzero_ctree_a3.py"),
+        copy=True,
+    )
+    .run_commands(
+        f"cd {REMOTE_ROOT} && python scripts/build_lightzero_ctree_a3.py build_ext --inplace"
     )
 )
 runs_volume = modal.Volume.from_name(
@@ -1541,6 +1555,18 @@ def _install_lightzero_phase_profile(
             patch_timed_method(env_cls, "step", "env_step_sec", "env_step_calls")
             patch_timed_method(
                 env_cls,
+                "_step_info",
+                "env_step_info_sec",
+                "env_step_info_calls",
+            )
+            patch_timed_method(
+                env_cls,
+                "_base_info",
+                "env_base_info_sec",
+                "env_base_info_calls",
+            )
+            patch_timed_method(
+                env_cls,
                 "_lightzero_observation",
                 "env_lightzero_obs_pack_sec",
                 "env_obs_pack_calls",
@@ -1559,6 +1585,20 @@ def _install_lightzero_phase_profile(
             )
         else:
             profiler.add_note("source-state env class missing for env hooks")
+        registered_env_cls = getattr(
+            env_module,
+            "CurvyZeroSourceStateVisualSurvivalLightZeroEnv",
+            None,
+        )
+        if inspect.isclass(registered_env_cls):
+            patch_timed_method(
+                registered_env_cls,
+                "step",
+                "env_registered_step_sec",
+                "env_registered_step_calls",
+            )
+        else:
+            profiler.add_note("registered source-state env class missing for env hooks")
 
         try:
             visual_module = importlib.import_module("curvyzero.env.vector_visual_observation")
@@ -1652,6 +1692,32 @@ def _install_lightzero_phase_profile(
 
         patch_module_function(vector_runtime, "step_many", make_step_many_wrapped)
 
+    def patch_rnd_reward_model_hooks() -> None:
+        rnd_cls = getattr(xb, "CurvyRNDRewardModel", None)
+        if not inspect.isclass(rnd_cls):
+            profiler.add_note("CurvyRNDRewardModel missing for RND hooks")
+            return
+        for method_name, timer_name, count_name, sync_cuda in (
+            ("collect_data", "rnd_collect_data_sec", "rnd_collect_data_calls", False),
+            ("train_with_data", "rnd_train_with_data_sec", "rnd_train_with_data_calls", True),
+            ("estimate", "rnd_estimate_sec", "rnd_estimate_calls", True),
+            ("metrics_snapshot", "rnd_metrics_snapshot_sec", "rnd_metrics_snapshot_calls", False),
+            (
+                "_write_metrics_snapshot",
+                "rnd_metrics_write_snapshot_sec",
+                "rnd_metrics_write_snapshot_calls",
+                False,
+            ),
+            ("_state_hash", "rnd_state_hash_sec", "rnd_state_hash_calls", False),
+        ):
+            patch_timed_method(
+                rnd_cls,
+                method_name,
+                timer_name,
+                count_name,
+                sync_cuda=sync_cuda,
+            )
+
     def patch_policy_hooks() -> None:
         try:
             policy_module = importlib.import_module("lzero.policy.muzero")
@@ -1710,9 +1776,29 @@ def _install_lightzero_phase_profile(
 
     globals_map = getattr(train_muzero, "__globals__", {})
 
+    def resolve_collector_class() -> Any | None:
+        collector_cls = globals_map.get("Collector")
+        if inspect.isclass(collector_cls):
+            return collector_cls
+        try:
+            worker_module = importlib.import_module("lzero.worker")
+            collector_cls = getattr(worker_module, "MuZeroCollector", None)
+        except Exception as exc:  # pragma: no cover - remote diagnosis only.
+            profiler.add_note(
+                f"could not import lzero.worker.MuZeroCollector: {type(exc).__name__}: {exc}"
+            )
+            return None
+        if inspect.isclass(collector_cls):
+            profiler.add_note(
+                "train_muzero globals did not expose Collector class; "
+                "using lzero.worker.MuZeroCollector"
+            )
+            return collector_cls
+        return None
+
     try:
-        if "Collector" in globals_map and inspect.isclass(globals_map["Collector"]):
-            collector_cls = globals_map["Collector"]
+        collector_cls = resolve_collector_class()
+        if inspect.isclass(collector_cls):
             patch_init(collector_cls, "collector_init_sec")
 
             def make_collect(original: Any) -> Any:
@@ -1924,12 +2010,1045 @@ def _install_lightzero_phase_profile(
 
         patch_source_state_env_hooks()
         patch_policy_hooks()
+        patch_rnd_reward_model_hooks()
     except Exception:
         restore()
         raise
 
     for hook in installed_hooks:
         profiler.add_installed_hook(hook)
+    return restore
+
+
+def _direct_ctree_gpu_latent_search_for_collect(
+    *,
+    policy: Any,
+    mcts: Any,
+    model: Any,
+    latent_state_roots: Any,
+    roots: Any,
+    to_play: list[int],
+    ctree_backend: str,
+    profiler: _LightZeroPhaseProfiler,
+) -> None:
+    """Run LightZero CTree search while keeping MuZero latent states on device."""
+
+    import numpy as np
+    import torch
+    from lzero.policy import mz_network_output_unpack
+
+    if not hasattr(latent_state_roots, "device"):
+        raise ValueError("direct_ctree_gpu_latent collect hook requires tensor latents")
+    device = latent_state_roots.device
+    if getattr(device, "type", None) != "cuda":
+        raise ValueError("direct_ctree_gpu_latent collect hook requires CUDA latents")
+
+    tree_muzero = _import_collect_search_tree_muzero(ctree_backend)
+    batch_size = int(roots.num)
+    cfg = getattr(mcts, "_cfg", getattr(policy, "_cfg", None))
+    pb_c_base = int(getattr(cfg, "pb_c_base"))
+    pb_c_init = float(getattr(cfg, "pb_c_init"))
+    discount_factor = float(getattr(cfg, "discount_factor"))
+    num_simulations = int(getattr(cfg, "num_simulations"))
+    value_delta_max = float(getattr(cfg, "value_delta_max", 0.01))
+    inverse_scalar_transform = getattr(mcts, "inverse_scalar_transform_handle", None)
+    if inverse_scalar_transform is None:
+        inverse_scalar_transform = getattr(policy, "inverse_scalar_transform_handle", None)
+    if inverse_scalar_transform is None:
+        raise ValueError("direct_ctree_gpu_latent collect hook missing inverse transform")
+
+    latent_pool = torch.empty(
+        (num_simulations + 1, batch_size)
+        + tuple(int(dim) for dim in latent_state_roots.shape[1:]),
+        dtype=latent_state_roots.dtype,
+        device=device,
+    )
+    latent_pool[0].copy_(latent_state_roots)
+    min_max_stats_lst = tree_muzero.MinMaxStatsList(batch_size)
+    min_max_stats_lst.set_delta(value_delta_max)
+    to_play_batch = list(to_play)
+    env_type = str(getattr(cfg, "env_type", "not_board_games"))
+
+    with torch.no_grad():
+        model.eval()
+        for simulation_index in range(num_simulations):
+            results = tree_muzero.ResultsWrapper(num=batch_size)
+            traverse_to_play = (
+                to_play_batch if env_type == "not_board_games" else copy.deepcopy(to_play_batch)
+            )
+            with profiler.timer("collect_search_backend_ctree_traverse_sec"):
+                (
+                    latent_path_indices,
+                    latent_batch_indices,
+                    last_actions,
+                    virtual_to_play_batch,
+                ) = tree_muzero.batch_traverse(
+                    roots,
+                    pb_c_base,
+                    pb_c_init,
+                    discount_factor,
+                    min_max_stats_lst,
+                    results,
+                    traverse_to_play,
+                )
+            profiler.add_count("collect_search_backend_ctree_traverse_calls")
+
+            if not latent_path_indices:
+                raise ValueError("direct_ctree_gpu_latent collect hook got no latent indices")
+            with profiler.timer("collect_search_backend_tensor_index_sec"):
+                path_tensor = torch.as_tensor(
+                    latent_path_indices,
+                    dtype=torch.long,
+                    device=device,
+                )
+                batch_tensor = torch.as_tensor(
+                    latent_batch_indices,
+                    dtype=torch.long,
+                    device=device,
+                )
+                latent_states = latent_pool[path_tensor, batch_tensor]
+                last_actions_tensor = torch.as_tensor(
+                    np.asarray(last_actions),
+                    dtype=torch.long,
+                    device=device,
+                )
+
+            with profiler.timer("collect_search_backend_recurrent_inference_sec"):
+                network_output = model.recurrent_inference(latent_states, last_actions_tensor)
+            profiler.add_count("collect_search_backend_recurrent_inference_calls")
+
+            with profiler.timer("collect_search_backend_model_output_d2h_sec"):
+                next_latent_state, reward, value, policy_logits = mz_network_output_unpack(
+                    network_output
+                )
+                reward_plain = inverse_scalar_transform(reward).reshape(batch_size, 1)
+                value_plain = inverse_scalar_transform(value).reshape(batch_size, 1)
+                policy_logits_plain = policy_logits.to(dtype=torch.float32).reshape(
+                    batch_size,
+                    -1,
+                )
+                model_output_np = (
+                    torch.cat(
+                        (reward_plain, value_plain, policy_logits_plain),
+                        dim=1,
+                    )
+                    .detach()
+                    .cpu()
+                    .numpy()
+                )
+                reward_np = model_output_np[:, 0]
+                value_np = model_output_np[:, 1]
+                policy_logits_np = model_output_np[:, 2:]
+            profiler.add_count(
+                "collect_search_backend_model_output_d2h_bytes",
+                int(model_output_np.nbytes),
+            )
+
+            latent_pool[simulation_index + 1].copy_(next_latent_state)
+            if ctree_backend == COLLECT_SEARCH_CTREE_BACKEND_FLAT_A3:
+                with profiler.timer("collect_search_backend_flat_payload_sec"):
+                    reward_batch = np.ascontiguousarray(
+                        reward_np.reshape(-1),
+                        dtype=np.float32,
+                    )
+                    value_batch = np.ascontiguousarray(
+                        value_np.reshape(-1),
+                        dtype=np.float32,
+                    )
+                    policy_logits_batch = np.ascontiguousarray(
+                        policy_logits_np,
+                        dtype=np.float32,
+                    )
+                with profiler.timer("collect_search_backend_ctree_backpropagate_sec"):
+                    tree_muzero.batch_backpropagate_flat_a3(
+                        simulation_index + 1,
+                        discount_factor,
+                        reward_batch,
+                        value_batch,
+                        policy_logits_batch,
+                        min_max_stats_lst,
+                        results,
+                    )
+            else:
+                with profiler.timer("collect_search_backend_model_output_listify_sec"):
+                    reward_batch = reward_np.reshape(-1).tolist()
+                    value_batch = value_np.reshape(-1).tolist()
+                    policy_logits_batch = policy_logits_np.tolist()
+                with profiler.timer("collect_search_backend_ctree_backpropagate_sec"):
+                    tree_muzero.batch_backpropagate(
+                        simulation_index + 1,
+                        discount_factor,
+                        reward_batch,
+                        value_batch,
+                        policy_logits_batch,
+                        min_max_stats_lst,
+                        results,
+                        virtual_to_play_batch,
+                    )
+            profiler.add_count("collect_search_backend_ctree_backpropagate_calls")
+
+
+def _install_lightzero_collect_search_backend_hook(
+    *,
+    train_muzero: Any,
+    backend: str,
+    ctree_backend: str = DEFAULT_COLLECT_SEARCH_CTREE_BACKEND,
+    profiler: _LightZeroPhaseProfiler,
+    allow_fallback: bool = True,
+) -> Any:
+    """Install an alternate LightZero collect/search backend hook."""
+
+    ctree_backend = _validate_collect_search_ctree_backend(ctree_backend)
+    if backend == COLLECT_SEARCH_BACKEND_STOCK:
+        return None
+    if backend != COLLECT_SEARCH_BACKEND_DIRECT_CTREE_GPU_LATENT:
+        raise ValueError(f"unsupported collect_search_backend {backend!r}")
+
+    import numpy as np
+    import torch
+    from lzero.policy import mz_network_output_unpack, select_action
+
+    policy_module = importlib.import_module("lzero.policy.muzero")
+    policy_cls = getattr(policy_module, "MuZeroPolicy", None)
+    if not inspect.isclass(policy_cls):
+        raise RuntimeError("lzero.policy.muzero.MuZeroPolicy is missing")
+
+    original_forward_collect = policy_cls._forward_collect
+
+    def wrapped_forward_collect(
+        self: Any,
+        data: Any,
+        action_mask: list | None = None,
+        temperature: float = 1,
+        to_play: list[int] = [-1],
+        epsilon: float = 0.25,
+        ready_env_id: Any = None,
+        **kwargs: Any,
+    ) -> dict[Any, Any]:
+        cfg = getattr(self, "_cfg", None)
+        model_cfg = getattr(cfg, "model", None)
+        model_type = getattr(model_cfg, "model_type", None)
+
+        def fallback(reason: str) -> dict[Any, Any]:
+            profiler.add_sample("collect_search_backend_fallback_reason", reason, limit=80)
+            profiler.add_count("collect_search_backend_fallback_calls")
+            if not allow_fallback:
+                raise RuntimeError(
+                    "direct_ctree_gpu_latent collect hook refused hidden fallback: "
+                    f"{reason}"
+                )
+            return original_forward_collect(
+                self,
+                data,
+                action_mask,
+                temperature,
+                to_play,
+                epsilon,
+                ready_env_id=ready_env_id,
+                **kwargs,
+            )
+
+        if model_type not in {"conv", "mlp"}:
+            return fallback(f"unsupported_model_type:{model_type}")
+        if bool(getattr(cfg, "collect_with_pure_policy", False)):
+            return fallback("collect_with_pure_policy")
+        if not bool(getattr(cfg, "mcts_ctree", False)):
+            return fallback("mcts_ptree")
+        if bool(getattr(cfg, "sampled_algo", False)) or bool(getattr(cfg, "gumbel_algo", False)):
+            return fallback("sampled_or_gumbel_algo")
+        if not hasattr(data, "shape"):
+            return fallback("data_without_shape")
+
+        active_collect_env_num = int(data.shape[0])
+        if ready_env_id is None:
+            ready_env_id = np.arange(active_collect_env_num)
+        if len(ready_env_id) != active_collect_env_num:
+            raise ValueError(
+                "direct_ctree_gpu_latent collect hook expected ready_env_id length "
+                f"{active_collect_env_num}, got {len(ready_env_id)}"
+            )
+        if action_mask is None:
+            raise ValueError("direct_ctree_gpu_latent collect hook requires action_mask")
+        if len(action_mask) != active_collect_env_num:
+            raise ValueError(
+                "direct_ctree_gpu_latent collect hook expected action_mask length "
+                f"{active_collect_env_num}, got {len(action_mask)}"
+            )
+
+        legal_actions: list[list[int]] = []
+        legal_action_arrays: list[Any] = []
+        all_actions_legal = True
+        action_count: int | None = None
+        try:
+            action_mask_matrix = np.asarray(action_mask, dtype=np.float32)
+        except (TypeError, ValueError):
+            action_mask_matrix = None
+        if (
+            action_mask_matrix is not None
+            and action_mask_matrix.ndim == 2
+            and action_mask_matrix.shape[0] == active_collect_env_num
+        ):
+            if not np.all((action_mask_matrix == 0.0) | (action_mask_matrix == 1.0)):
+                raise ValueError(
+                    "direct_ctree_gpu_latent collect hook requires binary action masks"
+                )
+            legal_counts = action_mask_matrix.sum(axis=1)
+            if bool((legal_counts <= 0.0).any()):
+                row_index = int(np.flatnonzero(legal_counts <= 0.0)[0])
+                raise ValueError(
+                    "direct_ctree_gpu_latent collect hook got a zero-action mask at "
+                    f"row {row_index}"
+                )
+            action_count = int(action_mask_matrix.shape[1])
+            all_actions_legal = bool(np.all(action_mask_matrix == 1.0))
+            if all_actions_legal:
+                shared_legal_array = np.arange(action_count, dtype=np.int64)
+                shared_legal = shared_legal_array.astype(int).tolist()
+                legal_action_arrays = [shared_legal_array] * active_collect_env_num
+                legal_actions = [list(shared_legal) for _ in range(active_collect_env_num)]
+            else:
+                for row_index, mask in enumerate(action_mask_matrix):
+                    legal_array = np.flatnonzero(mask == 1.0).astype(np.int64, copy=False)
+                    legal_action_arrays.append(legal_array)
+                    legal_actions.append([int(index) for index in legal_array])
+        else:
+            for row_index, row_mask in enumerate(action_mask):
+                mask = np.asarray(row_mask, dtype=np.float32).reshape(-1)
+                if not np.all((mask == 0.0) | (mask == 1.0)):
+                    raise ValueError(
+                        "direct_ctree_gpu_latent collect hook requires binary action masks"
+                    )
+                legal_array = np.flatnonzero(mask == 1.0).astype(np.int64, copy=False)
+                if legal_array.size == 0:
+                    raise ValueError(
+                        "direct_ctree_gpu_latent collect hook got a zero-action mask at "
+                        f"row {row_index}"
+                    )
+                if action_count is None:
+                    action_count = int(mask.size)
+                elif action_count != int(mask.size):
+                    all_actions_legal = False
+                if legal_array.size != mask.size or not np.array_equal(
+                    legal_array,
+                    np.arange(mask.size, dtype=np.int64),
+                ):
+                    all_actions_legal = False
+                legal_action_arrays.append(legal_array)
+                legal_actions.append([int(index) for index in legal_array])
+
+        if (
+            ctree_backend == COLLECT_SEARCH_CTREE_BACKEND_FLAT_A3
+            and action_count != 3
+        ):
+            raise ValueError(
+                "collect_search_ctree_backend='flat_a3' requires action_count=3, "
+                f"got {action_count!r}"
+            )
+
+        model = getattr(self, "_collect_model", None)
+        mcts = getattr(self, "_mcts_collect", None)
+        if model is None or not hasattr(model, "initial_inference"):
+            return fallback("missing_collect_model")
+        if mcts is None or not hasattr(type(mcts), "roots"):
+            return fallback("missing_ctree_mcts")
+
+        self._collect_model.eval()
+        self._collect_mcts_temperature = temperature
+        self.collect_epsilon = epsilon
+        output = {env_id: None for env_id in ready_env_id}
+        root_dirichlet_alpha = float(getattr(cfg, "root_dirichlet_alpha"))
+        root_noise_weight = float(getattr(cfg, "root_noise_weight"))
+        eps_cfg = getattr(cfg, "eps", None)
+        eps_greedy = bool(getattr(eps_cfg, "eps_greedy_exploration_in_collect", False))
+
+        def select_all_actions_legal_fast(
+            distributions: Any,
+        ) -> tuple[np.ndarray, np.ndarray] | None:
+            if not all_actions_legal or action_count is None or action_count <= 0:
+                return None
+            try:
+                visit_counts = np.asarray(distributions, dtype=np.float64)
+            except (TypeError, ValueError):
+                return None
+            if visit_counts.shape != (active_collect_env_num, action_count):
+                return None
+            if not np.all(np.isfinite(visit_counts)):
+                return None
+            temperature_value = float(self._collect_mcts_temperature)
+            if temperature_value <= 0.0:
+                return None
+            with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+                action_weights = np.power(visit_counts, 1.0 / temperature_value)
+            weight_sums = action_weights.sum(axis=1, keepdims=True)
+            if (
+                not np.all(np.isfinite(action_weights))
+                or not np.all(np.isfinite(weight_sums))
+                or np.any(weight_sums <= 0.0)
+            ):
+                return None
+            action_probs = action_weights / weight_sums
+            with np.errstate(divide="ignore", invalid="ignore"):
+                entropy_terms = np.where(action_probs > 0.0, action_probs * np.log2(action_probs), 0.0)
+            entropies = -entropy_terms.sum(axis=1)
+            if eps_greedy:
+                action_indices = np.argmax(visit_counts, axis=1).astype(np.int64, copy=False)
+                if self.collect_epsilon > 0.0:
+                    explore_mask = np.random.random(active_collect_env_num) < self.collect_epsilon
+                    explore_count = int(explore_mask.sum())
+                    if explore_count > 0:
+                        action_indices[explore_mask] = np.random.randint(
+                            0,
+                            action_count,
+                            size=explore_count,
+                        )
+            else:
+                cumulative = np.cumsum(action_probs, axis=1)
+                cumulative[:, -1] = 1.0
+                thresholds = np.random.random(active_collect_env_num)
+                action_indices = np.argmax(thresholds[:, None] <= cumulative, axis=1)
+            return action_indices.astype(np.int64, copy=False), entropies
+
+        with torch.no_grad():
+            with profiler.timer("collect_search_backend_initial_inference_sec", sync_cuda=True):
+                network_output = model.initial_inference(data)
+            latent_state_roots, reward_roots, pred_values, policy_logits = (
+                mz_network_output_unpack(network_output)
+            )
+            if not hasattr(latent_state_roots, "device") or latent_state_roots.device.type != "cuda":
+                raise ValueError("direct_ctree_gpu_latent collect hook requires CUDA latents")
+
+            with profiler.timer("collect_search_backend_root_prepare_sec"):
+                pred_values_np = (
+                    self.inverse_scalar_transform_handle(pred_values).detach().cpu().numpy()
+                )
+                policy_logits_list = policy_logits.detach().cpu().numpy().tolist()
+                if all_actions_legal and action_count is not None:
+                    noises = (
+                        np.random.dirichlet(
+                            [root_dirichlet_alpha] * action_count,
+                            size=active_collect_env_num,
+                        )
+                        .astype(np.float32)
+                        .tolist()
+                    )
+                else:
+                    noises = [
+                        np.random.dirichlet([root_dirichlet_alpha] * len(actions))
+                        .astype(np.float32)
+                        .tolist()
+                        for actions in legal_actions
+                    ]
+                tree_muzero = _import_collect_search_tree_muzero(ctree_backend)
+                roots = (
+                    tree_muzero.Roots(active_collect_env_num, legal_actions)
+                    if ctree_backend == COLLECT_SEARCH_CTREE_BACKEND_FLAT_A3
+                    else type(mcts).roots(active_collect_env_num, legal_actions)
+                )
+                roots.prepare(root_noise_weight, noises, reward_roots, policy_logits_list, to_play)
+
+            num_simulations = int(getattr(getattr(mcts, "_cfg", cfg), "num_simulations"))
+            profiler.add_count("collect_search_backend_direct_ctree_gpu_latent_calls")
+            profiler.add_count("mcts_search_calls")
+            profiler.add_count("mcts_search_root_sum", active_collect_env_num)
+            profiler.add_count("mcts_search_simulation_budget_sum", num_simulations)
+            profiler.add_count("mcts_search_node_budget_sum", active_collect_env_num * num_simulations)
+            profiler.add_sample("mcts_search_root_batch", active_collect_env_num, limit=120)
+            profiler.add_sample("mcts_search_simulations", num_simulations, limit=40)
+            profiler.add_sample(
+                "collect_search_backend",
+                COLLECT_SEARCH_BACKEND_DIRECT_CTREE_GPU_LATENT,
+                limit=40,
+            )
+            profiler.add_sample("collect_search_ctree_backend", ctree_backend, limit=40)
+            profiler.add_sample("mcts_cfg_device", str(latent_state_roots.device), limit=20)
+            with profiler.timer("mcts_search_sec", sync_cuda=True):
+                _direct_ctree_gpu_latent_search_for_collect(
+                    policy=self,
+                    mcts=mcts,
+                    model=model,
+                    latent_state_roots=latent_state_roots,
+                    roots=roots,
+                    to_play=to_play,
+                    ctree_backend=ctree_backend,
+                    profiler=profiler,
+                )
+
+            with profiler.timer("collect_search_backend_output_assembly_sec"):
+                root_visit_count_distributions = roots.get_distributions()
+                roots_values = roots.get_values()
+                fast_selection = select_all_actions_legal_fast(root_visit_count_distributions)
+                if fast_selection is not None:
+                    profiler.add_count("collect_search_backend_output_fast_path_calls")
+                    action_indices, visit_count_distribution_entropies = fast_selection
+                    for i, env_id in enumerate(ready_env_id):
+                        output[env_id] = {
+                            "action": action_indices[i],
+                            "visit_count_distributions": root_visit_count_distributions[i],
+                            "visit_count_distribution_entropy": (
+                                visit_count_distribution_entropies[i]
+                            ),
+                            "searched_value": roots_values[i],
+                            "predicted_value": pred_values_np[i],
+                            "predicted_policy_logits": policy_logits_list[i],
+                        }
+                else:
+                    for i, env_id in enumerate(ready_env_id):
+                        distributions = root_visit_count_distributions[i]
+                        value = roots_values[i]
+                        legal_array = legal_action_arrays[i]
+                        if eps_greedy:
+                            action_index, visit_count_distribution_entropy = select_action(
+                                distributions,
+                                temperature=self._collect_mcts_temperature,
+                                deterministic=True,
+                            )
+                            action = legal_array[action_index]
+                            if np.random.rand() < self.collect_epsilon:
+                                action = np.random.choice(legal_array)
+                        else:
+                            action_index, visit_count_distribution_entropy = select_action(
+                                distributions,
+                                temperature=self._collect_mcts_temperature,
+                                deterministic=False,
+                            )
+                            action = legal_array[action_index]
+                        output[env_id] = {
+                            "action": action,
+                            "visit_count_distributions": distributions,
+                            "visit_count_distribution_entropy": (
+                                visit_count_distribution_entropy
+                            ),
+                            "searched_value": value,
+                            "predicted_value": pred_values_np[i],
+                            "predicted_policy_logits": policy_logits_list[i],
+                        }
+        profiler.add_count("collect_search_backend_output_rows", active_collect_env_num)
+        return output
+
+    setattr(policy_cls, "_forward_collect", wrapped_forward_collect)
+    hook_label = "lzero.policy.muzero.MuZeroPolicy._forward_collect.direct_ctree_gpu_latent"
+    profiler.add_installed_hook(hook_label)
+    profiler.add_sample(
+        "collect_search_backend_hook",
+        COLLECT_SEARCH_BACKEND_DIRECT_CTREE_GPU_LATENT,
+        limit=20,
+    )
+
+    def restore() -> None:
+        setattr(policy_cls, "_forward_collect", original_forward_collect)
+
+    return restore
+
+
+def _install_batched_profile_env_manager_hook(
+    *,
+    train_muzero: Any,
+    profiler: _LightZeroPhaseProfiler,
+    env_manager_type: str,
+    seed: int,
+    source_max_steps: int,
+    decision_ms: float,
+    natural_bonus_spawn: bool,
+    disable_death_for_profile: bool,
+) -> Any:
+    """Patch stock LightZero to create the profile-only batched CurvyTron manager."""
+
+    globals_map = getattr(train_muzero, "__globals__", None)
+    if not isinstance(globals_map, dict):
+        raise RuntimeError("selected LightZero entrypoint does not expose patchable globals")
+    original = globals_map.get("create_env_manager")
+    if not callable(original):
+        raise RuntimeError("selected LightZero entrypoint does not expose create_env_manager")
+
+    def build_batched_manager(env_num: int, manager_type: str) -> Any:
+        manager_type = str(manager_type)
+        zero_observation_profile = (
+            manager_type == CURVYZERO_BATCHED_ZERO_OBS_PROFILE_ENV_MANAGER_TYPE
+        )
+        if int(env_num) < 2 or int(env_num) % 2 != 0:
+            raise RuntimeError(
+                f"{manager_type} requires an even env count because "
+                "one physical CurvyTron row exposes two scalar player views; "
+                f"got env_num={env_num}"
+            )
+        import numpy as np
+        from ding.envs import BaseEnvTimestep
+
+        from curvyzero.env import vector_runtime
+        from curvyzero.env.vector_multiplayer_env import DEFAULT_BODY_CAPACITY
+        from curvyzero.training.multiplayer_source_state_trainer_surface import (
+            SourceStateMultiplayerTrainerSurface,
+        )
+        from curvyzero.training.multiplayer_source_state_trainer_surface import (
+            TRAINER_STACK_BACKEND_RENDERER_BACKED_PROFILE,
+        )
+        from curvyzero.training.source_state_batched_observation_mock_collector import (
+            BatchedLightZeroScalarActionBridge,
+        )
+        from curvyzero.training.source_state_batched_observation_mock_collector import (
+            BatchedLightZeroStockEnvManagerAdapter,
+        )
+        from curvyzero.training.source_state_batched_observation_profile import (
+            SOURCE_STATE_BATCHED_OBSERVATION_GPU_CANDIDATE_BACKEND,
+        )
+        from curvyzero.training.source_state_batched_observation_profile import (
+            SourceStateBatchedRenderRequest,
+        )
+        from curvyzero.training.source_state_batched_observation_profile import (
+            SourceStateBatchedRenderResult,
+        )
+
+        batch_size = int(env_num) // 2
+        render_config: dict[str, Any] = {
+            "prewarm_dynamic_render_functions": False,
+        }
+        render_fn_for_slots = None
+        bp = None
+
+        class ZeroObservationRenderer:
+            backend_name = "zero_observation_profile"
+
+            def render(
+                self,
+                request: SourceStateBatchedRenderRequest,
+            ) -> SourceStateBatchedRenderResult:
+                started = time.perf_counter()
+                request.out[...] = 0
+                elapsed = time.perf_counter() - started
+                return SourceStateBatchedRenderResult(
+                    frames=request.out,
+                    telemetry={
+                        "render_sec": elapsed,
+                        "zero_fill_sec": elapsed,
+                        "device_render_sec": 0.0,
+                        "host_to_device_sec": 0.0,
+                        "device_to_host_sec": 0.0,
+                        "pack_sec": 0.0,
+                    },
+                )
+
+        if zero_observation_profile:
+            observation_renderer = ZeroObservationRenderer()
+            required_observation_backend = ZeroObservationRenderer.backend_name
+        else:
+            import jax
+            import jax.numpy as jnp
+
+            from curvyzero.infra.modal import (
+                source_state_batched_observation_boundary_profile as bp_mod,
+            )
+            from curvyzero.infra.modal.source_state_gpu_render_benchmark import (
+                BONUS_RENDER_MODE_IDS,
+            )
+            from curvyzero.infra.modal.source_state_gpu_render_benchmark import (
+                BONUS_RENDER_MODE_SIMPLE_SYMBOLS,
+            )
+            from curvyzero.infra.modal.source_state_gpu_render_benchmark import (
+                GEOMETRY_DTYPE_FLOAT32,
+            )
+            from curvyzero.infra.modal.source_state_gpu_render_benchmark import (
+                RENDER_MODE_BROWSER_LINES,
+            )
+            from curvyzero.infra.modal.source_state_gpu_render_benchmark import (
+                RENDER_MODE_IDS,
+            )
+            from curvyzero.infra.modal.source_state_gpu_render_benchmark import (
+                RENDER_SURFACE_DIRECT_GRAY64,
+            )
+
+            bp = bp_mod
+            checked = bp._validate_boundary_config(
+                np=np,
+                config={
+                    "batch_size": batch_size,
+                    "body_capacity": DEFAULT_BODY_CAPACITY,
+                    "geometry_dtype": GEOMETRY_DTYPE_FLOAT32,
+                    "render_surface": RENDER_SURFACE_DIRECT_GRAY64,
+                    "trail_slots": DEFAULT_BODY_CAPACITY,
+                    "dynamic_render_trail_slots": True,
+                    "min_render_trail_slots": getattr(
+                        bp,
+                        "DEFAULT_DYNAMIC_MIN_RENDER_TRAIL_SLOTS",
+                        32,
+                    ),
+                    # Full stock-loop rows should not prewarm every dynamic width:
+                    # that compiles several large JAX render programs and can
+                    # exhaust H100 memory before collection starts. Let the row pay
+                    # first-use cost for widths it actually reaches, then report it.
+                    "prewarm_dynamic_render_functions": False,
+                    "max_ticks": int(source_max_steps),
+                    "steps": 1,
+                    "warmup_steps": 0,
+                    "verify_steps": 0,
+                    "cpu_reference_interval": 0,
+                    "profile_env_manager_canary": True,
+                    "surface_stack_backend": TRAINER_STACK_BACKEND_RENDERER_BACKED_PROFILE,
+                },
+            )
+            render_config = checked["render_config"]
+            render_mode_id = RENDER_MODE_IDS[RENDER_MODE_BROWSER_LINES]
+            bonus_render_mode_id = BONUS_RENDER_MODE_IDS[BONUS_RENDER_MODE_SIMPLE_SYMBOLS]
+            render_fn_cache: dict[int, Any] = {}
+
+            def render_fn_for_slots(render_trail_slots: int) -> Any:
+                slots = int(render_trail_slots)
+                cached = render_fn_cache.get(slots)
+                if cached is not None:
+                    return cached
+                slot_config = dict(render_config)
+                slot_config["trail_slots"] = slots
+                cached = bp._make_jax_two_view_render_fn(
+                    jax=jax,
+                    jnp=jnp,
+                    config=slot_config,
+                    render_mode_id=render_mode_id,
+                    bonus_render_mode_id=bonus_render_mode_id,
+                )
+                render_fn_cache[slots] = cached
+                return cached
+
+            observation_renderer = bp._DynamicJaxBatchedObservationRenderer(
+                jax=jax,
+                np=np,
+                config=render_config,
+                render_fn_for_slots=render_fn_for_slots,
+            )
+            required_observation_backend = SOURCE_STATE_BATCHED_OBSERVATION_GPU_CANDIDATE_BACKEND
+
+        surface = SourceStateMultiplayerTrainerSurface(
+            batch_size=batch_size,
+            player_count=2,
+            seed=int(seed),
+            decision_source_frames=int(DEFAULT_DECISION_SOURCE_FRAMES),
+            source_physics_step_ms=float(DEFAULT_SOURCE_PHYSICS_STEP_MS),
+            body_capacity=DEFAULT_BODY_CAPACITY,
+            natural_bonus_spawn=bool(natural_bonus_spawn),
+            death_mode=(
+                vector_runtime.DEATH_MODE_PROFILE_NO_DEATH
+                if bool(disable_death_for_profile)
+                else vector_runtime.DEATH_MODE_NORMAL
+            ),
+            max_ticks=int(source_max_steps),
+            observation_stack_backend=TRAINER_STACK_BACKEND_RENDERER_BACKED_PROFILE,
+            observation_renderer=observation_renderer,
+            required_observation_renderer_backend=required_observation_backend,
+        )
+        manager = BatchedLightZeroStockEnvManagerAdapter(
+            BatchedLightZeroScalarActionBridge(
+                surface,
+                timer_advance_ms=float(decision_ms),
+            ),
+            base_env_timestep_cls=BaseEnvTimestep,
+        )
+        original_manager_reset = manager.reset
+        original_manager_step = manager.step
+        prewarm_render_done = False
+
+        def profiled_manager_reset(*args: Any, **kwargs: Any) -> Any:
+            nonlocal prewarm_render_done
+            started = time.perf_counter()
+            try:
+                result = original_manager_reset(*args, **kwargs)
+                if (
+                    not prewarm_render_done
+                    and bp is not None
+                    and render_fn_for_slots is not None
+                    and bool(render_config.get("prewarm_dynamic_render_functions", False))
+                ):
+                    prewarm_started = time.perf_counter()
+                    prewarm = bp._prewarm_dynamic_render_functions(
+                        jax=jax,
+                        np=np,
+                        production_state=surface.env.state,
+                        config=render_config,
+                        render_fn_for_slots=render_fn_for_slots,
+                    )
+                    prewarm_render_done = True
+                    profiler.add_time(
+                        "batched_profile_renderer_prewarm_sec",
+                        time.perf_counter() - prewarm_started,
+                    )
+                    for slot in prewarm.get("slots", []):
+                        profiler.add_sample(
+                            "batched_profile_renderer_prewarm_slot",
+                            int(slot),
+                            limit=40,
+                        )
+                elif not prewarm_render_done:
+                    prewarm_render_done = True
+                    profiler.add_count("batched_profile_renderer_prewarm_skipped_calls")
+                return result
+            finally:
+                profiler.add_time(
+                    "batched_profile_env_manager_reset_sec",
+                    time.perf_counter() - started,
+                )
+                profiler.add_count("batched_profile_env_manager_reset_calls")
+                profiler.add_sample(
+                    "batched_profile_env_manager_ready_obs_after_reset",
+                    len(manager.ready_obs),
+                    limit=120,
+                )
+
+        def profiled_manager_step(actions: Mapping[int, Any]) -> Any:
+            before_ready_ids = tuple(sorted(int(env_id) for env_id in manager.ready_obs))
+            before_ready_rows = {int(env_id) // 2 for env_id in before_ready_ids}
+            action_rows = {int(env_id) // 2 for env_id in actions}
+            result = None
+            started = time.perf_counter()
+            try:
+                result = original_manager_step(actions)
+                return result
+            finally:
+                elapsed = time.perf_counter() - started
+                profiler.add_time("batched_profile_env_manager_step_sec", elapsed)
+                profiler.add_count("batched_profile_env_manager_step_calls")
+                profiler.add_sample(
+                    "batched_profile_env_manager_step_action_count",
+                    len(actions),
+                    limit=120,
+                )
+                profiler.add_sample(
+                    "batched_profile_env_manager_ready_obs_before_step",
+                    len(before_ready_ids),
+                    limit=120,
+                )
+                profiler.add_sample(
+                    "batched_profile_env_manager_ready_row_before_step",
+                    len(before_ready_rows),
+                    limit=120,
+                )
+                profiler.add_sample(
+                    "batched_profile_env_manager_action_row_count",
+                    len(action_rows),
+                    limit=120,
+                )
+                profiler.add_sample(
+                    "batched_profile_env_manager_complete_row_omission_count",
+                    len(before_ready_rows.difference(action_rows)),
+                    limit=120,
+                )
+                if isinstance(result, Mapping):
+                    timestep_rows = {int(env_id) // 2 for env_id in result}
+                    profiler.add_sample(
+                        "batched_profile_env_manager_timestep_count",
+                        len(result),
+                        limit=120,
+                    )
+                    profiler.add_sample(
+                        "batched_profile_env_manager_timestep_row_count",
+                        len(timestep_rows),
+                        limit=120,
+                    )
+                last_profile_step = getattr(manager, "last_profile_step", None)
+                bridge_output = getattr(last_profile_step, "bridge_output", None)
+                bridge_timing = getattr(bridge_output, "profile_timing_sec", None)
+                if isinstance(bridge_timing, Mapping):
+                    for key, value in bridge_timing.items():
+                        try:
+                            profiler.add_time(
+                                f"batched_profile_bridge_{key}",
+                                float(value),
+                            )
+                        except (TypeError, ValueError):
+                            pass
+                bridge_counts = getattr(bridge_output, "profile_counts", None)
+                if isinstance(bridge_counts, Mapping):
+                    for key, value in bridge_counts.items():
+                        try:
+                            profiler.add_sample(
+                                f"batched_profile_bridge_{key}",
+                                int(value),
+                                limit=120,
+                            )
+                        except (TypeError, ValueError):
+                            pass
+                autoreset_row_mask = getattr(bridge_output, "autoreset_row_mask", None)
+                if autoreset_row_mask is not None:
+                    profiler.add_sample(
+                        "batched_profile_env_manager_autoreset_rows",
+                        int(np.asarray(autoreset_row_mask, dtype=bool).sum()),
+                        limit=120,
+                    )
+                ready_after = getattr(bridge_output, "ready_obs", None)
+                if isinstance(ready_after, Mapping):
+                    profiler.add_sample(
+                        "batched_profile_env_manager_ready_obs_after_step",
+                        len(ready_after),
+                        limit=120,
+                    )
+                    ready_after_rows = {int(env_id) // 2 for env_id in ready_after}
+                    profiler.add_sample(
+                        "batched_profile_env_manager_ready_row_after_step",
+                        len(ready_after_rows),
+                        limit=120,
+                    )
+                surface_step = getattr(bridge_output, "surface_step", None)
+                surface_info = getattr(surface_step, "info", None)
+                if isinstance(surface_info, Mapping):
+                    surface_timing = surface_info.get("trainer_surface_profile_timing")
+                    if isinstance(surface_timing, Mapping):
+                        for key, value in surface_timing.items():
+                            try:
+                                profiler.add_time(
+                                    f"batched_profile_surface_{key}",
+                                    float(value),
+                                )
+                            except (TypeError, ValueError):
+                                pass
+                    renderer_telemetry = surface_info.get("renderer_backed_stack_telemetry")
+                    if isinstance(renderer_telemetry, Mapping):
+                        for key, value in renderer_telemetry.items():
+                            if str(key).endswith("_sec"):
+                                try:
+                                    profiler.add_time(
+                                        f"batched_profile_renderer_{key}",
+                                        float(value),
+                                    )
+                                except (TypeError, ValueError):
+                                    pass
+                            elif str(key) in {
+                                "render_trail_slots",
+                                "active_trail_count_max",
+                                "render_truncation_row_count",
+                                "partial_render_request",
+                                "render_output_count",
+                            }:
+                                try:
+                                    profiler.add_sample(
+                                        f"batched_profile_renderer_{key}",
+                                        float(value),
+                                        limit=120,
+                                    )
+                                except (TypeError, ValueError):
+                                    pass
+
+        manager.reset = profiled_manager_reset
+        manager.step = profiled_manager_step
+        profiler.add_count("batched_profile_env_manager_create_calls")
+        profiler.add_sample("batched_profile_env_manager_env_num", int(env_num), limit=20)
+        profiler.add_sample(
+            "batched_profile_env_manager_batch_size",
+            int(batch_size),
+            limit=20,
+        )
+        profiler.add_sample(
+            "batched_profile_env_manager_backend",
+            str(required_observation_backend),
+            limit=20,
+        )
+        profiler.add_sample(
+            "batched_profile_env_manager_type",
+            manager_type,
+            limit=20,
+        )
+        profiler.add_sample(
+            "batched_profile_env_manager_decision_ms",
+            float(decision_ms),
+            limit=20,
+        )
+        return manager
+
+    registry_restore = None
+    try:
+        from ding.utils import ENV_MANAGER_REGISTRY
+
+        previous_registrations = {
+            name: ENV_MANAGER_REGISTRY.get(name)
+            for name in CURVYZERO_BATCHED_PROFILE_ENV_MANAGER_TYPES
+            if name in ENV_MANAGER_REGISTRY
+        }
+
+        def make_registry_class(registry_name: str) -> Any:
+            """Registry-visible profile manager; construction delegates to the hook."""
+
+            class CurvyZeroBatchedProfileEnvManagerForLightZero:
+                config = {
+                    "episode_num": float("inf"),
+                    "max_retry": 1,
+                    "retry_type": "reset",
+                    "auto_reset": True,
+                    "step_timeout": None,
+                    "reset_timeout": None,
+                    "retry_waiting_time": 0.1,
+                }
+
+                @classmethod
+                def default_config(cls) -> Any:
+                    from easydict import EasyDict
+
+                    cfg = EasyDict(copy.deepcopy(cls.config))
+                    cfg.cfg_type = cls.__name__ + "Dict"
+                    return cfg
+
+                def __init__(self, env_fn: list[Any], cfg: Any | None = None) -> None:
+                    del cfg
+                    self._delegate = build_batched_manager(len(env_fn), registry_name)
+
+                def __getattr__(self, name: str) -> Any:
+                    return getattr(self._delegate, name)
+
+            CurvyZeroBatchedProfileEnvManagerForLightZero.__name__ = (
+                "CurvyZeroBatchedProfileEnvManagerForLightZero"
+                if registry_name == CURVYZERO_BATCHED_PROFILE_ENV_MANAGER_TYPE
+                else "CurvyZeroBatchedZeroObservationProfileEnvManagerForLightZero"
+            )
+            return CurvyZeroBatchedProfileEnvManagerForLightZero
+
+        for registry_name in CURVYZERO_BATCHED_PROFILE_ENV_MANAGER_TYPES:
+            ENV_MANAGER_REGISTRY.register(
+                registry_name,
+                module=make_registry_class(registry_name),
+                force_overwrite=True,
+            )
+
+        def restore_registry() -> None:
+            for registry_name in CURVYZERO_BATCHED_PROFILE_ENV_MANAGER_TYPES:
+                if registry_name in previous_registrations:
+                    ENV_MANAGER_REGISTRY[registry_name] = previous_registrations[
+                        registry_name
+                    ]
+                else:
+                    ENV_MANAGER_REGISTRY.pop(registry_name, None)
+
+        registry_restore = restore_registry
+    except Exception as exc:
+        raise RuntimeError(
+            "failed to register CurvyZero profile env managers with DI-engine "
+            "ENV_MANAGER_REGISTRY"
+        ) from exc
+
+    def create_env_manager_wrapped(manager_cfg: Any, env_fns: Any, *args: Any, **kwargs: Any) -> Any:
+        if args or kwargs:
+            raise RuntimeError(
+                "curvyzero_batched_profile create_env_manager hook expected only "
+                "(manager_cfg, env_fns)"
+            )
+        try:
+            env_num = len(env_fns)
+        except Exception as exc:
+            raise RuntimeError(
+                "curvyzero_batched_profile could not read env_fns length"
+            ) from exc
+        manager_type = getattr(manager_cfg, "type", None)
+        if manager_type is None and isinstance(manager_cfg, Mapping):
+            manager_type = manager_cfg.get("type")
+        manager_type = str(manager_type)
+        if manager_type not in CURVYZERO_BATCHED_PROFILE_ENV_MANAGER_TYPES:
+            raise RuntimeError(
+                "CurvyZero profile env-manager hook was installed, but LightZero asked "
+                f"for env manager type {manager_type!r}; refusing hidden fallback to "
+                "the scalar env-manager path"
+            )
+        return build_batched_manager(int(env_num), manager_type)
+
+    globals_map["create_env_manager"] = create_env_manager_wrapped
+
+    def restore() -> None:
+        globals_map["create_env_manager"] = original
+        if registry_restore is not None:
+            registry_restore()
+
     return restore
 
 
@@ -1993,6 +3112,155 @@ def _safe_int_or_none(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _safe_float_or_none(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        if hasattr(value, "numel") and callable(value.numel):
+            if int(value.numel()) != 1:
+                return None
+        if hasattr(value, "item") and callable(value.item):
+            value = value.item()
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _flatten_numeric_scalars(
+    value: Any,
+    *,
+    prefix: str = "",
+    limit: int = 200,
+) -> dict[str, float]:
+    """Extract small scalar learner metrics without materializing large tensors."""
+
+    metrics: dict[str, float] = {}
+
+    def visit(item: Any, key_prefix: str) -> None:
+        if len(metrics) >= limit:
+            return
+        scalar = _safe_float_or_none(item)
+        if scalar is not None and key_prefix:
+            metrics[key_prefix] = scalar
+            return
+        if isinstance(item, Mapping):
+            for key in sorted(item.keys(), key=str):
+                child_key = str(key)
+                if child_key.startswith("_"):
+                    continue
+                next_prefix = f"{key_prefix}.{child_key}" if key_prefix else child_key
+                visit(item[key], next_prefix)
+                if len(metrics) >= limit:
+                    return
+            return
+        if isinstance(item, (list, tuple)) and len(item) <= 8:
+            for index, child in enumerate(item):
+                next_prefix = f"{key_prefix}.{index}" if key_prefix else str(index)
+                visit(child, next_prefix)
+                if len(metrics) >= limit:
+                    return
+
+    visit(value, prefix)
+    return metrics
+
+
+class _LearnerMetricsRecorder:
+    def __init__(
+        self,
+        *,
+        run_id: str,
+        attempt_id: str,
+        attempt_train_root: Path,
+        started_monotonic: float,
+        sample_first_n: int = 5,
+        sample_interval: int = 1000,
+    ) -> None:
+        self.run_id = run_id
+        self.attempt_id = attempt_id
+        self.attempt_train_root = attempt_train_root
+        self.started_monotonic = float(started_monotonic)
+        self.sample_first_n = max(0, int(sample_first_n))
+        self.sample_interval = max(0, int(sample_interval))
+        self.call_index = 0
+        self.latest_row: dict[str, Any] | None = None
+        self.jsonl_path = attempt_train_root / "learner_metrics.jsonl"
+        self.latest_path = attempt_train_root / "learner_metrics_latest.json"
+
+    def latest(self) -> dict[str, Any] | None:
+        return _to_plain(self.latest_row) if self.latest_row is not None else None
+
+    def refs(self) -> dict[str, str | None]:
+        result: dict[str, str | None] = {
+            "learner_metrics_ref": None,
+            "learner_metrics_latest_ref": None,
+        }
+        for key, path in (
+            ("learner_metrics_ref", self.jsonl_path),
+            ("learner_metrics_latest_ref", self.latest_path),
+        ):
+            try:
+                result[key] = runs.file_ref(path.resolve(), mount=RUNS_MOUNT.resolve())
+            except ValueError:
+                result[key] = None
+        return result
+
+    def _should_persist(self, call_index: int) -> bool:
+        if call_index <= self.sample_first_n:
+            return True
+        return self.sample_interval > 0 and call_index % self.sample_interval == 0
+
+    def record(
+        self,
+        *,
+        learner: Any,
+        result: Any = None,
+        exception: BaseException | None = None,
+        train_iter_before: int | None,
+        train_iter_after: int | None,
+        elapsed_sec: float,
+    ) -> None:
+        self.call_index += 1
+        now = runs.utc_timestamp()
+        row: dict[str, Any] = {
+            "schema_id": "curvyzero_lightzero_learner_metrics/v0",
+            "run_id": self.run_id,
+            "attempt_id": self.attempt_id,
+            "created_at": now,
+            "timestamp": now,
+            "source": "BaseLearner.train",
+            "learner_train_call_index": int(self.call_index),
+            "train_iter_before": train_iter_before,
+            "train_iter_after": train_iter_after,
+            "train_iter_delta": (
+                int(train_iter_after) - int(train_iter_before)
+                if train_iter_before is not None and train_iter_after is not None
+                else None
+            ),
+            "collector_envstep": _safe_int_or_none(getattr(learner, "collector_envstep", None)),
+            "elapsed_sec": float(elapsed_sec),
+            "train_wall_elapsed_sec": time.perf_counter() - self.started_monotonic,
+            "result_type": type(result).__name__ if exception is None else None,
+            "exception_type": type(exception).__name__ if exception is not None else None,
+            "exception_message": str(exception) if exception is not None else None,
+            "numeric_metrics": _flatten_numeric_scalars(result) if exception is None else {},
+            "model_parameters_changed": None,
+        }
+        self.latest_row = _to_plain(row)
+        if not self._should_persist(self.call_index):
+            return
+        try:
+            self.jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.jsonl_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(_to_plain(row), sort_keys=True) + "\n")
+            runs.write_json(self.latest_path, _to_plain(row))
+        except Exception as exc:  # pragma: no cover - remote resilience only.
+            print(
+                f"curvyzero learner metrics write failed: {type(exc).__name__}: {exc}",
+                flush=True,
+            )
 
 
 def _lightzero_exp_sibling_roots(exp_name: Path) -> list[Path]:
@@ -2062,6 +3330,125 @@ def _build_checkpoint_progress_latest_payload(
     return payload
 
 
+def _own_checkpoint_opponent_root_ref(run_id: str, attempt_id: str) -> PurePosixPath:
+    return runs.attempt_train_ref(TASK_ID, run_id, attempt_id) / "own_checkpoint_opponent"
+
+
+def _own_checkpoint_opponent_refresh_pointer_ref(run_id: str, attempt_id: str) -> str:
+    pointer_ref = _own_checkpoint_opponent_root_ref(run_id, attempt_id) / "latest.json"
+    return f"{_RUNS_REF_PREFIX}{pointer_ref.as_posix()}"
+
+
+def _write_own_checkpoint_opponent_refresh(
+    *,
+    run_id: str,
+    attempt_id: str,
+    checkpoint: Mapping[str, Any],
+    timestamp: str,
+    seed: int,
+    num_simulations: int,
+    batch_size: int,
+    opponent_use_cuda: bool,
+    assignment_refresh_ref: str | None = None,
+) -> dict[str, Any]:
+    iteration = _safe_int_or_none(checkpoint.get("iteration"))
+    checkpoint_ref = str(checkpoint.get("checkpoint_ref") or "").strip()
+    if iteration is None:
+        return {"saved": False, "reason": "checkpoint_iteration_missing"}
+    if iteration <= 0:
+        return {
+            "saved": False,
+            "reason": "initial_checkpoint_not_used_as_own_opponent",
+            "iteration": int(iteration),
+        }
+    if not checkpoint_ref:
+        return {
+            "saved": False,
+            "reason": "checkpoint_ref_missing",
+            "iteration": int(iteration),
+        }
+    if Path(checkpoint_ref).name != f"iteration_{int(iteration)}.pth.tar":
+        return {
+            "saved": False,
+            "reason": "checkpoint_ref_not_exact_iteration_file",
+            "iteration": int(iteration),
+            "checkpoint_ref": checkpoint_ref,
+        }
+
+    root_ref = _own_checkpoint_opponent_root_ref(run_id, attempt_id)
+    assignment_ref = root_ref / "assignments" / f"iteration_{int(iteration)}.json"
+    if assignment_refresh_ref and str(assignment_refresh_ref).startswith(_CONTROL_REF_PREFIX):
+        raise ValueError("own checkpoint opponent refresh pointer must live in the runs volume")
+    if assignment_refresh_ref and str(assignment_refresh_ref).startswith(_RUNS_REF_PREFIX):
+        pointer_ref = runs.require_relative_ref(
+            str(assignment_refresh_ref)[len(_RUNS_REF_PREFIX) :]
+        )
+    elif assignment_refresh_ref:
+        pointer_ref = runs.require_relative_ref(str(assignment_refresh_ref))
+    else:
+        pointer_ref = root_ref / "latest.json"
+
+    assignment = {
+        "schema_id": OPPONENT_ASSIGNMENT_SCHEMA_ID,
+        "assignment_id": f"own-checkpoint-iteration-{int(iteration)}",
+        "source_epoch": int(iteration),
+        "source_ref": checkpoint_ref,
+        "created_at": timestamp,
+        "seed": int(seed),
+        "entries": [
+            {
+                "name": "own_previous_checkpoint",
+                "age_label": f"own_iteration_{int(iteration)}",
+                "weight": 100.0,
+                "opponent_policy_kind": OPPONENT_POLICY_KIND_FROZEN_LIGHTZERO_CHECKPOINT,
+                "opponent_runtime_mode": OPPONENT_RUNTIME_MODE_NORMAL,
+                "opponent_immortal": False,
+                "opponent_checkpoint_ref": checkpoint_ref,
+                "opponent_snapshot_ref": f"own_checkpoint_iteration_{int(iteration)}",
+                "opponent_policy_seed": int(seed),
+                "opponent_num_simulations": int(num_simulations),
+                "opponent_batch_size": int(batch_size),
+                "opponent_use_cuda": bool(opponent_use_cuda),
+                "tags": {
+                    "source": "same_run_previous_checkpoint",
+                    "run_id": run_id,
+                    "attempt_id": attempt_id,
+                    "iteration": int(iteration),
+                },
+            }
+        ],
+    }
+    parse_opponent_assignment_snapshot(assignment)
+    assignment_sha256 = canonical_assignment_json_sha256(assignment)
+    pointer = {
+        "schema_id": OPPONENT_ASSIGNMENT_REFRESH_POINTER_SCHEMA_ID,
+        "created_at": timestamp,
+        "updated_at": timestamp,
+        "run_id": run_id,
+        "attempt_id": attempt_id,
+        "source": "same_run_previous_checkpoint",
+        "iteration": int(iteration),
+        "checkpoint_ref": checkpoint_ref,
+        "assignment_ref": assignment_ref.as_posix(),
+        "assignment_sha256": assignment_sha256,
+    }
+
+    assignment_path = runs.volume_path(RUNS_MOUNT, assignment_ref)
+    pointer_path = runs.volume_path(RUNS_MOUNT, pointer_ref)
+    runs.write_json(assignment_path, _to_plain(assignment))
+    runs.write_json(pointer_path, _to_plain(pointer))
+    return {
+        "saved": True,
+        "iteration": int(iteration),
+        "checkpoint_ref": checkpoint_ref,
+        "assignment_ref": assignment_ref.as_posix(),
+        "assignment_sha256": assignment_sha256,
+        "pointer_ref": f"{_RUNS_REF_PREFIX}{pointer_ref.as_posix()}",
+        "assignment_file": runs.file_summary_any_mount(assignment_path, mount=RUNS_MOUNT),
+        "pointer_file": runs.file_summary_any_mount(pointer_path, mount=RUNS_MOUNT),
+    }
+
+
 def _write_checkpoint_progress_latest(
     *,
     run_id: str,
@@ -2071,6 +3458,9 @@ def _write_checkpoint_progress_latest(
     learner: Any,
     started_monotonic: float,
     source: str = "BaseLearner.save_checkpoint",
+    checkpoint_metadata: Mapping[str, Any] | None = None,
+    own_checkpoint_opponent_publisher: Any | None = None,
+    learner_metrics_recorder: _LearnerMetricsRecorder | None = None,
 ) -> dict[str, Any]:
     checkpoint = _latest_lightzero_iteration_checkpoint(exp_name)
     learner_iteration = _safe_int_or_none(getattr(learner, "train_iter", None))
@@ -2084,8 +3474,156 @@ def _write_checkpoint_progress_latest(
         timestamp=now,
         source=source,
     )
+    if checkpoint is not None and checkpoint_metadata is not None:
+        payload["checkpoint_policy_metadata_sidecar"] = _write_checkpoint_policy_metadata_sidecar(
+            run_id=run_id,
+            attempt_id=attempt_id,
+            checkpoint=checkpoint,
+            checkpoint_metadata=checkpoint_metadata,
+            timestamp=now,
+        )
+    if checkpoint is not None and own_checkpoint_opponent_publisher is not None:
+        try:
+            payload["own_checkpoint_opponent_refresh"] = own_checkpoint_opponent_publisher(
+                checkpoint=checkpoint,
+                timestamp=now,
+                learner_iteration=learner_iteration,
+            )
+        except Exception as exc:  # pragma: no cover - remote resilience only.
+            payload["own_checkpoint_opponent_refresh"] = {
+                "saved": False,
+                "reason": f"{type(exc).__name__}: {exc}",
+            }
+    if learner_metrics_recorder is not None:
+        latest_learner = learner_metrics_recorder.latest()
+        if latest_learner is not None:
+            payload["last_learner"] = latest_learner
+            payload.update(
+                {
+                    key: value
+                    for key, value in learner_metrics_recorder.refs().items()
+                    if value is not None
+                }
+            )
     path = attempt_train_root / "progress_latest.json"
-    return runs.write_json(path, _to_plain(payload))
+    write = runs.write_json(path, _to_plain(payload))
+    if checkpoint is not None:
+        sidecar = payload.get("checkpoint_policy_metadata_sidecar")
+        append_lineage_event(
+            lineage_events_path(attempt_train_root),
+            stage="checkpoint_written",
+            run_id=run_id,
+            attempt_id=attempt_id,
+            source=source,
+            progress_ref=runs.file_ref(path, mount=RUNS_MOUNT),
+            progress_sha256=write.get("sha256"),
+            checkpoint_ref=checkpoint.get("checkpoint_ref"),
+            checkpoint_name=checkpoint.get("checkpoint_name"),
+            checkpoint_iteration=checkpoint.get("iteration"),
+            learner_iteration=learner_iteration,
+            checkpoint_bytes=checkpoint.get("bytes"),
+            checkpoint_sha256=checkpoint.get("sha256"),
+            checkpoint_policy_metadata_ref=(
+                sidecar.get("ref") if isinstance(sidecar, Mapping) else None
+            ),
+            own_checkpoint_opponent_refresh=payload.get("own_checkpoint_opponent_refresh"),
+        )
+    return write
+
+
+def _checkpoint_policy_metadata_sidecar_path(checkpoint_path: Path) -> Path:
+    return checkpoint_path.with_name(f"{checkpoint_path.name}.metadata.json")
+
+
+def _build_checkpoint_policy_metadata_sidecar_payload(
+    *,
+    run_id: str,
+    attempt_id: str,
+    checkpoint: Mapping[str, Any],
+    checkpoint_metadata: Mapping[str, Any],
+    timestamp: str,
+) -> dict[str, Any]:
+    metadata = dict(checkpoint_metadata)
+    observation_contract = _to_plain(metadata.get("observation_contract"))
+    if not isinstance(observation_contract, Mapping):
+        observation_contract = policy_observation_surface(
+            trail_render_mode=str(
+                metadata.get("policy_trail_render_mode") or POLICY_TRAIL_RENDER_MODE
+            ),
+            bonus_render_mode=metadata.get("policy_bonus_render_mode"),
+            backend=str(
+                metadata.get("policy_observation_backend")
+                or DEFAULT_POLICY_OBSERVATION_BACKEND_CHOICE
+            ),
+        )
+    payload: dict[str, Any] = {
+        "schema_id": "curvyzero_checkpoint_policy_metadata/v0",
+        "created_at": timestamp,
+        "run_id": run_id,
+        "attempt_id": attempt_id,
+        "iteration": checkpoint.get("iteration"),
+        "checkpoint_name": checkpoint.get("checkpoint_name"),
+        "checkpoint_ref": checkpoint.get("checkpoint_ref"),
+        "policy_observation_backend": metadata.get("policy_observation_backend"),
+        "policy_trail_render_mode": metadata.get("policy_trail_render_mode"),
+        "policy_bonus_render_mode": metadata.get("policy_bonus_render_mode"),
+        "policy_observation_contract_id": metadata.get("policy_observation_contract_id"),
+        "policy_observation_perspective_schema_id": (
+            metadata.get("policy_observation_perspective_schema_id")
+            or observation_contract.get("perspective_schema_id")
+            or POLICY_OBSERVATION_PERSPECTIVE_SCHEMA_ID
+        ),
+        "observation_contract": observation_contract,
+        "source_state_trail_render_mode": metadata.get("source_state_trail_render_mode"),
+        "source_state_bonus_render_mode": metadata.get("source_state_bonus_render_mode"),
+        "model_env_variant": metadata.get("model_env_variant") or metadata.get("env_variant"),
+        "model_reward_variant": (
+            metadata.get("model_reward_variant") or metadata.get("reward_variant")
+        ),
+        "env_variant": metadata.get("env_variant"),
+        "reward_variant": metadata.get("reward_variant"),
+        "decision_ms": metadata.get("decision_ms"),
+        "decision_source_frames": metadata.get("decision_source_frames"),
+        "source_physics_step_ms": metadata.get("source_physics_step_ms"),
+        "source_max_steps": metadata.get("source_max_steps"),
+        "learner_seat_mode": metadata.get("learner_seat_mode"),
+    }
+    return _to_plain({key: value for key, value in payload.items() if value is not None})
+
+
+def _write_checkpoint_policy_metadata_sidecar(
+    *,
+    run_id: str,
+    attempt_id: str,
+    checkpoint: Mapping[str, Any],
+    checkpoint_metadata: Mapping[str, Any],
+    timestamp: str,
+) -> dict[str, Any]:
+    checkpoint_path_value = checkpoint.get("checkpoint_path")
+    if not checkpoint_path_value:
+        return {"saved": False, "reason": "checkpoint_path_missing"}
+    checkpoint_path = Path(str(checkpoint_path_value))
+    sidecar_path = _checkpoint_policy_metadata_sidecar_path(checkpoint_path)
+    sidecar_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = _build_checkpoint_policy_metadata_sidecar_payload(
+        run_id=run_id,
+        attempt_id=attempt_id,
+        checkpoint=checkpoint,
+        checkpoint_metadata=checkpoint_metadata,
+        timestamp=timestamp,
+    )
+    sidecar_path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    sidecar_ref = None
+    try:
+        sidecar_ref = runs.file_ref(sidecar_path.resolve(), mount=RUNS_MOUNT.resolve())
+    except ValueError:
+        sidecar_ref = None
+    return {
+        "saved": True,
+        "path": str(sidecar_path),
+        "ref": sidecar_ref,
+        "schema_id": payload.get("schema_id"),
+    }
 
 
 def _install_checkpoint_progress_writer(
@@ -2097,6 +3635,9 @@ def _install_checkpoint_progress_writer(
     attempt_train_root: Path,
     started_monotonic: float,
     commit_on_checkpoint: bool = DEFAULT_COMMIT_ON_CHECKPOINT,
+    checkpoint_metadata: Mapping[str, Any] | None = None,
+    own_checkpoint_opponent_publisher: Any | None = None,
+    learner_metrics_recorder: _LearnerMetricsRecorder | None = None,
 ) -> Any:
     """Write the progress file used by the GIF browser whenever LightZero checkpoints."""
 
@@ -2126,6 +3667,9 @@ def _install_checkpoint_progress_writer(
                 exp_name=exp_name,
                 learner=self,
                 started_monotonic=started_monotonic,
+                checkpoint_metadata=checkpoint_metadata,
+                own_checkpoint_opponent_publisher=own_checkpoint_opponent_publisher,
+                learner_metrics_recorder=learner_metrics_recorder,
             )
             if commit_on_checkpoint:
                 _commit_runs_volume_with_backoff(label="checkpoint_progress_commit")
@@ -2144,6 +3688,69 @@ def _install_checkpoint_progress_writer(
     return restore
 
 
+def _install_lightzero_learner_metrics_recorder(
+    *,
+    train_muzero: Any,
+    run_id: str,
+    attempt_id: str,
+    attempt_train_root: Path,
+    started_monotonic: float,
+    sample_first_n: int = 5,
+    sample_interval: int = 1000,
+) -> tuple[Any, _LearnerMetricsRecorder] | None:
+    """Record lightweight BaseLearner.train metrics without affecting training."""
+
+    globals_map = getattr(train_muzero, "__globals__", {})
+    learner_cls = globals_map.get("BaseLearner")
+    if not inspect.isclass(learner_cls):
+        return None
+    owner = next(
+        (base for base in inspect.getmro(learner_cls) if "train" in getattr(base, "__dict__", {})),
+        None,
+    )
+    if owner is None:
+        return None
+    original = owner.__dict__["train"]
+    recorder = _LearnerMetricsRecorder(
+        run_id=run_id,
+        attempt_id=attempt_id,
+        attempt_train_root=attempt_train_root,
+        started_monotonic=started_monotonic,
+        sample_first_n=sample_first_n,
+        sample_interval=sample_interval,
+    )
+
+    def wrapped(self: Any, *args: Any, **kwargs: Any) -> Any:
+        train_iter_before = _safe_int_or_none(getattr(self, "train_iter", None))
+        started = time.perf_counter()
+        try:
+            result = original(self, *args, **kwargs)
+        except Exception as exc:
+            recorder.record(
+                learner=self,
+                exception=exc,
+                train_iter_before=train_iter_before,
+                train_iter_after=_safe_int_or_none(getattr(self, "train_iter", None)),
+                elapsed_sec=time.perf_counter() - started,
+            )
+            raise
+        recorder.record(
+            learner=self,
+            result=result,
+            train_iter_before=train_iter_before,
+            train_iter_after=_safe_int_or_none(getattr(self, "train_iter", None)),
+            elapsed_sec=time.perf_counter() - started,
+        )
+        return result
+
+    setattr(owner, "train", wrapped)
+
+    def restore() -> None:
+        setattr(owner, "train", original)
+
+    return restore, recorder
+
+
 def _install_lightzero_full_resume_state_hooks(
     *,
     train_muzero: Any,
@@ -2153,6 +3760,9 @@ def _install_lightzero_full_resume_state_hooks(
     auto_resume: dict[str, Any],
     attempt_train_root: Path | None = None,
     started_monotonic: float | None = None,
+    checkpoint_metadata: Mapping[str, Any] | None = None,
+    own_checkpoint_opponent_publisher: Any | None = None,
+    learner_metrics_recorder: _LearnerMetricsRecorder | None = None,
 ) -> Any:
     """Save and restore LightZero state that is not inside the stock checkpoint."""
 
@@ -2281,8 +3891,7 @@ def _install_lightzero_full_resume_state_hooks(
                     )
                 except Exception as exc:  # pragma: no cover - remote resilience only.
                     print(
-                        "curvyzero resume sidecar save failed: "
-                        f"{type(exc).__name__}: {exc}",
+                        f"curvyzero resume sidecar save failed: {type(exc).__name__}: {exc}",
                         flush=True,
                     )
                 if attempt_train_root is not None and started_monotonic is not None:
@@ -2295,6 +3904,9 @@ def _install_lightzero_full_resume_state_hooks(
                             learner=engine,
                             started_monotonic=started_monotonic,
                             source="SaveCkptHook.__call__",
+                            checkpoint_metadata=checkpoint_metadata,
+                            own_checkpoint_opponent_publisher=own_checkpoint_opponent_publisher,
+                            learner_metrics_recorder=learner_metrics_recorder,
                         )
                     except Exception as exc:  # pragma: no cover - remote resilience only.
                         print(
@@ -2634,124 +4246,6 @@ def _install_trusted_run_torch_load_retry(*, run_id: str) -> Any:
     return restore
 
 
-def _install_curvyzero_rnd_reward_model(
-    *,
-    train_muzero: Any,
-    exploration_bonus_spec: xb.ExplorationBonusSpec,
-) -> Any | None:
-    if not exploration_bonus_spec.enabled:
-        return None
-    globals_map = getattr(train_muzero, "__globals__", None)
-    if not isinstance(globals_map, dict):
-        raise RuntimeError("selected LightZero entrypoint does not expose patchable globals")
-    missing = object()
-    restore_actions: list[Any] = []
-
-    previous_global = globals_map.get("RNDRewardModel", missing)
-    globals_map["RNDRewardModel"] = xb.CurvyRNDRewardModel
-
-    def restore_global() -> None:
-        if previous_global is missing:
-            globals_map.pop("RNDRewardModel", None)
-        else:
-            globals_map["RNDRewardModel"] = previous_global
-
-    restore_actions.append(restore_global)
-
-    def restore() -> None:
-        for restore_action in reversed(restore_actions):
-            restore_action()
-
-    return restore
-
-
-def _summarize_rnd_reward_model_metrics(
-    *,
-    enabled: bool,
-    latest_path: Path,
-    jsonl_path: Path,
-) -> dict[str, Any]:
-    summary: dict[str, Any] = {
-        "schema_id": "curvyzero_rnd_reward_model_metrics_scan/v0",
-        "enabled": bool(enabled),
-        "latest_ref": runs.file_ref(latest_path, mount=RUNS_MOUNT),
-        "jsonl_ref": runs.file_ref(jsonl_path, mount=RUNS_MOUNT),
-        "latest_exists": latest_path.exists(),
-        "jsonl_exists": jsonl_path.exists(),
-        "latest": None,
-        "event_count": 0,
-        "last_event_reasons": [],
-        "errors": [],
-    }
-    if latest_path.exists():
-        try:
-            summary["latest"] = json.loads(latest_path.read_text(encoding="utf-8"))
-            summary["latest_file"] = runs.file_summary(latest_path, mount=RUNS_MOUNT)
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-            summary["errors"].append(
-                f"latest metrics read failed: {type(exc).__name__}: {exc}"
-            )
-    if jsonl_path.exists():
-        try:
-            event_count = 0
-            reasons: list[str | None] = []
-            last_valid_event: dict[str, Any] | None = None
-            with jsonl_path.open("r", encoding="utf-8") as handle:
-                for line in handle:
-                    event_count += 1
-                    if len(reasons) >= 20:
-                        reasons.pop(0)
-                    try:
-                        row = json.loads(line)
-                        if isinstance(row, dict):
-                            reasons.append(row.get("reason"))
-                            last_valid_event = row
-                        else:
-                            reasons.append(None)
-                    except json.JSONDecodeError:
-                        reasons.append("json_decode_error")
-            summary["event_count"] = event_count
-            summary["last_event_reasons"] = reasons
-            summary["jsonl_file"] = runs.file_summary(jsonl_path, mount=RUNS_MOUNT)
-            if summary["latest"] is None and last_valid_event is not None:
-                summary["latest"] = last_valid_event
-                summary["latest_source"] = "jsonl_tail_fallback"
-        except (OSError, UnicodeDecodeError) as exc:
-            summary["errors"].append(
-                f"jsonl metrics read failed: {type(exc).__name__}: {exc}"
-            )
-    return _to_plain(summary)
-
-
-def _validate_required_rnd_reward_model_metrics(
-    metrics: Mapping[str, Any],
-    *,
-    weight: float,
-) -> list[str]:
-    del weight
-    latest = metrics.get("latest") if isinstance(metrics.get("latest"), Mapping) else None
-    if latest is None:
-        return ["required RND reward-model metrics were not written"]
-    problems: list[str] = []
-    if int(latest.get("collect_data_calls") or 0) < 1:
-        problems.append("required RND metrics missing collect_data call proof")
-    if int(latest.get("train_with_data_calls") or 0) < 1:
-        problems.append("required RND metrics missing train_with_data call proof")
-    if int(latest.get("estimate_calls") or 0) < 1:
-        problems.append("required RND metrics missing estimate call proof")
-    if int(latest.get("train_cnt_rnd") or 0) < 1:
-        problems.append("required RND metrics missing predictor update proof")
-    predictor_before = latest.get("last_predictor_hash_before_train")
-    predictor_after = latest.get("last_predictor_hash_after_train")
-    if not predictor_before or not predictor_after or predictor_before == predictor_after:
-        problems.append("required RND metrics show predictor weights did not change")
-    target_before = latest.get("last_target_hash_before_train")
-    target_after = latest.get("last_target_hash_after_train")
-    if target_before and target_after and target_before != target_after:
-        problems.append("required RND metrics show target weights changed")
-    return problems
-
-
 def _checkpoint_payload_optimizer_keys(payload: Any) -> list[str]:
     if not isinstance(payload, dict):
         return []
@@ -3056,8 +4550,7 @@ class _InitialPolicyCheckpointLoadAudit:
 
     def summary(self) -> dict[str, Any]:
         optimizer_loaded = any(
-            not row.get("skipped_to_preserve_fresh_optimizer")
-            for row in self.optimizer_load_calls
+            not row.get("skipped_to_preserve_fresh_optimizer") for row in self.optimizer_load_calls
         )
         module_loads = []
         for row in self.module_loads:
@@ -3088,7 +4581,9 @@ def _install_initial_policy_checkpoint_load_audit(
         audit.record_torch_load(_torch_load_target_path(args, kwargs))
         return original_torch_load(*args, **kwargs)
 
-    def wrapped_module_load_state_dict(self: Any, state_dict: Any, *args: Any, **kwargs: Any) -> Any:
+    def wrapped_module_load_state_dict(
+        self: Any, state_dict: Any, *args: Any, **kwargs: Any
+    ) -> Any:
         strict = kwargs.get("strict", args[0] if args else True)
         filter_report: Mapping[str, Any] | None = None
         if audit.consume_initial_module_load_slot():
@@ -3165,6 +4660,49 @@ def _lightzero_rng_state() -> dict[str, Any]:
     if torch.cuda.is_available():
         state["torch_cuda_all"] = [item.cpu() for item in torch.cuda.get_rng_state_all()]
     return state
+
+
+def _seed_training_process(seed: int) -> dict[str, Any]:
+    """Seed process-local RNGs before LightZero and Curvy sidecars are built."""
+    random.seed(int(seed))
+    seeded: dict[str, Any] = {
+        "schema_id": "curvyzero_training_process_seed/v0",
+        "seed": int(seed),
+        "python_random": True,
+        "numpy_random": False,
+        "torch_cpu": False,
+        "torch_cuda_all": False,
+        "torch_deterministic_warn_only": False,
+        "cudnn_deterministic": None,
+        "cudnn_benchmark": None,
+        "errors": [],
+    }
+    try:
+        import numpy as np
+
+        np.random.seed(int(seed))
+        seeded["numpy_random"] = True
+    except Exception as exc:  # pragma: no cover - diagnostic only.
+        seeded["errors"].append(f"numpy: {type(exc).__name__}: {exc}")
+    try:
+        import torch
+
+        torch.manual_seed(int(seed))
+        seeded["torch_cpu"] = True
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(int(seed))
+            seeded["torch_cuda_all"] = True
+        if hasattr(torch, "use_deterministic_algorithms"):
+            torch.use_deterministic_algorithms(True, warn_only=True)
+            seeded["torch_deterministic_warn_only"] = True
+        if hasattr(torch.backends, "cudnn"):
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
+            seeded["cudnn_deterministic"] = True
+            seeded["cudnn_benchmark"] = False
+    except Exception as exc:  # pragma: no cover - diagnostic only.
+        seeded["errors"].append(f"torch: {type(exc).__name__}: {exc}")
+    return seeded
 
 
 def _restore_lightzero_rng_state(state: Any) -> None:
@@ -3714,6 +5252,155 @@ def _install_lightzero_target_audit(
     return restore
 
 
+def _install_curvyzero_rnd_reward_model(
+    *,
+    train_muzero: Any,
+    exploration_bonus_spec: xb.ExplorationBonusSpec,
+) -> Any | None:
+    if not exploration_bonus_spec.enabled:
+        return None
+    globals_map = getattr(train_muzero, "__globals__", None)
+    if not isinstance(globals_map, dict):
+        raise RuntimeError("selected LightZero entrypoint does not expose patchable globals")
+    missing = object()
+    restore_actions: list[Any] = []
+
+    def patch_attr(holder: Any, name: str) -> None:
+        previous = getattr(holder, name, missing)
+        setattr(holder, name, xb.CurvyRNDRewardModel)
+
+        def restore_attr() -> None:
+            if previous is missing:
+                try:
+                    delattr(holder, name)
+                except AttributeError:
+                    pass
+            else:
+                setattr(holder, name, previous)
+
+        restore_actions.append(restore_attr)
+
+    previous_global = globals_map.get("RNDRewardModel", missing)
+    globals_map["RNDRewardModel"] = xb.CurvyRNDRewardModel
+
+    def restore_global() -> None:
+        if previous_global is missing:
+            globals_map.pop("RNDRewardModel", None)
+        else:
+            globals_map["RNDRewardModel"] = previous_global
+
+    restore_actions.append(restore_global)
+    try:
+        rnd_module = importlib.import_module("lzero.reward_model.rnd_reward_model")
+    except Exception:
+        rnd_module = None
+    if rnd_module is not None:
+        patch_attr(rnd_module, "RNDRewardModel")
+
+    def restore() -> None:
+        for restore_action in reversed(restore_actions):
+            restore_action()
+
+    return restore
+
+
+def _summarize_rnd_reward_model_metrics(
+    *,
+    enabled: bool,
+    latest_path: Path,
+    jsonl_path: Path,
+) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "schema_id": "curvyzero_rnd_reward_model_metrics_scan/v0",
+        "enabled": bool(enabled),
+        "latest_ref": runs.file_ref(latest_path, mount=RUNS_MOUNT),
+        "jsonl_ref": runs.file_ref(jsonl_path, mount=RUNS_MOUNT),
+        "latest_exists": latest_path.exists(),
+        "jsonl_exists": jsonl_path.exists(),
+        "latest": None,
+        "event_count": 0,
+        "last_event_reasons": [],
+        "errors": [],
+    }
+    if latest_path.exists():
+        try:
+            summary["latest"] = json.loads(latest_path.read_text(encoding="utf-8"))
+            summary["latest_file"] = runs.file_summary(latest_path, mount=RUNS_MOUNT)
+        except Exception as exc:
+            summary["errors"].append(
+                f"latest metrics read failed: {type(exc).__name__}: {exc}"
+            )
+    if jsonl_path.exists():
+        try:
+            event_count = 0
+            reasons: list[str | None] = []
+            last_valid_event: dict[str, Any] | None = None
+            with jsonl_path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    event_count += 1
+                    if len(reasons) >= 20:
+                        reasons.pop(0)
+                    try:
+                        row = json.loads(line)
+                        if isinstance(row, dict):
+                            reasons.append(row.get("reason"))
+                            last_valid_event = row
+                        else:
+                            reasons.append(None)
+                    except json.JSONDecodeError:
+                        reasons.append("json_decode_error")
+            summary["event_count"] = event_count
+            summary["last_event_reasons"] = reasons
+            summary["jsonl_file"] = runs.file_summary(jsonl_path, mount=RUNS_MOUNT)
+            if summary["latest"] is None and last_valid_event is not None:
+                summary["latest"] = last_valid_event
+                summary["latest_source"] = "jsonl_tail_fallback"
+        except Exception as exc:
+            summary["errors"].append(
+                f"jsonl metrics read failed: {type(exc).__name__}: {exc}"
+            )
+    return _to_plain(summary)
+
+
+def _validate_required_rnd_reward_model_metrics(
+    metrics: Mapping[str, Any],
+    *,
+    weight: float,
+) -> list[str]:
+    problems: list[str] = []
+    latest = metrics.get("latest") if isinstance(metrics.get("latest"), Mapping) else None
+    if latest is None:
+        return ["required RND reward-model metrics were not written"]
+    if int(latest.get("collect_data_calls") or 0) < 1:
+        problems.append("required RND metrics missing collect_data call proof")
+    if int(latest.get("train_with_data_calls") or 0) < 1:
+        problems.append("required RND metrics missing train_with_data call proof")
+    if int(latest.get("estimate_calls") or 0) < 1:
+        problems.append("required RND metrics missing estimate call proof")
+    if int(latest.get("train_cnt_rnd") or 0) < 1:
+        problems.append("required RND metrics missing predictor update proof")
+    predictor_before = latest.get("last_predictor_hash_before_train")
+    predictor_after = latest.get("last_predictor_hash_after_train")
+    if not predictor_before or not predictor_after or predictor_before == predictor_after:
+        problems.append("required RND metrics show predictor weights did not change")
+    target_before = latest.get("last_target_hash_before_train")
+    target_after = latest.get("last_target_hash_after_train")
+    if target_before and target_after and target_before != target_after:
+        problems.append("required RND metrics show frozen target weights changed")
+    if float(weight) == 0.0 and latest.get("last_target_reward_changed") is not False:
+        problems.append("required RND metrics did not prove weight=0 target rewards unchanged")
+    if float(weight) > 0.0:
+        if latest.get("last_target_reward_changed") is not True:
+            problems.append("required RND metrics did not prove positive-weight target rewards changed")
+        try:
+            delta_abs_max = float(latest.get("last_target_reward_delta_abs_max") or 0.0)
+        except (TypeError, ValueError):
+            delta_abs_max = 0.0
+        if delta_abs_max <= 0.0:
+            problems.append("required RND metrics recorded zero positive-weight target delta")
+    return problems
+
+
 def _run_visual_survival_train(
     *,
     mode: str,
@@ -3741,9 +5428,12 @@ def _run_visual_survival_train(
     stop_after_learner_train_calls: int,
     env_variant: str,
     reward_variant: str,
+    reward_outcome_alpha: float = DEFAULT_REWARD_OUTCOME_ALPHA,
     source_state_trail_render_mode: str,
     source_state_bonus_render_mode: str,
     policy_observation_backend: str,
+    collect_search_backend: str = DEFAULT_COLLECT_SEARCH_BACKEND,
+    collect_search_ctree_backend: str = DEFAULT_COLLECT_SEARCH_CTREE_BACKEND,
     learner_seat_mode: str,
     ego_action_straight_override_probability: float,
     control_noise_profile_id: str,
@@ -3793,6 +5483,11 @@ def _run_visual_survival_train(
         DEFAULT_OPPONENT_ASSIGNMENT_REFRESH_INTERVAL_TRAIN_ITER
     ),
     opponent_assignment_refresh_ref: str | None = None,
+    model_support_cap: int | None = DEFAULT_MODEL_SUPPORT_CAP,
+    td_steps: int | None = DEFAULT_TD_STEPS,
+    own_checkpoint_opponent_refresh_enabled: bool = (
+        DEFAULT_OWN_CHECKPOINT_OPPONENT_REFRESH_ENABLED
+    ),
     exploration_bonus_mode: str = xb.EXPLORATION_BONUS_MODE_NONE,
     exploration_bonus_weight: float = 0.0,
     exploration_bonus_feature_source: str = xb.RND_FEATURE_SOURCE_POLICY_GRAY64_LATEST_V0,
@@ -3817,23 +5512,6 @@ def _run_visual_survival_train(
         raise ValueError(
             f"unknown reward_variant {reward_variant!r}; expected one of {REWARD_VARIANT_CHOICES!r}"
         )
-    opponent_policy_kind = _normalize_opponent_policy_kind_for_env(
-        env_variant=env_variant,
-        opponent_policy_kind=opponent_policy_kind,
-        opponent_checkpoint_ref=opponent_checkpoint_ref,
-    )
-    reward_variant = _normalize_reward_variant_for_env(
-        env_variant=env_variant,
-        reward_variant=reward_variant,
-    )
-    if opponent_death_mode not in OPPONENT_DEATH_MODES:
-        raise ValueError(f"opponent_death_mode must be one of {OPPONENT_DEATH_MODES!r}")
-    if opponent_runtime_mode not in OPPONENT_RUNTIME_MODES:
-        raise ValueError(f"opponent_runtime_mode must be one of {OPPONENT_RUNTIME_MODES!r}")
-    reward_policy = _reward_policy_for_variant(
-        env_variant=env_variant,
-        reward_variant=reward_variant,
-    )
     exploration_bonus_spec = xb.normalize_exploration_bonus_spec(
         mode=exploration_bonus_mode,
         weight=exploration_bonus_weight,
@@ -3845,20 +5523,44 @@ def _run_visual_survival_train(
         rnd_weight_decay=exploration_bonus_rnd_weight_decay,
         rnd_input_norm=exploration_bonus_rnd_input_norm,
     )
+    opponent_policy_kind = _normalize_opponent_policy_kind_for_env(
+        env_variant=env_variant,
+        opponent_policy_kind=opponent_policy_kind,
+        opponent_checkpoint_ref=opponent_checkpoint_ref,
+    )
+    reward_variant = _normalize_reward_variant_for_env(
+        env_variant=env_variant,
+        reward_variant=reward_variant,
+    )
+    reward_outcome_alpha = _normalize_reward_outcome_alpha(reward_outcome_alpha)
+    if opponent_death_mode not in OPPONENT_DEATH_MODES:
+        raise ValueError(f"opponent_death_mode must be one of {OPPONENT_DEATH_MODES!r}")
+    if opponent_runtime_mode not in OPPONENT_RUNTIME_MODES:
+        raise ValueError(f"opponent_runtime_mode must be one of {OPPONENT_RUNTIME_MODES!r}")
+    reward_policy = _reward_policy_for_variant(
+        env_variant=env_variant,
+        reward_variant=reward_variant,
+        reward_outcome_alpha=reward_outcome_alpha,
+    )
     source_state_trail_render_mode = _validate_source_state_trail_render_mode(
         source_state_trail_render_mode
     )
     source_state_bonus_render_mode = _validate_source_state_bonus_render_mode(
         source_state_bonus_render_mode
     )
-    policy_observation_backend = _validate_policy_observation_backend(
-        policy_observation_backend
+    policy_observation_backend = _validate_policy_observation_backend(policy_observation_backend)
+    collect_search_backend = _validate_collect_search_backend(collect_search_backend)
+    collect_search_ctree_backend = _validate_collect_search_ctree_backend(
+        collect_search_ctree_backend
     )
     learner_seat_mode = _validate_learner_seat_mode(learner_seat_mode)
     lightzero_target_config = _lightzero_target_config_for_reward(
         env_variant=env_variant,
         reward_variant=reward_variant,
         source_max_steps=source_max_steps,
+        reward_outcome_alpha=reward_outcome_alpha,
+        model_support_cap=model_support_cap,
+        td_steps=td_steps,
     )
     if opponent_policy_kind not in OPPONENT_POLICY_KIND_CHOICES:
         raise ValueError(
@@ -3880,6 +5582,13 @@ def _run_visual_survival_train(
             f"unknown env_manager_type {env_manager_type!r}; "
             f"expected one of {ENV_MANAGER_TYPE_CHOICES!r}"
         )
+    if env_manager_type in CURVYZERO_BATCHED_PROFILE_ENV_MANAGER_TYPES:
+        if mode != "profile":
+            raise ValueError(f"{env_manager_type} env manager is profile-only")
+        if int(collector_env_num) % 2 != 0 or int(evaluator_env_num) % 2 != 0:
+            raise ValueError(
+                f"{env_manager_type} requires even collector/evaluator env counts"
+            )
     if env_variant == ENV_VARIANT_SOURCE_STATE_JOINT_ACTION:
         if opponent_policy_kind != OPPONENT_POLICY_KIND_NONE_CENTRALIZED_JOINT_ACTION:
             raise ValueError(
@@ -3921,6 +5630,28 @@ def _run_visual_survival_train(
         raise ValueError("policy_action_repeat_extra_probability must be in [0, 1]")
     if bool(disable_death_for_profile) and mode != "profile":
         raise ValueError("disable_death_for_profile is only allowed in mode='profile'")
+    if collect_search_backend != COLLECT_SEARCH_BACKEND_STOCK:
+        if mode not in {"profile", "train"}:
+            raise ValueError(
+                "non-stock collect_search_backend is only allowed in mode='profile' "
+                "or mode='train'"
+            )
+        if not _compute_uses_cuda(compute):
+            raise ValueError("direct_ctree_gpu_latent collect_search_backend requires GPU compute")
+        if (
+            mode == "train"
+            and collect_search_ctree_backend != COLLECT_SEARCH_CTREE_BACKEND_LIGHTZERO
+        ):
+            raise ValueError(
+                "mode='train' with collect_search_backend='direct_ctree_gpu_latent' "
+                "uses LightZero CTree only; non-LightZero collect_search_ctree_backend "
+                "is profile-only"
+            )
+    elif collect_search_ctree_backend != COLLECT_SEARCH_CTREE_BACKEND_LIGHTZERO:
+        raise ValueError(
+            "non-lightzero collect_search_ctree_backend requires "
+            "collect_search_backend='direct_ctree_gpu_latent'"
+        )
     if env_variant == ENV_VARIANT_SOURCE_STATE_TURN_COMMIT and mode == "train":
         raise ValueError(
             "source_state_turn_commit is plumbing-smoke-only after target audit: "
@@ -3958,7 +5689,33 @@ def _run_visual_survival_train(
         raise ValueError("lightzero_eval_freq must be non-negative")
     if int(opponent_assignment_refresh_interval_train_iter) < 0:
         raise ValueError("opponent_assignment_refresh_interval_train_iter must be non-negative")
-    if int(opponent_assignment_refresh_interval_train_iter) > 0 and not opponent_assignment_refresh_ref:
+    if bool(own_checkpoint_opponent_refresh_enabled):
+        if env_variant != ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT:
+            raise ValueError(
+                "own_checkpoint_opponent_refresh_enabled requires "
+                "env_variant='source_state_fixed_opponent'"
+            )
+        if int(opponent_assignment_refresh_interval_train_iter) <= 0:
+            raise ValueError(
+                "own_checkpoint_opponent_refresh_enabled requires a positive "
+                "opponent_assignment_refresh_interval_train_iter"
+            )
+        if opponent_assignment_refresh_ref and str(opponent_assignment_refresh_ref).startswith(
+            _CONTROL_REF_PREFIX
+        ):
+            raise ValueError(
+                "own checkpoint opponent refresh must use a run-local runs: pointer, "
+                "not a control: pointer"
+            )
+        if not opponent_assignment_refresh_ref:
+            opponent_assignment_refresh_ref = _own_checkpoint_opponent_refresh_pointer_ref(
+                run_id,
+                attempt_id,
+            )
+    if (
+        int(opponent_assignment_refresh_interval_train_iter) > 0
+        and not opponent_assignment_refresh_ref
+    ):
         raise ValueError(
             "opponent_assignment_refresh_ref is required when "
             "opponent_assignment_refresh_interval_train_iter is positive"
@@ -3994,6 +5751,7 @@ def _run_visual_survival_train(
     attempt_train_root = runs.volume_path(RUNS_MOUNT, attempt_train_ref)
     telemetry_path = attempt_train_root / "env_steps.jsonl"
     assignment_refresh_events_path = attempt_train_root / "opponent_assignment_refresh_events.jsonl"
+    trainer_lineage_path = lineage_events_path(attempt_train_root)
     rnd_metrics_latest_path = attempt_train_root / "rnd_reward_model_metrics_latest.json"
     rnd_metrics_jsonl_path = attempt_train_root / "rnd_reward_model_metrics.jsonl"
     exp_name_ref = attempt_train_ref / "lightzero_exp"
@@ -4004,8 +5762,14 @@ def _run_visual_survival_train(
         opponent_checkpoint_ref=opponent_checkpoint_ref,
         opponent_checkpoint_report_ref=opponent_checkpoint_report_ref,
     )
+    assignment_ref_uses_volume = bool(
+        opponent_assignment_ref
+        and str(opponent_assignment_ref).startswith((_CONTROL_REF_PREFIX, _RUNS_REF_PREFIX))
+    )
     opponent_assignment = _resolve_opponent_assignment_for_env(
-        opponent_assignment_ref=opponent_assignment_ref
+        opponent_assignment_ref=opponent_assignment_ref,
+        reload_volume_before_read=assignment_ref_uses_volume,
+        reload_checkpoint_volume_before_read=bool(opponent_assignment_ref),
     )
     if opponent_assignment is not None and opponent_mixture_spec is not None:
         raise ValueError("opponent_assignment_ref cannot be combined with opponent_mixture_spec")
@@ -4015,6 +5779,15 @@ def _run_visual_survival_train(
         else _resolve_opponent_mixture_for_env(opponent_mixture_spec=opponent_mixture_spec)
     )
     opponent_assignment_context = _opponent_assignment_context_for_env(opponent_assignment)
+    if opponent_assignment is not None:
+        _append_trainer_assignment_loaded_lineage(
+            trainer_lineage_path,
+            status="initial",
+            run_id=run_id,
+            attempt_id=attempt_id,
+            opponent_assignment_ref=opponent_assignment_ref,
+            opponent_assignment=opponent_assignment,
+        )
     if opponent_mixture is not None:
         if env_variant != ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT:
             raise ValueError(
@@ -4032,6 +5805,7 @@ def _run_visual_survival_train(
         env_spec=env_spec,
         opponent_mixture=opponent_mixture,
     )
+    natural_bonus_spawn = bool(TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN)
     initial_policy_checkpoint = _prepare_initial_policy_checkpoint_load(
         initial_policy_checkpoint_ref=initial_policy_checkpoint_ref,
         initial_policy_checkpoint_state_key=initial_policy_checkpoint_state_key,
@@ -4060,6 +5834,8 @@ def _run_visual_survival_train(
         "n_episode": int(n_episode),
         "num_simulations": int(num_simulations),
         "batch_size": int(batch_size),
+        "model_support_cap": None if model_support_cap is None else int(model_support_cap),
+        "td_steps": None if td_steps is None else int(td_steps),
         "lightzero_eval_freq": int(lightzero_eval_freq),
         "skip_lightzero_eval_in_profile": bool(skip_lightzero_eval_in_profile),
         "profile_cuda_sync_enabled": bool(profile_cuda_sync_enabled),
@@ -4074,6 +5850,7 @@ def _run_visual_survival_train(
         "env_id": env_spec["env_id"],
         "action_space_size": int(env_spec.get("action_space_size", 3)),
         "reward_variant": reward_variant,
+        "reward_outcome_alpha": float(reward_outcome_alpha),
         "reward_schema_id": reward_policy["reward_schema_id"],
         "reward_policy": reward_policy,
         "lightzero_target_config": lightzero_target_config,
@@ -4092,12 +5869,23 @@ def _run_visual_survival_train(
         "require_rnd_metrics": bool(require_rnd_metrics),
         "rnd_reward_model_metrics": {
             "enabled": exploration_bonus_spec.enabled,
+            "required": bool(require_rnd_metrics),
             "latest_ref": runs.file_ref(rnd_metrics_latest_path, mount=RUNS_MOUNT),
             "jsonl_ref": runs.file_ref(rnd_metrics_jsonl_path, mount=RUNS_MOUNT),
         },
+        "trainer_entrypoint": xb.lightzero_trainer_entrypoint_ref(exploration_bonus_spec),
         "source_state_trail_render_mode": source_state_trail_render_mode,
         "source_state_bonus_render_mode": source_state_bonus_render_mode,
         "policy_observation_backend": policy_observation_backend,
+        "collect_search_backend": collect_search_backend,
+        "collect_search_ctree_backend": collect_search_ctree_backend,
+        "collect_search_backend_fallback_policy": (
+            "allow_profile_fallback"
+            if mode == "profile" and collect_search_backend != COLLECT_SEARCH_BACKEND_STOCK
+            else "fail_closed_when_non_stock"
+            if collect_search_backend != COLLECT_SEARCH_BACKEND_STOCK
+            else "stock_backend_no_hook"
+        ),
         "policy_trail_render_mode": source_state_trail_render_mode,
         "policy_bonus_render_mode": source_state_bonus_render_mode,
         "policy_observation_contract_id": POLICY_OBSERVATION_CONTRACT_ID,
@@ -4151,6 +5939,7 @@ def _run_visual_survival_train(
             if opponent_runtime_mode == OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP
             else "normal"
         ),
+        "natural_bonus_spawn": bool(natural_bonus_spawn),
         "death_mode": ("profile_no_death" if disable_death_for_profile else "normal"),
         "single_product_runtime_path": env_spec["single_product_runtime_path"],
         "legacy_debug_variant": env_spec["legacy_debug_variant"],
@@ -4202,6 +5991,9 @@ def _run_visual_survival_train(
             "mode": "assignment_or_pointer_ref_refresh",
             "interval_train_iter": int(opponent_assignment_refresh_interval_train_iter),
             "pending_assignment_ref": opponent_assignment_refresh_ref,
+            "own_checkpoint_opponent_refresh_enabled": bool(
+                own_checkpoint_opponent_refresh_enabled
+            ),
             "events_ref": runs.file_ref(assignment_refresh_events_path, mount=RUNS_MOUNT),
             "control_plane_caveat": (
                 "Refresh may read either an immutable assignment JSON or a "
@@ -4281,6 +6073,7 @@ def _run_visual_survival_train(
             else None
         ),
     }
+    command["process_seed"] = _seed_training_process(int(seed))
     if gif_browser_run_marker_enabled:
         _write_gif_browser_run_marker(run_id=run_id, created_at=started_at)
     _write_run_manifest_once(run_id=run_id, config=command)
@@ -4333,6 +6126,8 @@ def _run_visual_survival_train(
         n_episode=n_episode,
         num_simulations=num_simulations,
         batch_size=batch_size,
+        model_support_cap=model_support_cap,
+        td_steps=td_steps,
         lightzero_eval_freq=lightzero_eval_freq,
         lightzero_multi_gpu=lightzero_multi_gpu,
         max_train_iter=max_train_iter,
@@ -4357,11 +6152,13 @@ def _run_visual_survival_train(
         opponent_mixture=opponent_mixture,
         opponent_assignment_context=opponent_assignment_context,
         reward_variant=reward_variant,
+        reward_outcome_alpha=reward_outcome_alpha,
+        exploration_bonus=exploration_bonus_spec.as_dict(),
         source_state_trail_render_mode=source_state_trail_render_mode,
         source_state_bonus_render_mode=source_state_bonus_render_mode,
         policy_observation_backend=policy_observation_backend,
         learner_seat_mode=learner_seat_mode,
-        exploration_bonus=exploration_bonus_spec.as_dict(),
+        natural_bonus_spawn=natural_bonus_spawn,
     )
     if exploration_bonus_spec.enabled:
         patched["patches"].append(
@@ -4464,6 +6261,9 @@ def _run_visual_survival_train(
         patched["main_config"],
         patched["create_config"],
         seed=seed,
+        allow_profile_custom_env_manager_skip=(
+            env_manager_type in CURVYZERO_BATCHED_PROFILE_ENV_MANAGER_TYPES
+        ),
     )
     if not compile_summary.get("ok", False):
         problems.append(f"compile_config failed: {compile_summary.get('error')}")
@@ -4501,7 +6301,14 @@ def _run_visual_survival_train(
         assignment_refresh_events.append(row)
         assignment_refresh_events_path.parent.mkdir(parents=True, exist_ok=True)
         with assignment_refresh_events_path.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(row, sort_keys=True) + "\n")
+            f.write(json.dumps(row, sort_keys=True) + "\n")
+        if row.get("decision") == "applied":
+            _append_trainer_assignment_applied_lineage(
+                trainer_lineage_path,
+                run_id=run_id,
+                attempt_id=attempt_id,
+                event=row,
+            )
 
     if mode in {"train", "profile"} and not problems:
         train_original_cwd = Path.cwd()
@@ -4521,9 +6328,49 @@ def _run_visual_survival_train(
         restore_progress_writer = None
         restore_resume_state = None
         restore_initial_policy_load_audit = None
+        restore_learner_metrics = None
         restore_rnd_reward_model = None
+        restore_collect_search_backend = None
+        restore_batched_profile_env_manager = None
+        learner_metrics_recorder = None
         gpu_sampler = None
+        own_checkpoint_opponent_publisher = None
+        if command["opponent_assignment_refresh"].get("own_checkpoint_opponent_refresh_enabled"):
+            published_own_checkpoint_iterations: set[int] = set()
+
+            def publish_own_checkpoint_opponent(**kwargs: Any) -> dict[str, Any]:
+                checkpoint = kwargs["checkpoint"]
+                iteration = _safe_int_or_none(checkpoint.get("iteration"))
+                if iteration is not None and iteration in published_own_checkpoint_iterations:
+                    return {
+                        "saved": False,
+                        "reason": "iteration_already_published_in_this_process",
+                        "iteration": int(iteration),
+                    }
+                result = _write_own_checkpoint_opponent_refresh(
+                    run_id=run_id,
+                    attempt_id=attempt_id,
+                    checkpoint=checkpoint,
+                    timestamp=str(kwargs["timestamp"]),
+                    seed=seed,
+                    num_simulations=num_simulations,
+                    batch_size=batch_size,
+                    opponent_use_cuda=opponent_use_cuda,
+                    assignment_refresh_ref=opponent_assignment_refresh_ref,
+                )
+                if result.get("saved") and iteration is not None:
+                    published_own_checkpoint_iterations.add(int(iteration))
+                return result
+
+            own_checkpoint_opponent_publisher = publish_own_checkpoint_opponent
         try:
+            restore_collect_search_backend = _install_lightzero_collect_search_backend_hook(
+                train_muzero=train_muzero,
+                backend=collect_search_backend,
+                ctree_backend=collect_search_ctree_backend,
+                profiler=profiler,
+                allow_fallback=(mode == "profile"),
+            )
             restore_rnd_reward_model = _install_curvyzero_rnd_reward_model(
                 train_muzero=train_muzero,
                 exploration_bonus_spec=exploration_bonus_spec,
@@ -4532,6 +6379,15 @@ def _run_visual_survival_train(
                 restore_initial_policy_load_audit = _install_initial_policy_checkpoint_load_audit(
                     initial_policy_load_audit
                 )
+            learner_metrics_install = _install_lightzero_learner_metrics_recorder(
+                train_muzero=train_muzero,
+                run_id=run_id,
+                attempt_id=attempt_id,
+                attempt_train_root=attempt_train_root,
+                started_monotonic=train_started,
+            )
+            if learner_metrics_install is not None:
+                restore_learner_metrics, learner_metrics_recorder = learner_metrics_install
             restore_resume_state = _install_lightzero_full_resume_state_hooks(
                 train_muzero=train_muzero,
                 run_id=run_id,
@@ -4540,6 +6396,9 @@ def _run_visual_survival_train(
                 auto_resume=auto_resume,
                 attempt_train_root=attempt_train_root,
                 started_monotonic=train_started,
+                checkpoint_metadata=command,
+                own_checkpoint_opponent_publisher=own_checkpoint_opponent_publisher,
+                learner_metrics_recorder=learner_metrics_recorder,
             )
             restore_progress_writer = _install_checkpoint_progress_writer(
                 train_muzero=train_muzero,
@@ -4549,6 +6408,9 @@ def _run_visual_survival_train(
                 attempt_train_root=attempt_train_root,
                 started_monotonic=train_started,
                 commit_on_checkpoint=command["commit_on_checkpoint"],
+                checkpoint_metadata=command,
+                own_checkpoint_opponent_publisher=own_checkpoint_opponent_publisher,
+                learner_metrics_recorder=learner_metrics_recorder,
             )
             restore_live_publisher = _install_live_checkpoint_publisher(
                 train_muzero=train_muzero,
@@ -4563,15 +6425,38 @@ def _run_visual_survival_train(
                 ),
             )
             if command["opponent_assignment_refresh"]["enabled"]:
+                refresh_reads_local_own_checkpoint = bool(
+                    command["opponent_assignment_refresh"].get(
+                        "own_checkpoint_opponent_refresh_enabled"
+                    )
+                )
+
+                def load_pending_opponent_assignment_for_refresh() -> dict[str, Any] | None:
+                    pending_assignment = _resolve_opponent_assignment_for_env(
+                        opponent_assignment_ref=opponent_assignment_refresh_ref,
+                        reload_volume_before_read=not refresh_reads_local_own_checkpoint,
+                        reload_checkpoint_volume_before_read=(
+                            not refresh_reads_local_own_checkpoint
+                        ),
+                        checkpoint_volume_reload_errors_fatal=False,
+                    )
+                    if pending_assignment is not None:
+                        _append_trainer_assignment_loaded_lineage(
+                            trainer_lineage_path,
+                            status="refresh_candidate",
+                            run_id=run_id,
+                            attempt_id=attempt_id,
+                            opponent_assignment_ref=opponent_assignment_refresh_ref,
+                            opponent_assignment=pending_assignment,
+                        )
+                    return pending_assignment
+
                 restore_assignment_refresh = _install_lightzero_opponent_assignment_refresh_hook(
                     train_muzero=train_muzero,
                     interval_train_iter=int(
                         command["opponent_assignment_refresh"]["interval_train_iter"]
                     ),
-                    load_pending_assignment=lambda: _resolve_opponent_assignment_for_env(
-                        opponent_assignment_ref=opponent_assignment_refresh_ref,
-                        reload_volume_before_read=True,
-                    ),
+                    load_pending_assignment=load_pending_opponent_assignment_for_refresh,
                     initial_assignment=opponent_assignment,
                     event_sink=record_assignment_refresh_event,
                 )
@@ -4590,6 +6475,17 @@ def _run_visual_survival_train(
                         bool(skip_lightzero_eval_in_profile) if mode == "profile" else False
                     ),
                 )
+            if env_manager_type in CURVYZERO_BATCHED_PROFILE_ENV_MANAGER_TYPES:
+                restore_batched_profile_env_manager = _install_batched_profile_env_manager_hook(
+                    train_muzero=train_muzero,
+                    profiler=profiler,
+                    env_manager_type=env_manager_type,
+                    seed=seed,
+                    source_max_steps=source_max_steps,
+                    decision_ms=decision_ms,
+                    natural_bonus_spawn=natural_bonus_spawn,
+                    disable_death_for_profile=disable_death_for_profile,
+                )
             if mode == "profile":
                 gpu_sampler = _start_gpu_sampler(
                     profiler=profiler,
@@ -4600,11 +6496,7 @@ def _run_visual_survival_train(
                 contextlib.redirect_stderr(stderr_buffer),
             ):
                 called_train_muzero = True
-                with (
-                    profiler.timer("train_muzero_wall_sec")
-                    if mode == "profile"
-                    else contextlib.nullcontext()
-                ):
+                with profiler.timer("train_muzero_wall_sec"):
                     output = train_muzero(
                         [patched["main_config"], patched["create_config"]],
                         seed=seed,
@@ -4647,6 +6539,21 @@ def _run_visual_survival_train(
                     restore_profile()
                 except Exception as exc:  # pragma: no cover - remote diagnosis only.
                     profiler.add_note(f"phase profile restore failed: {type(exc).__name__}: {exc}")
+            if restore_collect_search_backend is not None:
+                try:
+                    restore_collect_search_backend()
+                except Exception as exc:  # pragma: no cover - remote diagnosis only.
+                    profiler.add_note(
+                        "collect search backend restore failed: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+            if restore_learner_metrics is not None:
+                try:
+                    restore_learner_metrics()
+                except Exception as exc:  # pragma: no cover - remote diagnosis only.
+                    profiler.add_note(
+                        f"learner metrics restore failed: {type(exc).__name__}: {exc}"
+                    )
             if restore_target_audit is not None:
                 try:
                     restore_target_audit()
@@ -4694,7 +6601,20 @@ def _run_visual_survival_train(
                             f"initial policy load audit restore failed: {type(exc).__name__}: {exc}"
                         )
             if restore_rnd_reward_model is not None:
-                restore_rnd_reward_model()
+                try:
+                    restore_rnd_reward_model()
+                except Exception as exc:  # pragma: no cover - remote diagnosis only.
+                    profiler.add_note(
+                        f"RND reward-model restore failed: {type(exc).__name__}: {exc}"
+                    )
+            if restore_batched_profile_env_manager is not None:
+                try:
+                    restore_batched_profile_env_manager()
+                except Exception as exc:  # pragma: no cover - remote diagnosis only.
+                    profiler.add_note(
+                        "batched profile env manager restore failed: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
             if gpu_sampler is not None:
                 gpu_stop_event, gpu_thread = gpu_sampler
                 gpu_stop_event.set()
@@ -4734,6 +6654,16 @@ def _run_visual_survival_train(
 
     runtime_compute = _runtime_compute_summary(requested_compute=compute)
     phase_profile = profiler.summary()
+    collect_search_backend_proof = _collect_search_backend_proof(
+        command=command,
+        phase_profile=phase_profile,
+    )
+    problems.extend(
+        _validate_train_collect_search_backend_proof(
+            command=command,
+            proof=collect_search_backend_proof,
+        )
+    )
     target_audit_summary = target_audit.summary()
     rnd_reward_model_metrics = _summarize_rnd_reward_model_metrics(
         enabled=exploration_bonus_spec.enabled,
@@ -4779,14 +6709,13 @@ def _run_visual_survival_train(
         "compile_config": compile_summary,
         "train_result": train_result,
         "phase_profile": phase_profile,
+        "collect_search_backend_proof": collect_search_backend_proof,
         "target_audit": target_audit_summary,
         "rnd_reward_model_metrics": rnd_reward_model_metrics,
         "opponent_assignment_refresh": {
             "enabled": command["opponent_assignment_refresh"]["enabled"],
             "mode": command["opponent_assignment_refresh"]["mode"],
-            "interval_train_iter": command["opponent_assignment_refresh"][
-                "interval_train_iter"
-            ],
+            "interval_train_iter": command["opponent_assignment_refresh"]["interval_train_iter"],
             "pending_assignment_ref": command["opponent_assignment_refresh"][
                 "pending_assignment_ref"
             ],
@@ -4877,6 +6806,7 @@ def _run_visual_survival_train(
     artifacts_path = attempt_train_root / "lightzero_artifacts_manifest.json"
     actions_path = attempt_train_root / "action_observability.json"
     target_audit_path = attempt_train_root / "target_audit.json"
+    rnd_metrics_scan_path = attempt_train_root / "rnd_reward_model_metrics_scan.json"
     runs.write_json(summary_path, summary)
     runs.write_json(
         config_path,
@@ -4890,6 +6820,7 @@ def _run_visual_survival_train(
     runs.write_json(artifacts_path, artifact_summary)
     runs.write_json(actions_path, action_summary)
     runs.write_json(target_audit_path, target_audit_summary)
+    runs.write_json(rnd_metrics_scan_path, rnd_reward_model_metrics)
     _write_text(
         stdout_path, "\n".join(_compact_log_tail(stdout_text)) + ("\n" if stdout_text else "")
     )
@@ -4931,9 +6862,7 @@ def _run_visual_survival_train(
         exp_name_ref=exp_name_ref.as_posix(),
     )
     final_volume_commit = {"attempted": False}
-    should_commit_final_artifacts = mode == "train" or (
-        mode == "profile" and profile_volume_commit
-    )
+    should_commit_final_artifacts = mode == "train" or (mode == "profile" and profile_volume_commit)
     if should_commit_final_artifacts and hasattr(runs_volume, "commit"):
         final_volume_commit = {"attempted": True, "ok": False}
         commit_started = time.perf_counter()
@@ -4969,6 +6898,7 @@ def _run_visual_survival_train(
         "initial_policy_checkpoint": summary.get("initial_policy_checkpoint"),
         "final_volume_commit": final_volume_commit,
         "phase_profile": phase_profile,
+        "collect_search_backend_proof": collect_search_backend_proof,
         "target_audit": target_audit_summary,
         "rnd_reward_model_metrics": rnd_reward_model_metrics,
         "artifact_refs": {
@@ -4977,6 +6907,10 @@ def _run_visual_survival_train(
             "command": runs.file_summary(command_path, mount=RUNS_MOUNT),
             "actions": runs.file_summary(actions_path, mount=RUNS_MOUNT),
             "target_audit": runs.file_summary(target_audit_path, mount=RUNS_MOUNT),
+            "rnd_reward_model_metrics_scan": runs.file_summary(
+                rnd_metrics_scan_path,
+                mount=RUNS_MOUNT,
+            ),
             "lightzero_artifacts": runs.file_summary(artifacts_path, mount=RUNS_MOUNT),
         },
     }
@@ -5149,11 +7083,27 @@ def _resolve_opponent_mixture_for_env(
     *,
     opponent_mixture_spec: Any,
     reload_checkpoint_volume_before_read: bool = False,
+    checkpoint_volume_reload_errors_fatal: bool = True,
 ) -> dict[str, Any] | None:
+    mixture, _warnings = _resolve_opponent_mixture_for_env_with_warnings(
+        opponent_mixture_spec=opponent_mixture_spec,
+        reload_checkpoint_volume_before_read=reload_checkpoint_volume_before_read,
+        checkpoint_volume_reload_errors_fatal=checkpoint_volume_reload_errors_fatal,
+    )
+    return mixture
+
+
+def _resolve_opponent_mixture_for_env_with_warnings(
+    *,
+    opponent_mixture_spec: Any,
+    reload_checkpoint_volume_before_read: bool = False,
+    checkpoint_volume_reload_errors_fatal: bool = True,
+) -> tuple[dict[str, Any] | None, list[dict[str, str]]]:
     mixture = parse_opponent_mixture_spec(opponent_mixture_spec)
     if mixture is None:
-        return None
+        return None, []
     entries: list[dict[str, Any]] = []
+    warnings: list[dict[str, str]] = []
     for entry in mixture["entries"]:
         resolved_entry = dict(entry)
         if entry["opponent_policy_kind"] == OPPONENT_POLICY_KIND_FROZEN_LIGHTZERO_CHECKPOINT:
@@ -5170,10 +7120,21 @@ def _resolve_opponent_mixture_for_env(
                     "iteration_N.pth.tar checkpoint refs"
                 )
             if reload_checkpoint_volume_before_read:
-                _safe_reload_volume_for_ref(
-                    str(checkpoint_ref),
-                    reason="opponent mixture checkpoint resolution",
-                )
+                try:
+                    _safe_reload_volume_for_ref(
+                        str(checkpoint_ref),
+                        reason="opponent mixture checkpoint resolution",
+                    )
+                except RuntimeError as exc:
+                    if checkpoint_volume_reload_errors_fatal:
+                        raise
+                    warnings.append(
+                        {
+                            "entry_name": str(entry.get("name", "")),
+                            "opponent_checkpoint_ref": str(checkpoint_ref),
+                            "warning": str(exc),
+                        }
+                    )
             path, resolution = _resolve_trainer_ref_or_path(
                 str(checkpoint_ref),
             )
@@ -5198,11 +7159,14 @@ def _resolve_opponent_mixture_for_env(
                 }
             )
         entries.append(resolved_entry)
-    return {
-        **mixture,
-        "schema_id": OPPONENT_MIXTURE_SCHEMA_ID,
-        "entries": entries,
-    }
+    return (
+        {
+            **mixture,
+            "schema_id": OPPONENT_MIXTURE_SCHEMA_ID,
+            "entries": entries,
+        },
+        warnings,
+    )
 
 
 def _path_is_inside_or_equal(path: Path, parent: Path) -> bool:
@@ -5343,6 +7307,7 @@ def _resolve_opponent_assignment_for_env(
     opponent_assignment_ref: str | None,
     reload_volume_before_read: bool = False,
     reload_checkpoint_volume_before_read: bool = False,
+    checkpoint_volume_reload_errors_fatal: bool = True,
     _pointer_depth: int = 0,
 ) -> dict[str, Any] | None:
     """Read an assignment, or a small mutable pointer to one, for the env."""
@@ -5370,6 +7335,7 @@ def _resolve_opponent_assignment_for_env(
             opponent_assignment_ref=pointed_ref,
             reload_volume_before_read=False,
             reload_checkpoint_volume_before_read=reload_checkpoint_volume_before_read,
+            checkpoint_volume_reload_errors_fatal=checkpoint_volume_reload_errors_fatal,
             _pointer_depth=int(_pointer_depth) + 1,
         )
         if resolved is None:
@@ -5399,11 +7365,12 @@ def _resolve_opponent_assignment_for_env(
     if parsed is None:
         return None
     assignment_hash = canonical_assignment_json_sha256(payload)
-    opponent_mixture = _resolve_opponent_mixture_for_env(
+    opponent_mixture, checkpoint_reload_warnings = _resolve_opponent_mixture_for_env_with_warnings(
         opponent_mixture_spec=parsed["opponent_mixture"],
         reload_checkpoint_volume_before_read=reload_checkpoint_volume_before_read,
+        checkpoint_volume_reload_errors_fatal=checkpoint_volume_reload_errors_fatal,
     )
-    return {
+    result = {
         "assignment_id": parsed["assignment_id"],
         "source_epoch": parsed.get("source_epoch"),
         "source_ref": parsed.get("source_ref"),
@@ -5418,6 +7385,9 @@ def _resolve_opponent_assignment_for_env(
         "assignment_file": _file_summary_for_resolution(path, resolution),
         "opponent_mixture": opponent_mixture,
     }
+    if checkpoint_reload_warnings:
+        result["opponent_checkpoint_volume_reload_warnings"] = checkpoint_reload_warnings
+    return result
 
 
 def _opponent_assignment_context_for_env(
@@ -5437,6 +7407,52 @@ def _opponent_assignment_context_for_env(
     if refresh_index is not None:
         context["refresh_index"] = int(refresh_index)
     return {key: value for key, value in context.items() if value is not None}
+
+
+def _append_trainer_assignment_loaded_lineage(
+    lineage_path: Path,
+    *,
+    status: str,
+    run_id: str,
+    attempt_id: str,
+    opponent_assignment_ref: str | None,
+    opponent_assignment: Mapping[str, Any],
+) -> dict[str, Any]:
+    return append_lineage_event(
+        lineage_path,
+        stage="trainer_assignment_loaded",
+        status=status,
+        run_id=run_id,
+        attempt_id=attempt_id,
+        opponent_assignment_ref=opponent_assignment_ref,
+        assignment_id=opponent_assignment.get("assignment_id"),
+        assignment_ref=opponent_assignment.get("assignment_ref"),
+        assignment_sha256=opponent_assignment.get("assignment_sha256"),
+        assignment_pointer=opponent_assignment.get("assignment_pointer"),
+        source_epoch=opponent_assignment.get("source_epoch"),
+    )
+
+
+def _append_trainer_assignment_applied_lineage(
+    lineage_path: Path,
+    *,
+    run_id: str,
+    attempt_id: str,
+    event: Mapping[str, Any],
+) -> dict[str, Any]:
+    return append_lineage_event(
+        lineage_path,
+        stage="trainer_assignment_applied",
+        run_id=run_id,
+        attempt_id=attempt_id,
+        train_iter=event.get("train_iter"),
+        bucket=event.get("bucket"),
+        refresh_index=event.get("refresh_index"),
+        assignment_id=event.get("assignment_id"),
+        assignment_ref=event.get("assignment_ref"),
+        assignment_sha256=event.get("assignment_sha256"),
+        env_ready_report=event.get("env_ready_report"),
+    )
 
 
 def _lightzero_collect_train_iter_from_call(
@@ -5504,10 +7520,36 @@ def _opponent_assignment_refresh_reset_param(
     for key in ("assignment_id", "assignment_ref", "assignment_sha256", "refresh_index"):
         if key not in context:
             raise ValueError(f"opponent assignment refresh context missing {key}")
+    split_plan = deterministic_collector_env_mixture_plan(
+        dict(opponent_mixture),
+        env_num=env_num,
+        seed_context={
+            "assignment_id": context.get("assignment_id"),
+            "assignment_sha256": context.get("assignment_sha256"),
+            "refresh_index": int(refresh_index),
+        },
+    )
+    count_by_entry_name = {
+        str(row["entry_name"]): int(row["count"]) for row in split_plan["slot_counts"]
+    }
     return {
         env_id: {
-            "opponent_mixture": copy.deepcopy(dict(opponent_mixture)),
-            "opponent_assignment_context": copy.deepcopy(context),
+            "opponent_mixture": singleton_mixture_for_split_entry(
+                dict(opponent_mixture),
+                entry_index=int(split_plan["assignments"][env_id]["entry_index"]),
+            ),
+            "opponent_assignment_context": {
+                **copy.deepcopy(context),
+                "opponent_split_unit": split_plan["unit"],
+                "opponent_split_mode": split_plan["mode"],
+                "opponent_split_plan_sha256": split_plan["plan_sha256"],
+                "opponent_split_env_index": int(env_id),
+                "opponent_split_env_num": env_num,
+                "opponent_split_entry_name": split_plan["assignments"][env_id]["entry_name"],
+                "opponent_split_entry_count": count_by_entry_name[
+                    str(split_plan["assignments"][env_id]["entry_name"])
+                ],
+            },
         }
         for env_id in range(env_num)
     }
@@ -5571,13 +7613,28 @@ def _opponent_assignment_refresh_ready_report(
         "opponent_assignment_sha256": expected_context.get("assignment_sha256"),
         "opponent_assignment_refresh_index": expected_context.get("refresh_index"),
     }
+    reset_param = _opponent_assignment_refresh_reset_param(
+        env_num=env_num,
+        opponent_assignment=opponent_assignment,
+        refresh_index=refresh_index,
+    )
+    expected_split_fields_by_env = {
+        env_id: {
+            key: value
+            for key, value in reset_param[env_id]["opponent_assignment_context"].items()
+            if key.startswith("opponent_split_")
+        }
+        for env_id in expected_ids
+    }
     for env_id, info in sorted(info_by_env.items()):
         if not isinstance(info, Mapping):
-            mismatches.append(
-                {"env_id": env_id, "reason": f"info type {type(info).__name__}"}
-            )
+            mismatches.append({"env_id": env_id, "reason": f"info type {type(info).__name__}"})
             continue
-        for key, expected in expected_pairs.items():
+        expected_fields = {
+            **expected_pairs,
+            **expected_split_fields_by_env[env_id],
+        }
+        for key, expected in expected_fields.items():
             if info.get(key) != expected:
                 mismatches.append(
                     {
@@ -5593,6 +7650,17 @@ def _opponent_assignment_refresh_ready_report(
             "reason": "env assignment info mismatch after refresh",
             "mismatches": mismatches,
         }
+    slot_counts: dict[str, int] = {}
+    split_plan_sha256_values: set[str] = set()
+    for info in info_by_env.values():
+        if not isinstance(info, Mapping):
+            continue
+        entry_name = info.get("opponent_split_entry_name", info.get("opponent_mixture_entry_name"))
+        if entry_name is not None:
+            slot_counts[str(entry_name)] = slot_counts.get(str(entry_name), 0) + 1
+        split_plan_sha256 = info.get("opponent_split_plan_sha256")
+        if split_plan_sha256 is not None:
+            split_plan_sha256_values.add(str(split_plan_sha256))
     return {
         "ok": True,
         "reason": "all envs ready with refreshed opponent assignment",
@@ -5601,6 +7669,10 @@ def _opponent_assignment_refresh_ready_report(
         "assignment_ref": expected_context.get("assignment_ref"),
         "assignment_sha256": expected_context.get("assignment_sha256"),
         "refresh_index": int(refresh_index),
+        "opponent_split_slot_counts": dict(sorted(slot_counts.items())),
+        "opponent_split_plan_sha256": (
+            next(iter(split_plan_sha256_values)) if len(split_plan_sha256_values) == 1 else None
+        ),
     }
 
 
@@ -5625,8 +7697,7 @@ def _apply_opponent_assignment_refresh_to_collector_env(
     )
     if not report.get("ok", False):
         raise RuntimeError(
-            "opponent assignment refresh reset was not proven: "
-            f"{report.get('reason')}"
+            f"opponent assignment refresh reset was not proven: {report.get('reason')}"
         )
 
     policy = getattr(collector, "_policy", None)
@@ -5695,6 +7766,7 @@ def _install_lightzero_opponent_assignment_refresh_hook(
             if (initial_context or {}).get("assignment_sha256") is not None
             else None
         ),
+        "force_initial_deterministic_split": initial_assignment is not None,
     }
 
     def emit(event: Mapping[str, Any]) -> None:
@@ -5707,9 +7779,7 @@ def _install_lightzero_opponent_assignment_refresh_hook(
             train_iter=train_iter,
             interval_train_iter=interval_train_iter,
         )
-        check_initial_collect = int(train_iter) <= 0 and not bool(
-            state["initial_collect_checked"]
-        )
+        check_initial_collect = int(train_iter) <= 0 and not bool(state["initial_collect_checked"])
         if check_initial_collect or bucket > int(state["last_checked_bucket"]):
             try:
                 pending_assignment = load_pending_assignment()
@@ -5745,7 +7815,9 @@ def _install_lightzero_opponent_assignment_refresh_hook(
                                 "bucket": int(bucket),
                             }
                         )
-                    elif pending_sha == state["last_applied_assignment_sha256"]:
+                    elif pending_sha == state["last_applied_assignment_sha256"] and not (
+                        check_initial_collect and bool(state["force_initial_deterministic_split"])
+                    ):
                         state["initial_collect_checked"] = True
                         state["last_checked_bucket"] = bucket
                         emit(
@@ -5758,6 +7830,9 @@ def _install_lightzero_opponent_assignment_refresh_hook(
                         )
                     else:
                         refresh_index = int(state["refresh_index"]) + 1
+                        same_assignment_as_previous = (
+                            pending_sha == state["last_applied_assignment_sha256"]
+                        )
                         try:
                             report = _apply_opponent_assignment_refresh_to_collector_env(
                                 collector=self,
@@ -5780,9 +7855,15 @@ def _install_lightzero_opponent_assignment_refresh_hook(
                         state["initial_collect_checked"] = True
                         state["last_checked_bucket"] = bucket
                         state["last_applied_assignment_sha256"] = str(pending_sha)
+                        state["force_initial_deterministic_split"] = False
                         emit(
                             {
                                 "decision": "applied",
+                                "reason": (
+                                    "initial_collect_deterministic_split"
+                                    if same_assignment_as_previous
+                                    else "assignment_changed"
+                                ),
                                 "train_iter": int(train_iter),
                                 "bucket": int(bucket),
                                 "refresh_index": int(refresh_index),
@@ -5880,260 +7961,19 @@ def _write_opponent_assignment_artifacts(
 
 @lru_cache(maxsize=1)
 def _source_state_fixed_opponent_wrapper_env_spec_fields() -> dict[str, Any]:
-    """Mirror the fixed-opponent wrapper's visual contract in Modal metadata."""
-
-    env = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
-        {"source_max_steps": 1, "max_ticks": 1}
-    )
-    try:
-        info = env._base_info()
-    finally:
-        env.close()
-    config = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv.config
-
-    def int_list(value: Any) -> list[int]:
-        return [int(item) for item in value]
-
-    return {
-        "env_type": str(info["lightzero_env_type"]),
-        "env_id": str(info["env_id"]),
-        "import_names": list(config["lightzero_import_names"]),
-        "action_space_size": int(config["action_space_size"]),
-        "observation_shape": int_list(info["model_observation_shape"]),
-        "observation_schema_id": str(info["observation_schema_id"]),
-        "single_frame_schema_id": str(info["single_frame_schema_id"]),
-        "raw_observation_schema_id": str(info["raw_observation_schema_id"]),
-        "raw_frame_shape": int_list(info["raw_frame_shape"]),
-        "grayscale_frame_shape": int_list(info["grayscale_frame_shape"]),
-        "frame_stack_proof": str(info["frame_stack_proof"]),
-        "debug_fidelity_only": bool(info["debug_fidelity_only"]),
-        "source_fidelity_claim": str(info["source_fidelity_claim"]),
-        "underlying_env_class": str(info["underlying_env_class"]),
-        "runtime_env_impl_id": str(info["runtime_env_impl_id"]),
-        "runtime_topology": str(info["runtime_topology"]),
-        "two_seat_self_play": bool(info["two_seat_self_play"]),
-        "two_seat_self_play_status": str(info["two_seat_self_play_status"]),
-        "fixed_opponent_is_two_seat_self_play": bool(info["fixed_opponent_is_two_seat_self_play"]),
-        "browser_pixel_fidelity": bool(info["browser_pixel_fidelity"]),
-        "uses_ale": bool(info["uses_ale"]),
-        "visual_surface": str(info["visual_surface"]),
-        "visual_truth_level": str(info["visual_truth_level"]),
-        "visual_source_state_backed": bool(info["visual_source_state_backed"]),
-    }
+    return lz_config.source_state_fixed_opponent_wrapper_env_spec_fields()
 
 
 def _env_variant_spec(env_variant: str) -> dict[str, Any]:
-    if env_variant == ENV_VARIANT_FIXED_OPPONENT:
-        return {
-            "env_variant": ENV_VARIANT_FIXED_OPPONENT,
-            "env_type": LIGHTZERO_STACKED_DEBUG_VISUAL_SURVIVAL_ENV_TYPE,
-            "env_id": LIGHTZERO_STACKED_DEBUG_VISUAL_SURVIVAL_ENV_ID,
-            "import_names": list(LIGHTZERO_STACKED_DEBUG_VISUAL_SURVIVAL_IMPORT_NAMES),
-            "action_space_size": 3,
-            "reward_schema_id": SURVIVAL_TIME_REWARD_SCHEMA_ID,
-            "reward_policy": _survival_reward_policy(),
-            "current_policy_self_play": CURRENT_POLICY_SELF_PLAY_CLAIM,
-            "current_policy_self_play_blocker": CURRENT_POLICY_SELF_PLAY_BLOCKER,
-            "current_policy_self_play_caveat": None,
-            "trusted_current_policy_self_play": False,
-            "simultaneous_game_theory_claim": False,
-            "opponent_training_relation": None,
-            "turn_commit_adapter": False,
-            "observation_shape": list(DEBUG_OCCUPANCY_GRAY64_STACK_SHAPE),
-            "observation_schema_id": STACKED_DEBUG_VISUAL_SURVIVAL_SCHEMA_ID,
-            "debug_fidelity_only": True,
-            "source_fidelity_claim": "none",
-            "single_product_runtime_path": False,
-            "legacy_debug_variant": True,
-            "underlying_env_class": "legacy_debug_visual_wrapper",
-            "runtime_env_impl_id": "legacy_debug_visual_wrapper",
-            "runtime_topology": "legacy_debug_visual_fixed_opponent",
-            "two_seat_self_play": False,
-            "two_seat_self_play_status": "not_two_seat_self_play",
-            "fixed_opponent_is_two_seat_self_play": False,
-            "browser_pixel_fidelity": False,
-            "uses_ale": False,
-            "visual_surface": "debug_occupancy_gray64_stack",
-            "visual_truth_level": "debug_non_fidelity",
-            "visual_source_state_backed": False,
-        }
-    if env_variant == ENV_VARIANT_TURN_COMMIT:
-        return {
-            "env_variant": ENV_VARIANT_TURN_COMMIT,
-            "env_type": LIGHTZERO_STACKED_DEBUG_VISUAL_TURN_COMMIT_ENV_TYPE,
-            "env_id": LIGHTZERO_STACKED_DEBUG_VISUAL_TURN_COMMIT_ENV_ID,
-            "import_names": list(LIGHTZERO_STACKED_DEBUG_VISUAL_TURN_COMMIT_IMPORT_NAMES),
-            "action_space_size": 3,
-            "reward_schema_id": SURVIVAL_TIME_REWARD_SCHEMA_ID,
-            "reward_policy": _survival_reward_policy(),
-            "current_policy_self_play": TURN_COMMIT_CURRENT_POLICY_SELF_PLAY_CLAIM,
-            "current_policy_self_play_blocker": None,
-            "current_policy_self_play_caveat": TURN_COMMIT_REWARD_CREDIT_CAVEAT,
-            "trusted_current_policy_self_play": TURN_COMMIT_TRUSTED_SELF_PLAY_CLAIM,
-            "simultaneous_game_theory_claim": (TURN_COMMIT_SIMULTANEOUS_GAME_THEORY_CLAIM),
-            "opponent_training_relation": TURN_COMMIT_OPPONENT_TRAINING_RELATION,
-            "turn_commit_adapter": True,
-            "observation_shape": list(DEBUG_OCCUPANCY_GRAY64_STACK_SHAPE),
-            "observation_schema_id": STACKED_DEBUG_VISUAL_SURVIVAL_SCHEMA_ID,
-            "debug_fidelity_only": True,
-            "source_fidelity_claim": "none",
-            "single_product_runtime_path": False,
-            "legacy_debug_variant": True,
-            "underlying_env_class": "legacy_debug_visual_turn_commit_wrapper",
-            "runtime_env_impl_id": "legacy_debug_visual_turn_commit_wrapper",
-            "runtime_topology": "legacy_debug_visual_turn_commit_adapter",
-            "two_seat_self_play": False,
-            "two_seat_self_play_status": "turn_commit_adapter_not_two_seat_self_play",
-            "fixed_opponent_is_two_seat_self_play": False,
-            "browser_pixel_fidelity": False,
-            "uses_ale": False,
-            "visual_surface": "debug_occupancy_gray64_stack",
-            "visual_truth_level": "debug_non_fidelity",
-            "visual_source_state_backed": False,
-        }
-    if env_variant == ENV_VARIANT_SOURCE_STATE_TURN_COMMIT:
-        return {
-            "env_variant": ENV_VARIANT_SOURCE_STATE_TURN_COMMIT,
-            "env_type": LIGHTZERO_SOURCE_STATE_VISUAL_TURN_COMMIT_ENV_TYPE,
-            "env_id": LIGHTZERO_SOURCE_STATE_VISUAL_TURN_COMMIT_ENV_ID,
-            "import_names": list(LIGHTZERO_SOURCE_STATE_VISUAL_TURN_COMMIT_IMPORT_NAMES),
-            "action_space_size": 3,
-            "reward_schema_id": SURVIVAL_TIME_REWARD_SCHEMA_ID,
-            "reward_policy": _survival_reward_policy(),
-            "current_policy_self_play": TURN_COMMIT_CURRENT_POLICY_SELF_PLAY_CLAIM,
-            "current_policy_self_play_blocker": None,
-            "current_policy_self_play_caveat": TURN_COMMIT_REWARD_CREDIT_CAVEAT,
-            "trusted_current_policy_self_play": TURN_COMMIT_TRUSTED_SELF_PLAY_CLAIM,
-            "simultaneous_game_theory_claim": (TURN_COMMIT_SIMULTANEOUS_GAME_THEORY_CLAIM),
-            "opponent_training_relation": TURN_COMMIT_OPPONENT_TRAINING_RELATION,
-            "turn_commit_adapter": True,
-            "observation_shape": list(TURN_COMMIT_STACKED_SOURCE_STATE_GRAY64_SHAPE),
-            "observation_schema_id": TURN_COMMIT_STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID,
-            "raw_observation_schema_id": SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID,
-            "raw_frame_shape": list(TURN_COMMIT_SOURCE_STATE_CANVAS_LIKE_RAW_SHAPE),
-            "grayscale_frame_shape": list(SOURCE_STATE_CANVAS_GRAY64_SHAPE),
-            "debug_fidelity_only": False,
-            "source_fidelity_claim": "source_state_backed_non_browser_pixel",
-            "single_product_runtime_path": True,
-            "legacy_debug_variant": False,
-            "underlying_env_class": "source_state_visual_turn_commit_wrapper",
-            "runtime_env_impl_id": SOURCE_STATE_TURN_COMMIT_ADAPTER_IMPL_ID,
-            "runtime_topology": (
-                "stock_lightzero_scalar_turn_commit_over_simultaneous_source_state_env"
-            ),
-            "two_seat_self_play": False,
-            "current_policy_two_seat_action_collection": True,
-            "two_seat_self_play_status": TURN_COMMIT_TRAINING_STATUS,
-            "fixed_opponent_is_two_seat_self_play": False,
-            "browser_pixel_fidelity": SOURCE_STATE_CANVAS_GRAY64_BROWSER_PIXEL_FIDELITY,
-            "uses_ale": SOURCE_STATE_CANVAS_GRAY64_USES_ALE,
-            "visual_surface": SOURCE_STATE_CANVAS_GRAY64_SURFACE,
-            "visual_truth_level": SOURCE_STATE_CANVAS_GRAY64_TRUTH_LEVEL,
-            "visual_source_state_backed": SOURCE_STATE_CANVAS_GRAY64_SOURCE_STATE_BACKED,
-        }
-    if env_variant == ENV_VARIANT_SOURCE_STATE_JOINT_ACTION:
-        return {
-            "env_variant": ENV_VARIANT_SOURCE_STATE_JOINT_ACTION,
-            "env_type": LIGHTZERO_SOURCE_STATE_VISUAL_JOINT_ACTION_ENV_TYPE,
-            "env_id": LIGHTZERO_SOURCE_STATE_VISUAL_JOINT_ACTION_ENV_ID,
-            "import_names": list(LIGHTZERO_SOURCE_STATE_VISUAL_JOINT_ACTION_IMPORT_NAMES),
-            "action_space_size": SOURCE_STATE_JOINT_ACTION_COUNT,
-            "reward_schema_id": ALL_PLAYERS_ALIVE_DIAGNOSTIC_REWARD_SCHEMA_ID,
-            "reward_policy": _all_players_alive_diagnostic_reward_policy(),
-            "current_policy_self_play": False,
-            "current_policy_self_play_blocker": (
-                "centralized_joint_action_control_is_not_true_competitive_self_play"
-            ),
-            "current_policy_self_play_caveat": (
-                "Centralized joint-action control: one policy chooses both players' actions."
-            ),
-            "trusted_current_policy_self_play": False,
-            "simultaneous_game_theory_claim": False,
-            "opponent_training_relation": "centralized_policy_controls_both_players",
-            "turn_commit_adapter": False,
-            "observation_shape": list(STACKED_SOURCE_STATE_GRAY64_SHAPE),
-            "observation_schema_id": STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID,
-            "debug_fidelity_only": False,
-            "source_fidelity_claim": "source_state_backed_non_browser_pixel",
-            "single_product_runtime_path": True,
-            "legacy_debug_variant": False,
-            "underlying_env_class": "source_state_visual_joint_action_wrapper",
-            "runtime_env_impl_id": SOURCE_STATE_JOINT_ACTION_ADAPTER_IMPL_ID,
-            "runtime_topology": SOURCE_STATE_JOINT_ACTION_RUNTIME_TOPOLOGY,
-            "two_seat_self_play": False,
-            "two_seat_self_play_status": SOURCE_STATE_JOINT_ACTION_TRAINING_STATUS,
-            "fixed_opponent_is_two_seat_self_play": False,
-            "browser_pixel_fidelity": SOURCE_STATE_GRAY64_BROWSER_PIXEL_FIDELITY,
-            "uses_ale": SOURCE_STATE_GRAY64_USES_ALE,
-            "visual_surface": SOURCE_STATE_GRAY64_SURFACE,
-            "visual_truth_level": SOURCE_STATE_GRAY64_TRUTH_LEVEL,
-            "visual_source_state_backed": SOURCE_STATE_GRAY64_SOURCE_STATE_BACKED,
-        }
-    if env_variant == ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT:
-        wrapper_spec = _source_state_fixed_opponent_wrapper_env_spec_fields()
-        return {
-            "env_variant": ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT,
-            **wrapper_spec,
-            "reward_schema_id": SPARSE_ROUND_OUTCOME_REWARD_SCHEMA_ID,
-            "reward_policy": {
-                "reward_variant": REWARD_VARIANT_SPARSE_OUTCOME,
-                "reward_schema_id": SPARSE_ROUND_OUTCOME_REWARD_SCHEMA_ID,
-                "survival_length_is_eval_metric": True,
-                "dense_survival_reward": False,
-                "survival_only": False,
-                "diagnostic_all_players_alive": False,
-                "centralized_joint_action_control": False,
-                "per_player_reward": True,
-                "zero_sum_reward": True,
-                "sparse_outcome_reward": True,
-                "terminal_outcome_bonus": 1.0,
-                "nonterminal_reward": 0.0,
-                "loser_penalty": -1.0,
-                "winner_bonus": 1.0,
-                "draw_bonus": 0.0,
-                "truncation_bonus": 0.0,
-            },
-            "current_policy_self_play": CURRENT_POLICY_SELF_PLAY_CLAIM,
-            "current_policy_self_play_blocker": CURRENT_POLICY_SELF_PLAY_BLOCKER,
-            "current_policy_self_play_caveat": None,
-            "trusted_current_policy_self_play": False,
-            "simultaneous_game_theory_claim": False,
-            "opponent_training_relation": OPPONENT_TRAINING_RELATION_FIXED_STRAIGHT,
-            "turn_commit_adapter": False,
-            "single_product_runtime_path": True,
-            "legacy_debug_variant": False,
-        }
-    raise ValueError(f"unknown env_variant: {env_variant!r}")
+    return lz_config.env_variant_spec(env_variant)
 
 
 def _survival_reward_policy() -> dict[str, Any]:
-    return {
-        "reward_schema_id": SURVIVAL_TIME_REWARD_SCHEMA_ID,
-        "survival_only": True,
-        "diagnostic_all_players_alive": False,
-        "centralized_joint_action_control": False,
-        "per_player_reward": False,
-        "zero_sum_reward": False,
-        "sparse_outcome_reward": False,
-        "terminal_outcome_bonus": 0.0,
-        "loser_penalty": 0.0,
-        "winner_bonus": 0.0,
-    }
+    return lz_config.survival_reward_policy()
 
 
 def _all_players_alive_diagnostic_reward_policy() -> dict[str, Any]:
-    return {
-        "reward_schema_id": ALL_PLAYERS_ALIVE_DIAGNOSTIC_REWARD_SCHEMA_ID,
-        "survival_only": False,
-        "diagnostic_all_players_alive": True,
-        "centralized_joint_action_control": True,
-        "per_player_reward": False,
-        "zero_sum_reward": False,
-        "sparse_outcome_reward": False,
-        "terminal_outcome_bonus": 0.0,
-        "loser_penalty": 0.0,
-        "winner_bonus": 0.0,
-    }
+    return lz_config.all_players_alive_diagnostic_reward_policy()
 
 
 def _build_visual_survival_configs(
@@ -6157,6 +7997,7 @@ def _build_visual_survival_configs(
     save_ckpt_after_iter: int,
     env_variant: str,
     reward_variant: str,
+    reward_outcome_alpha: float = DEFAULT_REWARD_OUTCOME_ALPHA,
     ego_action_straight_override_probability: float,
     control_noise_profile_id: str,
     disable_death_for_profile: bool,
@@ -6176,7 +8017,6 @@ def _build_visual_survival_configs(
     source_state_bonus_render_mode: str = DEFAULT_SOURCE_STATE_BONUS_RENDER_MODE,
     policy_observation_backend: str = DEFAULT_POLICY_OBSERVATION_BACKEND_CHOICE,
     learner_seat_mode: str = DEFAULT_LEARNER_SEAT_MODE,
-    exploration_bonus: Mapping[str, Any] | None = None,
     policy_action_repeat_min: int = DEFAULT_POLICY_ACTION_REPEAT_MIN,
     policy_action_repeat_max: int = DEFAULT_POLICY_ACTION_REPEAT_MAX,
     policy_action_repeat_extra_probability: float = (
@@ -6186,265 +8026,11 @@ def _build_visual_survival_configs(
     profile_env_timing_enabled: bool = False,
     opponent_death_mode: str = DEFAULT_OPPONENT_DEATH_MODE,
     opponent_runtime_mode: str = DEFAULT_OPPONENT_RUNTIME_MODE,
+    model_support_cap: int | None = DEFAULT_MODEL_SUPPORT_CAP,
+    td_steps: int | None = DEFAULT_TD_STEPS,
+    exploration_bonus: Mapping[str, Any] | xb.ExplorationBonusSpec | str | None = None,
 ) -> dict[str, Any]:
-    from easydict import EasyDict
-
-    template_module = "zoo.atari.config.atari_muzero_config"
-    module = importlib.import_module(template_module)
-    env_spec = _env_variant_spec(env_variant)
-    reward_variant = _normalize_reward_variant_for_env(
-        env_variant=env_variant,
-        reward_variant=reward_variant,
-    )
-    reward_policy = _reward_policy_for_variant(
-        env_variant=env_variant,
-        reward_variant=reward_variant,
-    )
-    source_state_trail_render_mode = _validate_source_state_trail_render_mode(
-        source_state_trail_render_mode
-    )
-    source_state_bonus_render_mode = _validate_source_state_bonus_render_mode(
-        source_state_bonus_render_mode
-    )
-    policy_observation_backend = _validate_policy_observation_backend(
-        policy_observation_backend
-    )
-    learner_seat_mode = _validate_learner_seat_mode(learner_seat_mode)
-    if not profile_env_timing_enabled:
-        _validate_trusted_source_state_action_cadence(
-            env_variant=env_variant,
-            decision_ms=decision_ms,
-            decision_source_frames=decision_source_frames,
-            source_physics_step_ms=source_physics_step_ms,
-            source_max_steps_semantics=source_max_steps_semantics,
-            context="_build_visual_survival_configs",
-        )
-    target_config = _lightzero_target_config_for_reward(
-        env_variant=env_variant,
-        reward_variant=reward_variant,
-        source_max_steps=source_max_steps,
-    )
-    exploration_bonus_spec = xb.normalize_exploration_bonus_config(exploration_bonus)
-    action_space_size = int(env_spec.get("action_space_size", 3))
-    main_config = copy.deepcopy(module.main_config)
-    create_config = EasyDict(
-        {
-            "env": {
-                "type": env_spec["env_type"],
-                "import_names": env_spec["import_names"],
-            },
-            "env_manager": {"type": env_manager_type},
-            "policy": {"type": "muzero", "import_names": ["lzero.policy.muzero"]},
-        }
-    )
-    patches = [
-        _set_or_add_path(main_config, ("exp_name",), str(exp_name)),
-        _set_or_add_path(main_config, ("policy", "cuda"), bool(cuda)),
-        _set_or_add_path(main_config, ("policy", "multi_gpu"), bool(lightzero_multi_gpu)),
-        _set_or_add_path(main_config, ("policy", "env_type"), "not_board_games"),
-        _set_or_add_path(main_config, ("policy", "collector_env_num"), int(collector_env_num)),
-        _set_or_add_path(main_config, ("policy", "evaluator_env_num"), int(evaluator_env_num)),
-        _set_or_add_path(main_config, ("policy", "n_episode"), int(n_episode)),
-        _set_or_add_path(main_config, ("policy", "num_simulations"), int(num_simulations)),
-        _set_or_add_path(main_config, ("policy", "batch_size"), int(batch_size)),
-        _set_or_add_path(
-            main_config,
-            ("policy", "eval_freq"),
-            int(lightzero_eval_freq) if int(lightzero_eval_freq) > 0 else int(max_train_iter) + 1,
-        ),
-        _set_or_add_path(main_config, ("policy", "model", "model_type"), "conv"),
-        _set_or_add_path(main_config, ("policy", "model", "image_channel"), 4),
-        _set_or_add_path(main_config, ("policy", "model", "frame_stack_num"), 1),
-        _set_or_add_path(
-            main_config,
-            ("policy", "model", "self_supervised_learning_loss"),
-            True,
-        ),
-        _set_or_add_path(
-            main_config,
-            ("policy", "model", "observation_shape"),
-            list(env_spec["observation_shape"]),
-        ),
-        _set_or_add_path(
-            main_config,
-            ("policy", "model", "action_space_size"),
-            action_space_size,
-        ),
-        _set_save_ckpt_after_iter(main_config, int(save_ckpt_after_iter)),
-    ]
-    for patch in _target_config_patches(main_config, target_config):
-        patches.append(patch)
-    env_cfg = EasyDict(
-        {
-            **_to_plain(main_config["env"]),
-            "type": env_spec["env_type"],
-            "import_names": env_spec["import_names"],
-            "env_id": env_spec["env_id"],
-            "env_variant": env_variant,
-            "action_space_size": action_space_size,
-            "collector_env_num": int(collector_env_num),
-            "evaluator_env_num": int(evaluator_env_num),
-            "n_evaluator_episode": int(n_evaluator_episode),
-            "seed": int(seed),
-            "dynamic_seed": True,
-            "reset_seed_strategy": "dynamic_seed_sequence_from_run_seed_and_reset_index/v0",
-            "source_max_steps": int(source_max_steps),
-            "max_ticks": int(source_max_steps),
-            "decision_ms": float(decision_ms),
-            "decision_source_frames": int(decision_source_frames),
-            "source_physics_step_ms": float(source_physics_step_ms),
-            "source_max_steps_semantics": str(source_max_steps_semantics),
-            "frame_stack_num": 1,
-            "observation_shape": list(env_spec["observation_shape"]),
-            "gray_scale": True,
-            "image_channel": 4,
-            "continuous": False,
-            "manually_discretization": False,
-            "telemetry_path": str(telemetry_path),
-            "telemetry_stride": int(env_telemetry_stride),
-            "profile_env_timing_enabled": bool(profile_env_timing_enabled),
-            "reward_variant": reward_variant,
-            "reward_schema_id": reward_policy["reward_schema_id"],
-            "reward_policy": reward_policy,
-            "lightzero_target_config": target_config,
-            "source_state_trail_render_mode": source_state_trail_render_mode,
-            "source_state_bonus_render_mode": source_state_bonus_render_mode,
-            "policy_observation_backend": policy_observation_backend,
-            "policy_trail_render_mode": source_state_trail_render_mode,
-            "policy_bonus_render_mode": source_state_bonus_render_mode,
-            "policy_observation_contract_id": POLICY_OBSERVATION_CONTRACT_ID,
-            "observation_contract": policy_observation_surface(
-                trail_render_mode=source_state_trail_render_mode,
-                bonus_render_mode=source_state_bonus_render_mode,
-                backend=policy_observation_backend,
-            ),
-            "learner_seat_mode": learner_seat_mode,
-            "default_trail_render_mode": DEFAULT_SOURCE_STATE_TRAIL_RENDER_MODE,
-            "supported_trail_render_modes": list(SOURCE_STATE_TRAIL_RENDER_MODE_CHOICES),
-            "default_bonus_render_mode": DEFAULT_SOURCE_STATE_BONUS_RENDER_MODE,
-            "supported_bonus_render_modes": list(SOURCE_STATE_BONUS_RENDER_MODE_CHOICES),
-            "default_policy_observation_backend": DEFAULT_POLICY_OBSERVATION_BACKEND_CHOICE,
-            "supported_policy_observation_backends": list(POLICY_OBSERVATION_BACKEND_CHOICES),
-            "observation_schema_id": env_spec["observation_schema_id"],
-            "debug_fidelity_only": env_spec["debug_fidelity_only"],
-            "source_fidelity_claim": env_spec["source_fidelity_claim"],
-            "single_product_runtime_path": env_spec["single_product_runtime_path"],
-            "legacy_debug_variant": env_spec["legacy_debug_variant"],
-            "underlying_env_class": env_spec["underlying_env_class"],
-            "runtime_env_impl_id": env_spec["runtime_env_impl_id"],
-            "runtime_topology": env_spec["runtime_topology"],
-            "two_seat_self_play": env_spec["two_seat_self_play"],
-            "current_policy_two_seat_action_collection": bool(
-                env_spec.get("current_policy_two_seat_action_collection", False)
-            ),
-            "two_seat_self_play_status": env_spec["two_seat_self_play_status"],
-            "fixed_opponent_is_two_seat_self_play": env_spec[
-                "fixed_opponent_is_two_seat_self_play"
-            ],
-            "browser_pixel_fidelity": env_spec["browser_pixel_fidelity"],
-            "uses_ale": env_spec["uses_ale"],
-            "visual_surface": env_spec["visual_surface"],
-            "visual_truth_level": env_spec["visual_truth_level"],
-            "visual_source_state_backed": env_spec["visual_source_state_backed"],
-            "ego_action_straight_override_probability": float(
-                ego_action_straight_override_probability
-            ),
-            "policy_action_repeat_min": int(policy_action_repeat_min),
-            "policy_action_repeat_max": int(policy_action_repeat_max),
-            "policy_action_repeat_extra_probability": float(policy_action_repeat_extra_probability),
-            "policy_action_repeat_semantics": (
-                "repeat_selected_policy_action_inside_one_lightzero_env_step"
-            ),
-            "control_noise_profile_id": str(control_noise_profile_id),
-            "disable_death_for_profile": bool(disable_death_for_profile),
-            "opponent_death_mode": opponent_death_mode,
-            "opponent_death_mode_diagnostic": (opponent_death_mode == OPPONENT_DEATH_MODE_IMMORTAL),
-            "opponent_death_mode_claim": (
-                "diagnostic_opponent_immortal_not_source_faithful"
-                if opponent_death_mode == OPPONENT_DEATH_MODE_IMMORTAL
-                else "none"
-            ),
-            "opponent_runtime_mode": opponent_runtime_mode,
-            "opponent_runtime_mode_claim": (
-                "blank_canvas_noop_player_1_inert_hidden_no_trail_no_collision_no_bonus"
-                if opponent_runtime_mode == OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP
-                else "normal_opponent_runtime"
-            ),
-            "opponent_visibility_mode": (
-                "hidden_from_model_gif_raw_render_views_public_present_alive"
-                if opponent_runtime_mode == OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP
-                else "visible_if_present_alive"
-            ),
-            "opponent_collision_effect": (
-                "disabled_no_player_1_movement_trail_collision_bonus_side_effects"
-                if opponent_runtime_mode == OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP
-                else "normal"
-            ),
-            "opponent_trail_mode": (
-                "none_blank_canvas_scrubbed"
-                if opponent_runtime_mode == OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP
-                else "normal"
-            ),
-            "natural_bonus_spawn": bool(natural_bonus_spawn),
-            "death_mode": ("profile_no_death" if disable_death_for_profile else "normal"),
-            "turn_commit_adapter": bool(env_spec["turn_commit_adapter"]),
-            "opponent_policy_kind": opponent_policy_kind,
-            "opponent_training_relation": _opponent_training_relation_for_surface(
-                env_variant=env_variant,
-                opponent_policy_kind=opponent_policy_kind,
-                env_spec=env_spec,
-                opponent_mixture=opponent_mixture,
-            ),
-            "current_policy_self_play": env_spec["current_policy_self_play"],
-            "current_policy_self_play_blocker": env_spec["current_policy_self_play_blocker"],
-            "current_policy_self_play_caveat": env_spec["current_policy_self_play_caveat"],
-            "trusted_current_policy_self_play": env_spec["trusted_current_policy_self_play"],
-            "simultaneous_game_theory_claim": env_spec["simultaneous_game_theory_claim"],
-        }
-    )
-    if opponent_mixture is not None:
-        env_cfg["opponent_mixture"] = opponent_mixture
-    if opponent_assignment_context is not None:
-        env_cfg["opponent_assignment_context"] = opponent_assignment_context
-    if opponent_policy_kind == OPPONENT_POLICY_KIND_FROZEN_LIGHTZERO_CHECKPOINT:
-        if opponent_checkpoint is None:
-            raise ValueError("opponent_checkpoint is required for frozen opponent env config")
-        env_cfg.update(
-            {
-                "opponent_checkpoint_path": opponent_checkpoint["resolved_checkpoint_path"],
-                "opponent_checkpoint_ref": opponent_checkpoint["checkpoint_ref"],
-                "opponent_snapshot_ref": (
-                    opponent_snapshot_ref or "curvytron_visual_survival_frozen_opponent"
-                ),
-                "opponent_checkpoint_state_key": opponent_checkpoint_state_key,
-                "opponent_policy_seed": int(seed),
-                "opponent_num_simulations": int(num_simulations),
-                "opponent_batch_size": int(batch_size),
-                "opponent_use_cuda": bool(opponent_use_cuda),
-            }
-        )
-    patches.append(_set_or_add_path(main_config, ("env",), env_cfg))
-    patches.extend(
-        xb.apply_lightzero_exploration_bonus_config(
-            main_config,
-            create_config,
-            exploration_bonus_spec,
-            seed=int(seed),
-        )
-    )
-    surface = _extract_surface(
-        main_config,
-        create_config,
-        max_env_step=max_env_step,
-        max_train_iter=max_train_iter,
-    )
-    return {
-        "template_module": template_module,
-        "main_config": main_config,
-        "create_config": create_config,
-        "surface": surface,
-        "patches": patches,
-    }
+    return lz_config.build_visual_survival_configs(**locals())
 
 
 def _extract_surface(
@@ -6454,125 +8040,12 @@ def _extract_surface(
     max_env_step: int,
     max_train_iter: int,
 ) -> dict[str, Any]:
-    policy = main_config["policy"]
-    model = policy["model"]
-    env = main_config["env"]
-    return {
-        "env_type": create_config["env"]["type"],
-        "env_import_names": _to_plain(create_config["env"].get("import_names")),
-        "env_manager_type": create_config["env_manager"]["type"],
-        "env_id": env["env_id"],
-        "model_type": model["model_type"],
-        "observation_shape": _to_plain(model["observation_shape"]),
-        "env_observation_shape": _to_plain(env.get("observation_shape")),
-        "action_space_size": model["action_space_size"],
-        "model_image_channel": model.get("image_channel"),
-        "model_frame_stack_num": model.get("frame_stack_num"),
-        "model_self_supervised_learning_loss": model.get("self_supervised_learning_loss"),
-        "collector_env_num": env["collector_env_num"],
-        "policy_collector_env_num": policy.get("collector_env_num"),
-        "evaluator_env_num": env["evaluator_env_num"],
-        "policy_evaluator_env_num": policy.get("evaluator_env_num"),
-        "n_evaluator_episode": env.get("n_evaluator_episode"),
-        "n_episode": policy.get("n_episode"),
-        "num_simulations": policy.get("num_simulations"),
-        "batch_size": policy.get("batch_size"),
-        "cuda": policy.get("cuda"),
-        "discount_factor": policy.get("discount_factor"),
-        "td_steps": policy.get("td_steps"),
-        "model_support_scale": model.get("support_scale"),
-        "model_reward_support_size": model.get("reward_support_size"),
-        "model_value_support_size": model.get("value_support_size"),
-        "model_reward_support_range": _to_plain(model.get("reward_support_range")),
-        "model_value_support_range": _to_plain(model.get("value_support_range")),
-        "load_ckpt_before_run": _get_path(
-            policy,
-            ("learn", "learner", "hook", "load_ckpt_before_run"),
-        ),
-        "frame_stack_num": env.get("frame_stack_num"),
-        "source_max_steps": env.get("source_max_steps"),
-        "decision_ms": env.get("decision_ms"),
-        "decision_source_frames": env.get("decision_source_frames"),
-        "source_physics_step_ms": env.get("source_physics_step_ms"),
-        "source_max_steps_semantics": env.get("source_max_steps_semantics"),
-        "dynamic_seed": env.get("dynamic_seed"),
-        "reset_seed_strategy": env.get("reset_seed_strategy"),
-        "telemetry_path": env.get("telemetry_path"),
-        "telemetry_stride": env.get("telemetry_stride"),
-        "profile_env_timing_enabled": env.get("profile_env_timing_enabled"),
-        "reward_variant": env.get("reward_variant"),
-        "reward_schema_id": env.get("reward_schema_id"),
-        "reward_policy": _to_plain(env.get("reward_policy")),
-        "lightzero_target_config": _to_plain(env.get("lightzero_target_config")),
-        "source_state_trail_render_mode": env.get("source_state_trail_render_mode"),
-        "source_state_bonus_render_mode": env.get("source_state_bonus_render_mode"),
-        "policy_observation_backend": env.get("policy_observation_backend"),
-        "policy_trail_render_mode": env.get("policy_trail_render_mode"),
-        "policy_bonus_render_mode": env.get("policy_bonus_render_mode"),
-        "policy_observation_contract_id": env.get("policy_observation_contract_id"),
-        "observation_contract": _to_plain(env.get("observation_contract")),
-        "default_trail_render_mode": env.get("default_trail_render_mode"),
-        "supported_trail_render_modes": _to_plain(env.get("supported_trail_render_modes")),
-        "default_bonus_render_mode": env.get("default_bonus_render_mode"),
-        "supported_bonus_render_modes": _to_plain(env.get("supported_bonus_render_modes")),
-        "observation_schema_id": env.get("observation_schema_id"),
-        "debug_fidelity_only": env.get("debug_fidelity_only"),
-        "source_fidelity_claim": env.get("source_fidelity_claim"),
-        "single_product_runtime_path": env.get("single_product_runtime_path"),
-        "legacy_debug_variant": env.get("legacy_debug_variant"),
-        "underlying_env_class": env.get("underlying_env_class"),
-        "runtime_env_impl_id": env.get("runtime_env_impl_id"),
-        "runtime_topology": env.get("runtime_topology"),
-        "two_seat_self_play": env.get("two_seat_self_play"),
-        "current_policy_two_seat_action_collection": env.get(
-            "current_policy_two_seat_action_collection"
-        ),
-        "two_seat_self_play_status": env.get("two_seat_self_play_status"),
-        "fixed_opponent_is_two_seat_self_play": env.get("fixed_opponent_is_two_seat_self_play"),
-        "browser_pixel_fidelity": env.get("browser_pixel_fidelity"),
-        "uses_ale": env.get("uses_ale"),
-        "visual_surface": env.get("visual_surface"),
-        "visual_truth_level": env.get("visual_truth_level"),
-        "visual_source_state_backed": env.get("visual_source_state_backed"),
-        "ego_action_straight_override_probability": env.get(
-            "ego_action_straight_override_probability"
-        ),
-        "policy_action_repeat_min": env.get("policy_action_repeat_min"),
-        "policy_action_repeat_max": env.get("policy_action_repeat_max"),
-        "policy_action_repeat_extra_probability": env.get("policy_action_repeat_extra_probability"),
-        "policy_action_repeat_semantics": env.get("policy_action_repeat_semantics"),
-        "control_noise_profile_id": env.get("control_noise_profile_id"),
-        "disable_death_for_profile": env.get("disable_death_for_profile"),
-        "opponent_death_mode": env.get("opponent_death_mode"),
-        "opponent_death_mode_diagnostic": env.get("opponent_death_mode_diagnostic"),
-        "opponent_death_mode_claim": env.get("opponent_death_mode_claim"),
-        "opponent_runtime_mode": env.get("opponent_runtime_mode"),
-        "opponent_runtime_mode_claim": env.get("opponent_runtime_mode_claim"),
-        "opponent_visibility_mode": env.get("opponent_visibility_mode"),
-        "opponent_collision_effect": env.get("opponent_collision_effect"),
-        "opponent_trail_mode": env.get("opponent_trail_mode"),
-        "death_mode": env.get("death_mode"),
-        "env_variant": env.get("env_variant"),
-        "turn_commit_adapter": env.get("turn_commit_adapter"),
-        "opponent_policy_kind": env.get("opponent_policy_kind"),
-        "opponent_training_relation": env.get("opponent_training_relation"),
-        "current_policy_self_play": env.get("current_policy_self_play"),
-        "current_policy_self_play_blocker": env.get("current_policy_self_play_blocker"),
-        "current_policy_self_play_caveat": env.get("current_policy_self_play_caveat"),
-        "trusted_current_policy_self_play": env.get("trusted_current_policy_self_play"),
-        "simultaneous_game_theory_claim": env.get("simultaneous_game_theory_claim"),
-        "opponent_checkpoint_ref": env.get("opponent_checkpoint_ref"),
-        "opponent_snapshot_ref": env.get("opponent_snapshot_ref"),
-        "opponent_checkpoint_state_key": env.get("opponent_checkpoint_state_key"),
-        "opponent_use_cuda": env.get("opponent_use_cuda"),
-        "opponent_mixture": _to_plain(env.get("opponent_mixture")),
-        "save_ckpt_after_iter": _get_path(
-            policy,
-            ("learn", "learner", "hook", "save_ckpt_after_iter"),
-        ),
-        "max_env_step": int(max_env_step),
-        "max_train_iter": int(max_train_iter),
-    }
+    return lz_config.extract_visual_survival_surface(
+        main_config,
+        create_config,
+        max_env_step=max_env_step,
+        max_train_iter=max_train_iter,
+    )
 
 
 def _validate_visual_survival_surface(
@@ -6593,6 +8066,14 @@ def _validate_visual_survival_surface(
         "model_image_channel": 4,
         "model_frame_stack_num": 1,
         "model_self_supervised_learning_loss": True,
+        "trainer_entrypoint": command["trainer_entrypoint"],
+        "exploration_bonus": _to_plain(command["exploration_bonus"]),
+        "policy_use_rnd_model": command["exploration_bonus"]["mode"] != xb.EXPLORATION_BONUS_MODE_NONE,
+        "reward_model_type": (
+            "rnd_muzero"
+            if command["exploration_bonus"]["mode"] != xb.EXPLORATION_BONUS_MODE_NONE
+            else None
+        ),
         "collector_env_num": command["collector_env_num"],
         "policy_collector_env_num": command["collector_env_num"],
         "evaluator_env_num": command["evaluator_env_num"],
@@ -6626,10 +8107,18 @@ def _validate_visual_survival_surface(
         "lightzero_target_config": _to_plain(command["lightzero_target_config"]),
         "source_state_trail_render_mode": command["source_state_trail_render_mode"],
         "source_state_bonus_render_mode": command["source_state_bonus_render_mode"],
+        "policy_observation_backend": command["policy_observation_backend"],
+        "policy_trail_render_mode": command["policy_trail_render_mode"],
+        "policy_bonus_render_mode": command["policy_bonus_render_mode"],
+        "policy_observation_contract_id": command["policy_observation_contract_id"],
+        "observation_contract": _to_plain(command["observation_contract"]),
+        "learner_seat_mode": command["learner_seat_mode"],
         "default_trail_render_mode": command["default_trail_render_mode"],
         "supported_trail_render_modes": command["supported_trail_render_modes"],
         "default_bonus_render_mode": command["default_bonus_render_mode"],
         "supported_bonus_render_modes": command["supported_bonus_render_modes"],
+        "default_policy_observation_backend": command["default_policy_observation_backend"],
+        "supported_policy_observation_backends": command["supported_policy_observation_backends"],
         "observation_schema_id": command["observation_schema_id"],
         "debug_fidelity_only": command["debug_fidelity_only"],
         "source_fidelity_claim": command["source_fidelity_claim"],
@@ -6666,6 +8155,7 @@ def _validate_visual_survival_surface(
         "opponent_visibility_mode": command["opponent_visibility_mode"],
         "opponent_collision_effect": command["opponent_collision_effect"],
         "opponent_trail_mode": command["opponent_trail_mode"],
+        "natural_bonus_spawn": command["natural_bonus_spawn"],
         "death_mode": command["death_mode"],
         "env_variant": command["env_variant"],
         "turn_commit_adapter": env_spec["turn_commit_adapter"],
@@ -6677,6 +8167,7 @@ def _validate_visual_survival_surface(
         "trusted_current_policy_self_play": command["trusted_current_policy_self_play"],
         "simultaneous_game_theory_claim": command["simultaneous_game_theory_claim"],
         "opponent_mixture": _to_plain(command["opponent_mixture"]),
+        "opponent_assignment_context": _to_plain(command["opponent_assignment_context"]),
         "save_ckpt_after_iter": command["save_ckpt_after_iter"],
         "max_env_step": command["max_env_step"],
         "max_train_iter": command["max_train_iter"],
@@ -6822,8 +8313,60 @@ def _action_observability_observed_fields(
     return _observed_fields_from_telemetry_rows(rows)
 
 
-def _compile_config_summary(main_config: Any, create_config: Any, *, seed: int) -> dict[str, Any]:
+def _compile_config_summary(
+    main_config: Any,
+    create_config: Any,
+    *,
+    seed: int,
+    allow_profile_custom_env_manager_skip: bool = False,
+) -> dict[str, Any]:
     started = time.perf_counter()
+    env_manager_cfg = _cfg_get(create_config, "env_manager", {})
+    env_manager_type = _cfg_get(env_manager_cfg, "type", None)
+    if (
+        allow_profile_custom_env_manager_skip
+        and str(env_manager_type) in CURVYZERO_BATCHED_PROFILE_ENV_MANAGER_TYPES
+    ):
+        env_cfg = _cfg_get(main_config, "env", {})
+        policy_cfg = _cfg_get(main_config, "policy", {})
+        model_cfg = _cfg_get(policy_cfg, "model", {})
+        return {
+            "ok": True,
+            "skipped": True,
+            "skip_reason": (
+                f"{env_manager_type} is a profile-only custom env manager "
+                "installed by a train_muzero hook; stock compile_config does not "
+                "know this manager type before the hook is installed"
+            ),
+            "env_manager_type": env_manager_type,
+            "env": {
+                "type": _cfg_get(env_cfg, "type", None),
+                "env_id": _cfg_get(env_cfg, "env_id", None),
+                "collector_env_num": _cfg_get(env_cfg, "collector_env_num", None),
+                "evaluator_env_num": _cfg_get(env_cfg, "evaluator_env_num", None),
+                "frame_stack_num": _cfg_get(env_cfg, "frame_stack_num", None),
+                "reward_variant": _cfg_get(env_cfg, "reward_variant", None),
+                "reward_schema_id": _cfg_get(env_cfg, "reward_schema_id", None),
+                "source_state_trail_render_mode": _cfg_get(
+                    env_cfg,
+                    "source_state_trail_render_mode",
+                    None,
+                ),
+                "source_state_bonus_render_mode": _cfg_get(
+                    env_cfg,
+                    "source_state_bonus_render_mode",
+                    None,
+                ),
+            },
+            "policy_model": {
+                "model_type": _cfg_get(model_cfg, "model_type", None),
+                "observation_shape": _to_plain(_cfg_get(model_cfg, "observation_shape", None)),
+                "image_channel": _cfg_get(model_cfg, "image_channel", None),
+                "frame_stack_num": _cfg_get(model_cfg, "frame_stack_num", None),
+                "action_space_size": _cfg_get(model_cfg, "action_space_size", None),
+            },
+            "elapsed_sec": round(time.perf_counter() - started, 6),
+        }
     try:
         from ding.config import compile_config
 
@@ -6917,41 +8460,11 @@ def _target_config_patches(
     main_config: Any,
     target_config: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    if not target_config:
-        return []
-    patches: list[dict[str, Any]] = []
-    key_paths = {
-        "discount_factor": ("policy", "discount_factor"),
-        "td_steps": ("policy", "td_steps"),
-        "model_support_scale": ("policy", "model", "support_scale"),
-        "model_reward_support_size": ("policy", "model", "reward_support_size"),
-        "model_value_support_size": ("policy", "model", "value_support_size"),
-        "model_reward_support_range": ("policy", "model", "reward_support_range"),
-        "model_value_support_range": ("policy", "model", "value_support_range"),
-    }
-    for key, path in key_paths.items():
-        if key not in target_config:
-            continue
-        patch = _set_or_add_path(main_config, path, target_config[key])
-        patch["reason"] = "make LightZero value/reward target range match CurvyTron reward variant"
-        patches.append(patch)
-    return patches
+    return lz_config.target_config_patches(main_config, target_config)
 
 
 def _set_save_ckpt_after_iter(main_config: Any, value: int) -> dict[str, Any]:
-    current = main_config["policy"]
-    for part in ("learn", "learner", "hook"):
-        if part not in current or current[part] is None:
-            current[part] = {}
-        current = current[part]
-    old_value = current.get("save_ckpt_after_iter")
-    current["save_ckpt_after_iter"] = int(value)
-    return {
-        "path": "policy.learn.learner.hook.save_ckpt_after_iter",
-        "old": _to_plain(old_value),
-        "new": int(value),
-        "reason": "first CurvyTron visual survival run checkpoints frequently for inspection",
-    }
+    return lz_config.set_save_ckpt_after_iter(main_config, value)
 
 
 def _set_load_ckpt_before_run(
@@ -6960,19 +8473,11 @@ def _set_load_ckpt_before_run(
     *,
     reason: str = "automatic resume from the latest iteration checkpoint for this run",
 ) -> dict[str, Any]:
-    current = main_config["policy"]
-    for part in ("learn", "learner", "hook"):
-        if part not in current or current[part] is None:
-            current[part] = {}
-        current = current[part]
-    old_value = current.get("load_ckpt_before_run")
-    current["load_ckpt_before_run"] = checkpoint_path
-    return {
-        "path": "policy.learn.learner.hook.load_ckpt_before_run",
-        "old": _to_plain(old_value),
-        "new": checkpoint_path,
-        "reason": reason,
-    }
+    return lz_config.set_load_ckpt_before_run(
+        main_config,
+        checkpoint_path,
+        reason=reason,
+    )
 
 
 def _prepare_lightzero_auto_resume(
@@ -7212,15 +8717,7 @@ def _lightzero_iteration_from_resume_state_name(name: str) -> int | None:
 
 
 def _opponent_training_relation(opponent_policy_kind: str) -> str:
-    if opponent_policy_kind == OPPONENT_POLICY_KIND_NONE_CENTRALIZED_JOINT_ACTION:
-        return "centralized_policy_controls_both_players"
-    if opponent_policy_kind == OPPONENT_POLICY_KIND_FIXED_STRAIGHT:
-        return OPPONENT_TRAINING_RELATION_FIXED_STRAIGHT
-    if opponent_policy_kind == OPPONENT_POLICY_KIND_PROACTIVE_WALL_AVOIDANT:
-        return OPPONENT_TRAINING_RELATION_PROACTIVE_WALL_AVOIDANT
-    if opponent_policy_kind == OPPONENT_POLICY_KIND_FROZEN_LIGHTZERO_CHECKPOINT:
-        return OPPONENT_TRAINING_RELATION_FROZEN_LIGHTZERO_CHECKPOINT
-    return f"unknown:{opponent_policy_kind}"
+    return lz_config.opponent_training_relation(opponent_policy_kind)
 
 
 def _opponent_training_relation_for_surface(
@@ -7230,12 +8727,11 @@ def _opponent_training_relation_for_surface(
     env_spec: dict[str, Any],
     opponent_mixture: dict[str, Any] | None,
 ) -> str:
-    if opponent_mixture is not None:
-        return OPPONENT_TRAINING_RELATION_WEIGHTED_EPISODE_MIXTURE
-    if env_variant == ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT:
-        return _opponent_training_relation(opponent_policy_kind)
-    return env_spec["opponent_training_relation"] or _opponent_training_relation(
-        opponent_policy_kind
+    return lz_config.opponent_training_relation_for_surface(
+        env_variant=env_variant,
+        opponent_policy_kind=opponent_policy_kind,
+        env_spec=env_spec,
+        opponent_mixture=opponent_mixture,
     )
 
 
@@ -7279,6 +8775,8 @@ def _scan_lightzero_artifacts(exp_name: str) -> dict[str, Any]:
             roots.append(path)
 
     add_roots(_lightzero_exp_sibling_roots(root))
+    if not root.is_absolute():
+        add_roots(_lightzero_exp_sibling_roots(RUNS_MOUNT / root))
     if exp_name.startswith("/"):
         add_roots(_lightzero_exp_sibling_roots(Path("." + exp_name)))
     files: list[dict[str, Any]] = []
@@ -7406,6 +8904,9 @@ def _background_eval_config_from_command(command: dict[str, Any]) -> dict[str, A
             command.get("reward_variant", DEFAULT_REWARD_VARIANT),
         )
     )
+    reward_outcome_alpha = float(
+        command.get("reward_outcome_alpha", DEFAULT_REWARD_OUTCOME_ALPHA)
+    )
     return {
         "enabled": bool(command.get("background_eval_enabled", DEFAULT_BACKGROUND_EVAL_ENABLED)),
         "compute": str(command.get("background_eval_compute", DEFAULT_BACKGROUND_EVAL_COMPUTE)),
@@ -7452,6 +8953,7 @@ def _background_eval_config_from_command(command: dict[str, Any]) -> dict[str, A
         ),
         "env_variant": str(command.get("env_variant", DEFAULT_ENV_VARIANT)),
         "reward_variant": eval_reward_variant,
+        "reward_outcome_alpha": reward_outcome_alpha,
         "eval_reward_variant": eval_reward_variant,
         "training_reward_variant": training_reward_variant,
         "model_reward_variant": model_reward_variant,
@@ -7538,6 +9040,9 @@ def _background_gif_config_from_command(command: dict[str, Any]) -> dict[str, An
                 "training_reward_variant",
                 command.get("reward_variant", DEFAULT_REWARD_VARIANT),
             )
+        ),
+        "reward_outcome_alpha": float(
+            command.get("reward_outcome_alpha", DEFAULT_REWARD_OUTCOME_ALPHA)
         ),
         "opponent_death_mode": str(command.get("opponent_death_mode", DEFAULT_OPPONENT_DEATH_MODE)),
         "opponent_runtime_mode": str(
@@ -7761,6 +9266,9 @@ def _spawn_one_checkpoint_background_eval(
                     config.get("training_reward_variant", DEFAULT_REWARD_VARIANT),
                 )
             ),
+            reward_outcome_alpha=float(
+                config.get("reward_outcome_alpha", DEFAULT_REWARD_OUTCOME_ALPHA)
+            ),
             opponent_policy_kind=str(config["opponent_policy_kind"]),
             opponent_checkpoint_ref=config.get("opponent_checkpoint_ref"),
             opponent_snapshot_ref=config.get("opponent_snapshot_ref"),
@@ -7945,6 +9453,9 @@ def _spawn_one_checkpoint_background_gif(
             training_reward_variant=str(
                 gif_config.get("training_reward_variant", DEFAULT_REWARD_VARIANT)
             ),
+            training_reward_outcome_alpha=float(
+                gif_config.get("reward_outcome_alpha", DEFAULT_REWARD_OUTCOME_ALPHA)
+            ),
             opponent_death_mode=str(
                 gif_config.get("opponent_death_mode", DEFAULT_OPPONENT_DEATH_MODE)
             ),
@@ -8026,6 +9537,7 @@ def _checkpoint_eval_poller_command(
     source_max_steps_semantics: str = "source_physics_steps",
     env_variant: str,
     reward_variant: str = DEFAULT_REWARD_VARIANT,
+    reward_outcome_alpha: float = DEFAULT_REWARD_OUTCOME_ALPHA,
     opponent_policy_kind: str,
     opponent_checkpoint_ref: str | None,
     opponent_snapshot_ref: str | None,
@@ -8082,6 +9594,7 @@ def _checkpoint_eval_poller_command(
         "source_max_steps_semantics": str(source_max_steps_semantics),
         "env_variant": env_variant,
         "reward_variant": reward_variant,
+        "reward_outcome_alpha": float(_normalize_reward_outcome_alpha(reward_outcome_alpha)),
         "eval_reward_variant": reward_variant,
         "training_reward_variant": reward_variant,
         "model_reward_variant": reward_variant,
@@ -8523,6 +10036,7 @@ def _run_checkpoint_eval_and_inspect(
     batch_size: int,
     env_variant: str,
     reward_variant: str,
+    reward_outcome_alpha: float,
     model_reward_variant: str | None,
     opponent_policy_kind: str,
     opponent_checkpoint_ref: str | None,
@@ -8615,7 +10129,9 @@ def _run_checkpoint_eval_and_inspect(
             quiet_framework_logs=True,
             env_variant=env_variant,
             reward_variant=reward_variant,
+            reward_outcome_alpha=float(reward_outcome_alpha),
             model_reward_variant=model_reward_variant,
+            model_reward_outcome_alpha=float(reward_outcome_alpha),
             opponent_policy_kind=opponent_policy_kind,
             opponent_checkpoint_ref=opponent_checkpoint_ref,
             opponent_snapshot_ref=opponent_snapshot_ref,
@@ -9224,6 +10740,41 @@ def _checkpoint_gif_variant_specs(
     ]
 
 
+def _checkpoint_gif_capture_surface(
+    *,
+    training_env_variant: str,
+    training_reward_variant: str,
+    opponent_runtime_mode: str,
+    opponent_mixture: dict[str, Any] | None,
+) -> dict[str, str]:
+    if opponent_mixture is not None:
+        return {
+            "env_variant": training_env_variant,
+            "reward_variant": training_reward_variant,
+            "reason": (
+                "one checkpoint controls player_0 while the source-state fixed-opponent "
+                "env samples one opponent-mixture component at reset"
+            ),
+        }
+    if opponent_runtime_mode == OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP:
+        return {
+            "env_variant": training_env_variant,
+            "reward_variant": training_reward_variant,
+            "reason": (
+                "one checkpoint controls player_0 on the same blank-canvas training "
+                "surface; opponent runtime is disabled"
+            ),
+        }
+    return {
+        "env_variant": ENV_VARIANT_SOURCE_STATE_TURN_COMMIT,
+        "reward_variant": DEFAULT_REWARD_VARIANT,
+        "reason": (
+            "one checkpoint controls player_0 and player_1 through the source-state "
+            "turn-commit adapter; only physical commits become GIF frames"
+        ),
+    }
+
+
 def _capture_checkpoint_selfplay_gif_variant(
     *,
     eval_mod: Any,
@@ -9249,6 +10800,7 @@ def _capture_checkpoint_selfplay_gif_variant(
     frame_size: int,
     training_env_variant: str,
     training_reward_variant: str,
+    training_reward_outcome_alpha: float,
     opponent_death_mode: str,
     opponent_runtime_mode: str,
     opponent_mixture: dict[str, Any] | None,
@@ -9259,13 +10811,11 @@ def _capture_checkpoint_selfplay_gif_variant(
     gif_path = artifact_root / str(variant["gif_filename"])
     frames_path = artifact_root / str(variant["raw_frames_filename"])
     telemetry_path = artifact_root / str(variant["telemetry_filename"])
-    capture_env_variant = (
-        training_env_variant
-        if opponent_mixture is not None
-        else ENV_VARIANT_SOURCE_STATE_TURN_COMMIT
-    )
-    capture_reward_variant = (
-        training_reward_variant if opponent_mixture is not None else DEFAULT_REWARD_VARIANT
+    capture_surface = _checkpoint_gif_capture_surface(
+        training_env_variant=training_env_variant,
+        training_reward_variant=training_reward_variant,
+        opponent_runtime_mode=opponent_runtime_mode,
+        opponent_mixture=opponent_mixture,
     )
     policy, env, surface = eval_mod._make_policy_and_env(
         state_dict=state_dict,
@@ -9279,16 +10829,19 @@ def _capture_checkpoint_selfplay_gif_variant(
         num_simulations=int(num_simulations),
         batch_size=int(batch_size),
         telemetry_path=telemetry_path,
-        env_variant=capture_env_variant,
-        reward_variant=capture_reward_variant,
+        env_variant=capture_surface["env_variant"],
+        reward_variant=capture_surface["reward_variant"],
+        reward_outcome_alpha=float(training_reward_outcome_alpha),
         model_env_variant=training_env_variant,
         model_reward_variant=training_reward_variant,
+        model_reward_outcome_alpha=float(training_reward_outcome_alpha),
         opponent_policy_kind=OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
         opponent_checkpoint=None,
         opponent_snapshot_ref=None,
         opponent_checkpoint_state_key=None,
         opponent_mixture=opponent_mixture,
         opponent_death_mode=opponent_death_mode,
+        opponent_runtime_mode=opponent_runtime_mode,
         natural_bonus_spawn=bool(natural_bonus_spawn),
     )
 
@@ -9525,6 +11078,7 @@ def _run_checkpoint_selfplay_gif(
     frame_size: int,
     training_env_variant: str,
     training_reward_variant: str,
+    training_reward_outcome_alpha: float = DEFAULT_REWARD_OUTCOME_ALPHA,
     opponent_death_mode: str = DEFAULT_OPPONENT_DEATH_MODE,
     opponent_runtime_mode: str = DEFAULT_OPPONENT_RUNTIME_MODE,
     opponent_mixture_spec: Any | None = None,
@@ -9589,6 +11143,12 @@ def _run_checkpoint_selfplay_gif(
             raise ValueError("checkpoint payload did not contain a LightZero state dict")
         found_key, state_dict = found
         variants: dict[str, dict[str, Any]] = {}
+        capture_surface = _checkpoint_gif_capture_surface(
+            training_env_variant=training_env_variant,
+            training_reward_variant=training_reward_variant,
+            opponent_runtime_mode=opponent_runtime_mode,
+            opponent_mixture=opponent_mixture,
+        )
         for variant in _checkpoint_gif_variant_specs(
             collect_temperature=float(collect_temperature),
             collect_epsilon=float(collect_epsilon),
@@ -9617,6 +11177,7 @@ def _run_checkpoint_selfplay_gif(
                 frame_size=int(frame_size),
                 training_env_variant=training_env_variant,
                 training_reward_variant=training_reward_variant,
+                training_reward_outcome_alpha=float(training_reward_outcome_alpha),
                 opponent_death_mode=opponent_death_mode,
                 opponent_runtime_mode=opponent_runtime_mode,
                 opponent_mixture=opponent_mixture,
@@ -9654,23 +11215,14 @@ def _run_checkpoint_selfplay_gif(
             "checkpoint_state_key": found_key,
             "training_env_variant": training_env_variant,
             "training_reward_variant": training_reward_variant,
+            "training_reward_outcome_alpha": float(training_reward_outcome_alpha),
             "opponent_death_mode": opponent_death_mode,
             "opponent_runtime_mode": opponent_runtime_mode,
             "opponent_mixture_enabled": opponent_mixture is not None,
             "opponent_mixture": _to_plain(opponent_mixture),
             "natural_bonus_spawn": bool(natural_bonus_spawn),
-            "capture_env_variant": (
-                training_env_variant
-                if opponent_mixture is not None
-                else ENV_VARIANT_SOURCE_STATE_TURN_COMMIT
-            ),
-            "capture_env_reason": (
-                "one checkpoint controls player_0 while the source-state fixed-opponent "
-                "env samples one opponent-mixture component at reset"
-                if opponent_mixture is not None
-                else "one checkpoint controls player_0 and player_1 through the source-state "
-                "turn-commit adapter; only physical commits become GIF frames"
-            ),
+            "capture_env_variant": capture_surface["env_variant"],
+            "capture_env_reason": capture_surface["reason"],
             "frame_source": "source_state_rgb_canvas_like",
             "frame_schema_id": SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID,
             "frame_truth_level": SOURCE_STATE_RGB_CANVAS_LIKE_TRUTH_LEVEL,
@@ -9792,7 +11344,12 @@ def _run_checkpoint_selfplay_gif(
         }
 
     artifact_root.mkdir(parents=True, exist_ok=True)
+    gif_browser_run_marker = _write_gif_browser_run_marker(
+        run_id=run_id,
+        created_at=started_at,
+    )
     summary["summary_ref"] = runs.file_ref(summary_path, mount=RUNS_MOUNT)
+    summary["gif_browser_run_marker"] = gif_browser_run_marker
     runs.write_json(summary_path, _to_plain(summary))
     summary["summary"] = runs.file_summary(summary_path, mount=RUNS_MOUNT)
     _commit_runs_volume_with_backoff(
@@ -9890,17 +11447,11 @@ def _compact_policy_observation_gpu_profile(profile: Any) -> dict[str, int | flo
     render_slots = _telemetry_float(compact.get("render_trail_slots"))
     capacity = _telemetry_float(compact.get("visual_trail_capacity"))
     if active_count is not None and active_prefix is not None:
-        compact["visual_trail_inactive_prefix_slots"] = int(
-            max(0.0, active_prefix - active_count)
-        )
+        compact["visual_trail_inactive_prefix_slots"] = int(max(0.0, active_prefix - active_count))
         if active_prefix > 0.0:
-            compact["visual_trail_active_prefix_fill_ratio"] = float(
-                active_count / active_prefix
-            )
+            compact["visual_trail_active_prefix_fill_ratio"] = float(active_count / active_prefix)
     if active_prefix is not None and render_slots is not None:
-        compact["render_trail_prefix_headroom_slots"] = int(
-            max(0.0, render_slots - active_prefix)
-        )
+        compact["render_trail_prefix_headroom_slots"] = int(max(0.0, render_slots - active_prefix))
     if active_count is not None and render_slots is not None and render_slots > 0.0:
         compact["render_trail_slot_utilization"] = float(active_count / render_slots)
     if capacity is not None and render_slots is not None and capacity > 0.0:
@@ -10064,16 +11615,10 @@ def _summarize_env_step_telemetry(path: Path) -> dict[str, Any]:
                         "render_trail_slots_reduced_from_capacity"
                     )
                 )
-            ) or (
-                render_trail_capacity_ratio is not None
-                and render_trail_capacity_ratio < 1.0
-            )
+            ) or (render_trail_capacity_ratio is not None and render_trail_capacity_ratio < 1.0)
             if render_slots_reduced:
                 policy_observation_gpu_capacity_reduction_row_count += 1
-            if (
-                _telemetry_float(policy_observation_gpu_profile.get("cache_misses"))
-                or 0.0
-            ) > 0.0:
+            if (_telemetry_float(policy_observation_gpu_profile.get("cache_misses")) or 0.0) > 0.0:
                 policy_observation_gpu_cache_miss_row_count += 1
             for key, value in policy_observation_gpu_profile.items():
                 numeric_value = float(value)
@@ -10462,25 +12007,11 @@ def _exception_result(exc: BaseException) -> dict[str, Any]:
 
 
 def _set_or_add_path(mapping: Any, path: tuple[str, ...], value: Any) -> dict[str, Any]:
-    current = mapping
-    for part in path[:-1]:
-        if part not in current or current[part] is None:
-            current[part] = {}
-        current = current[part]
-    key = path[-1]
-    old_value = current.get(key, "<missing>")
-    current[key] = value
-    return {"path": ".".join(path), "old": _to_plain(old_value), "new": _to_plain(value)}
+    return lz_config.set_or_add_path(mapping, path, value)
 
 
 def _get_path(mapping: Any, path: tuple[str, ...], default: Any = None) -> Any:
-    current = mapping
-    try:
-        for part in path:
-            current = current[part]
-    except KeyError:
-        return default
-    return current
+    return lz_config.get_path(mapping, path, default)
 
 
 def _cfg_get(mapping: Any, key: str, default: Any) -> Any:
@@ -11033,15 +12564,7 @@ def lightzero_curvytron_two_seat_selfplay_h100(payload: dict[str, Any]) -> dict[
 
 
 def _to_plain(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {str(key): _to_plain(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_to_plain(item) for item in value]
-    if hasattr(value, "tolist"):
-        return _to_plain(value.tolist())
-    if hasattr(value, "item"):
-        return value.item()
-    return value
+    return lz_config.to_plain(value)
 
 
 @app.function(image=image, volumes=TRAINER_VOLUMES, timeout=40 * 60, cpu=2.0)
@@ -11066,6 +12589,7 @@ def lightzero_curvytron_visual_survival_checkpoint_eval_and_inspect(
     batch_size: int = DEFAULT_BACKGROUND_EVAL_BATCH_SIZE,
     env_variant: str = DEFAULT_ENV_VARIANT,
     reward_variant: str = DEFAULT_REWARD_VARIANT,
+    reward_outcome_alpha: float = DEFAULT_REWARD_OUTCOME_ALPHA,
     model_reward_variant: str | None = None,
     opponent_policy_kind: str = DEFAULT_OPPONENT_POLICY_KIND,
     opponent_checkpoint_ref: str | None = None,
@@ -11098,6 +12622,7 @@ def lightzero_curvytron_visual_survival_checkpoint_eval_and_inspect(
         batch_size=batch_size,
         env_variant=env_variant,
         reward_variant=reward_variant,
+        reward_outcome_alpha=reward_outcome_alpha,
         model_reward_variant=model_reward_variant,
         opponent_policy_kind=opponent_policy_kind,
         opponent_checkpoint_ref=opponent_checkpoint_ref,
@@ -11133,6 +12658,7 @@ def lightzero_curvytron_visual_survival_checkpoint_selfplay_gif(
     frame_size: int = DEFAULT_BACKGROUND_GIF_FRAME_SIZE,
     training_env_variant: str = DEFAULT_ENV_VARIANT,
     training_reward_variant: str = DEFAULT_REWARD_VARIANT,
+    training_reward_outcome_alpha: float = DEFAULT_REWARD_OUTCOME_ALPHA,
     opponent_death_mode: str = DEFAULT_OPPONENT_DEATH_MODE,
     opponent_runtime_mode: str = DEFAULT_OPPONENT_RUNTIME_MODE,
     opponent_mixture_spec: Any | None = None,
@@ -11161,6 +12687,7 @@ def lightzero_curvytron_visual_survival_checkpoint_selfplay_gif(
         frame_size=frame_size,
         training_env_variant=training_env_variant,
         training_reward_variant=training_reward_variant,
+        training_reward_outcome_alpha=float(training_reward_outcome_alpha),
         opponent_death_mode=opponent_death_mode,
         opponent_runtime_mode=opponent_runtime_mode,
         opponent_mixture_spec=opponent_mixture_spec,
@@ -11188,6 +12715,7 @@ def lightzero_curvytron_visual_survival_checkpoint_eval_poller(
     source_max_steps_semantics: str = "source_physics_steps",
     env_variant: str = DEFAULT_ENV_VARIANT,
     reward_variant: str = DEFAULT_REWARD_VARIANT,
+    reward_outcome_alpha: float = DEFAULT_REWARD_OUTCOME_ALPHA,
     opponent_policy_kind: str = DEFAULT_OPPONENT_POLICY_KIND,
     opponent_checkpoint_ref: str | None = None,
     opponent_snapshot_ref: str | None = None,
@@ -11232,6 +12760,7 @@ def lightzero_curvytron_visual_survival_checkpoint_eval_poller(
         source_max_steps_semantics=source_max_steps_semantics,
         env_variant=env_variant,
         reward_variant=reward_variant,
+        reward_outcome_alpha=reward_outcome_alpha,
         opponent_policy_kind=opponent_policy_kind,
         opponent_checkpoint_ref=opponent_checkpoint_ref,
         opponent_snapshot_ref=opponent_snapshot_ref,
@@ -11273,7 +12802,9 @@ def lightzero_curvytron_visual_survival_checkpoint_eval_poller(
 
 
 @app.function(image=image, volumes=TRAINER_VOLUMES, timeout=20 * 60, cpu=2.0)
-def lightzero_curvytron_write_opponent_assignment_artifacts(payload: dict[str, Any]) -> dict[str, Any]:
+def lightzero_curvytron_write_opponent_assignment_artifacts(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
     return _write_opponent_assignment_artifacts(
         run_id=str(payload["run_id"]),
         attempt_id=str(payload["attempt_id"]),
@@ -11300,6 +12831,8 @@ def lightzero_curvytron_visual_survival_cpu(
     n_episode: int = DEFAULT_N_EPISODE,
     num_simulations: int = DEFAULT_NUM_SIMULATIONS,
     batch_size: int = DEFAULT_BATCH_SIZE,
+    model_support_cap: int | None = DEFAULT_MODEL_SUPPORT_CAP,
+    td_steps: int | None = DEFAULT_TD_STEPS,
     lightzero_eval_freq: int = DEFAULT_LIGHTZERO_EVAL_FREQ,
     skip_lightzero_eval_in_profile: bool = DEFAULT_SKIP_LIGHTZERO_EVAL_IN_PROFILE,
     profile_cuda_sync_enabled: bool = DEFAULT_PROFILE_CUDA_SYNC_ENABLED,
@@ -11311,9 +12844,12 @@ def lightzero_curvytron_visual_survival_cpu(
     stop_after_learner_train_calls: int = DEFAULT_STOP_AFTER_LEARNER_TRAIN_CALLS,
     env_variant: str = DEFAULT_ENV_VARIANT,
     reward_variant: str = DEFAULT_REWARD_VARIANT,
+    reward_outcome_alpha: float = DEFAULT_REWARD_OUTCOME_ALPHA,
     source_state_trail_render_mode: str = DEFAULT_SOURCE_STATE_TRAIL_RENDER_MODE,
     source_state_bonus_render_mode: str = DEFAULT_SOURCE_STATE_BONUS_RENDER_MODE,
     policy_observation_backend: str = DEFAULT_POLICY_OBSERVATION_BACKEND_CHOICE,
+    collect_search_backend: str = DEFAULT_COLLECT_SEARCH_BACKEND,
+    collect_search_ctree_backend: str = DEFAULT_COLLECT_SEARCH_CTREE_BACKEND,
     learner_seat_mode: str = DEFAULT_LEARNER_SEAT_MODE,
     ego_action_straight_override_probability: float = (
         DEFAULT_EGO_ACTION_STRAIGHT_OVERRIDE_PROBABILITY
@@ -11344,6 +12880,9 @@ def lightzero_curvytron_visual_survival_cpu(
         DEFAULT_OPPONENT_ASSIGNMENT_REFRESH_INTERVAL_TRAIN_ITER
     ),
     opponent_assignment_refresh_ref: str | None = None,
+    own_checkpoint_opponent_refresh_enabled: bool = (
+        DEFAULT_OWN_CHECKPOINT_OPPONENT_REFRESH_ENABLED
+    ),
     background_eval_enabled: bool = DEFAULT_BACKGROUND_EVAL_ENABLED,
     background_eval_launch_kind: str = BACKGROUND_EVAL_LAUNCH_HOOK,
     background_eval_compute: str = DEFAULT_BACKGROUND_EVAL_COMPUTE,
@@ -11390,6 +12929,8 @@ def lightzero_curvytron_visual_survival_cpu(
         n_episode=n_episode,
         num_simulations=num_simulations,
         batch_size=batch_size,
+        model_support_cap=model_support_cap,
+        td_steps=td_steps,
         lightzero_eval_freq=lightzero_eval_freq,
         skip_lightzero_eval_in_profile=skip_lightzero_eval_in_profile,
         profile_cuda_sync_enabled=profile_cuda_sync_enabled,
@@ -11401,9 +12942,12 @@ def lightzero_curvytron_visual_survival_cpu(
         stop_after_learner_train_calls=stop_after_learner_train_calls,
         env_variant=env_variant,
         reward_variant=reward_variant,
+        reward_outcome_alpha=reward_outcome_alpha,
         source_state_trail_render_mode=source_state_trail_render_mode,
         source_state_bonus_render_mode=source_state_bonus_render_mode,
         policy_observation_backend=policy_observation_backend,
+        collect_search_backend=collect_search_backend,
+        collect_search_ctree_backend=collect_search_ctree_backend,
         learner_seat_mode=learner_seat_mode,
         ego_action_straight_override_probability=ego_action_straight_override_probability,
         policy_action_repeat_min=policy_action_repeat_min,
@@ -11430,6 +12974,7 @@ def lightzero_curvytron_visual_survival_cpu(
             opponent_assignment_refresh_interval_train_iter
         ),
         opponent_assignment_refresh_ref=opponent_assignment_refresh_ref,
+        own_checkpoint_opponent_refresh_enabled=own_checkpoint_opponent_refresh_enabled,
         background_eval_enabled=background_eval_enabled,
         background_eval_launch_kind=background_eval_launch_kind,
         background_eval_compute=background_eval_compute,
@@ -11478,6 +13023,8 @@ def _apply_visual_survival_train_default_kwargs(kwargs: dict[str, Any]) -> None:
         "n_episode": DEFAULT_N_EPISODE,
         "num_simulations": DEFAULT_NUM_SIMULATIONS,
         "batch_size": DEFAULT_BATCH_SIZE,
+        "model_support_cap": DEFAULT_MODEL_SUPPORT_CAP,
+        "td_steps": DEFAULT_TD_STEPS,
         "lightzero_eval_freq": DEFAULT_LIGHTZERO_EVAL_FREQ,
         "skip_lightzero_eval_in_profile": DEFAULT_SKIP_LIGHTZERO_EVAL_IN_PROFILE,
         "profile_cuda_sync_enabled": DEFAULT_PROFILE_CUDA_SYNC_ENABLED,
@@ -11489,9 +13036,11 @@ def _apply_visual_survival_train_default_kwargs(kwargs: dict[str, Any]) -> None:
         "stop_after_learner_train_calls": DEFAULT_STOP_AFTER_LEARNER_TRAIN_CALLS,
         "env_variant": DEFAULT_ENV_VARIANT,
         "reward_variant": DEFAULT_REWARD_VARIANT,
+        "reward_outcome_alpha": DEFAULT_REWARD_OUTCOME_ALPHA,
         "source_state_trail_render_mode": DEFAULT_SOURCE_STATE_TRAIL_RENDER_MODE,
         "source_state_bonus_render_mode": DEFAULT_SOURCE_STATE_BONUS_RENDER_MODE,
         "policy_observation_backend": DEFAULT_POLICY_OBSERVATION_BACKEND_CHOICE,
+        "collect_search_backend": DEFAULT_COLLECT_SEARCH_BACKEND,
         "learner_seat_mode": DEFAULT_LEARNER_SEAT_MODE,
         "ego_action_straight_override_probability": (
             DEFAULT_EGO_ACTION_STRAIGHT_OVERRIDE_PROBABILITY
@@ -11520,6 +13069,9 @@ def _apply_visual_survival_train_default_kwargs(kwargs: dict[str, Any]) -> None:
             DEFAULT_OPPONENT_ASSIGNMENT_REFRESH_INTERVAL_TRAIN_ITER
         ),
         "opponent_assignment_refresh_ref": None,
+        "own_checkpoint_opponent_refresh_enabled": (
+            DEFAULT_OWN_CHECKPOINT_OPPONENT_REFRESH_ENABLED
+        ),
         "background_eval_enabled": DEFAULT_BACKGROUND_EVAL_ENABLED,
         "background_eval_launch_kind": DEFAULT_BACKGROUND_EVAL_LAUNCH_KIND,
         "background_eval_compute": DEFAULT_BACKGROUND_EVAL_COMPUTE,
@@ -11589,6 +13141,8 @@ def lightzero_curvytron_visual_survival_gpu(
     n_episode: int = DEFAULT_N_EPISODE,
     num_simulations: int = DEFAULT_NUM_SIMULATIONS,
     batch_size: int = DEFAULT_BATCH_SIZE,
+    model_support_cap: int | None = DEFAULT_MODEL_SUPPORT_CAP,
+    td_steps: int | None = DEFAULT_TD_STEPS,
     lightzero_eval_freq: int = DEFAULT_LIGHTZERO_EVAL_FREQ,
     skip_lightzero_eval_in_profile: bool = DEFAULT_SKIP_LIGHTZERO_EVAL_IN_PROFILE,
     profile_cuda_sync_enabled: bool = DEFAULT_PROFILE_CUDA_SYNC_ENABLED,
@@ -11600,9 +13154,12 @@ def lightzero_curvytron_visual_survival_gpu(
     stop_after_learner_train_calls: int = DEFAULT_STOP_AFTER_LEARNER_TRAIN_CALLS,
     env_variant: str = DEFAULT_ENV_VARIANT,
     reward_variant: str = DEFAULT_REWARD_VARIANT,
+    reward_outcome_alpha: float = DEFAULT_REWARD_OUTCOME_ALPHA,
     source_state_trail_render_mode: str = DEFAULT_SOURCE_STATE_TRAIL_RENDER_MODE,
     source_state_bonus_render_mode: str = DEFAULT_SOURCE_STATE_BONUS_RENDER_MODE,
     policy_observation_backend: str = DEFAULT_POLICY_OBSERVATION_BACKEND_CHOICE,
+    collect_search_backend: str = DEFAULT_COLLECT_SEARCH_BACKEND,
+    collect_search_ctree_backend: str = DEFAULT_COLLECT_SEARCH_CTREE_BACKEND,
     learner_seat_mode: str = DEFAULT_LEARNER_SEAT_MODE,
     ego_action_straight_override_probability: float = (
         DEFAULT_EGO_ACTION_STRAIGHT_OVERRIDE_PROBABILITY
@@ -11633,6 +13190,9 @@ def lightzero_curvytron_visual_survival_gpu(
         DEFAULT_OPPONENT_ASSIGNMENT_REFRESH_INTERVAL_TRAIN_ITER
     ),
     opponent_assignment_refresh_ref: str | None = None,
+    own_checkpoint_opponent_refresh_enabled: bool = (
+        DEFAULT_OWN_CHECKPOINT_OPPONENT_REFRESH_ENABLED
+    ),
     background_eval_enabled: bool = DEFAULT_BACKGROUND_EVAL_ENABLED,
     background_eval_launch_kind: str = BACKGROUND_EVAL_LAUNCH_HOOK,
     background_eval_compute: str = DEFAULT_BACKGROUND_EVAL_COMPUTE,
@@ -11679,6 +13239,8 @@ def lightzero_curvytron_visual_survival_gpu(
         n_episode=n_episode,
         num_simulations=num_simulations,
         batch_size=batch_size,
+        model_support_cap=model_support_cap,
+        td_steps=td_steps,
         lightzero_eval_freq=lightzero_eval_freq,
         skip_lightzero_eval_in_profile=skip_lightzero_eval_in_profile,
         profile_cuda_sync_enabled=profile_cuda_sync_enabled,
@@ -11690,9 +13252,12 @@ def lightzero_curvytron_visual_survival_gpu(
         stop_after_learner_train_calls=stop_after_learner_train_calls,
         env_variant=env_variant,
         reward_variant=reward_variant,
+        reward_outcome_alpha=reward_outcome_alpha,
         source_state_trail_render_mode=source_state_trail_render_mode,
         source_state_bonus_render_mode=source_state_bonus_render_mode,
         policy_observation_backend=policy_observation_backend,
+        collect_search_backend=collect_search_backend,
+        collect_search_ctree_backend=collect_search_ctree_backend,
         learner_seat_mode=learner_seat_mode,
         ego_action_straight_override_probability=ego_action_straight_override_probability,
         policy_action_repeat_min=policy_action_repeat_min,
@@ -11719,6 +13284,7 @@ def lightzero_curvytron_visual_survival_gpu(
             opponent_assignment_refresh_interval_train_iter
         ),
         opponent_assignment_refresh_ref=opponent_assignment_refresh_ref,
+        own_checkpoint_opponent_refresh_enabled=own_checkpoint_opponent_refresh_enabled,
         background_eval_enabled=background_eval_enabled,
         background_eval_launch_kind=background_eval_launch_kind,
         background_eval_compute=background_eval_compute,
@@ -11765,6 +13331,21 @@ def lightzero_curvytron_visual_survival_gpu_cpu40(**kwargs: Any) -> dict[str, An
 
 
 @app.function(
+    image=ctree_a3_image,
+    volumes=TRAINER_VOLUMES,
+    timeout=DEFAULT_STOCK_TRAIN_MODAL_TIMEOUT_SEC,
+    cpu=40.0,
+    memory=65536,
+    gpu=CHEAP_GPU_RESOURCE,
+)
+def lightzero_curvytron_visual_survival_gpu_cpu40_ctree_a3(
+    **kwargs: Any,
+) -> dict[str, Any]:
+    _apply_visual_survival_train_default_kwargs(kwargs)
+    return _run_visual_survival_train(compute=COMPUTE_GPU_L4_T4_CPU40, **kwargs)
+
+
+@app.function(
     image=image,
     volumes=TRAINER_VOLUMES,
     timeout=DEFAULT_STOCK_TRAIN_MODAL_TIMEOUT_SEC,
@@ -11773,6 +13354,21 @@ def lightzero_curvytron_visual_survival_gpu_cpu40(**kwargs: Any) -> dict[str, An
     gpu=H100_GPU_RESOURCE,
 )
 def lightzero_curvytron_visual_survival_h100_cpu40(**kwargs: Any) -> dict[str, Any]:
+    _apply_visual_survival_train_default_kwargs(kwargs)
+    return _run_visual_survival_train(compute=COMPUTE_GPU_H100_CPU40, **kwargs)
+
+
+@app.function(
+    image=ctree_a3_image,
+    volumes=TRAINER_VOLUMES,
+    timeout=DEFAULT_STOCK_TRAIN_MODAL_TIMEOUT_SEC,
+    cpu=40.0,
+    memory=65536,
+    gpu=H100_GPU_RESOURCE,
+)
+def lightzero_curvytron_visual_survival_h100_cpu40_ctree_a3(
+    **kwargs: Any,
+) -> dict[str, Any]:
     _apply_visual_survival_train_default_kwargs(kwargs)
     return _run_visual_survival_train(compute=COMPUTE_GPU_H100_CPU40, **kwargs)
 
@@ -11819,6 +13415,50 @@ def lightzero_curvytron_visual_survival_opponent_smoke(
     )
 
 
+def _compact_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _compact_effective_env_steps(
+    *,
+    counts: dict[str, Any],
+    command: dict[str, Any],
+) -> tuple[int | None, int | None, str | None]:
+    raw_env_steps = _compact_int(counts.get("env_steps_collected"))
+    if raw_env_steps is not None and raw_env_steps > 0:
+        return raw_env_steps, raw_env_steps, "collector_envstep_delta"
+
+    mcts_root_sum = _compact_int(counts.get("mcts_search_root_sum"))
+    evaluator_eval_calls = _compact_int(counts.get("evaluator_eval_calls"))
+    evaluator_eval_skipped_calls = _compact_int(counts.get("evaluator_eval_skipped_calls"))
+    lightzero_eval_freq = _compact_int(command.get("lightzero_eval_freq"))
+    skip_eval = bool(command.get("skip_lightzero_eval_in_profile"))
+    if (
+        (raw_env_steps is None or raw_env_steps == 0)
+        and mcts_root_sum is not None
+        and mcts_root_sum > 0
+        and skip_eval
+        and lightzero_eval_freq == 0
+        and evaluator_eval_calls == 0
+        and evaluator_eval_skipped_calls == 0
+    ):
+        return mcts_root_sum, raw_env_steps, "mcts_search_root_sum_profile_fallback"
+    return raw_env_steps, raw_env_steps, "collector_envstep_delta"
+
+
+def _compact_steps_per_sec_currency(env_steps_source: str | None) -> str:
+    if env_steps_source == "collector_envstep_delta":
+        return "stock_train_muzero_profile_env_steps_per_sec"
+    if env_steps_source == "mcts_search_root_sum_profile_fallback":
+        return "stock_train_muzero_profile_mcts_roots_per_sec_fallback"
+    return "unknown_profile_steps_per_sec"
+
+
 def _compact_train_result_for_output(result: Any) -> Any:
     if not isinstance(result, dict):
         return result
@@ -11826,23 +13466,55 @@ def _compact_train_result_for_output(result: Any) -> Any:
     if not isinstance(train_result, dict):
         return result
     phase = train_result.get("phase_profile")
+    collect_search_backend_proof = train_result.get("collect_search_backend_proof")
     command = train_result.get("command")
     action = train_result.get("action_observability")
     runtime = train_result.get("runtime_compute")
+    rnd_metrics = train_result.get("rnd_reward_model_metrics")
     phase = phase if isinstance(phase, dict) else {}
+    collect_search_backend_proof = (
+        collect_search_backend_proof
+        if isinstance(collect_search_backend_proof, dict)
+        else {}
+    )
     command = command if isinstance(command, dict) else {}
     action = action if isinstance(action, dict) else {}
     runtime = runtime if isinstance(runtime, dict) else {}
-    rnd_metrics = train_result.get("rnd_reward_model_metrics")
     rnd_metrics = rnd_metrics if isinstance(rnd_metrics, dict) else {}
+    rnd_latest = (
+        rnd_metrics.get("latest")
+        if isinstance(rnd_metrics.get("latest"), dict)
+        else {}
+    )
     timers = phase.get("timers_sec") if isinstance(phase.get("timers_sec"), dict) else {}
     counts = phase.get("counts") if isinstance(phase.get("counts"), dict) else {}
     derived = phase.get("derived_stats") if isinstance(phase.get("derived_stats"), dict) else {}
+    sample_stats = phase.get("sample_stats") if isinstance(phase.get("sample_stats"), dict) else {}
+    phase_samples = phase.get("samples") if isinstance(phase.get("samples"), dict) else {}
+    observed_collect_search_ctree_backends = sorted(
+        {
+            str(value)
+            for value in phase_samples.get("collect_search_ctree_backend", [])
+            if value is not None
+        }
+    )
+    observed_collect_search_backends = sorted(
+        {
+            str(value)
+            for value in phase_samples.get("collect_search_backend", [])
+            if value is not None
+        }
+    )
     gpu = phase.get("gpu_sampling") if isinstance(phase.get("gpu_sampling"), dict) else {}
     mcts_search_calls = counts.get("mcts_search_calls")
     mcts_root_sum = counts.get("mcts_search_root_sum")
     train_wall = timers.get("train_muzero_wall_sec")
-    env_steps = counts.get("env_steps_collected")
+    env_steps, env_steps_raw, env_steps_source = _compact_effective_env_steps(
+        counts=counts,
+        command=command,
+    )
+    steps_per_sec_currency = _compact_steps_per_sec_currency(env_steps_source)
+    steps_per_sec_uses_fallback = env_steps_source != "collector_envstep_delta"
     steps_per_sec = None
     try:
         if train_wall and env_steps is not None:
@@ -11855,6 +13527,28 @@ def _compact_train_result_for_output(result: Any) -> Any:
             mcts_root_batch_mean = float(mcts_root_sum) / float(mcts_search_calls)
     except (TypeError, ValueError, ZeroDivisionError):
         mcts_root_batch_mean = None
+    direct_recurrent_batch_mean = None
+    try:
+        direct_recurrent_calls = counts.get("collect_search_backend_recurrent_inference_calls")
+        direct_node_budget = counts.get("mcts_search_node_budget_sum")
+        if direct_recurrent_calls and direct_node_budget is not None:
+            direct_recurrent_batch_mean = float(direct_node_budget) / float(direct_recurrent_calls)
+    except (TypeError, ValueError, ZeroDivisionError):
+        direct_recurrent_batch_mean = None
+    observation_contract = _to_plain(command.get("observation_contract"))
+    if not isinstance(observation_contract, dict):
+        observation_contract = {}
+    env_manager_type = command.get("env_manager_type")
+    scalar_materialization_semantics = (
+        "batched_profile_manager_materializes_lightzero_scalar_timesteps"
+        if env_manager_type == "curvyzero_batched_profile"
+        else "stock_env_manager_materializes_lightzero_scalar_timesteps"
+    )
+    lightzero_to_play_mode = (
+        "fixed_opponent_minus_one"
+        if command.get("env_variant") == "source_state_fixed_opponent"
+        else "env_observation_to_play"
+    )
     compact: dict[str, Any] = {
         "schema_id": "curvyzero_lightzero_curvytron_visual_survival_compact_output/v0",
         "ok": train_result.get("ok"),
@@ -11865,37 +13559,15 @@ def _compact_train_result_for_output(result: Any) -> Any:
         "summary_ref": train_result.get("summary_ref"),
         "mode": train_result.get("mode"),
         "compute": train_result.get("compute"),
-        "trainer_entrypoint": train_result.get("trainer_entrypoint"),
         "called_train_muzero": train_result.get("called_train_muzero"),
+        "trainer_entrypoint": train_result.get("trainer_entrypoint"),
         "initial_policy_checkpoint": train_result.get("initial_policy_checkpoint"),
         "command": {
             "env_variant": command.get("env_variant"),
             "reward_variant": command.get("reward_variant"),
-            "exploration_bonus": _to_plain(command.get("exploration_bonus")),
-            "exploration_bonus_mode": command.get("exploration_bonus_mode"),
-            "exploration_bonus_weight": command.get("exploration_bonus_weight"),
-            "exploration_bonus_feature_source": command.get(
-                "exploration_bonus_feature_source"
-            ),
-            "exploration_bonus_rnd_batch_size": command.get(
-                "exploration_bonus_rnd_batch_size"
-            ),
-            "exploration_bonus_rnd_update_per_collect": command.get(
-                "exploration_bonus_rnd_update_per_collect"
-            ),
-            "exploration_bonus_rnd_buffer_size": command.get(
-                "exploration_bonus_rnd_buffer_size"
-            ),
-            "exploration_bonus_rnd_learning_rate": command.get(
-                "exploration_bonus_rnd_learning_rate"
-            ),
-            "exploration_bonus_rnd_weight_decay": command.get(
-                "exploration_bonus_rnd_weight_decay"
-            ),
-            "exploration_bonus_rnd_input_norm": command.get(
-                "exploration_bonus_rnd_input_norm"
-            ),
-            "require_rnd_metrics": command.get("require_rnd_metrics"),
+            "reward_outcome_alpha": command.get("reward_outcome_alpha"),
+            "exploration_bonus": command.get("exploration_bonus"),
+            "trainer_entrypoint": command.get("trainer_entrypoint"),
             "opponent_policy_kind": command.get("opponent_policy_kind"),
             "opponent_use_cuda": command.get("opponent_use_cuda"),
             "env_manager_type": command.get("env_manager_type"),
@@ -11906,10 +13578,15 @@ def _compact_train_result_for_output(result: Any) -> Any:
             "source_state_trail_render_mode": command.get("source_state_trail_render_mode"),
             "source_state_bonus_render_mode": command.get("source_state_bonus_render_mode"),
             "policy_observation_backend": command.get("policy_observation_backend"),
+            "collect_search_backend": command.get("collect_search_backend"),
+            "collect_search_ctree_backend": command.get("collect_search_ctree_backend"),
+            "collect_search_backend_fallback_policy": command.get(
+                "collect_search_backend_fallback_policy"
+            ),
             "policy_trail_render_mode": command.get("policy_trail_render_mode"),
             "policy_bonus_render_mode": command.get("policy_bonus_render_mode"),
             "policy_observation_contract_id": command.get("policy_observation_contract_id"),
-            "observation_contract": _to_plain(command.get("observation_contract")),
+            "observation_contract": observation_contract,
             "lightzero_eval_freq": command.get("lightzero_eval_freq"),
             "skip_lightzero_eval_in_profile": command.get("skip_lightzero_eval_in_profile"),
             "profile_cuda_sync_enabled": command.get("profile_cuda_sync_enabled"),
@@ -11937,11 +13614,60 @@ def _compact_train_result_for_output(result: Any) -> Any:
         },
         "counts": {
             "env_steps_collected": env_steps,
+            "env_steps_collected_effective": env_steps,
+            "env_steps_collected_raw": env_steps_raw,
+            "env_steps_collected_source": env_steps_source,
+            "env_steps_collected_uses_fallback": steps_per_sec_uses_fallback,
             "mcts_search_calls": mcts_search_calls,
             "mcts_search_root_sum": mcts_root_sum,
             "mcts_search_simulation_budget_sum": counts.get("mcts_search_simulation_budget_sum"),
+            "mcts_search_node_budget_sum": counts.get("mcts_search_node_budget_sum"),
+            "collect_search_backend_direct_ctree_gpu_latent_calls": counts.get(
+                "collect_search_backend_direct_ctree_gpu_latent_calls"
+            ),
+            "collect_search_backend_fallback_calls": counts.get(
+                "collect_search_backend_fallback_calls"
+            ),
+            "collect_search_backend_output_fast_path_calls": counts.get(
+                "collect_search_backend_output_fast_path_calls"
+            ),
+            "collect_search_backend_output_rows": counts.get(
+                "collect_search_backend_output_rows"
+            ),
+            "collect_search_backend_ctree_traverse_calls": counts.get(
+                "collect_search_backend_ctree_traverse_calls"
+            ),
+            "collect_search_backend_ctree_backpropagate_calls": counts.get(
+                "collect_search_backend_ctree_backpropagate_calls"
+            ),
+            "collect_search_backend_recurrent_inference_calls": counts.get(
+                "collect_search_backend_recurrent_inference_calls"
+            ),
+            "collect_search_backend_model_output_d2h_bytes": counts.get(
+                "collect_search_backend_model_output_d2h_bytes"
+            ),
             "learner_train_calls": counts.get("learner_train_calls"),
             "replay_sample_calls": counts.get("replay_sample_calls"),
+            "evaluator_eval_calls": counts.get("evaluator_eval_calls"),
+            "evaluator_eval_skipped_calls": counts.get("evaluator_eval_skipped_calls"),
+            "env_registered_step_calls": counts.get("env_registered_step_calls"),
+            "batched_profile_env_manager_create_calls": counts.get(
+                "batched_profile_env_manager_create_calls"
+            ),
+            "batched_profile_env_manager_reset_calls": counts.get(
+                "batched_profile_env_manager_reset_calls"
+            ),
+            "batched_profile_env_manager_step_calls": counts.get(
+                "batched_profile_env_manager_step_calls"
+            ),
+            "env_step_info_calls": counts.get("env_step_info_calls"),
+            "env_base_info_calls": counts.get("env_base_info_calls"),
+            "rnd_collect_data_calls": counts.get("rnd_collect_data_calls"),
+            "rnd_train_with_data_calls": counts.get("rnd_train_with_data_calls"),
+            "rnd_estimate_calls": counts.get("rnd_estimate_calls"),
+            "rnd_metrics_snapshot_calls": counts.get("rnd_metrics_snapshot_calls"),
+            "rnd_metrics_write_snapshot_calls": counts.get("rnd_metrics_write_snapshot_calls"),
+            "rnd_state_hash_calls": counts.get("rnd_state_hash_calls"),
         },
         "timers_sec": {
             "train_muzero_wall": train_wall,
@@ -11951,18 +13677,228 @@ def _compact_train_result_for_output(result: Any) -> Any:
             "policy_forward_eval": timers.get("policy_forward_eval_sec"),
             "model_initial_inference": timers.get("model_initial_inference_sec"),
             "model_recurrent_inference": timers.get("model_recurrent_inference_sec"),
+            "collect_search_backend_initial_inference": timers.get(
+                "collect_search_backend_initial_inference_sec"
+            ),
+            "collect_search_backend_root_prepare": timers.get(
+                "collect_search_backend_root_prepare_sec"
+            ),
+            "collect_search_backend_ctree_traverse": timers.get(
+                "collect_search_backend_ctree_traverse_sec"
+            ),
+            "collect_search_backend_tensor_index": timers.get(
+                "collect_search_backend_tensor_index_sec"
+            ),
+            "collect_search_backend_recurrent_inference": timers.get(
+                "collect_search_backend_recurrent_inference_sec"
+            ),
+            "collect_search_backend_model_output_d2h": timers.get(
+                "collect_search_backend_model_output_d2h_sec"
+            ),
+            "collect_search_backend_model_output_listify": timers.get(
+                "collect_search_backend_model_output_listify_sec"
+            ),
+            "collect_search_backend_ctree_backpropagate": timers.get(
+                "collect_search_backend_ctree_backpropagate_sec"
+            ),
+            "collect_search_backend_flat_payload": timers.get(
+                "collect_search_backend_flat_payload_sec"
+            ),
+            "collect_search_backend_output_assembly": timers.get(
+                "collect_search_backend_output_assembly_sec"
+            ),
             "learner_train": timers.get("learner_train_sec"),
             "replay_sample": timers.get("replay_sample_sec"),
             "evaluator_eval": timers.get("evaluator_eval_sec"),
             "env_telemetry_write": timers.get("env_telemetry_write_sec"),
+            "env_registered_step": timers.get("env_registered_step_sec"),
+            "batched_profile_env_manager_reset": timers.get(
+                "batched_profile_env_manager_reset_sec"
+            ),
+            "batched_profile_env_manager_step": timers.get(
+                "batched_profile_env_manager_step_sec"
+            ),
+            "batched_profile_surface_env_step": timers.get(
+                "batched_profile_surface_env_step_sec"
+            ),
+            "batched_profile_surface_stack_update": timers.get(
+                "batched_profile_surface_stack_update_sec"
+            ),
+            "batched_profile_surface_reward": timers.get(
+                "batched_profile_surface_reward_sec"
+            ),
+            "batched_profile_surface_package": timers.get(
+                "batched_profile_surface_package_sec"
+            ),
+            "batched_profile_surface_package_mask_copy": timers.get(
+                "batched_profile_surface_package_mask_copy_sec"
+            ),
+            "batched_profile_surface_package_live_mask": timers.get(
+                "batched_profile_surface_package_live_mask_sec"
+            ),
+            "batched_profile_surface_package_policy_rows": timers.get(
+                "batched_profile_surface_package_policy_rows_sec"
+            ),
+            "batched_profile_surface_package_policy_observation": timers.get(
+                "batched_profile_surface_package_policy_observation_sec"
+            ),
+            "batched_profile_surface_package_policy_action_mask": timers.get(
+                "batched_profile_surface_package_policy_action_mask_sec"
+            ),
+            "batched_profile_surface_package_final_observation": timers.get(
+                "batched_profile_surface_package_final_observation_sec"
+            ),
+            "batched_profile_surface_package_info": timers.get(
+                "batched_profile_surface_package_info_sec"
+            ),
+            "batched_profile_surface_package_output_copy": timers.get(
+                "batched_profile_surface_package_output_copy_sec"
+            ),
+            "batched_profile_bridge_action_env_id_sort": timers.get(
+                "batched_profile_bridge_action_env_id_sort_sec"
+            ),
+            "batched_profile_bridge_joint_action_from_scalar": timers.get(
+                "batched_profile_bridge_joint_action_from_scalar_sec"
+            ),
+            "batched_profile_bridge_loop_step": timers.get(
+                "batched_profile_bridge_loop_step_sec"
+            ),
+            "batched_profile_bridge_output_from_loop_step": timers.get(
+                "batched_profile_bridge_output_from_loop_step_sec"
+            ),
+            "batched_profile_bridge_policy_env_id_build": timers.get(
+                "batched_profile_bridge_policy_env_id_build_sec"
+            ),
+            "batched_profile_bridge_ready_obs_by_env_id": timers.get(
+                "batched_profile_bridge_ready_obs_by_env_id_sec"
+            ),
+            "batched_profile_bridge_timestep_env_id_prepare": timers.get(
+                "batched_profile_bridge_timestep_env_id_prepare_sec"
+            ),
+            "batched_profile_bridge_env_id_timestep_materialize": timers.get(
+                "batched_profile_bridge_env_id_timestep_materialize_sec"
+            ),
+            "batched_profile_bridge_split_timestep_by_env_id": timers.get(
+                "batched_profile_bridge_split_timestep_by_env_id_sec"
+            ),
+            "batched_profile_bridge_stock_base_env_timestep_conversion": timers.get(
+                "batched_profile_bridge_stock_base_env_timestep_conversion_sec"
+            ),
+            "batched_profile_bridge_autoreset_reset_materialize": timers.get(
+                "batched_profile_bridge_autoreset_reset_materialize_sec"
+            ),
+            "batched_profile_renderer_render": timers.get(
+                "batched_profile_renderer_render_sec"
+            ),
+            "batched_profile_renderer_device_render": timers.get(
+                "batched_profile_renderer_device_render_sec"
+            ),
+            "batched_profile_renderer_host_to_device": timers.get(
+                "batched_profile_renderer_host_to_device_sec"
+            ),
+            "batched_profile_renderer_device_to_host": timers.get(
+                "batched_profile_renderer_device_to_host_sec"
+            ),
+            "batched_profile_renderer_prewarm": timers.get(
+                "batched_profile_renderer_prewarm_sec"
+            ),
+            "batched_profile_renderer_pack": timers.get(
+                "batched_profile_renderer_owner_ordered_pack_sec"
+            ),
+            "env_step_info": timers.get("env_step_info_sec"),
+            "env_base_info": timers.get("env_base_info_sec"),
             "learner_save_checkpoint": timers.get("learner_save_checkpoint_sec"),
+            "rnd_collect_data": timers.get("rnd_collect_data_sec"),
+            "rnd_train_with_data": timers.get("rnd_train_with_data_sec"),
+            "rnd_estimate": timers.get("rnd_estimate_sec"),
+            "rnd_metrics_snapshot": timers.get("rnd_metrics_snapshot_sec"),
+            "rnd_metrics_write_snapshot": timers.get("rnd_metrics_write_snapshot_sec"),
+            "rnd_state_hash": timers.get("rnd_state_hash_sec"),
         },
         "derived": {
             "steps_per_sec": steps_per_sec,
+            "steps_per_sec_currency": steps_per_sec_currency,
+            "steps_per_sec_source": env_steps_source,
+            "steps_per_sec_uses_fallback_denominator": steps_per_sec_uses_fallback,
             "mcts_root_batch_mean": mcts_root_batch_mean,
             "mcts_recurrent_batch_mean": derived.get(
                 "model_recurrent_inference_in_mcts_search_batch_mean"
             ),
+            "collect_search_backend_recurrent_batch_mean": direct_recurrent_batch_mean,
+            "batched_profile_ready_obs_before_step_mean": (
+                sample_stats.get("batched_profile_env_manager_ready_obs_before_step", {})
+                .get("mean")
+            ),
+            "batched_profile_ready_obs_after_step_mean": (
+                sample_stats.get("batched_profile_env_manager_ready_obs_after_step", {})
+                .get("mean")
+            ),
+            "batched_profile_timestep_count_mean": (
+                sample_stats.get("batched_profile_env_manager_timestep_count", {}).get("mean")
+            ),
+            "batched_profile_action_row_count_mean": (
+                sample_stats.get("batched_profile_env_manager_action_row_count", {}).get("mean")
+            ),
+            "batched_profile_complete_row_omission_count_mean": (
+                sample_stats.get(
+                    "batched_profile_env_manager_complete_row_omission_count",
+                    {},
+                ).get("mean")
+            ),
+            "batched_profile_partial_render_request_mean": (
+                sample_stats.get("batched_profile_renderer_partial_render_request", {}).get(
+                    "mean"
+                )
+            ),
+            "batched_profile_render_output_count_mean": (
+                sample_stats.get("batched_profile_renderer_render_output_count", {}).get("mean")
+            ),
+        },
+        "semantic_identity": {
+            "schema_id": "curvyzero_optimizer_profile_semantic_identity/v0",
+            "profile_mode": train_result.get("mode"),
+            "called_train_muzero": train_result.get("called_train_muzero"),
+            "trainer_entrypoint": train_result.get("trainer_entrypoint"),
+            "env_variant": command.get("env_variant"),
+            "env_manager_type": env_manager_type,
+            "policy_observation_backend": command.get("policy_observation_backend"),
+            "collect_search_backend": command.get("collect_search_backend"),
+            "collect_search_ctree_backend": command.get("collect_search_ctree_backend"),
+            "collect_search_backend_fallback_policy": command.get(
+                "collect_search_backend_fallback_policy"
+            ),
+            "policy_observation_contract_id": command.get("policy_observation_contract_id"),
+            "observation_contract_id": observation_contract.get("contract_id"),
+            "observation_surface_label": observation_contract.get("surface_label"),
+            "observation_stack_shape": observation_contract.get("stack_shape"),
+            "observation_single_frame_shape": observation_contract.get("single_frame_shape"),
+            "observation_raw_dtype": observation_contract.get("raw_dtype"),
+            "observation_model_dtype": observation_contract.get("model_dtype"),
+            "source_state_trail_render_mode": command.get("source_state_trail_render_mode"),
+            "source_state_bonus_render_mode": command.get("source_state_bonus_render_mode"),
+            "policy_trail_render_mode": command.get("policy_trail_render_mode"),
+            "policy_bonus_render_mode": command.get("policy_bonus_render_mode"),
+            "death_mode": (
+                "profile_no_death"
+                if command.get("disable_death_for_profile")
+                else "normal"
+            ),
+            "opponent_death_mode": command.get("opponent_death_mode"),
+            "rnd_mode": (
+                command.get("exploration_bonus", {}).get("mode")
+                if isinstance(command.get("exploration_bonus"), dict)
+                else None
+            ),
+            "env_steps_collected_source": env_steps_source,
+            "speed_currency": steps_per_sec_currency,
+            "scalar_materialization_semantics": scalar_materialization_semantics,
+            "materialized_timestep_count_mean": (
+                sample_stats.get("batched_profile_env_manager_timestep_count", {}).get("mean")
+            ),
+            "lightzero_to_play_mode": lightzero_to_play_mode,
+            "zero_mask_filtering_semantics": "environment_action_mask_consumed_by_lightzero",
+            "consumer_semantics": "stock_lightzero_train_muzero_collect_search_replay_learner",
+            "cpu_tree_included": True,
         },
         "telemetry": {
             "row_count": action.get("row_count"),
@@ -11978,24 +13914,81 @@ def _compact_train_result_for_output(result: Any) -> Any:
             "max_memory_used_mib": gpu.get("max_memory_used_mib"),
             "sample_count": gpu.get("sample_count"),
         },
+        "search_backend_proof": {
+            "schema_id": collect_search_backend_proof.get("schema_id"),
+            "requested_backend": collect_search_backend_proof.get("requested_backend"),
+            "requested_ctree_backend": collect_search_backend_proof.get(
+                "requested_ctree_backend"
+            ),
+            "fallback_policy": collect_search_backend_proof.get("fallback_policy"),
+            "observed_collect_search_backends": observed_collect_search_backends,
+            "observed_collect_search_ctree_backends": observed_collect_search_ctree_backends,
+            "direct_ctree_gpu_latent_calls": collect_search_backend_proof.get(
+                "direct_ctree_gpu_latent_calls"
+            ),
+            "fallback_calls": collect_search_backend_proof.get("fallback_calls"),
+            "output_rows": collect_search_backend_proof.get("output_rows"),
+            "flat_payload_timer_present": timers.get("collect_search_backend_flat_payload_sec")
+            is not None,
+        },
+        "final_volume_commit": train_result.get("final_volume_commit"),
         "rnd_reward_model_metrics": {
             "enabled": rnd_metrics.get("enabled"),
-            "latest_ref": rnd_metrics.get("latest_ref"),
-            "jsonl_ref": rnd_metrics.get("jsonl_ref"),
+            "required": command.get("require_rnd_metrics"),
             "latest_exists": rnd_metrics.get("latest_exists"),
             "jsonl_exists": rnd_metrics.get("jsonl_exists"),
             "event_count": rnd_metrics.get("event_count"),
-            "last_event_reasons": rnd_metrics.get("last_event_reasons"),
-            "errors": rnd_metrics.get("errors"),
-            "latest": _to_plain(rnd_metrics.get("latest")),
+            "latest_ref": rnd_metrics.get("latest_ref"),
+            "jsonl_ref": rnd_metrics.get("jsonl_ref"),
+            "constructed": rnd_latest.get("constructed"),
+            "buffer_count": rnd_latest.get("buffer_count"),
+            "collect_data_calls": rnd_latest.get("collect_data_calls"),
+            "train_with_data_calls": rnd_latest.get("train_with_data_calls"),
+            "train_with_data_skipped_small_buffer_count": rnd_latest.get(
+                "train_with_data_skipped_small_buffer_count"
+            ),
+            "train_cnt_rnd": rnd_latest.get("train_cnt_rnd"),
+            "estimate_calls": rnd_latest.get("estimate_calls"),
+            "estimate_cnt_rnd": rnd_latest.get("estimate_cnt_rnd"),
+            "train_cnt_per_estimate": rnd_latest.get("train_cnt_per_estimate"),
+            "train_with_data_calls_per_collect": rnd_latest.get(
+                "train_with_data_calls_per_collect"
+            ),
+            "last_train_loss": rnd_latest.get("last_train_loss"),
+            "last_raw_mse_mean": rnd_latest.get("last_raw_mse_mean"),
+            "last_raw_mse_min": rnd_latest.get("last_raw_mse_min"),
+            "last_raw_mse_max": rnd_latest.get("last_raw_mse_max"),
+            "last_raw_mse_std": rnd_latest.get("last_raw_mse_std"),
+            "last_raw_mse_p50": rnd_latest.get("last_raw_mse_p50"),
+            "last_raw_mse_p95": rnd_latest.get("last_raw_mse_p95"),
+            "last_intrinsic_mean": rnd_latest.get("last_intrinsic_mean"),
+            "last_intrinsic_min": rnd_latest.get("last_intrinsic_min"),
+            "last_intrinsic_max": rnd_latest.get("last_intrinsic_max"),
+            "last_target_reward_changed": rnd_latest.get("last_target_reward_changed"),
+            "last_target_reward_delta_abs_mean": rnd_latest.get(
+                "last_target_reward_delta_abs_mean"
+            ),
+            "last_target_reward_delta_abs_max": rnd_latest.get(
+                "last_target_reward_delta_abs_max"
+            ),
+            "predictor_changed": bool(
+                rnd_latest.get("last_predictor_hash_before_train")
+                and rnd_latest.get("last_predictor_hash_after_train")
+                and rnd_latest.get("last_predictor_hash_before_train")
+                != rnd_latest.get("last_predictor_hash_after_train")
+            ),
+            "target_changed": (
+                None
+                if not rnd_latest.get("last_target_hash_before_train")
+                or not rnd_latest.get("last_target_hash_after_train")
+                else rnd_latest.get("last_target_hash_before_train")
+                != rnd_latest.get("last_target_hash_after_train")
+            ),
         },
-        "final_volume_commit": train_result.get("final_volume_commit"),
     }
     policy_observation_gpu_summary = action.get("policy_observation_gpu_last_profile")
     if policy_observation_gpu_summary is not None:
-        compact["telemetry"]["policy_observation_gpu_last_profile"] = (
-            policy_observation_gpu_summary
-        )
+        compact["telemetry"]["policy_observation_gpu_last_profile"] = policy_observation_gpu_summary
     elif str(command.get("policy_observation_backend") or "") == "jax_gpu":
         compact["telemetry"]["policy_observation_gpu_last_profile"] = {
             "status": "missing",
@@ -12006,6 +13999,71 @@ def _compact_train_result_for_output(result: Any) -> Any:
     if "background_eval" in result:
         compact["background_eval"] = result["background_eval"]
     return compact
+
+
+@app.local_entrypoint()
+def checkpoint_selfplay_gif_main(
+    checkpoint_ref: str,
+    checkpoint_label: str = "",
+    eval_id: str = DEFAULT_BACKGROUND_EVAL_ID_PREFIX,
+    run_id: str = DEFAULT_RUN_ID,
+    attempt_id: str = DEFAULT_ATTEMPT_ID,
+    seed: int = DEFAULT_SEED + DEFAULT_BACKGROUND_GIF_SEED_OFFSET,
+    max_steps: int = DEFAULT_BACKGROUND_GIF_MAX_STEPS,
+    source_max_steps: int = DEFAULT_SOURCE_MAX_STEPS,
+    decision_ms: float = DEFAULT_DECISION_MS,
+    decision_source_frames: int = DEFAULT_DECISION_SOURCE_FRAMES,
+    source_physics_step_ms: float = DEFAULT_SOURCE_PHYSICS_STEP_MS,
+    source_max_steps_semantics: str = "source_physics_steps",
+    num_simulations: int = DEFAULT_BACKGROUND_EVAL_NUM_SIMULATIONS,
+    batch_size: int = DEFAULT_BACKGROUND_EVAL_BATCH_SIZE,
+    frame_stride: int = DEFAULT_BACKGROUND_GIF_FRAME_STRIDE,
+    fps: float = DEFAULT_BACKGROUND_GIF_FPS,
+    scale: int = DEFAULT_BACKGROUND_GIF_SCALE,
+    frame_size: int = DEFAULT_BACKGROUND_GIF_FRAME_SIZE,
+    training_env_variant: str = DEFAULT_ENV_VARIANT,
+    training_reward_variant: str = DEFAULT_REWARD_VARIANT,
+    training_reward_outcome_alpha: float = DEFAULT_REWARD_OUTCOME_ALPHA,
+    opponent_death_mode: str = DEFAULT_OPPONENT_DEATH_MODE,
+    opponent_runtime_mode: str = DEFAULT_OPPONENT_RUNTIME_MODE,
+    opponent_mixture_json: str = "",
+    natural_bonus_spawn: bool = TWO_SEAT_DEFAULT_NATURAL_BONUS_SPAWN,
+    collect_temperature: float = DEFAULT_BACKGROUND_GIF_COLLECT_TEMPERATURE,
+    collect_epsilon: float = DEFAULT_BACKGROUND_GIF_COLLECT_EPSILON,
+) -> None:
+    opponent_mixture_spec = None
+    if opponent_mixture_json:
+        opponent_mixture_spec = json.loads(opponent_mixture_json)
+    result = lightzero_curvytron_visual_survival_checkpoint_selfplay_gif.remote(
+        checkpoint_ref=checkpoint_ref,
+        checkpoint_label=checkpoint_label or None,
+        eval_id=eval_id,
+        run_id=run_id,
+        attempt_id=attempt_id,
+        seed=seed,
+        max_steps=max_steps,
+        source_max_steps=source_max_steps,
+        decision_ms=decision_ms,
+        decision_source_frames=decision_source_frames,
+        source_physics_step_ms=source_physics_step_ms,
+        source_max_steps_semantics=source_max_steps_semantics,
+        num_simulations=num_simulations,
+        batch_size=batch_size,
+        frame_stride=frame_stride,
+        fps=fps,
+        scale=scale,
+        frame_size=frame_size,
+        training_env_variant=training_env_variant,
+        training_reward_variant=training_reward_variant,
+        training_reward_outcome_alpha=training_reward_outcome_alpha,
+        opponent_death_mode=opponent_death_mode,
+        opponent_runtime_mode=opponent_runtime_mode,
+        opponent_mixture_spec=opponent_mixture_spec,
+        natural_bonus_spawn=natural_bonus_spawn,
+        collect_temperature=collect_temperature,
+        collect_epsilon=collect_epsilon,
+    )
+    print(json.dumps(_to_plain(result), indent=2, sort_keys=True))
 
 
 @app.local_entrypoint()
@@ -12025,6 +14083,8 @@ def main(
     n_episode: int = DEFAULT_N_EPISODE,
     num_simulations: int = DEFAULT_NUM_SIMULATIONS,
     batch_size: int = DEFAULT_BATCH_SIZE,
+    model_support_cap: int | None = DEFAULT_MODEL_SUPPORT_CAP,
+    td_steps: int | None = DEFAULT_TD_STEPS,
     lightzero_eval_freq: int = DEFAULT_LIGHTZERO_EVAL_FREQ,
     skip_lightzero_eval_in_profile: bool = DEFAULT_SKIP_LIGHTZERO_EVAL_IN_PROFILE,
     profile_cuda_sync_enabled: bool = DEFAULT_PROFILE_CUDA_SYNC_ENABLED,
@@ -12037,9 +14097,12 @@ def main(
     stop_after_learner_train_calls: int = DEFAULT_STOP_AFTER_LEARNER_TRAIN_CALLS,
     env_variant: str = DEFAULT_ENV_VARIANT,
     reward_variant: str = DEFAULT_REWARD_VARIANT,
+    reward_outcome_alpha: float = DEFAULT_REWARD_OUTCOME_ALPHA,
     source_state_trail_render_mode: str = DEFAULT_SOURCE_STATE_TRAIL_RENDER_MODE,
     source_state_bonus_render_mode: str = DEFAULT_SOURCE_STATE_BONUS_RENDER_MODE,
     policy_observation_backend: str = DEFAULT_POLICY_OBSERVATION_BACKEND_CHOICE,
+    collect_search_backend: str = DEFAULT_COLLECT_SEARCH_BACKEND,
+    collect_search_ctree_backend: str = DEFAULT_COLLECT_SEARCH_CTREE_BACKEND,
     learner_seat_mode: str = DEFAULT_LEARNER_SEAT_MODE,
     ego_action_straight_override_probability: float = (
         DEFAULT_EGO_ACTION_STRAIGHT_OVERRIDE_PROBABILITY
@@ -12068,6 +14131,9 @@ def main(
         DEFAULT_OPPONENT_ASSIGNMENT_REFRESH_INTERVAL_TRAIN_ITER
     ),
     opponent_assignment_refresh_ref: str | None = None,
+    own_checkpoint_opponent_refresh_enabled: bool = (
+        DEFAULT_OWN_CHECKPOINT_OPPONENT_REFRESH_ENABLED
+    ),
     opponent_assignment_json_path: str = "",
     opponent_assignment_audit_json_path: str = "",
     opponent_assignment_target_volume: str = "runs",
@@ -12414,17 +14480,50 @@ def main(
                 result = compact
         print(json.dumps(_to_plain(result), indent=2, sort_keys=True))
         return
+    flat_a3_ctree_requested = (
+        _validate_collect_search_ctree_backend(collect_search_ctree_backend)
+        == COLLECT_SEARCH_CTREE_BACKEND_FLAT_A3
+    )
     if compute == COMPUTE_CPU:
+        if flat_a3_ctree_requested:
+            raise ValueError(
+                "collect_search_ctree_backend='flat_a3' is isolated to "
+                "gpu-l4-t4-cpu40 and gpu-h100-cpu40 optimizer profile images"
+            )
         train_fn = lightzero_curvytron_visual_survival_cpu
     elif compute == COMPUTE_CPU64:
+        if flat_a3_ctree_requested:
+            raise ValueError(
+                "collect_search_ctree_backend='flat_a3' is isolated to "
+                "gpu-l4-t4-cpu40 and gpu-h100-cpu40 optimizer profile images"
+            )
         train_fn = lightzero_curvytron_visual_survival_cpu64
     elif compute == COMPUTE_GPU_L4_T4:
+        if flat_a3_ctree_requested:
+            raise ValueError(
+                "collect_search_ctree_backend='flat_a3' uses the isolated CPU40 "
+                "optimizer image; choose compute='gpu-l4-t4-cpu40' or "
+                "'gpu-h100-cpu40'"
+            )
         train_fn = lightzero_curvytron_visual_survival_gpu
     elif compute == COMPUTE_GPU_L4_T4_CPU40:
-        train_fn = lightzero_curvytron_visual_survival_gpu_cpu40
+        train_fn = (
+            lightzero_curvytron_visual_survival_gpu_cpu40_ctree_a3
+            if flat_a3_ctree_requested
+            else lightzero_curvytron_visual_survival_gpu_cpu40
+        )
     elif compute == COMPUTE_GPU_H100_CPU40:
-        train_fn = lightzero_curvytron_visual_survival_h100_cpu40
+        train_fn = (
+            lightzero_curvytron_visual_survival_h100_cpu40_ctree_a3
+            if flat_a3_ctree_requested
+            else lightzero_curvytron_visual_survival_h100_cpu40
+        )
     elif compute == COMPUTE_GPU_H100X2_CPU40:
+        if flat_a3_ctree_requested:
+            raise ValueError(
+                "collect_search_ctree_backend='flat_a3' is isolated to the "
+                "single-GPU optimizer images for now"
+            )
         train_fn = lightzero_curvytron_visual_survival_h100x2_cpu40
     else:
         raise ValueError(f"unknown compute {compute!r}; expected one of {COMPUTE_CHOICES!r}")
@@ -12439,8 +14538,10 @@ def main(
     source_state_bonus_render_mode = _validate_source_state_bonus_render_mode(
         source_state_bonus_render_mode
     )
-    policy_observation_backend = _validate_policy_observation_backend(
-        policy_observation_backend
+    policy_observation_backend = _validate_policy_observation_backend(policy_observation_backend)
+    collect_search_backend = _validate_collect_search_backend(collect_search_backend)
+    collect_search_ctree_backend = _validate_collect_search_ctree_backend(
+        collect_search_ctree_backend
     )
     learner_seat_mode = _validate_learner_seat_mode(learner_seat_mode)
     kwargs = {
@@ -12458,6 +14559,8 @@ def main(
         "n_episode": n_episode,
         "num_simulations": num_simulations,
         "batch_size": batch_size,
+        "model_support_cap": model_support_cap,
+        "td_steps": td_steps,
         "lightzero_eval_freq": lightzero_eval_freq,
         "skip_lightzero_eval_in_profile": skip_lightzero_eval_in_profile,
         "profile_cuda_sync_enabled": profile_cuda_sync_enabled,
@@ -12469,9 +14572,12 @@ def main(
         "stop_after_learner_train_calls": stop_after_learner_train_calls,
         "env_variant": env_variant,
         "reward_variant": reward_variant,
+        "reward_outcome_alpha": reward_outcome_alpha,
         "source_state_trail_render_mode": source_state_trail_render_mode,
         "source_state_bonus_render_mode": source_state_bonus_render_mode,
         "policy_observation_backend": policy_observation_backend,
+        "collect_search_backend": collect_search_backend,
+        "collect_search_ctree_backend": collect_search_ctree_backend,
         "learner_seat_mode": learner_seat_mode,
         "ego_action_straight_override_probability": ego_action_straight_override_probability,
         "policy_action_repeat_min": policy_action_repeat_min,
@@ -12498,6 +14604,7 @@ def main(
             opponent_assignment_refresh_interval_train_iter
         ),
         "opponent_assignment_refresh_ref": opponent_assignment_refresh_ref,
+        "own_checkpoint_opponent_refresh_enabled": own_checkpoint_opponent_refresh_enabled,
         "background_eval_enabled": background_eval_enabled,
         "background_eval_launch_kind": background_eval_launch_kind,
         "background_eval_compute": background_eval_compute,

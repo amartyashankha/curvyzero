@@ -1,7 +1,11 @@
-"""Modal train-attempt artifact for CurvyTron stacked debug-visual survival MuZero.
+"""Historical Modal train-attempt artifact for CurvyTron visual survival MuZero.
 
-This is the canonical attempt-shaped launch point for the first CurvyTron
-debug-fidelity visual survival trainer. It delegates the implementation to the
+This was the canonical attempt-shaped launch point for the first CurvyTron
+debug-fidelity visual survival trainer. It is not the current broad launch
+lane. Current defaults live in ``curvyzero.contracts.curvytron`` and the main
+``lightzero_curvyzero_stacked_debug_visual_survival_train`` module.
+
+This artifact delegates the implementation to the
 bounded sibling trainer module, which validates the configured surface and calls
 ``lzero.entry.train_muzero`` only when ``mode="train"``.
 
@@ -31,9 +35,8 @@ import modal
 
 from curvyzero.infra.modal import run_management as runs
 from curvyzero.infra.modal.lightzero_curvyzero_stacked_debug_visual_survival_train import (
-    CHEAP_GPU_RESOURCE,
     BACKGROUND_EVAL_LAUNCH_HOOK,
-    COMPUTE_CHOICES,
+    CHEAP_GPU_RESOURCE,
     DEFAULT_ATTEMPT_ID,
     DEFAULT_BACKGROUND_EVAL_BATCH_SIZE,
     DEFAULT_BACKGROUND_EVAL_COMPUTE,
@@ -53,7 +56,6 @@ from curvyzero.infra.modal.lightzero_curvyzero_stacked_debug_visual_survival_tra
     DEFAULT_BACKGROUND_GIF_SEED_OFFSET,
     DEFAULT_BATCH_SIZE,
     DEFAULT_COLLECTOR_ENV_NUM,
-    DEFAULT_COMPUTE,
     DEFAULT_CONTROL_NOISE_PROFILE_ID,
     DEFAULT_DECISION_MS,
     DEFAULT_DISABLE_DEATH_FOR_PROFILE,
@@ -85,6 +87,10 @@ from curvyzero.infra.modal.lightzero_curvyzero_stacked_debug_visual_survival_tra
 
 APP_NAME = "curvyzero-lightzero-curvytron-visual-survival-train-attempt"
 app = modal.App(APP_NAME)
+ATTEMPT_COMPUTE_CPU = "cpu"
+ATTEMPT_COMPUTE_GPU_L4_T4 = "gpu-l4-t4"
+ATTEMPT_COMPUTE_CHOICES = (ATTEMPT_COMPUTE_CPU, ATTEMPT_COMPUTE_GPU_L4_T4)
+DEFAULT_ATTEMPT_COMPUTE = ATTEMPT_COMPUTE_GPU_L4_T4
 
 
 @app.function(image=image, volumes={str(RUNS_MOUNT): runs_volume}, timeout=20 * 60, cpu=2.0)
@@ -287,7 +293,7 @@ def lightzero_curvytron_visual_survival_train_attempt_gpu(
 @app.local_entrypoint()
 def main(
     mode: str = DEFAULT_MODE,
-    compute: str = DEFAULT_COMPUTE,
+    compute: str = DEFAULT_ATTEMPT_COMPUTE,
     seed: int = DEFAULT_SEED,
     run_id: str = DEFAULT_RUN_ID,
     attempt_id: str = DEFAULT_ATTEMPT_ID,
@@ -331,12 +337,16 @@ def main(
     background_gif_frame_size: int = DEFAULT_BACKGROUND_GIF_FRAME_SIZE,
     wait_for_train: bool = False,
 ) -> None:
-    if compute == "cpu":
+    if compute == ATTEMPT_COMPUTE_CPU:
         train_fn = lightzero_curvytron_visual_survival_train_attempt_cpu
-    elif compute == "gpu-l4-t4":
+    elif compute == ATTEMPT_COMPUTE_GPU_L4_T4:
         train_fn = lightzero_curvytron_visual_survival_train_attempt_gpu
     else:
-        raise ValueError(f"unknown compute {compute!r}; expected one of {COMPUTE_CHOICES!r}")
+        raise ValueError(
+            f"unknown historical attempt compute {compute!r}; "
+            f"expected one of {ATTEMPT_COMPUTE_CHOICES!r}. "
+            "Use the main v2 trainer for the current L4 CPU40 broad lane."
+        )
 
     kwargs = {
         "mode": mode,

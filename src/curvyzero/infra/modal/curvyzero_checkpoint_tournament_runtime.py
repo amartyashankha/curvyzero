@@ -13,6 +13,8 @@ from curvyzero.infra.modal.curvyzero_checkpoint_tournament_settings import (
     CHECKPOINT_INTAKE_DICT_NAME,
     CHECKPOINT_INTAKE_QUEUE_NAME,
     CHECKPOINT_VOLUME_NAME,
+    CONTROL_MOUNT,
+    CONTROL_VOLUME_NAME,
     CURVYTRON_BONUS_SPRITE_SHEET_RELATIVE_PATH,
     LIGHTZERO_VERSION,
     OPPONENT_LEADERBOARD_DICT_NAME,
@@ -55,6 +57,10 @@ tournament_volume = modal.Volume.from_name(
     TOURNAMENT_VOLUME_NAME,
     **modal_volume_kwargs_for_name(TOURNAMENT_VOLUME_NAME),
 )
+control_volume = modal.Volume.from_name(
+    CONTROL_VOLUME_NAME,
+    **modal_volume_kwargs_for_name(CONTROL_VOLUME_NAME),
+)
 checkpoint_intake_state = modal.Dict.from_name(
     CHECKPOINT_INTAKE_DICT_NAME,
     create_if_missing=True,
@@ -76,6 +82,14 @@ def checkpoint_volumes() -> dict[str, Any]:
 
 def tournament_volumes() -> dict[str, Any]:
     return {TOURNAMENT_MOUNT.as_posix(): tournament_volume}
+
+
+def control_volumes() -> dict[str, Any]:
+    return {CONTROL_MOUNT.as_posix(): control_volume}
+
+
+def controller_volumes() -> dict[str, Any]:
+    return {**checkpoint_volumes(), **tournament_volumes(), **control_volumes()}
 
 
 def game_volumes() -> dict[str, Any]:

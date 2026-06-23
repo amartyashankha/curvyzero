@@ -266,9 +266,17 @@ def write_json(path: Path, payload: Any, *, exclusive: bool = False) -> dict[str
 
     body = json_bytes(payload)
     path.parent.mkdir(parents=True, exist_ok=True)
-    mode = "xb" if exclusive else "wb"
-    with path.open(mode) as handle:
-        handle.write(body)
+    if exclusive:
+        with path.open("xb") as handle:
+            handle.write(body)
+    else:
+        tmp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            with tmp_path.open("xb") as handle:
+                handle.write(body)
+            tmp_path.replace(path)
+        finally:
+            tmp_path.unlink(missing_ok=True)
     return {
         "path": str(path),
         "bytes": len(body),

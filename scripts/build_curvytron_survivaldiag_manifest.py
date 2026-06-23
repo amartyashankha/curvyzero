@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""Build a dry-run-only manifest for the current CurvyTron survivaldiag matrix.
+"""Build a dry-run-only manifest for the historical CurvyTron survivaldiag matrix.
 
 This generator is intentionally separate from
 ``build_curvytron_stock_train_manifest.py``. The older generator is historical
-May 12 control material; this one encodes the current blank-canvas
+May 12 control material; this one encodes a May 2026 blank-canvas
 survival-plus-bonus diagnostic lane and never launches Modal.
+
+Do not use this file for broad current launch defaults. The current broad lane
+comes from ``curvyzero.contracts.curvytron`` and the r18fresh postmortem
+``CURRENT_LAUNCH_DEFAULTS.md``.
 """
 
 from __future__ import annotations
@@ -1067,6 +1071,7 @@ def _train_kwargs_for_row(row: Row, *, run_id: str, attempt_id: str) -> dict[str
         "stop_after_learner_train_calls": 0,
         "env_variant": ENV_SOURCE_STATE_FIXED_OPPONENT,
         "reward_variant": row.reward_variant,
+        "reward_outcome_alpha": 1.0,
         "source_state_trail_render_mode": row.source_state_trail_render_mode,
         "source_state_bonus_render_mode": BONUS_RENDER_SIMPLE_SYMBOLS,
         "learner_seat_mode": LEARNER_SEAT_MODE_RANDOM_PER_EPISODE,
@@ -1134,6 +1139,7 @@ def _poller_kwargs_for_row(row: Row, *, run_id: str, attempt_id: str) -> dict[st
         "source_max_steps": SOURCE_MAX_STEPS,
         "env_variant": ENV_SOURCE_STATE_FIXED_OPPONENT,
         "reward_variant": row.reward_variant,
+        "reward_outcome_alpha": 1.0,
         "opponent_policy_kind": row.opponent_policy_kind,
         "opponent_checkpoint_ref": None,
         "opponent_snapshot_ref": None,

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import math
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,7 @@ from curvyzero.training import lightzero_checkpoints as lz_checkpoints
 
 APP_NAME = "curvyzero-lightzero-curvytron-run-status"
 DEFAULT_COLLAPSE_THRESHOLD = 0.95
+DEFAULT_ASSIGNMENT_PROOF_TAIL_BYTES = 128 * 1024 * 1024
 EVAL_JOB_KINDS = {
     "lightzero_curvytron_visual_survival_checkpoint_curve_eval",
     "lightzero_curvytron_visual_survival_live_checkpoint_eval",
@@ -162,6 +164,48 @@ def _load_jsonl_rows(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def _iter_jsonl_rows(path: Path) -> Any:
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                try:
+                    value = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(value, dict):
+                    yield value
+    except FileNotFoundError:
+        return
+
+
+def _iter_jsonl_tail_rows(path: Path, *, max_tail_bytes: int) -> Any:
+    max_tail_bytes = int(max_tail_bytes)
+    if max_tail_bytes <= 0:
+        yield from _iter_jsonl_rows(path)
+        return
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as handle:
+            offset = max(0, size - max_tail_bytes)
+            handle.seek(offset)
+            if offset > 0:
+                handle.readline()
+            for raw_line in handle:
+                line = raw_line.decode("utf-8", errors="ignore").strip()
+                if not line:
+                    continue
+                try:
+                    value = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(value, dict):
+                    yield value
+    except FileNotFoundError:
+        return
+
+
 def _safe_float(value: Any) -> float | None:
     if value is None:
         return None
@@ -178,6 +222,17 @@ def _safe_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _load_learner_metrics_latest(train_ref: Path) -> tuple[dict[str, Any] | None, str | None]:
+    latest_path = runs.volume_path(RUNS_MOUNT, train_ref / "learner_metrics_latest.json")
+    latest = _load_json(latest_path)
+    if latest is None:
+        return None, None
+    error = latest.get("error") if isinstance(latest, dict) else None
+    if error:
+        return None, str(error)
+    return latest, None
 
 
 def _action_summary(
@@ -745,6 +800,142 @@ def _assignment_refresh_rollup(run_id: str, attempt_id: str) -> dict[str, Any]:
     }
 
 
+def _assignment_env_proof_rollup(
+    run_id: str,
+    attempt_id: str,
+    *,
+    target_assignment_shas: list[str],
+    max_tail_bytes: int,
+) -> dict[str, Any]:
+    train_ref = runs.attempt_train_ref(TASK_ID, run_id, attempt_id)
+    env_ref = train_ref / "env_steps.jsonl"
+    env_path = runs.volume_path(RUNS_MOUNT, env_ref)
+    target_shas = {sha for sha in target_assignment_shas if sha}
+    target_prefixes = {sha[:8] for sha in target_shas}
+
+    try:
+        env_file_size = env_path.stat().st_size
+    except FileNotFoundError:
+        env_file_size = None
+
+    scanned_row_count = 0
+    assignment_row_count = 0
+    target_row_count = 0
+    target_provider_ok_count = 0
+    target_provider_false_count = 0
+    target_provider_null_count = 0
+    target_checkpoint_ref_count = 0
+    target_done_count = 0
+    assignment_counts: Counter[str] = Counter()
+    target_policy_kinds: Counter[str] = Counter()
+    target_entry_names: Counter[str] = Counter()
+    target_death_modes: Counter[str] = Counter()
+    target_refresh_indices: Counter[str] = Counter()
+    sample_rows: list[dict[str, Any]] = []
+
+    for row in _iter_jsonl_tail_rows(env_path, max_tail_bytes=max_tail_bytes):
+        scanned_row_count += 1
+        sha = row.get("opponent_assignment_sha256")
+        if sha:
+            sha_text = str(sha)
+            assignment_row_count += 1
+            assignment_counts[sha_text[:8]] += 1
+        else:
+            sha_text = ""
+        if target_shas and sha_text not in target_shas:
+            continue
+        if not target_shas and not sha_text:
+            continue
+
+        target_row_count += 1
+        provider_ok = row.get("opponent_provider_load_ok")
+        if provider_ok is True:
+            target_provider_ok_count += 1
+        elif provider_ok is False:
+            target_provider_false_count += 1
+        else:
+            target_provider_null_count += 1
+        if row.get("opponent_checkpoint_ref"):
+            target_checkpoint_ref_count += 1
+        if row.get("done") is True:
+            target_done_count += 1
+        for counter, key in (
+            (target_policy_kinds, "opponent_policy_kind"),
+            (target_entry_names, "opponent_mixture_entry_name"),
+            (target_death_modes, "opponent_death_mode"),
+            (target_refresh_indices, "opponent_assignment_refresh_index"),
+        ):
+            value = row.get(key)
+            if value is not None:
+                counter[str(value)] += 1
+        if len(sample_rows) < 3:
+            sample_rows.append(
+                {
+                    "opponent_assignment_sha256": sha_text[:8] if sha_text else None,
+                    "opponent_assignment_refresh_index": row.get(
+                        "opponent_assignment_refresh_index"
+                    ),
+                    "opponent_mixture_entry_name": row.get("opponent_mixture_entry_name"),
+                    "opponent_policy_kind": row.get("opponent_policy_kind"),
+                    "opponent_checkpoint_ref": row.get("opponent_checkpoint_ref"),
+                    "opponent_provider_load_ok": row.get("opponent_provider_load_ok"),
+                    "opponent_provider_load_candidate": row.get(
+                        "opponent_provider_load_candidate"
+                    ),
+                    "decision_source_frames": row.get("decision_source_frames"),
+                    "done": row.get("done"),
+                    "terminal_reason": row.get("terminal_reason"),
+                }
+            )
+
+    return {
+        "assignment_env_proof_ref": env_ref.as_posix(),
+        "assignment_env_proof_target_sha_prefixes": sorted(target_prefixes),
+        "assignment_env_proof_env_file_exists": env_path.exists(),
+        "assignment_env_proof_env_file_size_bytes": env_file_size,
+        "assignment_env_proof_tail_bytes": int(max_tail_bytes),
+        "assignment_env_proof_scanned_row_count": scanned_row_count,
+        "assignment_env_proof_assignment_row_count": assignment_row_count,
+        "assignment_env_proof_target_row_count": target_row_count,
+        "assignment_env_proof_target_provider_ok_count": target_provider_ok_count,
+        "assignment_env_proof_target_provider_false_count": target_provider_false_count,
+        "assignment_env_proof_target_provider_null_count": target_provider_null_count,
+        "assignment_env_proof_target_checkpoint_ref_count": target_checkpoint_ref_count,
+        "assignment_env_proof_target_done_count": target_done_count,
+        "assignment_env_proof_assignment_sha_counts": dict(sorted(assignment_counts.items())),
+        "assignment_env_proof_target_policy_kinds": dict(sorted(target_policy_kinds.items())),
+        "assignment_env_proof_target_entry_names": dict(sorted(target_entry_names.items())),
+        "assignment_env_proof_target_death_modes": dict(sorted(target_death_modes.items())),
+        "assignment_env_proof_target_refresh_indices": dict(
+            sorted(target_refresh_indices.items())
+        ),
+        "assignment_env_proof_sample_rows": sample_rows,
+    }
+
+
+def _assignment_proof_status(
+    run_id: str,
+    *,
+    attempt_id: str | None,
+    target_assignment_shas: list[str],
+    max_tail_bytes: int,
+) -> dict[str, Any]:
+    resolved_attempt_id = (
+        attempt_id or _latest_attempt_id_for_run(run_id) or _attempt_id_for_run(run_id)
+    )
+    return {
+        "run_id": run_id,
+        "attempt_id": resolved_attempt_id,
+        **_assignment_refresh_rollup(run_id, resolved_attempt_id),
+        **_assignment_env_proof_rollup(
+            run_id,
+            resolved_attempt_id,
+            target_assignment_shas=target_assignment_shas,
+            max_tail_bytes=max_tail_bytes,
+        ),
+    }
+
+
 def _gif_rollup(
     run_id: str,
     attempt_id: str,
@@ -846,6 +1037,23 @@ def _train_artifact_rollup(
         "status_heartbeat_ref": heartbeat_ref.as_posix(),
         "train_status": heartbeat.get("status") if isinstance(heartbeat, dict) else None,
         "train_stage": heartbeat.get("stage") if isinstance(heartbeat, dict) else None,
+        "heartbeat_error": heartbeat.get("error") if isinstance(heartbeat, dict) else None,
+        "heartbeat_exception": (
+            heartbeat.get("exception") if isinstance(heartbeat, dict) else None
+        ),
+        "heartbeat_message": (
+            heartbeat.get("message")
+            or heartbeat.get("status_message")
+            or heartbeat.get("failure_reason")
+            if isinstance(heartbeat, dict)
+            else None
+        ),
+        "heartbeat_updated_at": (
+            heartbeat.get("updated_at")
+            or heartbeat.get("timestamp")
+            if isinstance(heartbeat, dict)
+            else None
+        ),
         "progress_missing_reason": missing_reason,
         **_assignment_refresh_rollup(run_id, attempt_id),
         **_action_observability_rollup(run_id, attempt_id),
@@ -922,6 +1130,9 @@ def _run_status(
     progress = _load_json(latest_path)
     progress_error = progress.get("error") if isinstance(progress, dict) else None
     progress_readable = progress is not None and progress_error is None
+    learner_metrics_latest, learner_metrics_error = _load_learner_metrics_latest(train_ref)
+    learner_metrics_path = runs.volume_path(RUNS_MOUNT, train_ref / "learner_metrics.jsonl")
+    learner_metrics_rows = _load_jsonl_rows(learner_metrics_path)
     checkpoints = _checkpoint_summary(run_id, resolved_attempt_id)
     eval_rollup = _eval_manifest_rollup(
         run_id,
@@ -941,11 +1152,20 @@ def _run_status(
         "progress_exists": progress_readable,
         "progress_ref": (train_ref / "progress_latest.json").as_posix(),
         "progress_error": progress_error,
+        "learner_metrics_latest_exists": learner_metrics_latest is not None,
+        "learner_metrics_latest_ref": (train_ref / "learner_metrics_latest.json").as_posix(),
+        "learner_metrics_ref": (train_ref / "learner_metrics.jsonl").as_posix(),
+        "learner_metrics_error": learner_metrics_error,
+        "learner_metrics_point_count": len(learner_metrics_rows),
         **checkpoints,
         **eval_rollup,
         **train_artifacts,
     }
     if progress is None or progress_error is not None:
+        learner = learner_metrics_latest if isinstance(learner_metrics_latest, dict) else {}
+        numeric_metrics = learner.get("numeric_metrics")
+        if not isinstance(numeric_metrics, dict):
+            numeric_metrics = {}
         if progress_error is not None:
             row["progress_missing_reason"] = "progress_latest_unreadable"
         row.update(
@@ -955,7 +1175,15 @@ def _run_status(
                 "mean_steps": None,
                 "max_steps": None,
                 "completed_episodes": None,
-                "model_changed": None,
+                "model_changed": learner.get("model_parameters_changed"),
+                "learner_train_call_index": learner.get("learner_train_call_index"),
+                "learner_train_iter_before": learner.get("train_iter_before"),
+                "learner_train_iter_after": learner.get("train_iter_after"),
+                "learner_train_iter_delta": learner.get("train_iter_delta"),
+                "learner_collector_envstep": learner.get("collector_envstep"),
+                "learner_elapsed_sec": _safe_float(learner.get("elapsed_sec")),
+                "learner_numeric_metric_count": len(numeric_metrics),
+                "learner_numeric_metrics": numeric_metrics,
                 "problems": None,
                 "top_action": None,
                 "top_action_fraction": None,
@@ -965,7 +1193,10 @@ def _run_status(
         return row
     learner = progress.get("last_learner")
     if not isinstance(learner, dict):
-        learner = {}
+        learner = learner_metrics_latest if isinstance(learner_metrics_latest, dict) else {}
+    numeric_metrics = learner.get("numeric_metrics")
+    if not isinstance(numeric_metrics, dict):
+        numeric_metrics = {}
     row.update(
         {
             "event": progress.get("event"),
@@ -974,6 +1205,14 @@ def _run_status(
             "max_steps": progress.get("max_completed_episode_steps"),
             "completed_episodes": progress.get("completed_episode_count"),
             "model_changed": learner.get("model_parameters_changed"),
+            "learner_train_call_index": learner.get("learner_train_call_index"),
+            "learner_train_iter_before": learner.get("train_iter_before"),
+            "learner_train_iter_after": learner.get("train_iter_after"),
+            "learner_train_iter_delta": learner.get("train_iter_delta"),
+            "learner_collector_envstep": learner.get("collector_envstep"),
+            "learner_elapsed_sec": _safe_float(learner.get("elapsed_sec")),
+            "learner_numeric_metric_count": len(numeric_metrics),
+            "learner_numeric_metrics": numeric_metrics,
             "problems": progress.get("problem_count"),
             "effective_noop": _safe_float(progress.get("effective_action_noop_probability")),
             "elapsed_sec": _safe_float(progress.get("elapsed_sec")),
@@ -989,6 +1228,92 @@ def _run_status(
         )
     )
     return row
+
+
+def _run_fast_status(run_id: str, *, attempt_id: str | None) -> dict[str, Any]:
+    resolved_attempt_id = (
+        attempt_id or _latest_attempt_id_for_run(run_id) or _attempt_id_for_run(run_id)
+    )
+    train_ref = runs.attempt_train_ref(TASK_ID, run_id, resolved_attempt_id)
+    train_root = runs.volume_path(RUNS_MOUNT, train_ref)
+    heartbeat_ref = train_ref / "status_heartbeat.json"
+    heartbeat = _load_json(runs.volume_path(RUNS_MOUNT, heartbeat_ref))
+    progress_ref = train_ref / "progress_latest.json"
+    progress = _load_json(runs.volume_path(RUNS_MOUNT, progress_ref))
+    progress_error = progress.get("error") if isinstance(progress, dict) else None
+    progress_readable = progress is not None and progress_error is None
+    learner_metrics_latest, learner_metrics_error = _load_learner_metrics_latest(train_ref)
+    checkpoints = _checkpoint_summary(run_id, resolved_attempt_id)
+    learner = progress.get("last_learner") if isinstance(progress, dict) else None
+    if not isinstance(learner, dict):
+        learner = learner_metrics_latest if isinstance(learner_metrics_latest, dict) else {}
+    numeric_metrics = learner.get("numeric_metrics")
+    if not isinstance(numeric_metrics, dict):
+        numeric_metrics = {}
+    if progress_readable:
+        progress_missing_reason = None
+    elif not train_root.exists():
+        progress_missing_reason = "train_root_absent"
+    elif heartbeat is not None:
+        progress_missing_reason = "progress_latest_absent_after_train_heartbeat"
+    else:
+        progress_missing_reason = "train_root_exists_progress_latest_absent"
+    return {
+        "run_id": run_id,
+        "short_name": run_id.removeprefix("curvytron-two-seat-selfplay-"),
+        "attempt_id": resolved_attempt_id,
+        "train_root_exists": train_root.exists(),
+        "status_heartbeat_exists": heartbeat is not None,
+        "status_heartbeat_ref": heartbeat_ref.as_posix(),
+        "train_status": heartbeat.get("status") if isinstance(heartbeat, dict) else None,
+        "train_stage": heartbeat.get("stage") if isinstance(heartbeat, dict) else None,
+        "heartbeat_error": heartbeat.get("error") if isinstance(heartbeat, dict) else None,
+        "heartbeat_exception": (
+            heartbeat.get("exception") if isinstance(heartbeat, dict) else None
+        ),
+        "heartbeat_message": (
+            heartbeat.get("message")
+            or heartbeat.get("status_message")
+            or heartbeat.get("failure_reason")
+            if isinstance(heartbeat, dict)
+            else None
+        ),
+        "heartbeat_updated_at": (
+            heartbeat.get("updated_at")
+            or heartbeat.get("timestamp")
+            if isinstance(heartbeat, dict)
+            else None
+        ),
+        "progress_exists": progress_readable,
+        "progress_ref": progress_ref.as_posix(),
+        "progress_error": progress_error,
+        "progress_missing_reason": progress_missing_reason,
+        "event": progress.get("event") if isinstance(progress, dict) else None,
+        "iteration": progress.get("iteration") if isinstance(progress, dict) else None,
+        "mean_steps": (
+            progress.get("mean_completed_episode_steps") if isinstance(progress, dict) else None
+        ),
+        "max_steps": (
+            progress.get("max_completed_episode_steps") if isinstance(progress, dict) else None
+        ),
+        "completed_episodes": (
+            progress.get("completed_episode_count") if isinstance(progress, dict) else None
+        ),
+        "problem_count": progress.get("problem_count") if isinstance(progress, dict) else None,
+        "model_changed": learner.get("model_parameters_changed"),
+        "learner_train_call_index": learner.get("learner_train_call_index"),
+        "learner_train_iter_before": learner.get("train_iter_before"),
+        "learner_train_iter_after": learner.get("train_iter_after"),
+        "learner_train_iter_delta": learner.get("train_iter_delta"),
+        "learner_collector_envstep": learner.get("collector_envstep"),
+        "learner_elapsed_sec": _safe_float(learner.get("elapsed_sec")),
+        "learner_numeric_metric_count": len(numeric_metrics),
+        "learner_metrics_latest_exists": learner_metrics_latest is not None,
+        "learner_metrics_error": learner_metrics_error,
+        "checkpoint_count": checkpoints.get("checkpoint_count"),
+        "latest_checkpoint": checkpoints.get("latest_checkpoint"),
+        "latest_checkpoint_mtime": checkpoints.get("latest_checkpoint_mtime"),
+    }
 
 
 def _progress_curve(
@@ -1084,6 +1409,54 @@ def _split_csv(value: str | None) -> list[str]:
     if not value:
         return []
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _chunks(items: list[str], size: int) -> list[tuple[int, list[str]]]:
+    chunk_size = max(1, int(size))
+    return [
+        (start, items[start : start + chunk_size])
+        for start in range(0, len(items), chunk_size)
+    ]
+
+
+def _remote_rows_in_chunks(
+    fn: Any,
+    selected_run_ids: list[str],
+    selected_attempt_ids: list[str],
+    *remote_args: Any,
+    chunk_size: int,
+    chunk_workers: int,
+) -> list[dict[str, Any]]:
+    if not selected_run_ids:
+        return []
+    if chunk_size <= 0 or len(selected_run_ids) <= chunk_size:
+        return fn.remote(selected_run_ids, selected_attempt_ids, *remote_args)
+
+    chunks = _chunks(selected_run_ids, chunk_size)
+    attempt_chunks = {
+        start: selected_attempt_ids[start : start + len(run_chunk)]
+        for start, run_chunk in chunks
+    }
+    max_workers = max(1, min(int(chunk_workers), len(chunks)))
+    rows_by_start: dict[int, list[dict[str, Any]]] = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(
+                fn.remote,
+                run_chunk,
+                attempt_chunks[start],
+                *remote_args,
+            ): start
+            for start, run_chunk in chunks
+        }
+        for future in as_completed(futures):
+            start = futures[future]
+            rows_by_start[start] = future.result()
+
+    merged: list[dict[str, Any]] = []
+    for start, _run_chunk in chunks:
+        merged.extend(rows_by_start.get(start, []))
+    return merged
 
 
 def _preset_run_ids(preset: str) -> tuple[list[str], list[str]]:
@@ -1208,6 +1581,93 @@ def _print_table(rows: list[dict[str, Any]]) -> None:
                 value = ""
             values.append(str(value))
         print("\t".join(values))
+
+
+def _print_fast_table(rows: list[dict[str, Any]]) -> None:
+    fields = [
+        "short_name",
+        "train_status",
+        "train_stage",
+        "iteration",
+        "learner_train_iter_after",
+        "learner_collector_envstep",
+        "mean_steps",
+        "max_steps",
+        "checkpoint_count",
+        "latest_checkpoint",
+        "progress_exists",
+        "status_heartbeat_exists",
+        "model_changed",
+        "problem_count",
+        "progress_missing_reason",
+    ]
+    print("\t".join(fields))
+    for row in rows:
+        values = []
+        for field in fields:
+            value = row.get(field)
+            if field == "mean_steps":
+                value = _format_float(value)
+            elif value is None:
+                value = ""
+            values.append(str(value))
+        print("\t".join(values))
+
+
+def _print_fast_summary(rows: list[dict[str, Any]]) -> None:
+    checkpoint_counts = [
+        int(row["checkpoint_count"])
+        for row in rows
+        if isinstance(row.get("checkpoint_count"), int)
+    ]
+    iterations = [
+        int(row["iteration"])
+        for row in rows
+        if isinstance(row.get("iteration"), int)
+    ]
+    grid_counts: Counter[str] = Counter()
+    for row in rows:
+        run_id = str(row.get("run_id") or "")
+        grid_counts[run_id.split("-", 1)[0] or "unknown"] += 1
+    summary = {
+        "row_count": len(rows),
+        "grid_counts": dict(sorted(grid_counts.items())),
+        "train_status_counts": dict(
+            sorted(Counter(str(row.get("train_status") or "missing") for row in rows).items())
+        ),
+        "train_stage_counts": dict(
+            sorted(Counter(str(row.get("train_stage") or "missing") for row in rows).items())
+        ),
+        "heartbeat_count": sum(1 for row in rows if row.get("status_heartbeat_exists")),
+        "progress_latest_count": sum(1 for row in rows if row.get("progress_exists")),
+        "model_changed_true_count": sum(1 for row in rows if row.get("model_changed") is True),
+        "checkpoint_count_min": min(checkpoint_counts) if checkpoint_counts else None,
+        "checkpoint_count_max": max(checkpoint_counts) if checkpoint_counts else None,
+        "checkpoint_count_sum": sum(checkpoint_counts),
+        "iteration_min": min(iterations) if iterations else None,
+        "iteration_max": max(iterations) if iterations else None,
+        "failed_run_ids": [
+            str(row.get("run_id"))
+            for row in rows
+            if str(row.get("train_status") or "") == "failed"
+        ],
+        "lowest_checkpoint_runs": [
+            {
+                "run_id": row.get("run_id"),
+                "checkpoint_count": row.get("checkpoint_count"),
+                "latest_checkpoint": row.get("latest_checkpoint"),
+                "train_status": row.get("train_status"),
+            }
+            for row in sorted(
+                rows,
+                key=lambda item: (
+                    int(item.get("checkpoint_count") or 0),
+                    str(item.get("run_id") or ""),
+                ),
+            )[:8]
+        ],
+    }
+    print(json.dumps(summary, indent=2, sort_keys=True))
 
 
 def _print_curve_table(rows: list[dict[str, Any]]) -> None:
@@ -1515,6 +1975,23 @@ def curvytron_run_status(
 
 
 @app.function(image=image, volumes={str(RUNS_MOUNT): runs_volume}, timeout=5 * 60, cpu=1.0)
+def curvytron_run_fast_status(
+    run_ids: list[str],
+    attempt_ids: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    resolved_attempt_ids = attempt_ids or []
+    rows: list[dict[str, Any]] = []
+    for index, run_id in enumerate(run_ids):
+        attempt_id = (
+            resolved_attempt_ids[index]
+            if index < len(resolved_attempt_ids) and resolved_attempt_ids[index]
+            else None
+        )
+        rows.append(_run_fast_status(run_id, attempt_id=attempt_id))
+    return rows
+
+
+@app.function(image=image, volumes={str(RUNS_MOUNT): runs_volume}, timeout=5 * 60, cpu=1.0)
 def curvytron_run_curves(
     run_ids: list[str],
     attempt_ids: list[str] | None = None,
@@ -1562,6 +2039,33 @@ def curvytron_run_eval_curves(
     return rows
 
 
+@app.function(image=image, volumes={str(RUNS_MOUNT): runs_volume}, timeout=5 * 60, cpu=1.0)
+def curvytron_assignment_proof(
+    run_ids: list[str],
+    attempt_ids: list[str] | None = None,
+    target_assignment_shas: list[str] | None = None,
+    max_tail_bytes: int = DEFAULT_ASSIGNMENT_PROOF_TAIL_BYTES,
+) -> list[dict[str, Any]]:
+    resolved_attempt_ids = attempt_ids or []
+    target_shas = target_assignment_shas or []
+    rows: list[dict[str, Any]] = []
+    for index, run_id in enumerate(run_ids):
+        attempt_id = (
+            resolved_attempt_ids[index]
+            if index < len(resolved_attempt_ids) and resolved_attempt_ids[index]
+            else None
+        )
+        rows.append(
+            _assignment_proof_status(
+                run_id,
+                attempt_id=attempt_id,
+                target_assignment_shas=target_shas,
+                max_tail_bytes=int(max_tail_bytes),
+            )
+        )
+    return rows
+
+
 @app.local_entrypoint()
 def main(
     preset: str = "live6",
@@ -1569,6 +2073,10 @@ def main(
     attempt_ids: str | None = None,
     collapse_threshold: float = DEFAULT_COLLAPSE_THRESHOLD,
     output: str = "table",
+    target_assignment_shas: str | None = None,
+    assignment_proof_tail_bytes: int = DEFAULT_ASSIGNMENT_PROOF_TAIL_BYTES,
+    chunk_size: int = 16,
+    chunk_workers: int = 8,
 ) -> None:
     if run_ids:
         selected_run_ids = _split_csv(run_ids)
@@ -1576,26 +2084,59 @@ def main(
     else:
         selected_run_ids, preset_attempt_ids = _preset_run_ids(preset)
     selected_attempt_ids = _split_csv(attempt_ids) or preset_attempt_ids
-    if output in {"eval-summary", "eval-json"}:
-        rows = curvytron_run_eval_curves.remote(
+    if output in {"fast-table", "fast-json", "fast-summary"}:
+        rows = _remote_rows_in_chunks(
+            curvytron_run_fast_status,
+            selected_run_ids,
+            selected_attempt_ids,
+            chunk_size=chunk_size,
+            chunk_workers=chunk_workers,
+        )
+    elif output in {"eval-summary", "eval-json"}:
+        rows = _remote_rows_in_chunks(
+            curvytron_run_eval_curves,
             selected_run_ids,
             selected_attempt_ids,
             collapse_threshold,
+            chunk_size=chunk_size,
+            chunk_workers=chunk_workers,
+        )
+    elif output in {"assignment-proof-json"}:
+        rows = _remote_rows_in_chunks(
+            curvytron_assignment_proof,
+            selected_run_ids,
+            selected_attempt_ids,
+            _split_csv(target_assignment_shas),
+            int(assignment_proof_tail_bytes),
+            chunk_size=chunk_size,
+            chunk_workers=chunk_workers,
         )
     elif output in {"curve-json", "curve-table", "curve-summary"}:
-        rows = curvytron_run_curves.remote(
+        rows = _remote_rows_in_chunks(
+            curvytron_run_curves,
             selected_run_ids,
             selected_attempt_ids,
             collapse_threshold,
+            chunk_size=chunk_size,
+            chunk_workers=chunk_workers,
         )
     else:
-        rows = curvytron_run_status.remote(
+        rows = _remote_rows_in_chunks(
+            curvytron_run_status,
             selected_run_ids,
             selected_attempt_ids,
             collapse_threshold,
+            chunk_size=chunk_size,
+            chunk_workers=chunk_workers,
         )
     if output == "json":
         print(json.dumps(rows, indent=2, sort_keys=True))
+    elif output == "fast-json":
+        print(json.dumps(rows, indent=2, sort_keys=True))
+    elif output == "fast-table":
+        _print_fast_table(rows)
+    elif output == "fast-summary":
+        _print_fast_summary(rows)
     elif output == "table":
         _print_table(rows)
     elif output == "curve-json":
@@ -1608,8 +2149,11 @@ def main(
         _print_eval_summary(rows)
     elif output == "eval-json":
         print(json.dumps(rows, indent=2, sort_keys=True))
+    elif output == "assignment-proof-json":
+        print(json.dumps(rows, indent=2, sort_keys=True))
     else:
         raise ValueError(
-            "output must be table, json, curve-table, curve-summary, "
-            "curve-json, eval-summary, or eval-json"
+            "output must be table, json, fast-table, fast-summary, fast-json, "
+            "curve-table, curve-summary, curve-json, eval-summary, eval-json, "
+            "or assignment-proof-json"
         )

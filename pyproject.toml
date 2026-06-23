@@ -15,11 +15,17 @@ build-backend = "setuptools.build_meta"
 
 [project.optional-dependencies]
 dev = [
+  "Cython>=3",
   "pytest>=8",
   "ruff>=0.6",
 ]
 modal = [
   "modal>=1.4,<2",
+]
+lightzero = [
+  "LightZero==0.2.0",
+  "torch==2.8.0",
+  "cloudpickle>=3",
 ]
 
 [tool.pytest.ini_options]

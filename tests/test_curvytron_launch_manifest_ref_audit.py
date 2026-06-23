@@ -146,3 +146,40 @@ def test_launch_manifest_ref_audit_rejects_mutable_or_control_checkpoint_refs(tm
     assert report["ok"] is False
     assert report["bad_ref_count"] == 1
     assert report["bad_refs"][0]["reason"] == "mutable checkpoint ref"
+
+
+def test_launch_ref_audit_accepts_refs_file_with_existing_local_refs(tmp_path):
+    audit = _load_script()
+    refs_file = tmp_path / "refs.txt"
+    refs = [_checkpoint_ref(), _checkpoint_ref("iteration_20000.pth.tar")]
+    refs_file.write_text("\n".join(refs) + "\n", encoding="utf-8")
+    runs_root = tmp_path / "runs"
+    for ref in refs:
+        (runs_root / ref).parent.mkdir(parents=True, exist_ok=True)
+        (runs_root / ref).write_bytes(b"ckpt")
+
+    args = audit.parse_args(
+        ["--refs-file", str(refs_file), "--runs-root", str(runs_root)]
+    )
+    report = audit.build_report(args)
+
+    assert report["ok"] is True
+    assert report["input_kind"] == "refs_file"
+    assert report["ref_count"] == 2
+    assert report["missing_ref_count"] == 0
+
+
+def test_launch_ref_audit_requires_one_input(tmp_path):
+    audit = _load_script()
+    refs_file = tmp_path / "refs.txt"
+    manifest_path = tmp_path / "manifest.json"
+    refs_file.write_text(_checkpoint_ref() + "\n", encoding="utf-8")
+    manifest_path.write_text(json.dumps(_manifest()), encoding="utf-8")
+
+    args = audit.parse_args([str(manifest_path), "--refs-file", str(refs_file)])
+    try:
+        audit.build_report(args)
+    except ValueError as exc:
+        assert "exactly one" in str(exc)
+    else:
+        raise AssertionError("audit accepted both manifest and refs file")

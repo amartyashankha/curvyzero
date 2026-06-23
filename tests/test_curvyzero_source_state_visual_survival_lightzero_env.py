@@ -696,6 +696,10 @@ def test_source_state_visual_survival_profile_env_timing_is_opt_in(tmp_path):
     assert timing["opponent_action_sec"] >= 0.0
     assert timing["vector_step_sec"] >= 0.0
     assert timing["observation_sec"] >= 0.0
+    assert timing["update_stack_sec"] >= 0.0
+    assert timing["observation_stack_copy_sec"] >= 0.0
+    assert timing["action_mask_copy_sec"] >= 0.0
+    assert timing["base_info_sec"] >= 0.0
     assert timing["step_total_before_info_sec"] >= timing["observation_sec"]
 
     rows = [
@@ -706,6 +710,40 @@ def test_source_state_visual_survival_profile_env_timing_is_opt_in(tmp_path):
     assert len(rows) == 1
     assert rows[0]["profile_env_timing_sec"]["opponent_action_sec"] >= 0.0
     assert rows[0]["profile_env_timing_sec"]["observation_sec"] >= 0.0
+    assert rows[0]["profile_env_timing_sec"]["update_stack_sec"] >= 0.0
+    assert rows[0]["profile_env_timing_sec"]["action_mask_copy_sec"] >= 0.0
+
+
+def test_registered_source_state_env_profile_records_base_timestep_payload(tmp_path):
+    telemetry_path = tmp_path / "registered_source_state_timed_steps.jsonl"
+    env = CurvyZeroSourceStateVisualSurvivalLightZeroEnv(
+        {
+            "seed": 23,
+            "source_max_steps": 2,
+            "telemetry_path": telemetry_path,
+            "telemetry_stride": 1,
+            "profile_env_timing_enabled": True,
+        }
+    )
+    env.reset(seed=23)
+
+    timestep = env.step(1)
+
+    timing = timestep.info["profile_env_timing_sec"]
+    assert timing["base_env_timestep_construct_sec"] >= 0.0
+    assert timing["base_env_timestep_pickle_sec"] >= 0.0
+    assert timing["base_env_timestep_pickle_bytes"] > 0.0
+    expected_obs_bytes = float(np.prod(STACKED_SOURCE_STATE_GRAY64_SHAPE) * 4)
+    assert timing["base_env_timestep_array_bytes"] >= expected_obs_bytes
+    rows = [
+        json.loads(line)
+        for line in telemetry_path.read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+    assert len(rows) == 1
+    row_timing = rows[0]["profile_env_timing_sec"]
+    assert row_timing["base_env_timestep_construct_sec"] >= 0.0
+    assert row_timing["base_env_timestep_pickle_bytes"] == timing["base_env_timestep_pickle_bytes"]
 
 
 def test_source_state_visual_survival_can_use_frozen_checkpoint_opponent(
@@ -980,7 +1018,7 @@ def test_source_state_survival_plus_bonus_plus_outcome_keeps_survival_without_ca
     assert timestep.info["terminal_outcome_reward_for_ego"] == 0.0
     assert timestep.info["sparse_outcome_reward_for_ego"] == 0.0
     assert timestep.info["terminal_outcome_bonus"] == 1.0
-    assert timestep.info["terminal_outcome_scale"] == "episode_source_step_count"
+    assert timestep.info["terminal_outcome_scale"] == "accumulated_non_outcome_training_reward"
     assert timestep.info["winner_bonus"] == 1.0
     assert timestep.info["loser_penalty"] == -1.0
 
@@ -1017,7 +1055,7 @@ def test_source_state_survival_plus_bonus_plus_outcome_rewards_same_step_bonus()
     )
     assert timestep.info["terminal_outcome_reward_for_ego"] == 0.0
     assert timestep.info["terminal_outcome_reward_enabled"] is True
-    assert timestep.info["terminal_outcome_scale"] == "episode_source_step_count"
+    assert timestep.info["terminal_outcome_scale"] == "accumulated_non_outcome_training_reward"
     assert timestep.reward == (
         1.0 + SURVIVAL_PLUS_BONUS_NO_OUTCOME_BONUS_REWARD
     )
@@ -1046,11 +1084,43 @@ def test_source_state_survival_plus_bonus_plus_outcome_scales_terminal_loss():
     assert terminal.info["dense_survival_helper_for_ego"] == 0.0
     assert terminal.info["bonus_pickup_reward_for_ego"] == 0.0
     assert terminal.info["sparse_outcome_reward_for_ego"] == -1.0
-    assert terminal.info["terminal_outcome_reward_for_ego"] == -2.0
-    assert terminal.reward == -2.0
-    assert terminal.info["trainer_reward"] == -2.0
-    assert terminal.info["episode_training_return"] == -1.0
-    assert terminal.info["final_step_training_reward_map"][ego_key] == -2.0
+    assert terminal.info["terminal_outcome_reward_for_ego"] == -1.0
+    assert terminal.reward == -1.0
+    assert terminal.info["trainer_reward"] == -1.0
+    assert terminal.info["episode_training_return"] == 0.0
+    assert terminal.info["final_step_training_reward_map"][ego_key] == -1.0
+    assert terminal.info["source_terminal_reward_map"][ego_key] == -1.0
+
+
+def test_source_state_survival_plus_bonus_plus_outcome_allows_weaker_terminal_outcome():
+    env = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
+        {
+            "seed": 96,
+            "source_max_steps": 64,
+            "natural_bonus_spawn": False,
+            "reward_variant": REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME,
+            "reward_outcome_alpha": 0.5,
+        }
+    )
+
+    env.reset(seed=96)
+    first = env.step(1)
+    ego = env.ego_player_index
+    ego_key = f"player_{ego}"
+    env._env.state["pos"][0, ego] = np.array([-1.0, -1.0], dtype=np.float64)
+    terminal = env.step(1)
+
+    assert first.reward == 1.0
+    assert first.info["reward_outcome_alpha"] == 0.5
+    assert first.info["terminal_outcome_bonus"] == 0.5
+    assert terminal.done is True
+    assert terminal.info["source_tick_index"] == 2
+    assert terminal.info["sparse_outcome_reward_for_ego"] == -1.0
+    assert terminal.info["terminal_outcome_reward_for_ego"] == -0.5
+    assert terminal.reward == -0.5
+    assert terminal.info["trainer_reward"] == -0.5
+    assert terminal.info["episode_training_return"] == 0.5
+    assert terminal.info["final_step_training_reward_map"][ego_key] == -0.5
     assert terminal.info["source_terminal_reward_map"][ego_key] == -1.0
 
 
@@ -1511,6 +1581,13 @@ def test_opponent_mixture_selects_once_per_reset_not_per_step():
     assert first.info["opponent_mixture_enabled"] is True
     assert first.info["opponent_mixture_selection_unit"] == "episode_reset"
     assert first.info["opponent_mixture_entry_name"] == "blank"
+    assert first.info["opponent_split_unit"] is None
+    assert first.info["opponent_split_mode"] is None
+    assert first.info["opponent_split_plan_sha256"] is None
+    assert first.info["opponent_split_env_index"] is None
+    assert first.info["opponent_split_env_num"] is None
+    assert first.info["opponent_split_entry_name"] is None
+    assert first.info["opponent_split_entry_count"] is None
     assert second.info["opponent_mixture_entry_name"] == "blank"
     assert first.info["opponent_runtime_mode"] == OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP
     assert second.info["opponent_runtime_mode"] == OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP

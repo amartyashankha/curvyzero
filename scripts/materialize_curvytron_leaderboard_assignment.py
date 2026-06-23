@@ -21,7 +21,6 @@ from typing import Any
 
 from curvyzero.training.opponent_leaderboard import (
     LEADERBOARD_SNAPSHOT_SCHEMA_ID,
-    OPPONENT_DEATH_MODE_IMMORTAL,
     OPPONENT_DEATH_MODE_NORMAL,
     STABLE_SENTINEL_BLANK_CANVAS,
     STABLE_SENTINEL_NONE,
@@ -126,8 +125,12 @@ def main() -> None:
     )
     parser.add_argument(
         "--checkpoint-death-mode",
-        choices=[OPPONENT_DEATH_MODE_NORMAL, OPPONENT_DEATH_MODE_IMMORTAL],
+        choices=[OPPONENT_DEATH_MODE_NORMAL],
         default=OPPONENT_DEATH_MODE_NORMAL,
+        help=(
+            "Only 'normal' is accepted. Use explicit opponent-mixture recipes "
+            "for small immortal frozen-checkpoint slices."
+        ),
     )
     parser.add_argument("--expected-rating-context-hash", default="")
     parser.add_argument("--allow-recent-provisional", action="store_true")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import pickle
 import time
 from pathlib import Path
 from typing import Any, Mapping
@@ -11,7 +12,9 @@ import numpy as np
 
 from curvyzero.env import vector_runtime
 from curvyzero.env.vector_multiplayer_env import ACTION_COUNT
-from curvyzero.env.vector_multiplayer_env import DEFAULT_BODY_CAPACITY as VECTOR_DEFAULT_BODY_CAPACITY
+from curvyzero.env.vector_multiplayer_env import (
+    DEFAULT_BODY_CAPACITY as VECTOR_DEFAULT_BODY_CAPACITY,
+)
 from curvyzero.env.vector_multiplayer_env import JOINT_ACTION_SCHEMA_ID
 from curvyzero.env.vector_multiplayer_env import NATURAL_BONUS_ENV_IMPL_ID
 from curvyzero.env.vector_multiplayer_env import NATURAL_BONUS_RULESET_ID
@@ -19,12 +22,6 @@ from curvyzero.env.vector_multiplayer_env import PUBLIC_NATURAL_BONUS_ENV_CONTRA
 from curvyzero.env.vector_multiplayer_env import SOURCE_PHYSICS_STEP_MS
 from curvyzero.env.vector_multiplayer_env import VectorMultiplayerEnv
 from curvyzero.env.trainer_contract import ACTION_ID_TO_SOURCE_MOVE
-from curvyzero.env.trainer_contract import (
-    REWARD_SCHEMA_HASH as SPARSE_ROUND_OUTCOME_REWARD_SCHEMA_HASH,
-)
-from curvyzero.env.trainer_contract import (
-    REWARD_SCHEMA_ID as SPARSE_ROUND_OUTCOME_REWARD_SCHEMA_ID,
-)
 from curvyzero.env.trainer_contract import stable_contract_hash
 from curvyzero.env.vector_visual_observation import (
     SOURCE_STATE_CANVAS_GRAY64_BROWSER_PIXEL_FIDELITY,
@@ -94,11 +91,28 @@ from curvyzero.contracts.curvytron import (
     LEARNER_SEAT_MODE_FIXED_PLAYER_0,
     LEARNER_SEAT_MODE_FIXED_PLAYER_1,
     LEARNER_SEAT_MODE_RANDOM_PER_EPISODE as _LEARNER_SEAT_MODE_RANDOM_PER_EPISODE,
+)
+from curvyzero.training.reward_contracts import (
+    ALL_PLAYERS_ALIVE_DIAGNOSTIC_REWARD_SCHEMA_HASH,
+    ALL_PLAYERS_ALIVE_DIAGNOSTIC_REWARD_SCHEMA_ID,
+    DEFAULT_REWARD_OUTCOME_ALPHA,
     REWARD_VARIANT_ALL_PLAYERS_ALIVE_DIAGNOSTIC,
     REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME,
     REWARD_VARIANT_SPARSE_OUTCOME,
     REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME,
     REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME,
+    SOURCE_STATE_FIXED_OPPONENT_REWARD_VARIANTS,
+    SOURCE_STATE_JOINT_ACTION_REWARD_VARIANTS,
+    SURVIVAL_PLUS_BONUS_NO_OUTCOME_BONUS_REWARD,
+    SURVIVAL_PLUS_BONUS_NO_OUTCOME_REWARD_SCHEMA_HASH,
+    SURVIVAL_PLUS_BONUS_NO_OUTCOME_REWARD_SCHEMA_ID,
+    SURVIVAL_PLUS_BONUS_PLUS_OUTCOME_REWARD_SCHEMA_HASH,
+    SURVIVAL_PLUS_BONUS_PLUS_OUTCOME_REWARD_SCHEMA_ID,
+    normalize_reward_outcome_alpha,
+    reward_perspective_for_variant,
+    reward_schema_hash_for_variant,
+    reward_schema_id_for_variant,
+    reward_space_for_variant,
 )
 
 from curvyzero.training.curvyzero_debug_visual_lightzero_smoke import (
@@ -121,6 +135,7 @@ from curvyzero.training.opponent_mixture import (
     parse_opponent_mixture_spec,
     select_opponent_mixture_entry,
 )
+
 try:  # Imported inside a LightZero/DI-engine runtime.
     import gym
     from ding.envs import BaseEnv
@@ -152,12 +167,8 @@ else:  # pragma: no cover - exercised only when LightZero/DI-engine is installed
     _LIGHTZERO_IMPORT_ERROR = None
 
 
-LIGHTZERO_SOURCE_STATE_VISUAL_SURVIVAL_ENV_TYPE = (
-    "curvyzero_source_state_visual_survival_lightzero"
-)
-LIGHTZERO_SOURCE_STATE_VISUAL_SURVIVAL_ENV_ID = (
-    "CurvyZeroSourceStateVisualSurvivalLightZero-v0"
-)
+LIGHTZERO_SOURCE_STATE_VISUAL_SURVIVAL_ENV_TYPE = "curvyzero_source_state_visual_survival_lightzero"
+LIGHTZERO_SOURCE_STATE_VISUAL_SURVIVAL_ENV_ID = "CurvyZeroSourceStateVisualSurvivalLightZero-v0"
 LIGHTZERO_SOURCE_STATE_VISUAL_SURVIVAL_IMPORT_NAMES = (
     "curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env",
 )
@@ -190,9 +201,7 @@ SOURCE_STATE_JOINT_ACTION_TRAINING_STATUS = (
     "centralized_joint_action_control_not_true_competitive_self_play"
 )
 JOINT_ACTION_COUNT = ACTION_COUNT * ACTION_COUNT
-STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID = (
-    "curvyzero_source_state_rgb_canvas_like_gray64_stack4/v0"
-)
+STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID = "curvyzero_source_state_rgb_canvas_like_gray64_stack4/v0"
 STACKED_SOURCE_STATE_GRAY64_SHAPE = POLICY_STACK_SHAPE
 SOURCE_STATE_CANVAS_LIKE_RAW_CANVAS_SHAPE = (
     SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE,
@@ -238,9 +247,7 @@ SOURCE_STATE_CANVAS_LIKE_RAW_CANVAS_SCHEMA_HASH = stable_contract_hash(
     }
 )
 SOURCE_STATE_CANVAS_LIKE_GRAY64_SCHEMA_ID = SOURCE_STATE_CANVAS_GRAY64_SCHEMA_ID
-SOURCE_STATE_CANVAS_LIKE_GRAY64_RENDERER_IMPL_ID = (
-    SOURCE_STATE_CANVAS_GRAY64_RENDERER_IMPL_ID
-)
+SOURCE_STATE_CANVAS_LIKE_GRAY64_RENDERER_IMPL_ID = SOURCE_STATE_CANVAS_GRAY64_RENDERER_IMPL_ID
 SOURCE_STATE_CANVAS_LIKE_GRAY64_SURFACE = SOURCE_STATE_CANVAS_GRAY64_SURFACE
 SOURCE_STATE_CANVAS_LIKE_GRAY64_SCHEMA_HASH = SOURCE_STATE_CANVAS_GRAY64_SCHEMA_HASH
 PLAYER_PERSPECTIVE_SCHEMA_ID = "curvyzero_player_perspective_source_state_gray64/v0"
@@ -280,157 +287,20 @@ LEFT_ACTION_ID = 0
 STRAIGHT_ACTION_ID = 1
 RIGHT_ACTION_ID = 2
 OPPONENT_POLICY_KIND_PROACTIVE_WALL_AVOIDANT = "proactive_wall_avoidant"
-OPPONENT_TRAINING_RELATION_PROACTIVE_WALL_AVOIDANT = (
-    "learner_vs_proactive_wall_avoidant"
-)
+OPPONENT_TRAINING_RELATION_PROACTIVE_WALL_AVOIDANT = "learner_vs_proactive_wall_avoidant"
 PROACTIVE_WALL_AVOIDANT_OPPONENT_POLICY_ID = (
     "curvyzero_source_state_proactive_wall_avoidant_opponent"
 )
 PROACTIVE_WALL_AVOIDANT_OPPONENT_POLICY_VERSION = "v0.2026-05-13"
 DEFAULT_OPPONENT_WALL_AVOIDANT_SAFE_MARGIN = 20.0
-SOURCE_STATE_FIXED_OPPONENT_REWARD_VARIANTS = (
-    REWARD_VARIANT_SPARSE_OUTCOME,
-    REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME,
-    REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME,
-    REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME,
-)
 SOURCE_STATE_OPPONENT_POLICY_KINDS = (
     OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
     OPPONENT_POLICY_KIND_PROACTIVE_WALL_AVOIDANT,
     OPPONENT_POLICY_KIND_FROZEN_LIGHTZERO_CHECKPOINT,
 )
-OPPONENT_POLICY_KIND_NONE_CENTRALIZED_JOINT_ACTION = (
-    "none_centralized_joint_action"
-)
+OPPONENT_POLICY_KIND_NONE_CENTRALIZED_JOINT_ACTION = "none_centralized_joint_action"
 SOURCE_STATE_JOINT_ACTION_OPPONENT_POLICY_KINDS = (
     OPPONENT_POLICY_KIND_NONE_CENTRALIZED_JOINT_ACTION,
-)
-SOURCE_STATE_JOINT_ACTION_REWARD_VARIANTS = (
-    REWARD_VARIANT_ALL_PLAYERS_ALIVE_DIAGNOSTIC,
-)
-DENSE_SURVIVAL_PLUS_OUTCOME_REWARD_SCHEMA_ID = (
-    "curvyzero_dense_survival_plus_sparse_outcome/v0"
-)
-DENSE_SURVIVAL_PLUS_OUTCOME_REWARD_SCHEMA = {
-    "schema_id": DENSE_SURVIVAL_PLUS_OUTCOME_REWARD_SCHEMA_ID,
-    "dtype": "float32",
-    "episode_unit": "one_round",
-    "perspective": "ego_player",
-    "alignment": "reward_t_plus_1_after_one_source_tick",
-    "trainer_reward_terms": [
-        "dense_alive_helper_for_ego_player",
-        "sparse_round_outcome_for_ego_player",
-    ],
-    "dense_alive_helper": 1.0,
-    "sparse_round_outcome_schema_id": SPARSE_ROUND_OUTCOME_REWARD_SCHEMA_ID,
-    "survival_length_metric_is_telemetry": True,
-    "non_claims": [
-        "not_zero_sum_after_dense_helper",
-        "not_two_seat_self_play",
-        "not_a_learning_claim",
-    ],
-}
-DENSE_SURVIVAL_PLUS_OUTCOME_REWARD_SCHEMA_HASH = stable_contract_hash(
-    DENSE_SURVIVAL_PLUS_OUTCOME_REWARD_SCHEMA
-)
-SURVIVAL_PLUS_BONUS_NO_OUTCOME_BONUS_REWARD = 1.0
-SURVIVAL_PLUS_BONUS_NO_OUTCOME_REWARD_SCHEMA_ID = (
-    "curvyzero_survival_plus_bonus_no_outcome/v0"
-)
-SURVIVAL_PLUS_BONUS_NO_OUTCOME_REWARD_SCHEMA = {
-    "schema_id": SURVIVAL_PLUS_BONUS_NO_OUTCOME_REWARD_SCHEMA_ID,
-    "dtype": "float32",
-    "episode_unit": "one_round",
-    "perspective": "ego_player",
-    "alignment": "reward_t_plus_1_after_one_source_tick",
-    "trainer_reward_terms": [
-        "dense_alive_helper_for_ego_player",
-        "same_step_bonus_pickup_helper_for_ego_player",
-    ],
-    "dense_alive_helper": 1.0,
-    "bonus_pickup_reward_per_catch": SURVIVAL_PLUS_BONUS_NO_OUTCOME_BONUS_REWARD,
-    "bonus_pickup_source": "bonus_catch_count_step[0, ego_player_index]",
-    "sparse_round_outcome_schema_id": SPARSE_ROUND_OUTCOME_REWARD_SCHEMA_ID,
-    "sparse_round_outcome_is_telemetry_only": True,
-    "terminal_outcome_bonus": 0.0,
-    "loser_penalty": 0.0,
-    "winner_bonus": 0.0,
-    "draw_bonus": 0.0,
-    "truncation_bonus": 0.0,
-    "survival_length_metric_is_telemetry": True,
-    "non_claims": [
-        "not_zero_sum",
-        "not_two_seat_self_play",
-        "not_sparse_outcome_reward",
-        "not_a_learning_claim",
-    ],
-}
-SURVIVAL_PLUS_BONUS_NO_OUTCOME_REWARD_SCHEMA_HASH = stable_contract_hash(
-    SURVIVAL_PLUS_BONUS_NO_OUTCOME_REWARD_SCHEMA
-)
-SURVIVAL_PLUS_BONUS_PLUS_OUTCOME_REWARD_SCHEMA_ID = (
-    "curvyzero_survival_plus_bonus_plus_outcome/v0"
-)
-SURVIVAL_PLUS_BONUS_PLUS_OUTCOME_REWARD_SCHEMA = {
-    "schema_id": SURVIVAL_PLUS_BONUS_PLUS_OUTCOME_REWARD_SCHEMA_ID,
-    "dtype": "float32",
-    "episode_unit": "one_round",
-    "perspective": "ego_player",
-    "alignment": "reward_t_plus_1_after_one_source_tick",
-    "trainer_reward_terms": [
-        "dense_alive_helper_for_ego_player",
-        "same_step_bonus_pickup_helper_for_ego_player",
-        "terminal_sparse_outcome_scaled_by_episode_source_step_count",
-    ],
-    "dense_alive_helper": 1.0,
-    "bonus_pickup_reward_per_catch": SURVIVAL_PLUS_BONUS_NO_OUTCOME_BONUS_REWARD,
-    "bonus_pickup_source": "bonus_catch_count_step[0, ego_player_index]",
-    "sparse_round_outcome_schema_id": SPARSE_ROUND_OUTCOME_REWARD_SCHEMA_ID,
-    "sparse_round_outcome_is_telemetry_only": False,
-    "terminal_outcome_scale": "episode_source_step_count",
-    "terminal_outcome_reward": "sparse_round_outcome * episode_source_step_count",
-    "terminal_outcome_bonus": 1.0,
-    "loser_penalty": -1.0,
-    "winner_bonus": 1.0,
-    "draw_bonus": 0.0,
-    "truncation_bonus": 0.0,
-    "survival_length_metric_is_telemetry": True,
-    "non_claims": [
-        "not_zero_sum_after_dense_helper_and_bonus",
-        "not_two_seat_self_play",
-        "not_a_learning_claim",
-    ],
-}
-SURVIVAL_PLUS_BONUS_PLUS_OUTCOME_REWARD_SCHEMA_HASH = stable_contract_hash(
-    SURVIVAL_PLUS_BONUS_PLUS_OUTCOME_REWARD_SCHEMA
-)
-ALL_PLAYERS_ALIVE_DIAGNOSTIC_REWARD_SCHEMA_ID = (
-    "curvyzero_all_players_alive_diagnostic/v0"
-)
-ALL_PLAYERS_ALIVE_DIAGNOSTIC_REWARD_SCHEMA = {
-    "schema_id": ALL_PLAYERS_ALIVE_DIAGNOSTIC_REWARD_SCHEMA_ID,
-    "dtype": "float32",
-    "episode_unit": "one_round",
-    "perspective": "centralized_joint_action_controller",
-    "alignment": "reward_t_plus_1_after_one_source_tick",
-    "reward_unit": "one_real_source_tick",
-    "post_transition_all_players_alive_reward": 1.0,
-    "post_transition_any_player_dead_reward": 0.0,
-    "terminal_outcome_bonus": 0.0,
-    "loser_penalty": 0.0,
-    "winner_bonus": 0.0,
-    "draw_bonus": 0.0,
-    "truncation_bonus": 0.0,
-    "episode_return": "sum of all-players-alive rewards for centralized control",
-    "non_claims": [
-        "not_per_player_reward",
-        "not_zero_sum_reward",
-        "not_true_competitive_self_play",
-        "not_sparse_outcome_reward",
-    ],
-}
-ALL_PLAYERS_ALIVE_DIAGNOSTIC_REWARD_SCHEMA_HASH = stable_contract_hash(
-    ALL_PLAYERS_ALIVE_DIAGNOSTIC_REWARD_SCHEMA
 )
 STACKED_SOURCE_STATE_GRAY64_SCHEMA_HASH = stable_contract_hash(
     {
@@ -507,20 +377,14 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         "supported_learner_seat_modes": LEARNER_SEAT_MODES,
         "policy_action_repeat_min": DEFAULT_POLICY_ACTION_REPEAT_MIN,
         "policy_action_repeat_max": DEFAULT_POLICY_ACTION_REPEAT_MAX,
-        "policy_action_repeat_extra_probability": (
-            DEFAULT_POLICY_ACTION_REPEAT_EXTRA_PROBABILITY
-        ),
-        "opponent_wall_avoidant_safe_margin": (
-            DEFAULT_OPPONENT_WALL_AVOIDANT_SAFE_MARGIN
-        ),
+        "policy_action_repeat_extra_probability": (DEFAULT_POLICY_ACTION_REPEAT_EXTRA_PROBABILITY),
+        "opponent_wall_avoidant_safe_margin": (DEFAULT_OPPONENT_WALL_AVOIDANT_SAFE_MARGIN),
         "uses_ale": False,
     }
 
     def __init__(self, cfg: Any | None = None):
         cfg = cfg or {}
-        self.env_id = str(
-            _cfg_get(cfg, "env_id", LIGHTZERO_SOURCE_STATE_VISUAL_SURVIVAL_ENV_ID)
-        )
+        self.env_id = str(_cfg_get(cfg, "env_id", LIGHTZERO_SOURCE_STATE_VISUAL_SURVIVAL_ENV_ID))
         (
             self._learner_seat_mode,
             initial_ego_player_index,
@@ -578,8 +442,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         self.opponent_policy = None
         if (
             self._opponent_mixture is None
-            and self._opponent_policy_kind
-            == OPPONENT_POLICY_KIND_FROZEN_LIGHTZERO_CHECKPOINT
+            and self._opponent_policy_kind == OPPONENT_POLICY_KIND_FROZEN_LIGHTZERO_CHECKPOINT
         ):
             self.opponent_policy = _build_source_state_frozen_lightzero_opponent_policy(
                 cfg,
@@ -623,8 +486,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         self._jax_scalar_observation_renderer: _JaxScalarPolicyObservationRenderer | None = None
         if self._policy_observation_backend == POLICY_OBSERVATION_BACKEND_GPU:
             if (
-                self._source_state_trail_render_mode
-                != SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES
+                self._source_state_trail_render_mode != SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES
                 or self._model_bonus_render_mode != BONUS_RENDER_MODE_SIMPLE_SYMBOLS
             ):
                 raise ValueError(
@@ -637,9 +499,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             )
         self._raw_observation_bonus_render_mode = SOURCE_STATE_RAW_BONUS_RENDER_MODE
         disable_death_for_profile = bool(_cfg_get(cfg, "disable_death_for_profile", False))
-        configured_death_mode = str(
-            _cfg_get(cfg, "death_mode", vector_runtime.DEATH_MODE_NORMAL)
-        )
+        configured_death_mode = str(_cfg_get(cfg, "death_mode", vector_runtime.DEATH_MODE_NORMAL))
         if disable_death_for_profile:
             configured_death_mode = vector_runtime.DEATH_MODE_PROFILE_NO_DEATH
         if configured_death_mode not in vector_runtime.DEATH_MODES:
@@ -650,17 +510,13 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         )
         self._configured_opponent_death_mode = self._opponent_death_mode
         if self._opponent_death_mode not in OPPONENT_DEATH_MODES:
-            raise ValueError(
-                f"opponent_death_mode must be one of {OPPONENT_DEATH_MODES!r}"
-            )
+            raise ValueError(f"opponent_death_mode must be one of {OPPONENT_DEATH_MODES!r}")
         self._opponent_runtime_mode = str(
             _cfg_get(cfg, "opponent_runtime_mode", OPPONENT_RUNTIME_MODE_NORMAL)
         )
         self._configured_opponent_runtime_mode = self._opponent_runtime_mode
         if self._opponent_runtime_mode not in OPPONENT_RUNTIME_MODES:
-            raise ValueError(
-                f"opponent_runtime_mode must be one of {OPPONENT_RUNTIME_MODES!r}"
-            )
+            raise ValueError(f"opponent_runtime_mode must be one of {OPPONENT_RUNTIME_MODES!r}")
         self._natural_bonus_spawn = bool(_cfg_get(cfg, "natural_bonus_spawn", True))
         self._disable_death_for_profile = (
             self._death_mode == vector_runtime.DEATH_MODE_PROFILE_NO_DEATH
@@ -670,9 +526,8 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         self._telemetry_stride = int(_cfg_get(cfg, "telemetry_stride", 1))
         if self._telemetry_stride < 1:
             raise ValueError("telemetry_stride must be at least 1")
-        self._profile_env_timing_enabled = bool(
-            _cfg_get(cfg, "profile_env_timing_enabled", False)
-        )
+        self._profile_env_timing_enabled = bool(_cfg_get(cfg, "profile_env_timing_enabled", False))
+        self._defer_telemetry_until_base_timestep = False
         self._override_probability = float(
             _cfg_get(cfg, "ego_action_straight_override_probability", 0.0)
         )
@@ -708,9 +563,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             None if configured_repeat_seed is None else int(configured_repeat_seed)
         )
         self._policy_action_repeat_seed = self._policy_action_repeat_seed_for(self._seed)
-        self._policy_action_repeat_rng = np.random.default_rng(
-            self._policy_action_repeat_seed
-        )
+        self._policy_action_repeat_rng = np.random.default_rng(self._policy_action_repeat_seed)
         configured_profile = _cfg_get(cfg, "control_noise_profile_id", None)
         self._control_noise_profile_id = (
             str(configured_profile)
@@ -733,6 +586,10 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
                 f"{type(self).__name__} reward_variant must be one of "
                 f"{allowed_reward_variants!r}; got {self._reward_variant!r}"
             )
+        self._reward_outcome_alpha = float(
+            _cfg_get(cfg, "reward_outcome_alpha", DEFAULT_REWARD_OUTCOME_ALPHA)
+        )
+        self._reward_outcome_alpha = normalize_reward_outcome_alpha(self._reward_outcome_alpha)
         self._env = self._new_env(self._seed)
         self._raw_frame = np.zeros(
             SOURCE_STATE_CANVAS_LIKE_RAW_CANVAS_SHAPE,
@@ -777,6 +634,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         self._needs_reset = False
         self._last_batch = None
         self._episode_return = 0.0
+        self._episode_training_return_by_player = np.zeros(2, dtype=np.float64)
         self._step_index = 0
         self._physical_step_index = 0
         self._observation_space = {
@@ -804,13 +662,10 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             raise ValueError("policy_action_repeat_min must be at least 1")
         if self._policy_action_repeat_max < self._policy_action_repeat_min:
             raise ValueError(
-                "policy_action_repeat_max must be greater than or equal to "
-                "policy_action_repeat_min"
+                "policy_action_repeat_max must be greater than or equal to policy_action_repeat_min"
             )
         if not 0.0 <= self._policy_action_repeat_extra_probability <= 1.0:
-            raise ValueError(
-                "policy_action_repeat_extra_probability must be in [0, 1]"
-            )
+            raise ValueError("policy_action_repeat_extra_probability must be in [0, 1]")
 
     def _policy_action_repeat_seed_for(self, reset_seed: int) -> int:
         if self._configured_repeat_seed is not None:
@@ -851,9 +706,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         self._override_seed = self._override_seed_for(reset_seed)
         self._override_rng = np.random.default_rng(self._override_seed)
         self._policy_action_repeat_seed = self._policy_action_repeat_seed_for(reset_seed)
-        self._policy_action_repeat_rng = np.random.default_rng(
-            self._policy_action_repeat_seed
-        )
+        self._policy_action_repeat_rng = np.random.default_rng(self._policy_action_repeat_seed)
         self._env = self._new_env(reset_seed)
         self._stack.fill(0.0)
         self._opponent_stack.fill(0.0)
@@ -862,6 +715,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         self._needs_reset = False
         self._has_reset = True
         self._episode_return = 0.0
+        self._episode_training_return_by_player.fill(0.0)
         self._step_index = 0
         self._physical_step_index = 0
         self._last_batch = self._env.reset(seed=reset_seed)
@@ -886,10 +740,10 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
                     f"{entry['opponent_policy_kind']!r}; expected one of "
                     f"{allowed_opponent_policy_kinds!r}"
                 )
-            if (
-                entry["opponent_policy_kind"]
-                == OPPONENT_POLICY_KIND_FROZEN_LIGHTZERO_CHECKPOINT
-                and not entry.get("opponent_checkpoint_path")
+            if entry[
+                "opponent_policy_kind"
+            ] == OPPONENT_POLICY_KIND_FROZEN_LIGHTZERO_CHECKPOINT and not entry.get(
+                "opponent_checkpoint_path"
             ):
                 raise ValueError(
                     "refreshed frozen opponent mixture entries require "
@@ -972,9 +826,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             raise RuntimeError("reset must be called before step")
         if self._needs_reset:
             raise RuntimeError("reset must be called before stepping after done")
-        timing_sec: dict[str, float] | None = (
-            {} if self._profile_env_timing_enabled else None
-        )
+        timing_sec: dict[str, float] | None = {} if self._profile_env_timing_enabled else None
         step_started = time.perf_counter() if timing_sec is not None else 0.0
         requested_action = _validate_action(action)
         executed_action, override_applied = self._executed_ego_action(requested_action)
@@ -993,6 +845,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         bonus_catch_count_step_sum = 0
         bonus_pickup_reward_sum = 0.0
         terminal_outcome_reward_sum = 0.0
+        final_step_training_reward_map = None
         done = False
         terminated = False
         truncated = False
@@ -1015,19 +868,37 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             action_repeat_executed += 1
             self._physical_step_index += 1
             reward_started = time.perf_counter() if timing_sec is not None else 0.0
-            components = self._reward_components_for_player(
-                batch=batch,
-                player_index=self.ego_player_index,
-            )
+            player_components = [
+                self._reward_components_for_player(
+                    batch=batch,
+                    player_index=player_index,
+                    episode_training_return_before_step=float(
+                        self._episode_training_return_by_player[player_index]
+                    ),
+                )
+                for player_index in range(2)
+            ]
+            components = player_components[self.ego_player_index]
             sparse_outcome_reward_sum += components["sparse_outcome_reward"]
             dense_survival_helper_sum += components["dense_survival_helper"]
             bonus_catch_count_step_sum += int(components["bonus_catch_count_step"])
             bonus_pickup_reward_sum += components["bonus_pickup_reward"]
             terminal_outcome_reward_sum += components["terminal_outcome_reward"]
             reward += components["trainer_reward"]
+            for player_index, player_component in enumerate(player_components):
+                self._episode_training_return_by_player[player_index] += float(
+                    player_component["trainer_reward"]
+                )
             done = bool(batch.done[0])
             terminated = bool(batch.terminated[0])
             truncated = bool(batch.truncated[0])
+            if done:
+                final_step_training_reward_map = {
+                    f"player_{player_index}": float(
+                        player_components[player_index]["trainer_reward"]
+                    )
+                    for player_index in range(2)
+                }
             if timing_sec is not None:
                 reward_sec += time.perf_counter() - reward_started
             if done:
@@ -1039,10 +910,15 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         if batch is None:
             raise RuntimeError("policy action repeat produced no physical env step")
         self._needs_reset = done
-        self._episode_return += reward
+        self._episode_return = float(
+            self._episode_training_return_by_player[self.ego_player_index]
+        )
         self._step_index += 1
         observation_started = time.perf_counter() if timing_sec is not None else 0.0
-        next_obs = self._lightzero_observation(needs_reset=done)
+        next_obs = self._lightzero_observation(
+            needs_reset=done,
+            profile_env_timing_sec=timing_sec,
+        )
         if timing_sec is not None:
             timing_sec["observation_sec"] = time.perf_counter() - observation_started
             timing_sec["step_total_before_info_sec"] = time.perf_counter() - step_started
@@ -1065,10 +941,15 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             bonus_catch_count_step_sum=bonus_catch_count_step_sum,
             bonus_pickup_reward_sum=bonus_pickup_reward_sum,
             terminal_outcome_reward_sum=terminal_outcome_reward_sum,
+            final_step_training_reward_map=final_step_training_reward_map,
             profile_env_timing_sec=timing_sec,
         )
         timestep = LocalDebugVisualLightZeroTimestep(next_obs, reward, done, info)
-        self._write_telemetry_row(timestep=timestep)
+        if not (
+            self._defer_telemetry_until_base_timestep
+            and self._profile_env_timing_enabled
+        ):
+            self._write_telemetry_row(timestep=timestep)
         return timestep
 
     def close(self) -> None:
@@ -1087,9 +968,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         self._override_seed = self._override_seed_for(self._seed)
         self._override_rng = np.random.default_rng(self._override_seed)
         self._policy_action_repeat_seed = self._policy_action_repeat_seed_for(self._seed)
-        self._policy_action_repeat_rng = np.random.default_rng(
-            self._policy_action_repeat_seed
-        )
+        self._policy_action_repeat_rng = np.random.default_rng(self._policy_action_repeat_seed)
 
     def random_action(self) -> int:
         rng = np.random.default_rng(self._seed + self._step_index)
@@ -1176,8 +1055,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
                 raise ValueError("policy_observation_gpu_min_trail_slots must be positive")
             return value
         expected_visual_points = (
-            DEFAULT_POLICY_OBSERVATION_GPU_TRAIL_SLOT_SAFETY_FACTOR
-            * self._max_source_ticks
+            DEFAULT_POLICY_OBSERVATION_GPU_TRAIL_SLOT_SAFETY_FACTOR * self._max_source_ticks
         )
         return _ceil_power_of_two(
             min(int(VECTOR_DEFAULT_BODY_CAPACITY), max(1, int(expected_visual_points)))
@@ -1250,14 +1128,16 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             if "body_break_before" in state:
                 state["body_break_before"][body_mask] = False
             if "world_body_count" in state:
-                state["world_body_count"][:] = state["body_active"].sum(axis=1).astype(
-                    state["world_body_count"].dtype,
-                    copy=False,
+                state["world_body_count"][:] = (
+                    state["body_active"]
+                    .sum(axis=1)
+                    .astype(
+                        state["world_body_count"].dtype,
+                        copy=False,
+                    )
                 )
         if "visual_trail_owner" in state and "visual_trail_active" in state:
-            visual_mask = (
-                state["visual_trail_active"] & (state["visual_trail_owner"] == player)
-            )
+            visual_mask = state["visual_trail_active"] & (state["visual_trail_owner"] == player)
             state["visual_trail_active"][visual_mask] = False
             state["visual_trail_owner"][visual_mask] = -1
             if "visual_trail_radius" in state:
@@ -1280,9 +1160,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             if count <= 0:
                 continue
             keep = [
-                index
-                for index in range(count)
-                if int(state["death_player"][row, index]) != player
+                index for index in range(count) if int(state["death_player"][row, index]) != player
             ]
             if len(keep) == count:
                 continue
@@ -1346,11 +1224,31 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
                 view["visual_trail_owner"] = owner.copy()
                 view["visual_trail_owner"][visual_mask] = -1
 
-    def _lightzero_observation(self, *, needs_reset: bool) -> dict[str, Any]:
+    def _lightzero_observation(
+        self,
+        *,
+        needs_reset: bool,
+        profile_env_timing_sec: dict[str, float] | None = None,
+    ) -> dict[str, Any]:
+        update_started = time.perf_counter() if profile_env_timing_sec is not None else 0.0
         stack = self._update_stack()
+        if profile_env_timing_sec is not None:
+            profile_env_timing_sec["update_stack_sec"] = time.perf_counter() - update_started
+        stack_copy_started = (
+            time.perf_counter() if profile_env_timing_sec is not None else 0.0
+        )
+        observation = stack.copy()
+        if profile_env_timing_sec is not None:
+            profile_env_timing_sec["observation_stack_copy_sec"] = (
+                time.perf_counter() - stack_copy_started
+            )
+        mask_started = time.perf_counter() if profile_env_timing_sec is not None else 0.0
+        action_mask = self._action_mask(active=not needs_reset)
+        if profile_env_timing_sec is not None:
+            profile_env_timing_sec["action_mask_copy_sec"] = time.perf_counter() - mask_started
         return {
-            "observation": stack.copy(),
-            "action_mask": self._action_mask(active=not needs_reset),
+            "observation": observation,
+            "action_mask": action_mask,
             "to_play": -1,
             "timestep": int(self._step_index),
         }
@@ -1461,8 +1359,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
     def _should_use_scalar_dirty_render_cache(self) -> bool:
         return (
             self._scalar_dirty_render_enabled
-            and self._source_state_trail_render_mode
-            == SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES
+            and self._source_state_trail_render_mode == SOURCE_STATE_TRAIL_RENDER_MODE_BROWSER_LINES
         )
 
     def _reset_scalar_render_cache(self) -> None:
@@ -1484,10 +1381,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         if self._opponent_policy_kind == OPPONENT_POLICY_KIND_FIXED_STRAIGHT:
             self._last_opponent_policy_sidecar = None
             return STRAIGHT_ACTION_ID
-        if (
-            self._opponent_policy_kind
-            == OPPONENT_POLICY_KIND_PROACTIVE_WALL_AVOIDANT
-        ):
+        if self._opponent_policy_kind == OPPONENT_POLICY_KIND_PROACTIVE_WALL_AVOIDANT:
             return self._proactive_wall_avoidant_opponent_action()
         if self.opponent_policy is None:
             raise RuntimeError("frozen LightZero opponent policy was not initialized")
@@ -1554,10 +1448,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         preferred = int(preferred_action)
         if 0 <= preferred < legal_mask.shape[0] and bool(legal_mask[preferred]):
             return preferred, None
-        if (
-            0 <= STRAIGHT_ACTION_ID < legal_mask.shape[0]
-            and bool(legal_mask[STRAIGHT_ACTION_ID])
-        ):
+        if 0 <= STRAIGHT_ACTION_ID < legal_mask.shape[0] and bool(legal_mask[STRAIGHT_ACTION_ID]):
             return STRAIGHT_ACTION_ID, "preferred_illegal_used_straight"
         legal_ids = np.flatnonzero(legal_mask)
         if legal_ids.size:
@@ -1580,9 +1471,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         left_heading = self._wall_avoidant_post_action_heading(LEFT_ACTION_ID)
         right_heading = self._wall_avoidant_post_action_heading(RIGHT_ACTION_ID)
         left_score = float(np.cos(left_heading) * target_x + np.sin(left_heading) * target_y)
-        right_score = float(
-            np.cos(right_heading) * target_x + np.sin(right_heading) * target_y
-        )
+        right_score = float(np.cos(right_heading) * target_x + np.sin(right_heading) * target_y)
         telemetry.update(
             {
                 "left_alignment_score": left_score,
@@ -1629,9 +1518,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             "radius": radius,
             "map_size": map_size,
             "heading": heading,
-            "post_action_heading": float(
-                self._wall_avoidant_post_action_heading(action_id)
-            ),
+            "post_action_heading": float(self._wall_avoidant_post_action_heading(action_id)),
             "clearance_left": float(clearances[0]),
             "clearance_right": float(clearances[1]),
             "clearance_top": float(clearances[2]),
@@ -1668,13 +1555,10 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             raise ValueError("policy_action_repeat_min must be at least 1")
         if self._policy_action_repeat_max < self._policy_action_repeat_min:
             raise ValueError(
-                "policy_action_repeat_max must be greater than or equal to "
-                "policy_action_repeat_min"
+                "policy_action_repeat_max must be greater than or equal to policy_action_repeat_min"
             )
         if not 0.0 <= self._policy_action_repeat_extra_probability <= 1.0:
-            raise ValueError(
-                "policy_action_repeat_extra_probability must be in [0, 1]"
-            )
+            raise ValueError("policy_action_repeat_extra_probability must be in [0, 1]")
 
     def _sample_policy_action_repeat(self) -> int:
         repeat = int(self._policy_action_repeat_min)
@@ -1706,13 +1590,9 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             raise RuntimeError("bonus_catch_count_step missing from source-state batch info")
         counts_array = np.asarray(counts)
         if counts_array.ndim != 2 or counts_array.shape[0] < 1:
-            raise RuntimeError(
-                "bonus_catch_count_step must have shape [batch, player]"
-            )
+            raise RuntimeError("bonus_catch_count_step must have shape [batch, player]")
         if not 0 <= int(player_index) < counts_array.shape[1]:
-            raise RuntimeError(
-                f"bonus_catch_count_step missing player index {player_index}"
-            )
+            raise RuntimeError(f"bonus_catch_count_step missing player index {player_index}")
         return int(counts_array[0, int(player_index)])
 
     def _bonus_pickup_reward_for_player(
@@ -1732,6 +1612,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         *,
         batch: Any,
         player_index: int,
+        episode_training_return_before_step: float | None = None,
     ) -> dict[str, float]:
         sparse_outcome = float(batch.reward[0, player_index])
         dense_helper = 0.0
@@ -1743,40 +1624,41 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         elif self._reward_variant == REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME:
             dense_helper = self._survival_reward_for_player(player_index)
             trainer_reward = sparse_outcome + dense_helper
-        elif (
-            self._reward_variant
-            == REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME
-        ):
+        elif self._reward_variant == REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME:
             dense_helper = self._survival_reward_for_player(player_index)
             bonus_catch_count = self._bonus_catch_count_for_player(
                 batch=batch,
                 player_index=player_index,
             )
             bonus_pickup_reward = (
-                float(bonus_catch_count)
-                * SURVIVAL_PLUS_BONUS_NO_OUTCOME_BONUS_REWARD
+                float(bonus_catch_count) * SURVIVAL_PLUS_BONUS_NO_OUTCOME_BONUS_REWARD
             )
             trainer_reward = dense_helper + bonus_pickup_reward
-        elif (
-            self._reward_variant
-            == REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME
-        ):
+        elif self._reward_variant == REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME:
             dense_helper = self._survival_reward_for_player(player_index)
             bonus_catch_count = self._bonus_catch_count_for_player(
                 batch=batch,
                 player_index=player_index,
             )
             bonus_pickup_reward = (
-                float(bonus_catch_count)
-                * SURVIVAL_PLUS_BONUS_NO_OUTCOME_BONUS_REWARD
+                float(bonus_catch_count) * SURVIVAL_PLUS_BONUS_NO_OUTCOME_BONUS_REWARD
             )
             if bool(batch.done[0]) and sparse_outcome != 0.0:
-                terminal_outcome_reward = sparse_outcome * float(
-                    self._physical_step_index
+                accumulated_return = (
+                    float(self._episode_return)
+                    if episode_training_return_before_step is None
+                    else float(episode_training_return_before_step)
                 )
-            trainer_reward = (
-                dense_helper + bonus_pickup_reward + terminal_outcome_reward
-            )
+                terminal_outcome_scale = max(
+                    0.0,
+                    accumulated_return + dense_helper + bonus_pickup_reward,
+                )
+                terminal_outcome_reward = (
+                    sparse_outcome
+                    * float(self._reward_outcome_alpha)
+                    * terminal_outcome_scale
+                )
+            trainer_reward = dense_helper + bonus_pickup_reward + terminal_outcome_reward
         elif self._reward_variant == REWARD_VARIANT_ALL_PLAYERS_ALIVE_DIAGNOSTIC:
             alive = self._env.state["alive"][0, :2].astype(bool)
             trainer_reward = 1.0 if bool(np.all(alive)) else 0.0
@@ -1798,82 +1680,24 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         )["trainer_reward"]
 
     def _reward_schema_id(self) -> str:
-        if self._reward_variant == REWARD_VARIANT_SPARSE_OUTCOME:
-            return SPARSE_ROUND_OUTCOME_REWARD_SCHEMA_ID
-        if self._reward_variant == REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME:
-            return DENSE_SURVIVAL_PLUS_OUTCOME_REWARD_SCHEMA_ID
-        if self._reward_variant == REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME:
-            return SURVIVAL_PLUS_BONUS_NO_OUTCOME_REWARD_SCHEMA_ID
-        if self._reward_variant == REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME:
-            return SURVIVAL_PLUS_BONUS_PLUS_OUTCOME_REWARD_SCHEMA_ID
-        if self._reward_variant == REWARD_VARIANT_ALL_PLAYERS_ALIVE_DIAGNOSTIC:
-            return ALL_PLAYERS_ALIVE_DIAGNOSTIC_REWARD_SCHEMA_ID
-        raise RuntimeError(f"unsupported reward_variant {self._reward_variant!r}")
+        return reward_schema_id_for_variant(
+            env_variant=str(self.config["env_variant"]),
+            reward_variant=self._reward_variant,
+        )
 
     def _reward_schema_hash(self) -> str:
-        if self._reward_variant == REWARD_VARIANT_SPARSE_OUTCOME:
-            return SPARSE_ROUND_OUTCOME_REWARD_SCHEMA_HASH
-        if self._reward_variant == REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME:
-            return DENSE_SURVIVAL_PLUS_OUTCOME_REWARD_SCHEMA_HASH
-        if self._reward_variant == REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME:
-            return SURVIVAL_PLUS_BONUS_NO_OUTCOME_REWARD_SCHEMA_HASH
-        if self._reward_variant == REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME:
-            return SURVIVAL_PLUS_BONUS_PLUS_OUTCOME_REWARD_SCHEMA_HASH
-        if self._reward_variant == REWARD_VARIANT_ALL_PLAYERS_ALIVE_DIAGNOSTIC:
-            return ALL_PLAYERS_ALIVE_DIAGNOSTIC_REWARD_SCHEMA_HASH
-        raise RuntimeError(f"unsupported reward_variant {self._reward_variant!r}")
+        return reward_schema_hash_for_variant(self._reward_variant)
 
     def _reward_perspective(self) -> str:
-        if self._reward_variant == REWARD_VARIANT_SPARSE_OUTCOME:
-            return "ego_player_sparse_round_outcome"
-        if self._reward_variant == REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME:
-            return "ego_player_dense_survival_helper_plus_sparse_outcome"
-        if self._reward_variant == REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME:
-            return "ego_player_dense_survival_plus_same_step_bonus_no_outcome"
-        if self._reward_variant == REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME:
-            return "ego_player_dense_survival_plus_same_step_bonus_plus_scaled_outcome"
-        if self._reward_variant == REWARD_VARIANT_ALL_PLAYERS_ALIVE_DIAGNOSTIC:
-            return "diagnostic_all_players_alive_after_one_source_tick"
-        raise RuntimeError(f"unsupported reward_variant {self._reward_variant!r}")
+        return reward_perspective_for_variant(self._reward_variant)
 
     def _make_reward_space(self) -> dict[str, Any]:
-        if self._reward_variant == REWARD_VARIANT_SPARSE_OUTCOME:
-            low = -1.0
-            high = 1.0
-        elif self._reward_variant == REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME:
-            low = -1.0
-            high = float(self._policy_action_repeat_max + 1)
-        elif (
-            self._reward_variant
-            == REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME
-        ):
-            low = 0.0
-            high = float(
-                self._policy_action_repeat_max
-                * (1.0 + SURVIVAL_PLUS_BONUS_NO_OUTCOME_BONUS_REWARD)
-            )
-        elif (
-            self._reward_variant
-            == REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME
-        ):
-            low = -float(self._max_source_ticks)
-            high = float(
-                self._max_source_ticks
-                + self._policy_action_repeat_max
-                * (1.0 + SURVIVAL_PLUS_BONUS_NO_OUTCOME_BONUS_REWARD)
-            )
-        elif self._reward_variant == REWARD_VARIANT_ALL_PLAYERS_ALIVE_DIAGNOSTIC:
-            low = 0.0
-            high = 1.0
-        else:
-            raise RuntimeError(f"unsupported reward_variant {self._reward_variant!r}")
-        return {
-            "type": "Box",
-            "shape": (),
-            "dtype": "float32",
-            "low": low,
-            "high": high,
-        }
+        return reward_space_for_variant(
+            reward_variant=self._reward_variant,
+            max_source_ticks=self._max_source_ticks,
+            policy_action_repeat_max=self._policy_action_repeat_max,
+            reward_outcome_alpha=self._reward_outcome_alpha,
+        )
 
     def _step_info(
         self,
@@ -1896,21 +1720,35 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         bonus_catch_count_step_sum: int,
         bonus_pickup_reward_sum: float,
         terminal_outcome_reward_sum: float,
+        final_step_training_reward_map: dict[str, float] | None = None,
         profile_env_timing_sec: dict[str, float] | None = None,
     ) -> dict[str, Any]:
+        base_info_started = (
+            time.perf_counter() if profile_env_timing_sec is not None else 0.0
+        )
         info = self._base_info()
+        if profile_env_timing_sec is not None:
+            profile_env_timing_sec["base_info_sec"] = time.perf_counter() - base_info_started
+        final_observation = None
+        if done:
+            final_observation_started = (
+                time.perf_counter() if profile_env_timing_sec is not None else 0.0
+            )
+            final_observation = _copy_lightzero_observation(next_obs)
+            if profile_env_timing_sec is not None:
+                profile_env_timing_sec["final_observation_copy_sec"] = (
+                    time.perf_counter() - final_observation_started
+                )
+                profile_env_timing_sec["final_observation_array_bytes"] = float(
+                    _array_payload_nbytes(final_observation)
+                )
         final_reward_map = None
-        final_step_training_reward_map = None
         survival_reward_map = None
         source_terminal_reward_map = None
         if done:
             survival_reward_map = {
                 "player_0": self._survival_reward_for_player(0),
                 "player_1": self._survival_reward_for_player(1),
-            }
-            final_step_training_reward_map = {
-                "player_0": self._scalar_reward_for_player(batch=batch, player_index=0),
-                "player_1": self._scalar_reward_for_player(batch=batch, player_index=1),
             }
             if batch.final_reward is not None:
                 source_terminal_reward_map = {
@@ -1954,9 +1792,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
                 "policy_action_repeat_executed": int(action_repeat_executed),
                 "policy_action_repeat_extra_steps": int(action_repeat_executed - 1),
                 "policy_observation_after_skipped_steps": int(action_repeat_executed - 1),
-                "physical_decision_ms_total": float(
-                    self._decision_ms * action_repeat_executed
-                ),
+                "physical_decision_ms_total": float(self._decision_ms * action_repeat_executed),
                 "control_noise_profile_id": self._control_noise_profile_id,
                 "joint_action": {
                     "player_0": int(joint_action[0]),
@@ -1984,15 +1820,13 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
                 "reward_player_id": self.ego_player_id,
                 "reward_perspective": self._reward_perspective(),
                 "scalar_training_reward_variant": self._reward_variant,
-                "survival_reward_for_ego": self._survival_reward_for_player(
-                    self.ego_player_index
-                ),
+                "survival_reward_for_ego": self._survival_reward_for_player(self.ego_player_index),
                 "done": bool(done),
                 "terminated": bool(terminated),
                 "truncated": bool(truncated),
                 "needs_reset": bool(self._needs_reset),
                 "terminal_reason": self._terminal_reason_name(),
-                "final_observation": _copy_lightzero_observation(next_obs) if done else None,
+                "final_observation": final_observation,
                 "final_reward_map": final_reward_map,
                 "final_step_training_reward_map": final_step_training_reward_map,
                 "survival_reward_map": survival_reward_map,
@@ -2041,12 +1875,8 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             "max_source_ticks": int(self._max_source_ticks),
             "body_capacity": int(self._env.body_capacity),
             "visual_trail_capacity": int(self._env.state["visual_trail_active"].shape[1]),
-            "visual_trail_write_cursor": int(
-                self._env.state["visual_trail_write_cursor"][0]
-            ),
-            "visual_trail_active_count": int(
-                self._env.state["visual_trail_active"].sum()
-            ),
+            "visual_trail_write_cursor": int(self._env.state["visual_trail_write_cursor"][0]),
+            "visual_trail_active_count": int(self._env.state["visual_trail_active"].sum()),
             "visual_trail_overflow": bool(self._env.state["visual_trail_overflow"][0]),
             "body_write_cursor": int(self._env.state["body_write_cursor"][0]),
             "body_active_count": int(self._env.state["body_active"].sum()),
@@ -2089,8 +1919,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
                 f"bonus_render_mode={self._raw_observation_bonus_render_mode!r})"
             ),
             "grayscale_observation_source": (
-                "jax_gpu_scalar_block_704_gray64_experimental("
-                "browser_lines, simple_symbols)"
+                "jax_gpu_scalar_block_704_gray64_experimental(browser_lines, simple_symbols)"
                 if self._policy_observation_backend == POLICY_OBSERVATION_BACKEND_GPU
                 else (
                     "render_source_state_canvas_gray64("
@@ -2101,9 +1930,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             ),
             "policy_observation_backend": self._policy_observation_backend,
             "default_policy_observation_backend": DEFAULT_POLICY_OBSERVATION_BACKEND,
-            "supported_policy_observation_backends": list(
-                SOURCE_STATE_POLICY_OBSERVATION_BACKENDS
-            ),
+            "supported_policy_observation_backends": list(SOURCE_STATE_POLICY_OBSERVATION_BACKENDS),
             "policy_observation_backend_kind": (
                 "experimental_scalar_jax_gpu"
                 if self._policy_observation_backend == POLICY_OBSERVATION_BACKEND_GPU
@@ -2125,9 +1952,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             "source_state_player_perspective": True,
             "observation_perspective_player_index": int(self.ego_player_index),
             "observation_perspective_player_id": self.ego_player_id,
-            "opponent_observation_perspective_player_index": int(
-                self.opponent_player_index
-            ),
+            "opponent_observation_perspective_player_index": int(self.opponent_player_index),
             "opponent_observation_perspective_player_id": self.opponent_player_id,
             "renderer_impl_id": SOURCE_STATE_CANVAS_LIKE_GRAY64_RENDERER_IMPL_ID,
             "raw_renderer_impl_id": SOURCE_STATE_RGB_CANVAS_LIKE_RENDERER_IMPL_ID,
@@ -2148,9 +1973,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             "bonus_renderer_is_approximation": bool(
                 self._model_bonus_render_mode != BONUS_RENDER_MODE_BROWSER_SPRITES
             ),
-            "source_state_scalar_dirty_render_enabled": bool(
-                self._scalar_dirty_render_enabled
-            ),
+            "source_state_scalar_dirty_render_enabled": bool(self._scalar_dirty_render_enabled),
             "source_state_scalar_dirty_render_active": (
                 self._should_use_scalar_dirty_render_cache()
             ),
@@ -2176,9 +1999,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             "default_trail_render_mode": SOURCE_STATE_DEFAULT_TRAIL_RENDER_MODE,
             "supported_trail_render_modes": list(SOURCE_STATE_SUPPORTED_TRAIL_RENDER_MODES),
             "browser_trail_semantics": SOURCE_STATE_BROWSER_TRAIL_SEMANTICS,
-            "browser_client_trail_point_caveat": (
-                SOURCE_STATE_BROWSER_CLIENT_TRAIL_POINT_CAVEAT
-            ),
+            "browser_client_trail_point_caveat": (SOURCE_STATE_BROWSER_CLIENT_TRAIL_POINT_CAVEAT),
             **_trail_render_metadata(self._source_state_trail_render_mode),
             "shape": list(STACKED_SOURCE_STATE_GRAY64_SHAPE),
             "dtype": SOURCE_STATE_CANVAS_GRAY64_NORMALIZED_DTYPE,
@@ -2226,7 +2047,9 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             "natural_bonus_pop_count": int(public_info["natural_bonus_pop_count"][0]),
             "natural_bonus_type_codes": public_info["bonus_support"][
                 "enabled_natural_bonus_type_codes"
-            ].astype(np.int16, copy=True).tolist(),
+            ]
+            .astype(np.int16, copy=True)
+            .tolist(),
             "natural_bonus_type_names": [
                 vector_runtime.BONUS_TYPE_NAME_BY_CODE[int(code)]
                 for code in public_info["bonus_support"][
@@ -2269,15 +2092,11 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
                 else "normal"
             ),
             "opponent_trail_mode": (
-                "none_blank_canvas_scrubbed"
-                if self._blank_canvas_noop_enabled()
-                else "normal"
+                "none_blank_canvas_scrubbed" if self._blank_canvas_noop_enabled() else "normal"
             ),
             "blank_canvas_noop": self._blank_canvas_noop_enabled(),
             "blank_canvas_noop_training_reward_expected": (
-                "survival_plus_bonus_no_outcome"
-                if self._blank_canvas_noop_enabled()
-                else None
+                "survival_plus_bonus_no_outcome" if self._blank_canvas_noop_enabled() else None
             ),
             "blank_canvas_noop_uses_remove_player": False,
             "blank_canvas_noop_public_opponent_present_alive": (
@@ -2289,28 +2108,29 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
                 else None
             ),
             "blank_canvas_noop_public_player_1_present_alive": (
-                bool(
-                    self._env.state["present"][0, 1]
-                    and self._env.state["alive"][0, 1]
-                )
+                bool(self._env.state["present"][0, 1] and self._env.state["alive"][0, 1])
                 if self._blank_canvas_noop_enabled()
                 else None
             ),
             "disable_death_for_profile": self._disable_death_for_profile,
             "death_suppression_for_profile": self._disable_death_for_profile,
             "death_suppression_claim": (
-                "profile_only_not_source_fidelity"
-                if self._disable_death_for_profile
-                else "none"
+                "profile_only_not_source_fidelity" if self._disable_death_for_profile else "none"
             ),
             "terminal_outcome_bonus": (
-                1.0
+                float(self._reward_outcome_alpha)
+                if self._reward_variant == REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME
+                else 1.0
                 if self._reward_variant
                 in (
                     REWARD_VARIANT_SPARSE_OUTCOME,
                     REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME,
-                    REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME,
                 )
+                else 0.0
+            ),
+            "reward_outcome_alpha": (
+                float(self._reward_outcome_alpha)
+                if self._reward_variant == REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME
                 else 0.0
             ),
             "terminal_outcome_reward_enabled": (
@@ -2322,9 +2142,8 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
                 )
             ),
             "terminal_outcome_scale": (
-                "episode_source_step_count"
-                if self._reward_variant
-                == REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME
+                "accumulated_non_outcome_training_reward"
+                if self._reward_variant == REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME
                 else "unit_sparse_outcome"
                 if self._reward_variant
                 in (
@@ -2333,23 +2152,36 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
                 )
                 else "none"
             ),
-            "loser_penalty": (
-                -1.0
+            "terminal_outcome_multiplier": (
+                float(self._reward_outcome_alpha)
+                if self._reward_variant == REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME
+                else 1.0
                 if self._reward_variant
                 in (
                     REWARD_VARIANT_SPARSE_OUTCOME,
                     REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME,
-                    REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME,
+                )
+                else 0.0
+            ),
+            "loser_penalty": (
+                -float(self._reward_outcome_alpha)
+                if self._reward_variant == REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME
+                else -1.0
+                if self._reward_variant
+                in (
+                    REWARD_VARIANT_SPARSE_OUTCOME,
+                    REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME,
                 )
                 else 0.0
             ),
             "winner_bonus": (
-                1.0
+                float(self._reward_outcome_alpha)
+                if self._reward_variant == REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME
+                else 1.0
                 if self._reward_variant
                 in (
                     REWARD_VARIANT_SPARSE_OUTCOME,
                     REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME,
-                    REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME,
                 )
                 else 0.0
             ),
@@ -2366,9 +2198,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
                 OPPONENT_MIXTURE_SCHEMA_ID if self._opponent_mixture is not None else None
             ),
             "opponent_mixture_selection_unit": (
-                OPPONENT_MIXTURE_SELECTION_UNIT
-                if self._opponent_mixture is not None
-                else None
+                OPPONENT_MIXTURE_SELECTION_UNIT if self._opponent_mixture is not None else None
             ),
             "opponent_mixture_entry_name": (
                 self._episode_opponent_mixture_entry.get("name")
@@ -2410,10 +2240,44 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
                 if self._opponent_assignment_context is not None
                 else None
             ),
+            "opponent_split_unit": (
+                self._opponent_assignment_context.get("opponent_split_unit")
+                if self._opponent_assignment_context is not None
+                else None
+            ),
+            "opponent_split_mode": (
+                self._opponent_assignment_context.get("opponent_split_mode")
+                if self._opponent_assignment_context is not None
+                else None
+            ),
+            "opponent_split_plan_sha256": (
+                self._opponent_assignment_context.get("opponent_split_plan_sha256")
+                if self._opponent_assignment_context is not None
+                else None
+            ),
+            "opponent_split_env_index": (
+                self._opponent_assignment_context.get("opponent_split_env_index")
+                if self._opponent_assignment_context is not None
+                else None
+            ),
+            "opponent_split_env_num": (
+                self._opponent_assignment_context.get("opponent_split_env_num")
+                if self._opponent_assignment_context is not None
+                else None
+            ),
+            "opponent_split_entry_name": (
+                self._opponent_assignment_context.get("opponent_split_entry_name")
+                if self._opponent_assignment_context is not None
+                else None
+            ),
+            "opponent_split_entry_count": (
+                self._opponent_assignment_context.get("opponent_split_entry_count")
+                if self._opponent_assignment_context is not None
+                else None
+            ),
             "opponent_wall_avoidant_safe_margin": (
                 float(self._opponent_wall_avoidant_safe_margin)
-                if self._opponent_policy_kind
-                == OPPONENT_POLICY_KIND_PROACTIVE_WALL_AVOIDANT
+                if self._opponent_policy_kind == OPPONENT_POLICY_KIND_PROACTIVE_WALL_AVOIDANT
                 else None
             ),
             "episode_seed": self._episode_seed,
@@ -2465,28 +2329,20 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         return info
 
     def _opponent_policy_id(self) -> str:
-        if (
-            self._opponent_policy_kind
-            == OPPONENT_POLICY_KIND_PROACTIVE_WALL_AVOIDANT
-        ):
+        if self._opponent_policy_kind == OPPONENT_POLICY_KIND_PROACTIVE_WALL_AVOIDANT:
             return PROACTIVE_WALL_AVOIDANT_OPPONENT_POLICY_ID
         if (
-            self._opponent_policy_kind
-            == OPPONENT_POLICY_KIND_FROZEN_LIGHTZERO_CHECKPOINT
+            self._opponent_policy_kind == OPPONENT_POLICY_KIND_FROZEN_LIGHTZERO_CHECKPOINT
             and self.opponent_policy is not None
         ):
             return str(getattr(self.opponent_policy, "policy_id", "frozen_lightzero_checkpoint"))
         return "curvyzero_source_state_fixed_straight_opponent"
 
     def _opponent_policy_version(self) -> str:
-        if (
-            self._opponent_policy_kind
-            == OPPONENT_POLICY_KIND_PROACTIVE_WALL_AVOIDANT
-        ):
+        if self._opponent_policy_kind == OPPONENT_POLICY_KIND_PROACTIVE_WALL_AVOIDANT:
             return PROACTIVE_WALL_AVOIDANT_OPPONENT_POLICY_VERSION
         if (
-            self._opponent_policy_kind
-            == OPPONENT_POLICY_KIND_FROZEN_LIGHTZERO_CHECKPOINT
+            self._opponent_policy_kind == OPPONENT_POLICY_KIND_FROZEN_LIGHTZERO_CHECKPOINT
             and self.opponent_policy is not None
         ):
             return str(getattr(self.opponent_policy, "policy_version", "unknown"))
@@ -2504,9 +2360,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
         if not sampled_step:
             return
         info = timestep.info
-        opponent_metadata = _opponent_policy_metadata(
-            info.get("opponent_policy_sidecar")
-        )
+        opponent_metadata = _opponent_policy_metadata(info.get("opponent_policy_sidecar"))
         opponent_load_summary = opponent_metadata.get("provider_load_summary")
         if not isinstance(opponent_load_summary, dict):
             opponent_load_summary = {}
@@ -2533,9 +2387,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             "natural_bonus_pop_count": info.get("natural_bonus_pop_count"),
             "death_mode": info.get("death_mode"),
             "opponent_death_mode": info.get("opponent_death_mode"),
-            "opponent_death_mode_diagnostic": info.get(
-                "opponent_death_mode_diagnostic"
-            ),
+            "opponent_death_mode_diagnostic": info.get("opponent_death_mode_diagnostic"),
             "opponent_death_mode_claim": info.get("opponent_death_mode_claim"),
             "opponent_runtime_mode": info.get("opponent_runtime_mode"),
             "opponent_runtime_mode_claim": info.get("opponent_runtime_mode_claim"),
@@ -2555,10 +2407,30 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             "scalar_action": info.get("scalar_action", info.get("requested_ego_action")),
             "joint_action_scalar": info.get("joint_action_scalar"),
             "joint_action_decode_rule": info.get("joint_action_decode_rule"),
-            "centralized_joint_action_control": info.get(
-                "centralized_joint_action_control"
-            ),
+            "centralized_joint_action_control": info.get("centralized_joint_action_control"),
             "true_competitive_self_play": info.get("true_competitive_self_play"),
+            "learner_seat_assignment_schema_id": info.get("learner_seat_assignment_schema_id"),
+            "learner_seat_mode": info.get("learner_seat_mode"),
+            "supported_learner_seat_modes": info.get("supported_learner_seat_modes"),
+            "ego_player_index": info.get("ego_player_index"),
+            "opponent_player_index": info.get("opponent_player_index"),
+            "learner_player_index": info.get("learner_player_index"),
+            "learner_player_id": info.get("learner_player_id"),
+            "opponent_player_id": info.get("opponent_player_id"),
+            "source_state_player_perspective": info.get("source_state_player_perspective"),
+            "player_perspective_schema_id": info.get("player_perspective_schema_id"),
+            "observation_perspective": info.get("observation_perspective"),
+            "observation_perspective_owner": info.get("observation_perspective_owner"),
+            "observation_perspective_player_index": info.get(
+                "observation_perspective_player_index"
+            ),
+            "observation_perspective_player_id": info.get("observation_perspective_player_id"),
+            "opponent_observation_perspective_player_index": info.get(
+                "opponent_observation_perspective_player_index"
+            ),
+            "opponent_observation_perspective_player_id": info.get(
+                "opponent_observation_perspective_player_id"
+            ),
             "ego_action": info.get("executed_ego_action"),
             "acting_player_id": info.get("acting_player_id"),
             "controlled_player_id": info.get("controlled_player_id"),
@@ -2590,9 +2462,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             "opponent_training_relation": info.get("opponent_training_relation"),
             "opponent_mixture_enabled": info.get("opponent_mixture_enabled"),
             "opponent_mixture_schema_id": info.get("opponent_mixture_schema_id"),
-            "opponent_mixture_selection_unit": info.get(
-                "opponent_mixture_selection_unit"
-            ),
+            "opponent_mixture_selection_unit": info.get("opponent_mixture_selection_unit"),
             "opponent_mixture_entry_name": info.get("opponent_mixture_entry_name"),
             "opponent_mixture_entry_weight": info.get("opponent_mixture_entry_weight"),
             "opponent_mixture_entry_index": info.get("opponent_mixture_entry_index"),
@@ -2600,9 +2470,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             "opponent_assignment_id": info.get("opponent_assignment_id"),
             "opponent_assignment_ref": info.get("opponent_assignment_ref"),
             "opponent_assignment_sha256": info.get("opponent_assignment_sha256"),
-            "opponent_assignment_refresh_index": info.get(
-                "opponent_assignment_refresh_index"
-            ),
+            "opponent_assignment_refresh_index": info.get("opponent_assignment_refresh_index"),
             "opponent_checkpoint_ref": opponent_metadata.get("checkpoint_ref"),
             "opponent_snapshot_ref": opponent_metadata.get("snapshot_ref"),
             "opponent_provider_id": opponent_metadata.get("provider_id"),
@@ -2625,9 +2493,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             "trainer_reward": info.get("trainer_reward"),
             "sparse_outcome_reward_for_ego": info.get("sparse_outcome_reward_for_ego"),
             "dense_survival_helper_for_ego": info.get("dense_survival_helper_for_ego"),
-            "bonus_catch_count_step_for_ego": info.get(
-                "bonus_catch_count_step_for_ego"
-            ),
+            "bonus_catch_count_step_for_ego": info.get("bonus_catch_count_step_for_ego"),
             "bonus_pickup_reward_for_ego": info.get("bonus_pickup_reward_for_ego"),
             "bonus_pickup_reward_enabled": info.get("bonus_pickup_reward_enabled"),
             "bonus_pickup_reward_per_catch": info.get("bonus_pickup_reward_per_catch"),
@@ -2666,26 +2532,18 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv:
             "trail_render_mode": info.get("trail_render_mode"),
             "trail_renderer_kind": info.get("trail_renderer_kind"),
             "trail_renderer_truth_level": info.get("trail_renderer_truth_level"),
-            "trail_renderer_is_approximation": info.get(
-                "trail_renderer_is_approximation"
-            ),
+            "trail_renderer_is_approximation": info.get("trail_renderer_is_approximation"),
             "browser_style_trail_renderer": info.get("browser_style_trail_renderer"),
             "browser_trail_semantics": info.get("browser_trail_semantics"),
-            "browser_client_trail_point_caveat": info.get(
-                "browser_client_trail_point_caveat"
-            ),
+            "browser_client_trail_point_caveat": info.get("browser_client_trail_point_caveat"),
             "source_state_bonus_render_mode": info.get("source_state_bonus_render_mode"),
             "default_bonus_render_mode": info.get("default_bonus_render_mode"),
             "supported_bonus_render_modes": info.get("supported_bonus_render_modes"),
-            "model_observation_bonus_render_mode": info.get(
-                "model_observation_bonus_render_mode"
-            ),
+            "model_observation_bonus_render_mode": info.get("model_observation_bonus_render_mode"),
             "raw_observation_bonus_render_mode": info.get("raw_observation_bonus_render_mode"),
             "bonus_render_mode": info.get("bonus_render_mode"),
             "bonus_renderer_kind": info.get("bonus_renderer_kind"),
-            "bonus_renderer_is_approximation": info.get(
-                "bonus_renderer_is_approximation"
-            ),
+            "bonus_renderer_is_approximation": info.get("bonus_renderer_is_approximation"),
             "browser_pixel_fidelity_claim": info.get("browser_pixel_fidelity_claim"),
             "source_fidelity_claim": info.get("source_fidelity_claim"),
             "debug_fidelity_only": info.get("debug_fidelity_only"),
@@ -2787,6 +2645,7 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroEnv(
 
     def __init__(self, cfg: Any | None = None):
         super().__init__(cfg)
+        self._defer_telemetry_until_base_timestep = True
         self.lightzero_env_type = LIGHTZERO_SOURCE_STATE_VISUAL_SURVIVAL_ENV_TYPE
         if gym is not None:
             reward_space = self._make_reward_space()
@@ -2818,7 +2677,25 @@ class CurvyZeroSourceStateVisualSurvivalLightZeroEnv(
 
     def step(self, action: Any) -> BaseEnvTimestep:
         local_timestep = super().step(action)
-        return local_timestep.to_base_env_timestep(BaseEnvTimestep)
+        timing = local_timestep.info.get("profile_env_timing_sec")
+        construct_started = time.perf_counter() if isinstance(timing, dict) else 0.0
+        base_timestep = local_timestep.to_base_env_timestep(BaseEnvTimestep)
+        if isinstance(timing, dict):
+            timing["base_env_timestep_construct_sec"] = time.perf_counter() - construct_started
+            pickle_started = time.perf_counter()
+            pickled_timestep = pickle.dumps(base_timestep, protocol=pickle.HIGHEST_PROTOCOL)
+            timing["base_env_timestep_pickle_sec"] = time.perf_counter() - pickle_started
+            timing["base_env_timestep_pickle_bytes"] = float(len(pickled_timestep))
+            timing["base_env_timestep_array_bytes"] = float(
+                _array_payload_nbytes(
+                    {
+                        "obs": getattr(base_timestep, "obs", None),
+                        "info": getattr(base_timestep, "info", None),
+                    }
+                )
+            )
+            self._write_telemetry_row(timestep=local_timestep)
+        return base_timestep
 
 
 class CurvyZeroSourceStateVisualJointActionLightZeroLocalEnv(
@@ -3099,10 +2976,7 @@ def _learner_seat_mode_from_cfg(cfg: Any) -> tuple[str, int]:
         raise ValueError("ego_player_index config is removed; use learner_seat_mode")
     mode = str(_cfg_get(cfg, "learner_seat_mode", DEFAULT_LEARNER_SEAT_MODE))
     if mode not in LEARNER_SEAT_MODES:
-        raise ValueError(
-            "learner_seat_mode must be one of "
-            f"{LEARNER_SEAT_MODES!r}; got {mode!r}"
-        )
+        raise ValueError(f"learner_seat_mode must be one of {LEARNER_SEAT_MODES!r}; got {mode!r}")
     if mode == LEARNER_SEAT_MODE_FIXED_PLAYER_1:
         return mode, 1
     return mode, 0
@@ -3185,6 +3059,16 @@ def _validate_joint_action(action: Any) -> int:
 
 def _decode_joint_action(action_id: int) -> tuple[int, int]:
     return int(action_id // ACTION_COUNT), int(action_id % ACTION_COUNT)
+
+
+def _array_payload_nbytes(value: Any) -> int:
+    if isinstance(value, np.ndarray):
+        return int(value.nbytes)
+    if isinstance(value, Mapping):
+        return sum(_array_payload_nbytes(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return sum(_array_payload_nbytes(item) for item in value)
+    return 0
 
 
 def _copy_lightzero_observation(observation: dict[str, Any]) -> dict[str, Any]:
@@ -3300,13 +3184,9 @@ class _JaxScalarPolicyObservationRenderer:
     def _trail_slot_profile(self, state: Mapping[str, np.ndarray]) -> dict[str, Any]:
         active = np.asarray(state["visual_trail_active"])
         if active.ndim != 2 or active.shape[0] != 1:
-            raise ValueError(
-                "jax_gpu scalar backend expects visual_trail_active with shape [1,C]"
-            )
+            raise ValueError("jax_gpu scalar backend expects visual_trail_active with shape [1,C]")
         capacity = int(active.shape[1])
-        cursor = int(
-            np.asarray(state.get("visual_trail_write_cursor", np.asarray([capacity])))[0]
-        )
+        cursor = int(np.asarray(state.get("visual_trail_write_cursor", np.asarray([capacity])))[0])
         if cursor < 0 or cursor > capacity:
             raise ValueError(
                 "jax_gpu scalar backend received invalid visual_trail_write_cursor "
@@ -3345,8 +3225,7 @@ class _JaxScalarPolicyObservationRenderer:
         backend = str(jax.default_backend())
         if backend != "gpu":
             raise RuntimeError(
-                "policy_observation_backend='jax_gpu' requires a JAX GPU backend; "
-                f"got {backend!r}"
+                f"policy_observation_backend='jax_gpu' requires a JAX GPU backend; got {backend!r}"
             )
         self._jax = jax
         self._jnp = jnp
@@ -3377,9 +3256,7 @@ class _JaxScalarPolicyObservationRenderer:
                 jax=self._jax,
                 jnp=self._jnp,
                 config=render_config,
-                render_mode_id=self._bench.RENDER_MODE_IDS[
-                    self._bench.RENDER_MODE_BROWSER_LINES
-                ],
+                render_mode_id=self._bench.RENDER_MODE_IDS[self._bench.RENDER_MODE_BROWSER_LINES],
                 bonus_render_mode_id=self._bench.BONUS_RENDER_MODE_IDS[
                     self._bench.BONUS_RENDER_MODE_SIMPLE_SYMBOLS
                 ],
@@ -3396,9 +3273,7 @@ def _trail_render_metadata(trail_render_mode: str) -> dict[str, Any]:
     return {
         "trail_render_mode": trail_render_mode,
         "trail_renderer_kind": "connected_rounded_lines",
-        "trail_renderer_truth_level": (
-            "source_state_browser_style_lines_non_pixel_parity"
-        ),
+        "trail_renderer_truth_level": ("source_state_browser_style_lines_non_pixel_parity"),
         "trail_renderer_is_approximation": False,
         "browser_style_trail_renderer": True,
     }
@@ -3441,9 +3316,7 @@ def _resolve_model_bonus_render_mode(
 
 
 def _source_frame_decision_config(cfg: Any) -> tuple[int, float, float]:
-    source_physics_step_ms = float(
-        _cfg_get(cfg, "source_physics_step_ms", SOURCE_PHYSICS_STEP_MS)
-    )
+    source_physics_step_ms = float(_cfg_get(cfg, "source_physics_step_ms", SOURCE_PHYSICS_STEP_MS))
     if not np.isfinite(source_physics_step_ms) or source_physics_step_ms <= 0.0:
         raise ValueError("source_physics_step_ms must be positive and finite")
 
@@ -3494,13 +3367,17 @@ def _normalize_opponent_assignment_context(value: Any) -> dict[str, Any] | None:
         "refresh_index",
         "source_epoch",
         "source_ref",
+        "opponent_split_unit",
+        "opponent_split_mode",
+        "opponent_split_plan_sha256",
+        "opponent_split_env_index",
+        "opponent_split_env_num",
+        "opponent_split_entry_name",
+        "opponent_split_entry_count",
     }
     unknown = set(value) - allowed
     if unknown:
-        raise ValueError(
-            "opponent_assignment_context has unknown keys "
-            f"{sorted(unknown)!r}"
-        )
+        raise ValueError(f"opponent_assignment_context has unknown keys {sorted(unknown)!r}")
     context = dict(value)
     assignment_id = context.get("assignment_id")
     if assignment_id is not None:
@@ -3513,6 +3390,17 @@ def _normalize_opponent_assignment_context(value: Any) -> dict[str, Any] | None:
         context["assignment_sha256"] = str(assignment_sha256)
     if context.get("refresh_index") is not None:
         context["refresh_index"] = int(context["refresh_index"])
+    for key in ("opponent_split_env_index", "opponent_split_env_num", "opponent_split_entry_count"):
+        if context.get(key) is not None:
+            context[key] = int(context[key])
+    for key in (
+        "opponent_split_unit",
+        "opponent_split_mode",
+        "opponent_split_plan_sha256",
+        "opponent_split_entry_name",
+    ):
+        if context.get(key) is not None:
+            context[key] = str(context[key])
     return context
 
 

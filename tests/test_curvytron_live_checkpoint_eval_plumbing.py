@@ -1,4 +1,5 @@
 import json
+import inspect
 import sys
 import types
 from pathlib import Path
@@ -6,12 +7,14 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from curvyzero.contracts.curvytron import LEARNER_SEAT_MODE_FIXED_PLAYER_1
 from curvyzero.infra.modal import lightzero_curvytron_visual_survival_eval as eval_mod
 from curvyzero.infra.modal import (
     lightzero_curvyzero_stacked_debug_visual_survival_train as train_mod,
 )
 from curvyzero.training.opponent_leaderboard import OPPONENT_ASSIGNMENT_AUDIT_SCHEMA_ID
 from curvyzero.training.opponent_registry import OPPONENT_ASSIGNMENT_SCHEMA_ID
+from curvyzero.training import exploration_bonus as xb
 from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
     CurvyZeroSourceStateVisualSurvivalLightZeroEnv,
     LIGHTZERO_SOURCE_STATE_VISUAL_SURVIVAL_ENV_TYPE,
@@ -21,9 +24,7 @@ from curvyzero.env.vector_multiplayer_env import SOURCE_PHYSICS_STEP_MS
 
 def _modal_image_copy_mount_entries(image):
     sync_original = next(
-        value
-        for key, value in image.__dict__.items()
-        if key.startswith("_sync_original")
+        value for key, value in image.__dict__.items() if key.startswith("_sync_original")
     )
     entries = []
     for cell in sync_original._load.__closure__ or ():
@@ -50,9 +51,41 @@ def _source_state_training_command():
     return command
 
 
+def test_scan_lightzero_artifacts_checks_runs_mount_for_relative_exp_name(monkeypatch, tmp_path):
+    monkeypatch.setattr(train_mod, "RUNS_MOUNT", tmp_path)
+    exp_ref = (
+        Path("training")
+        / train_mod.TASK_ID
+        / "run-a"
+        / "attempts"
+        / "attempt-a"
+        / "train"
+        / "lightzero_exp"
+    )
+    ckpt_path = tmp_path / exp_ref / "ckpt" / "iteration_1.pth.tar"
+    ckpt_path.parent.mkdir(parents=True)
+    ckpt_path.write_bytes(b"checkpoint")
+
+    summary = train_mod._scan_lightzero_artifacts(exp_ref.as_posix())
+
+    assert summary["exists"] is True
+    assert [Path(item["path"]).name for item in summary["checkpoint_files"]] == [
+        "iteration_1.pth.tar"
+    ]
+
+
 def test_checkpoint_progress_writer_updates_browser_speed_file(monkeypatch, tmp_path):
     monkeypatch.setattr(train_mod, "RUNS_MOUNT", tmp_path)
-    exp_name = tmp_path / "training" / train_mod.TASK_ID / "run-a" / "attempts" / "attempt-a" / "train" / "lightzero_exp"
+    exp_name = (
+        tmp_path
+        / "training"
+        / train_mod.TASK_ID
+        / "run-a"
+        / "attempts"
+        / "attempt-a"
+        / "train"
+        / "lightzero_exp"
+    )
     attempt_train_root = exp_name.parent
 
     class FakeBaseLearner:
@@ -94,9 +127,308 @@ def test_checkpoint_progress_writer_updates_browser_speed_file(monkeypatch, tmp_
     assert progress["checkpoint_ref"].endswith("lightzero_exp/ckpt/iteration_17.pth.tar")
 
 
+def test_learner_metrics_recorder_preserves_train_result_and_feeds_progress(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setattr(train_mod, "RUNS_MOUNT", tmp_path)
+    exp_name = (
+        tmp_path
+        / "training"
+        / train_mod.TASK_ID
+        / "run-metrics"
+        / "attempts"
+        / "attempt-metrics"
+        / "train"
+        / "lightzero_exp"
+    )
+    attempt_train_root = exp_name.parent
+
+    class FakeBaseLearner:
+        train_iter = 0
+        collector_envstep = 128
+
+        def train(self, _batch):
+            before = self.train_iter
+            self.train_iter += 1
+            return {
+                "total_loss": np.float32(1.25),
+                "policy_loss": 2.5,
+                "nested": {"value_loss": 3},
+                "vector": np.asarray([1.0, 2.0]),
+                "before": before,
+            }
+
+    def fake_train_muzero():
+        return None
+
+    monkeypatch.setitem(fake_train_muzero.__globals__, "BaseLearner", FakeBaseLearner)
+    installed = train_mod._install_lightzero_learner_metrics_recorder(
+        train_muzero=fake_train_muzero,
+        run_id="run-metrics",
+        attempt_id="attempt-metrics",
+        attempt_train_root=attempt_train_root,
+        started_monotonic=0.0,
+    )
+
+    assert installed is not None
+    restore, recorder = installed
+    learner = FakeBaseLearner()
+    try:
+        result = learner.train({"fake": "batch"})
+    finally:
+        restore()
+
+    assert result["policy_loss"] == 2.5
+    latest = json.loads(
+        (attempt_train_root / "learner_metrics_latest.json").read_text(encoding="utf-8")
+    )
+    assert latest["learner_train_call_index"] == 1
+    assert latest["train_iter_before"] == 0
+    assert latest["train_iter_after"] == 1
+    assert latest["train_iter_delta"] == 1
+    assert latest["collector_envstep"] == 128
+    assert latest["numeric_metrics"]["total_loss"] == pytest.approx(1.25)
+    assert latest["numeric_metrics"]["policy_loss"] == 2.5
+    assert latest["numeric_metrics"]["nested.value_loss"] == 3.0
+    assert "vector" not in latest["numeric_metrics"]
+
+    checkpoint_path = exp_name / "ckpt" / "iteration_1.pth.tar"
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint_path.write_bytes(b"fake-checkpoint")
+    train_mod._write_checkpoint_progress_latest(
+        run_id="run-metrics",
+        attempt_id="attempt-metrics",
+        attempt_train_root=attempt_train_root,
+        exp_name=exp_name,
+        learner=learner,
+        started_monotonic=0.0,
+        learner_metrics_recorder=recorder,
+    )
+    progress = json.loads((attempt_train_root / "progress_latest.json").read_text(encoding="utf-8"))
+    assert progress["last_learner"]["learner_train_call_index"] == 1
+    assert progress["last_learner"]["numeric_metrics"]["policy_loss"] == 2.5
+    assert progress["learner_metrics_ref"].endswith("learner_metrics.jsonl")
+    assert progress["learner_metrics_latest_ref"].endswith("learner_metrics_latest.json")
+
+
+def test_learner_metrics_recorder_preserves_train_exception(monkeypatch, tmp_path):
+    monkeypatch.setattr(train_mod, "RUNS_MOUNT", tmp_path)
+    attempt_train_root = tmp_path / "attempt" / "train"
+
+    class FakeBaseLearner:
+        train_iter = 41
+
+        def train(self):
+            raise RuntimeError("boom")
+
+    def fake_train_muzero():
+        return None
+
+    monkeypatch.setitem(fake_train_muzero.__globals__, "BaseLearner", FakeBaseLearner)
+    installed = train_mod._install_lightzero_learner_metrics_recorder(
+        train_muzero=fake_train_muzero,
+        run_id="run-exception",
+        attempt_id="attempt-exception",
+        attempt_train_root=attempt_train_root,
+        started_monotonic=0.0,
+    )
+
+    assert installed is not None
+    restore, _recorder = installed
+    try:
+        with pytest.raises(RuntimeError, match="boom"):
+            FakeBaseLearner().train()
+    finally:
+        restore()
+
+    latest = json.loads(
+        (attempt_train_root / "learner_metrics_latest.json").read_text(encoding="utf-8")
+    )
+    assert latest["exception_type"] == "RuntimeError"
+    assert latest["exception_message"] == "boom"
+    assert latest["train_iter_before"] == 41
+    assert latest["train_iter_after"] == 41
+
+
+def test_own_checkpoint_opponent_refresh_writes_pointer_and_assignment(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setattr(train_mod, "RUNS_MOUNT", tmp_path)
+    checkpoint_ref = (
+        "training/lightzero-curvytron-visual-survival/run-own/attempts/attempt-a/"
+        "train/lightzero_exp/ckpt/iteration_10000.pth.tar"
+    )
+    checkpoint_path = tmp_path / checkpoint_ref
+    checkpoint_path.parent.mkdir(parents=True)
+    checkpoint_path.write_bytes(b"fake-checkpoint")
+
+    result = train_mod._write_own_checkpoint_opponent_refresh(
+        run_id="run-own",
+        attempt_id="attempt-a",
+        checkpoint={
+            "iteration": 10000,
+            "checkpoint_name": "iteration_10000.pth.tar",
+            "checkpoint_ref": checkpoint_ref,
+        },
+        timestamp="2026-05-16T00:00:00Z",
+        seed=123,
+        num_simulations=8,
+        batch_size=32,
+        opponent_use_cuda=False,
+    )
+
+    assert result["saved"] is True
+    assert result["pointer_ref"].startswith("runs:")
+    pointer_path = tmp_path / result["pointer_ref"][len("runs:") :]
+    pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    assignment_path = tmp_path / pointer["assignment_ref"]
+    assignment = json.loads(assignment_path.read_text(encoding="utf-8"))
+    assert pointer["assignment_sha256"] == train_mod.canonical_assignment_json_sha256(assignment)
+    assert assignment["assignment_id"] == "own-checkpoint-iteration-10000"
+    assert assignment["entries"][0]["opponent_checkpoint_ref"] == checkpoint_ref
+    assert assignment["entries"][0]["opponent_immortal"] is False
+    resolved = train_mod._resolve_opponent_assignment_for_env(
+        opponent_assignment_ref=result["pointer_ref"]
+    )
+    assert resolved is not None
+    assert resolved["assignment_id"] == "own-checkpoint-iteration-10000"
+    assert resolved["opponent_mixture"]["entries"][0]["opponent_checkpoint_ref"] == checkpoint_ref
+
+
+def test_own_checkpoint_opponent_refresh_skips_initial_checkpoint(monkeypatch, tmp_path):
+    monkeypatch.setattr(train_mod, "RUNS_MOUNT", tmp_path)
+
+    result = train_mod._write_own_checkpoint_opponent_refresh(
+        run_id="run-own",
+        attempt_id="attempt-a",
+        checkpoint={
+            "iteration": 0,
+            "checkpoint_name": "iteration_0.pth.tar",
+            "checkpoint_ref": (
+                "training/lightzero-curvytron-visual-survival/run-own/attempts/"
+                "attempt-a/train/lightzero_exp/ckpt/iteration_0.pth.tar"
+            ),
+        },
+        timestamp="2026-05-16T00:00:00Z",
+        seed=123,
+        num_simulations=8,
+        batch_size=32,
+        opponent_use_cuda=False,
+    )
+
+    assert result == {
+        "saved": False,
+        "reason": "initial_checkpoint_not_used_as_own_opponent",
+        "iteration": 0,
+    }
+    assert not (
+        tmp_path
+        / "training"
+        / train_mod.TASK_ID
+        / "run-own"
+        / "attempts"
+        / "attempt-a"
+        / "train"
+        / "own_checkpoint_opponent"
+    ).exists()
+
+
+def test_checkpoint_progress_writer_writes_policy_metadata_sidecar(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setattr(train_mod, "RUNS_MOUNT", tmp_path)
+    exp_name = (
+        tmp_path
+        / "training"
+        / train_mod.TASK_ID
+        / "run-sidecar"
+        / "attempts"
+        / "attempt-sidecar"
+        / "train"
+        / "lightzero_exp"
+    )
+    attempt_train_root = exp_name.parent
+
+    class FakeBaseLearner:
+        train_iter = 11
+
+        def save_checkpoint(self):
+            checkpoint_path = exp_name / "ckpt" / "iteration_11.pth.tar"
+            checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+            checkpoint_path.write_bytes(b"fake-checkpoint")
+            return {"ok": True}
+
+    def fake_train_muzero():
+        return None
+
+    metadata = {
+        "env_variant": "source_state_fixed_opponent",
+        "reward_variant": "survival_plus_bonus_no_outcome",
+        "policy_observation_backend": "cpu_oracle",
+        "policy_trail_render_mode": "browser_lines",
+        "policy_bonus_render_mode": "simple_symbols",
+        "policy_observation_contract_id": "curvyzero_source_state_gray64_stack4/v1",
+        "observation_contract": {
+            "trail_render_mode": "browser_lines",
+            "bonus_render_mode": "simple_symbols",
+            "backend": "cpu_oracle",
+        },
+        "decision_source_frames": 1,
+        "decision_ms": 1000.0 / 60.0,
+        "source_physics_step_ms": 1000.0 / 60.0,
+        "source_max_steps": 1048576,
+        "learner_seat_mode": "random_per_episode",
+    }
+    monkeypatch.setitem(fake_train_muzero.__globals__, "BaseLearner", FakeBaseLearner)
+    restore = train_mod._install_checkpoint_progress_writer(
+        train_muzero=fake_train_muzero,
+        run_id="run-sidecar",
+        attempt_id="attempt-sidecar",
+        exp_name=exp_name,
+        attempt_train_root=attempt_train_root,
+        started_monotonic=0.0,
+        checkpoint_metadata=metadata,
+    )
+
+    try:
+        assert restore is not None
+        assert FakeBaseLearner().save_checkpoint() == {"ok": True}
+    finally:
+        if restore is not None:
+            restore()
+
+    sidecar_path = exp_name / "ckpt" / "iteration_11.pth.tar.metadata.json"
+    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    assert sidecar["schema_id"] == "curvyzero_checkpoint_policy_metadata/v0"
+    assert sidecar["checkpoint_ref"].endswith("lightzero_exp/ckpt/iteration_11.pth.tar")
+    assert sidecar["model_env_variant"] == "source_state_fixed_opponent"
+    assert sidecar["model_reward_variant"] == "survival_plus_bonus_no_outcome"
+    assert sidecar["policy_trail_render_mode"] == "browser_lines"
+    assert sidecar["policy_bonus_render_mode"] == "simple_symbols"
+    assert sidecar["policy_observation_backend"] == "cpu_oracle"
+    assert sidecar["observation_contract"]["backend"] == "cpu_oracle"
+
+    progress = json.loads((attempt_train_root / "progress_latest.json").read_text())
+    saved = progress["checkpoint_policy_metadata_sidecar"]
+    assert saved["saved"] is True
+    assert saved["path"] == str(sidecar_path)
+
+
 def test_checkpoint_progress_writer_can_commit_after_checkpoint(monkeypatch, tmp_path):
     monkeypatch.setattr(train_mod, "RUNS_MOUNT", tmp_path)
-    exp_name = tmp_path / "training" / train_mod.TASK_ID / "run-live" / "attempts" / "attempt-live" / "train" / "lightzero_exp"
+    exp_name = (
+        tmp_path
+        / "training"
+        / train_mod.TASK_ID
+        / "run-live"
+        / "attempts"
+        / "attempt-live"
+        / "train"
+        / "lightzero_exp"
+    )
     attempt_train_root = exp_name.parent
     commit_labels = []
 
@@ -140,7 +472,16 @@ def test_checkpoint_progress_writer_can_commit_after_checkpoint(monkeypatch, tmp
 
 def test_save_ckpt_hook_updates_browser_speed_file(monkeypatch, tmp_path):
     monkeypatch.setattr(train_mod, "RUNS_MOUNT", tmp_path)
-    exp_name = tmp_path / "training" / train_mod.TASK_ID / "run-b" / "attempts" / "attempt-b" / "train" / "lightzero_exp"
+    exp_name = (
+        tmp_path
+        / "training"
+        / train_mod.TASK_ID
+        / "run-b"
+        / "attempts"
+        / "attempt-b"
+        / "train"
+        / "lightzero_exp"
+    )
     attempt_train_root = exp_name.parent
 
     class FakeBaseLearner:
@@ -283,6 +624,149 @@ def test_eval_episode_and_tables_preserve_reward_components(monkeypatch):
     assert survival["reward_components"]["survival"] == 2.0
 
 
+def test_eval_infers_model_support_from_checkpoint_head_shapes():
+    state_dict = {
+        "module.dynamics_network.fc_reward_head.3.weight": np.zeros((13, 4)),
+        "module.prediction_network.fc_value.3.weight": np.zeros((13, 4)),
+    }
+
+    inferred = eval_mod._infer_model_support_config_from_state_dict(state_dict)
+
+    assert inferred == {
+        "model_reward_support_size": 13,
+        "model_value_support_size": 13,
+        "model_support_scale": 6,
+    }
+
+
+def test_make_policy_and_env_applies_checkpoint_inferred_support_with_public_patches(
+    monkeypatch,
+    tmp_path,
+):
+    patched_main_config = {
+        "policy": {
+            "cuda": False,
+            "num_simulations": 1,
+            "batch_size": 4,
+            "model": {
+                "model_type": "conv",
+                "observation_shape": [4, 64, 64],
+                "image_channel": 4,
+                "frame_stack_num": 1,
+                "self_supervised_learning_loss": True,
+                "action_space_size": 3,
+                "support_scale": 10,
+                "reward_support_size": 21,
+                "value_support_size": 21,
+            },
+        },
+        "env": {
+            "type": "fake-env",
+            "env_id": "fake-env-v0",
+            "source_max_steps": 8,
+        },
+    }
+    patched = {
+        "main_config": patched_main_config,
+        "create_config": {"env": {"type": "fake-env"}, "env_manager": {"type": "base"}},
+        "surface": {},
+    }
+    monkeypatch.setattr(eval_mod, "_build_visual_survival_configs", lambda **_kwargs: patched)
+
+    original_target_patches = eval_mod._target_config_patches
+    patch_calls = []
+
+    def spy_target_config_patches(main_config, target_config):
+        patch_calls.append(target_config)
+        return original_target_patches(main_config, target_config)
+
+    monkeypatch.setattr(eval_mod, "_target_config_patches", spy_target_config_patches)
+    monkeypatch.setattr(
+        eval_mod,
+        "_load_state_dict_probe",
+        lambda _model, _state_dict: {"ok": True, "strict": True},
+    )
+
+    def to_namespace(value):
+        if isinstance(value, dict):
+            return types.SimpleNamespace(
+                **{str(key): to_namespace(item) for key, item in value.items()}
+            )
+        if isinstance(value, list):
+            return [to_namespace(item) for item in value]
+        return value
+
+    def fake_compile_config(main_config, *, seed, auto, create_cfg, save_cfg):
+        return types.SimpleNamespace(
+            policy=to_namespace(main_config["policy"]),
+            env=to_namespace(main_config["env"]),
+        )
+
+    class FakePolicy:
+        def __init__(self, cfg):
+            self.cfg = cfg
+            self._model = types.SimpleNamespace(eval=lambda: None)
+
+    class FakeEnv:
+        def seed(self, seed, dynamic_seed=False):
+            self.seed_call = {"seed": seed, "dynamic_seed": dynamic_seed}
+
+    def fake_get_vec_env_setting(_cfg_env):
+        return (lambda cfg: FakeEnv(), [{"collector": True}], [{"evaluator": True}])
+
+    ding_config = types.ModuleType("ding.config")
+    ding_config.compile_config = fake_compile_config
+    ding_envs = types.ModuleType("ding.envs")
+    ding_envs.get_vec_env_setting = fake_get_vec_env_setting
+    lzero_muzero = types.ModuleType("lzero.policy.muzero")
+    lzero_muzero.MuZeroPolicy = FakePolicy
+    monkeypatch.setitem(sys.modules, "ding", types.ModuleType("ding"))
+    monkeypatch.setitem(sys.modules, "ding.config", ding_config)
+    monkeypatch.setitem(sys.modules, "ding.envs", ding_envs)
+    monkeypatch.setitem(sys.modules, "lzero", types.ModuleType("lzero"))
+    monkeypatch.setitem(sys.modules, "lzero.policy", types.ModuleType("lzero.policy"))
+    monkeypatch.setitem(sys.modules, "lzero.policy.muzero", lzero_muzero)
+
+    state_dict = {
+        "dynamics_network.fc_reward_head.3.weight": np.zeros((13, 4)),
+        "prediction_network.fc_value.3.weight": np.zeros((13, 4)),
+    }
+
+    _policy, _env, surface = eval_mod._make_policy_and_env(
+        state_dict=state_dict,
+        seed=7,
+        use_cuda=False,
+        source_max_steps=8,
+        num_simulations=1,
+        batch_size=4,
+        telemetry_path=tmp_path / "env_steps.jsonl",
+        env_variant=train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT,
+        reward_variant=train_mod.DEFAULT_REWARD_VARIANT,
+        opponent_policy_kind=train_mod.OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
+        opponent_checkpoint=None,
+        opponent_snapshot_ref=None,
+        opponent_checkpoint_state_key=None,
+    )
+
+    assert patch_calls == [
+        {
+            "model_reward_support_size": 13,
+            "model_value_support_size": 13,
+            "model_support_scale": 6,
+        }
+    ]
+    assert patched_main_config["policy"]["model"]["support_scale"] == 6
+    assert patched_main_config["policy"]["model"]["reward_support_size"] == 13
+    assert patched_main_config["policy"]["model"]["value_support_size"] == 13
+    patched_surface = surface["patched_surface"]
+    assert patched_surface["checkpoint_inferred_model_support_config"] == patch_calls[0]
+    assert [row["path"] for row in patched_surface["model_target_config_patches"]] == [
+        "policy.model.support_scale",
+        "policy.model.reward_support_size",
+        "policy.model.value_support_size",
+    ]
+
+
 def _source_state_fixed_opponent_wrapper_info():
     env = train_mod.CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
         {"source_max_steps": 1, "max_ticks": 1}
@@ -362,13 +846,10 @@ def test_default_env_variant_stays_fixed_opponent_while_turn_commit_is_profile_o
         train_mod.TURN_COMMIT_STACKED_SOURCE_STATE_GRAY64_SHAPE
     )
     assert (
-        spec["observation_schema_id"]
-        == train_mod.TURN_COMMIT_STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID
+        spec["observation_schema_id"] == train_mod.TURN_COMMIT_STACKED_SOURCE_STATE_GRAY64_SCHEMA_ID
     )
     assert spec["raw_observation_schema_id"] == train_mod.SOURCE_STATE_RGB_CANVAS_LIKE_SCHEMA_ID
-    assert spec["raw_frame_shape"] == list(
-        train_mod.TURN_COMMIT_SOURCE_STATE_CANVAS_LIKE_RAW_SHAPE
-    )
+    assert spec["raw_frame_shape"] == list(train_mod.TURN_COMMIT_SOURCE_STATE_CANVAS_LIKE_RAW_SHAPE)
     assert spec["debug_fidelity_only"] is False
     assert spec["source_fidelity_claim"] == "source_state_backed_non_browser_pixel"
     assert spec["single_product_runtime_path"] is True
@@ -391,10 +872,23 @@ def test_stock_train_mode_calls_lightzero_train_muzero_entrypoint(monkeypatch, t
     fake_volume = FakeVolume()
     monkeypatch.setattr(train_mod, "RUNS_MOUNT", tmp_path)
     monkeypatch.setattr(train_mod, "runs_volume", fake_volume)
-    monkeypatch.setattr(train_mod, "_version_or_missing", lambda *_args: train_mod.LIGHTZERO_VERSION)
+    monkeypatch.setattr(
+        train_mod, "_version_or_missing", lambda *_args: train_mod.LIGHTZERO_VERSION
+    )
     monkeypatch.setattr(train_mod.os, "chdir", lambda _path: None)
 
     train_calls = []
+    assignment_resolutions = []
+
+    def fake_resolve_opponent_assignment_for_env(**kwargs):
+        assignment_resolutions.append(kwargs)
+        return None
+
+    monkeypatch.setattr(
+        train_mod,
+        "_resolve_opponent_assignment_for_env",
+        fake_resolve_opponent_assignment_for_env,
+    )
 
     def fake_train_muzero(configs, *, seed, max_train_iter, max_env_step):
         train_calls.append(
@@ -428,9 +922,13 @@ def test_stock_train_mode_calls_lightzero_train_muzero_entrypoint(monkeypatch, t
         "_build_visual_survival_configs",
         fake_build_visual_survival_configs,
     )
-    monkeypatch.setattr(train_mod, "_compile_config_summary", lambda *_args, **_kwargs: {"ok": True})
+    monkeypatch.setattr(
+        train_mod, "_compile_config_summary", lambda *_args, **_kwargs: {"ok": True}
+    )
     monkeypatch.setattr(train_mod, "_validate_visual_survival_surface", lambda **_kwargs: [])
-    monkeypatch.setattr(train_mod, "_install_lightzero_full_resume_state_hooks", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        train_mod, "_install_lightzero_full_resume_state_hooks", lambda **_kwargs: None
+    )
     monkeypatch.setattr(train_mod, "_install_checkpoint_progress_writer", lambda **_kwargs: None)
     monkeypatch.setattr(train_mod, "_install_live_checkpoint_publisher", lambda **_kwargs: None)
     monkeypatch.setattr(train_mod, "_install_lightzero_target_audit", lambda **_kwargs: None)
@@ -506,6 +1004,749 @@ def test_stock_train_mode_calls_lightzero_train_muzero_entrypoint(monkeypatch, t
         opponent_checkpoint_report_ref=None,
         opponent_checkpoint_state_key=None,
         opponent_mixture_spec=None,
+        opponent_assignment_ref="control:training/test/assignment.json",
+        background_eval_enabled=False,
+        background_eval_launch_kind=train_mod.BACKGROUND_EVAL_LAUNCH_HOOK,
+        background_eval_compute="cpu",
+        background_eval_id_prefix=train_mod.DEFAULT_BACKGROUND_EVAL_ID_PREFIX,
+        background_eval_seed_count=1,
+        background_eval_seed_rng_seed=None,
+        background_eval_max_steps=8,
+        background_eval_step_detail_limit=None,
+        background_eval_num_simulations=1,
+        background_eval_batch_size=4,
+        background_gif_enabled=False,
+        background_gif_seed_offset=1,
+        background_gif_max_steps=8,
+        background_gif_frame_stride=1,
+        background_gif_fps=8.0,
+        background_gif_scale=1,
+        background_gif_frame_size=train_mod.DEFAULT_BACKGROUND_GIF_FRAME_SIZE,
+        background_gif_collect_temperature=train_mod.DEFAULT_BACKGROUND_GIF_COLLECT_TEMPERATURE,
+        background_gif_collect_epsilon=train_mod.DEFAULT_BACKGROUND_GIF_COLLECT_EPSILON,
+        td_steps=5,
+    )
+
+    assert result["ok"] is True
+    assert result["called_train_muzero"] is True
+    assert result["mode"] == "train"
+    assert result["final_volume_commit"]["attempted"] is True
+    assert result["final_volume_commit"]["ok"] is True
+    assert fake_volume.commit_count == 1
+    assert assignment_resolutions == [
+        {
+            "opponent_assignment_ref": "control:training/test/assignment.json",
+            "reload_volume_before_read": True,
+            "reload_checkpoint_volume_before_read": True,
+        }
+    ]
+    summary = json.loads((tmp_path / result["summary_ref"]).read_text(encoding="utf-8"))
+    assert summary["trainer_entrypoint"] == "lzero.entry.train_muzero"
+    assert summary["command"]["env_variant"] == train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT
+    assert summary["command"]["two_seat_self_play"] is False
+    assert summary["command"]["current_policy_two_seat_action_collection"] is False
+    assert summary["command"]["fixed_opponent_is_two_seat_self_play"] is False
+    assert len(train_calls) == 1
+    assert train_calls[0]["seed"] == 123
+    assert train_calls[0]["max_train_iter"] == 1
+    assert train_calls[0]["max_env_step"] == 8
+    assert train_calls[0]["configs"] == [
+        {"env": {"type": "fake-env"}, "policy": {"cuda": False}},
+        {"env": {"type": "fake-env"}},
+    ]
+
+
+def test_rnd_meter_mode_selects_reward_model_entrypoint_and_patch(
+    monkeypatch,
+    tmp_path,
+):
+    train_calls = []
+
+    def fake_train_muzero(_configs, *, seed, max_train_iter, max_env_step):
+        raise AssertionError("stock train_muzero should not run for rnd_meter_v0")
+
+    def fake_train_muzero_with_reward_model(configs, *, seed, max_train_iter, max_env_step):
+        train_calls.append(
+            {
+                "configs": configs,
+                "seed": seed,
+                "max_train_iter": max_train_iter,
+                "max_env_step": max_env_step,
+                "patched_reward_model": globals().get("RNDRewardModel"),
+            }
+        )
+        return {"trained": True}
+
+    fake_volume = _install_minimal_visual_train_mocks(
+        monkeypatch,
+        tmp_path,
+        fake_train_muzero,
+    )
+    sys.modules["lzero.entry"].train_muzero_with_reward_model = (
+        fake_train_muzero_with_reward_model
+    )
+
+    result = train_mod._run_visual_survival_train(
+        **{
+            **_minimal_visual_train_kwargs(
+                run_id="rnd-meter-entrypoint-local-test",
+                attempt_id="attempt-001",
+            ),
+            "exploration_bonus_mode": "rnd_meter_v0",
+            "exploration_bonus_weight": 0.0,
+            "exploration_bonus_feature_source": "policy_gray64_latest/v0",
+            "exploration_bonus_rnd_batch_size": 32,
+        }
+    )
+
+    assert result["ok"] is True
+    assert result["trainer_entrypoint"] == "lzero.entry.train_muzero_with_reward_model"
+    assert result["command"]["exploration_bonus"]["mode"] == "rnd_meter_v0"
+    assert result["command"]["process_seed"]["seed"] == 123
+    assert result["command"]["process_seed"]["python_random"] is True
+    assert result["command"]["exploration_bonus"]["training_effect"] == (
+        "reward_target_unchanged"
+    )
+    assert result["command"]["exploration_bonus"]["rnd_batch_size"] == 32
+    assert result["command"]["exploration_bonus_rnd_batch_size"] == 32
+    assert fake_volume.commit_count == 1
+    assert len(train_calls) == 1
+    assert train_calls[0]["patched_reward_model"] is xb.CurvyRNDRewardModel
+    reward_model_config = train_calls[0]["configs"][0]["reward_model"]
+    assert reward_model_config["seed"] == 123
+    assert reward_model_config["curvyzero_metrics_latest_path"].endswith(
+        "rnd_reward_model_metrics_latest.json"
+    )
+    assert reward_model_config["curvyzero_metrics_jsonl_path"].endswith(
+        "rnd_reward_model_metrics.jsonl"
+    )
+    assert result["rnd_reward_model_metrics"]["enabled"] is True
+    assert result["rnd_reward_model_metrics"]["latest_exists"] is False
+    summary = json.loads((tmp_path / result["summary_ref"]).read_text(encoding="utf-8"))
+    assert summary["trainer_entrypoint"] == "lzero.entry.train_muzero_with_reward_model"
+    assert summary["command"]["exploration_bonus"]["input_spec"]["shape"] == [1, 64, 64]
+    assert summary["command"]["rnd_reward_model_metrics"]["enabled"] is True
+    assert summary["rnd_reward_model_metrics"]["latest_exists"] is False
+
+
+def test_direct_ctree_gpu_latent_train_can_require_rnd_metrics(
+    monkeypatch,
+    tmp_path,
+):
+    train_calls = []
+
+    def fake_train_muzero(_configs, *, seed, max_train_iter, max_env_step):
+        del seed, max_train_iter, max_env_step
+        raise AssertionError("stock train_muzero should not run for rnd_meter_v0")
+
+    def fake_train_muzero_with_reward_model(configs, *, seed, max_train_iter, max_env_step):
+        del seed, max_train_iter, max_env_step
+        train_calls.append(
+            {
+                "patched_reward_model": globals().get("RNDRewardModel"),
+                "configs": configs,
+            }
+        )
+        metrics_config = configs[0]["reward_model"]
+        metrics = {
+            "schema_id": "curvyzero_rnd_reward_model_metrics/v0",
+            "collect_data_calls": 1,
+            "train_with_data_calls": 1,
+            "estimate_calls": 1,
+            "train_cnt_rnd": 1,
+            "last_predictor_hash_before_train": "predictor-before",
+            "last_predictor_hash_after_train": "predictor-after",
+            "last_target_hash_before_train": "target-stable",
+            "last_target_hash_after_train": "target-stable",
+            "last_target_reward_changed": False,
+            "reason": "test_required_rnd_metrics",
+        }
+        latest_path = Path(metrics_config["curvyzero_metrics_latest_path"])
+        jsonl_path = Path(metrics_config["curvyzero_metrics_jsonl_path"])
+        latest_path.parent.mkdir(parents=True, exist_ok=True)
+        latest_path.write_text(json.dumps(metrics), encoding="utf-8")
+        jsonl_path.write_text(json.dumps(metrics) + "\n", encoding="utf-8")
+        return {"trained": True}
+
+    _install_minimal_visual_train_mocks(monkeypatch, tmp_path, fake_train_muzero)
+    sys.modules["lzero.entry"].train_muzero_with_reward_model = (
+        fake_train_muzero_with_reward_model
+    )
+
+    def fake_install_collect_search_backend_hook(**kwargs):
+        kwargs["profiler"].add_installed_hook("fake_direct_ctree_gpu_latent_train_hook")
+        kwargs["profiler"].add_sample(
+            "collect_search_backend",
+            train_mod.COLLECT_SEARCH_BACKEND_DIRECT_CTREE_GPU_LATENT,
+        )
+        kwargs["profiler"].add_sample(
+            "collect_search_ctree_backend",
+            train_mod.COLLECT_SEARCH_CTREE_BACKEND_LIGHTZERO,
+        )
+        kwargs["profiler"].add_count("collect_search_backend_direct_ctree_gpu_latent_calls")
+        kwargs["profiler"].add_count("collect_search_backend_output_rows", 2)
+        kwargs["profiler"].add_count("collect_search_backend_recurrent_inference_calls")
+        kwargs["profiler"].add_count("collect_search_backend_model_output_d2h_bytes", 16)
+
+        def restore():
+            return None
+
+        return restore
+
+    monkeypatch.setattr(
+        train_mod,
+        "_install_lightzero_collect_search_backend_hook",
+        fake_install_collect_search_backend_hook,
+    )
+
+    result = train_mod._run_visual_survival_train(
+        **{
+            **_minimal_visual_train_kwargs(
+                run_id="direct-ctree-rnd-meter-local-test",
+                attempt_id="attempt-001",
+            ),
+            "compute": train_mod.COMPUTE_GPU_L4_T4,
+            "collect_search_backend": train_mod.COLLECT_SEARCH_BACKEND_DIRECT_CTREE_GPU_LATENT,
+            "collect_search_ctree_backend": train_mod.COLLECT_SEARCH_CTREE_BACKEND_LIGHTZERO,
+            "exploration_bonus_mode": "rnd_meter_v0",
+            "exploration_bonus_weight": 0.0,
+            "exploration_bonus_feature_source": "policy_gray64_latest/v0",
+            "require_rnd_metrics": True,
+        }
+    )
+
+    assert result["ok"] is True
+    assert result["trainer_entrypoint"] == "lzero.entry.train_muzero_with_reward_model"
+    assert train_calls[0]["patched_reward_model"] is xb.CurvyRNDRewardModel
+    assert result["collect_search_backend_proof"]["direct_ctree_gpu_latent_calls"] == 1
+    assert result["collect_search_backend_proof"]["fallback_calls"] == 0
+    assert result["rnd_reward_model_metrics"]["latest_exists"] is True
+    assert result["rnd_reward_model_metrics"]["event_count"] == 1
+    assert result["rnd_reward_model_metrics"]["latest"]["last_target_reward_changed"] is False
+
+
+def test_train_mode_can_install_direct_ctree_gpu_latent_collect_hook(
+    monkeypatch,
+    tmp_path,
+):
+    train_calls = []
+    hook_installs = []
+    hook_restores = []
+
+    def fake_train_muzero(configs, *, seed, max_train_iter, max_env_step):
+        train_calls.append(
+            {
+                "configs": configs,
+                "seed": seed,
+                "max_train_iter": max_train_iter,
+                "max_env_step": max_env_step,
+            }
+        )
+        return {"trained": True}
+
+    _install_minimal_visual_train_mocks(monkeypatch, tmp_path, fake_train_muzero)
+
+    def fake_install_collect_search_backend_hook(**kwargs):
+        hook_installs.append(
+            {
+                "backend": kwargs["backend"],
+                "ctree_backend": kwargs["ctree_backend"],
+                "allow_fallback": kwargs["allow_fallback"],
+            }
+        )
+        kwargs["profiler"].add_installed_hook("fake_direct_ctree_gpu_latent_train_hook")
+        kwargs["profiler"].add_sample(
+            "collect_search_backend",
+            train_mod.COLLECT_SEARCH_BACKEND_DIRECT_CTREE_GPU_LATENT,
+        )
+        kwargs["profiler"].add_sample(
+            "collect_search_ctree_backend",
+            train_mod.COLLECT_SEARCH_CTREE_BACKEND_LIGHTZERO,
+        )
+        kwargs["profiler"].add_count("collect_search_backend_direct_ctree_gpu_latent_calls")
+        kwargs["profiler"].add_count("collect_search_backend_output_rows", 2)
+        kwargs["profiler"].add_count("collect_search_backend_recurrent_inference_calls")
+        kwargs["profiler"].add_count("collect_search_backend_model_output_d2h_bytes", 16)
+
+        def restore():
+            hook_restores.append(True)
+
+        return restore
+
+    monkeypatch.setattr(
+        train_mod,
+        "_install_lightzero_collect_search_backend_hook",
+        fake_install_collect_search_backend_hook,
+    )
+
+    result = train_mod._run_visual_survival_train(
+        **{
+            **_minimal_visual_train_kwargs(
+                run_id="direct-ctree-train-hook-local-test",
+                attempt_id="attempt-001",
+            ),
+            "compute": train_mod.COMPUTE_GPU_L4_T4,
+            "collect_search_backend": train_mod.COLLECT_SEARCH_BACKEND_DIRECT_CTREE_GPU_LATENT,
+            "collect_search_ctree_backend": train_mod.COLLECT_SEARCH_CTREE_BACKEND_LIGHTZERO,
+        }
+    )
+
+    assert result["ok"] is True
+    assert result["called_train_muzero"] is True
+    assert len(train_calls) == 1
+    assert hook_installs == [
+        {
+            "backend": train_mod.COLLECT_SEARCH_BACKEND_DIRECT_CTREE_GPU_LATENT,
+            "ctree_backend": train_mod.COLLECT_SEARCH_CTREE_BACKEND_LIGHTZERO,
+            "allow_fallback": False,
+        }
+    ]
+    assert hook_restores == [True]
+    assert result["command"]["collect_search_backend"] == (
+        train_mod.COLLECT_SEARCH_BACKEND_DIRECT_CTREE_GPU_LATENT
+    )
+    assert result["command"]["collect_search_backend_fallback_policy"] == (
+        "fail_closed_when_non_stock"
+    )
+    assert "fake_direct_ctree_gpu_latent_train_hook" in result["phase_profile"][
+        "installed_hooks"
+    ]
+    assert result["collect_search_backend_proof"]["fallback_policy"] == (
+        "fail_closed_when_non_stock"
+    )
+    assert result["collect_search_backend_proof"]["direct_ctree_gpu_latent_calls"] == 1
+    assert result["collect_search_backend_proof"]["output_rows"] == 2
+    assert result["collect_search_backend_proof"]["recurrent_inference_calls"] == 1
+    assert result["collect_search_backend_proof"]["model_output_d2h_bytes"] == 16
+
+
+def test_train_mode_direct_ctree_gpu_latent_hook_is_used_by_trainer(
+    monkeypatch,
+    tmp_path,
+):
+    pytest.importorskip("lzero")
+    torch = pytest.importorskip("torch")
+    from lzero.policy.muzero import MuZeroPolicy
+
+    outputs = []
+
+    class FakeCudaLatent:
+        device = types.SimpleNamespace(type="cuda")
+
+    class FakeCollectModel:
+        def eval(self):
+            return None
+
+        def initial_inference(self, data):
+            batch_size = int(data.shape[0])
+            return types.SimpleNamespace(
+                latent_state=FakeCudaLatent(),
+                reward=torch.zeros(batch_size, dtype=torch.float32),
+                value=torch.arange(batch_size, dtype=torch.float32),
+                policy_logits=torch.zeros((batch_size, 3), dtype=torch.float32),
+            )
+
+    class FakeRoots:
+        def __init__(self, num, legal_actions):
+            self.num = num
+            self.legal_actions = legal_actions
+
+        def prepare(self, *_args):
+            return None
+
+        def get_distributions(self):
+            return [[1.0, 2.0, 3.0] for _ in range(self.num)]
+
+        def get_values(self):
+            return [0.25 for _ in range(self.num)]
+
+    class FakeMcts:
+        _cfg = types.SimpleNamespace(num_simulations=1)
+
+        @staticmethod
+        def roots(num, legal_actions):
+            return FakeRoots(num, legal_actions)
+
+    fake_policy = types.SimpleNamespace(
+        _cfg=types.SimpleNamespace(
+            model=types.SimpleNamespace(model_type="conv"),
+            collect_with_pure_policy=False,
+            mcts_ctree=True,
+            sampled_algo=False,
+            gumbel_algo=False,
+            root_dirichlet_alpha=0.3,
+            root_noise_weight=0.0,
+            eps=types.SimpleNamespace(eps_greedy_exploration_in_collect=True),
+        ),
+        _collect_model=FakeCollectModel(),
+        _mcts_collect=FakeMcts(),
+        _collect_mcts_temperature=1.0,
+        collect_epsilon=0.0,
+        inverse_scalar_transform_handle=lambda value: value,
+    )
+
+    def fake_direct_search(**kwargs):
+        profiler = kwargs["profiler"]
+        profiler.add_count("collect_search_backend_recurrent_inference_calls")
+        profiler.add_count("collect_search_backend_model_output_d2h_bytes", 16)
+
+    monkeypatch.setattr(
+        train_mod,
+        "_direct_ctree_gpu_latent_search_for_collect",
+        fake_direct_search,
+    )
+
+    def fake_train_muzero(configs, *, seed, max_train_iter, max_env_step):
+        del configs, seed, max_train_iter, max_env_step
+        outputs.append(
+            MuZeroPolicy._forward_collect(
+                fake_policy,
+                torch.zeros((2, 4, 64, 64), dtype=torch.float32),
+                action_mask=[[1, 1, 1], [1, 1, 1]],
+                ready_env_id=[10, 11],
+                temperature=1.0,
+                epsilon=0.0,
+            )
+        )
+        return {"trained": True}
+
+    _install_minimal_visual_train_mocks(monkeypatch, tmp_path, fake_train_muzero)
+
+    result = train_mod._run_visual_survival_train(
+        **{
+            **_minimal_visual_train_kwargs(
+                run_id="direct-ctree-train-real-hook-local-test",
+                attempt_id="attempt-001",
+            ),
+            "compute": train_mod.COMPUTE_GPU_L4_T4,
+            "collect_search_backend": train_mod.COLLECT_SEARCH_BACKEND_DIRECT_CTREE_GPU_LATENT,
+            "collect_search_ctree_backend": train_mod.COLLECT_SEARCH_CTREE_BACKEND_LIGHTZERO,
+        }
+    )
+
+    assert result["ok"] is True
+    assert sorted(outputs[0]) == [10, 11]
+    assert result["collect_search_backend_proof"]["direct_ctree_gpu_latent_calls"] == 1
+    assert result["collect_search_backend_proof"]["fallback_calls"] == 0
+    assert result["collect_search_backend_proof"]["output_rows"] == 2
+    assert result["collect_search_backend_proof"]["recurrent_inference_calls"] == 1
+    assert result["collect_search_backend_proof"]["model_output_d2h_bytes"] == 16
+
+
+def test_train_mode_direct_ctree_gpu_latent_marks_missing_observation_not_ok(
+    monkeypatch,
+    tmp_path,
+):
+    def fake_train_muzero(_configs, *, seed, max_train_iter, max_env_step):
+        del seed, max_train_iter, max_env_step
+        return {"trained": True}
+
+    _install_minimal_visual_train_mocks(monkeypatch, tmp_path, fake_train_muzero)
+
+    def fake_install_collect_search_backend_hook(**kwargs):
+        kwargs["profiler"].add_installed_hook("fake_direct_ctree_gpu_latent_train_hook")
+
+        def restore():
+            return None
+
+        return restore
+
+    monkeypatch.setattr(
+        train_mod,
+        "_install_lightzero_collect_search_backend_hook",
+        fake_install_collect_search_backend_hook,
+    )
+
+    result = train_mod._run_visual_survival_train(
+        **{
+            **_minimal_visual_train_kwargs(
+                run_id="direct-ctree-train-hook-missing-proof-test",
+                attempt_id="attempt-001",
+            ),
+            "compute": train_mod.COMPUTE_GPU_L4_T4,
+            "collect_search_backend": train_mod.COLLECT_SEARCH_BACKEND_DIRECT_CTREE_GPU_LATENT,
+            "collect_search_ctree_backend": train_mod.COLLECT_SEARCH_CTREE_BACKEND_LIGHTZERO,
+        }
+    )
+
+    assert result["ok"] is False
+    assert "non-stock train collect_search_backend was not observed" in result["problems"]
+
+
+def test_train_mode_direct_ctree_gpu_latent_rejects_non_lightzero_ctree(
+    monkeypatch,
+    tmp_path,
+):
+    def fake_train_muzero(_configs, *, seed, max_train_iter, max_env_step):
+        del seed, max_train_iter, max_env_step
+        raise AssertionError("train_muzero should not run after validation failure")
+
+    _install_minimal_visual_train_mocks(monkeypatch, tmp_path, fake_train_muzero)
+
+    with pytest.raises(ValueError, match="LightZero CTree only"):
+        train_mod._run_visual_survival_train(
+            **{
+                **_minimal_visual_train_kwargs(
+                    run_id="direct-ctree-flat-a3-train-reject",
+                    attempt_id="attempt-001",
+                ),
+                "compute": train_mod.COMPUTE_GPU_H100_CPU40,
+                "collect_search_backend": (
+                    train_mod.COLLECT_SEARCH_BACKEND_DIRECT_CTREE_GPU_LATENT
+                ),
+                "collect_search_ctree_backend": train_mod.COLLECT_SEARCH_CTREE_BACKEND_FLAT_A3,
+            }
+        )
+
+
+def test_train_mode_direct_ctree_gpu_latent_rejects_cpu_compute(
+    monkeypatch,
+    tmp_path,
+):
+    def fake_train_muzero(_configs, *, seed, max_train_iter, max_env_step):
+        del seed, max_train_iter, max_env_step
+        raise AssertionError("train_muzero should not run after validation failure")
+
+    _install_minimal_visual_train_mocks(monkeypatch, tmp_path, fake_train_muzero)
+
+    with pytest.raises(ValueError, match="requires GPU compute"):
+        train_mod._run_visual_survival_train(
+            **{
+                **_minimal_visual_train_kwargs(
+                    run_id="direct-ctree-cpu-train-reject",
+                    attempt_id="attempt-001",
+                ),
+                "compute": train_mod.COMPUTE_CPU,
+                "collect_search_backend": (
+                    train_mod.COLLECT_SEARCH_BACKEND_DIRECT_CTREE_GPU_LATENT
+                ),
+                "collect_search_ctree_backend": train_mod.COLLECT_SEARCH_CTREE_BACKEND_LIGHTZERO,
+            }
+        )
+
+
+def test_dry_mode_rejects_non_stock_collect_search_backend(
+    monkeypatch,
+    tmp_path,
+):
+    def fake_train_muzero(_configs, *, seed, max_train_iter, max_env_step):
+        del seed, max_train_iter, max_env_step
+        raise AssertionError("train_muzero should not run after validation failure")
+
+    _install_minimal_visual_train_mocks(monkeypatch, tmp_path, fake_train_muzero)
+
+    with pytest.raises(ValueError, match="only allowed in mode='profile' or mode='train'"):
+        train_mod._run_visual_survival_train(
+            **{
+                **_minimal_visual_train_kwargs(
+                    run_id="direct-ctree-dry-reject",
+                    attempt_id="attempt-001",
+                ),
+                "mode": "dry",
+                "compute": train_mod.COMPUTE_GPU_H100_CPU40,
+                "collect_search_backend": (
+                    train_mod.COLLECT_SEARCH_BACKEND_DIRECT_CTREE_GPU_LATENT
+                ),
+                "collect_search_ctree_backend": train_mod.COLLECT_SEARCH_CTREE_BACKEND_LIGHTZERO,
+            }
+        )
+
+
+def test_l4_gpu_modal_entrypoint_accepts_exploration_bonus_kwargs():
+    signature = inspect.signature(
+        train_mod.lightzero_curvytron_visual_survival_gpu.get_raw_f()
+    )
+
+    for name in (
+        "exploration_bonus_mode",
+        "exploration_bonus_weight",
+        "exploration_bonus_feature_source",
+        "exploration_bonus_rnd_batch_size",
+        "exploration_bonus_rnd_update_per_collect",
+        "exploration_bonus_rnd_buffer_size",
+        "exploration_bonus_rnd_learning_rate",
+        "exploration_bonus_rnd_weight_decay",
+        "exploration_bonus_rnd_input_norm",
+        "require_rnd_metrics",
+    ):
+        assert name in signature.parameters
+
+
+def test_rnd_metrics_summary_falls_back_to_jsonl_tail_when_latest_is_corrupt(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setattr(train_mod, "RUNS_MOUNT", tmp_path)
+    latest_path = tmp_path / "rnd_reward_model_metrics_latest.json"
+    jsonl_path = tmp_path / "rnd_reward_model_metrics.jsonl"
+    latest_path.write_bytes(b"\x00" * 32)
+    jsonl_path.write_text(
+        json.dumps(
+            {
+                "reason": "estimate",
+                "collect_data_calls": 1,
+                "train_with_data_calls": 1,
+                "estimate_calls": 7,
+                "train_cnt_rnd": 1,
+                "last_target_reward_changed": True,
+            },
+            sort_keys=True,
+        )
+        + "\n"
+        + "\x00" * 8,
+        encoding="utf-8",
+    )
+
+    summary = train_mod._summarize_rnd_reward_model_metrics(
+        enabled=True,
+        latest_path=latest_path,
+        jsonl_path=jsonl_path,
+    )
+
+    assert summary["latest_exists"] is True
+    assert summary["latest"]["estimate_calls"] == 7
+    assert summary["latest_source"] == "jsonl_tail_fallback"
+    assert any("latest metrics read failed" in error for error in summary["errors"])
+
+
+def test_stock_train_mode_real_builder_config_reaches_fake_lightzero_entrypoint(
+    monkeypatch,
+    tmp_path,
+):
+    _install_fake_lightzero_atari_config(monkeypatch)
+
+    class FakeVolume:
+        def __init__(self) -> None:
+            self.commit_count = 0
+
+        def commit(self) -> None:
+            self.commit_count += 1
+
+    fake_volume = FakeVolume()
+    monkeypatch.setattr(train_mod, "RUNS_MOUNT", tmp_path)
+    monkeypatch.setattr(train_mod, "runs_volume", fake_volume)
+    monkeypatch.setattr(
+        train_mod, "_version_or_missing", lambda *_args: train_mod.LIGHTZERO_VERSION
+    )
+    monkeypatch.setattr(train_mod.os, "chdir", lambda _path: None)
+    monkeypatch.setattr(
+        train_mod, "_compile_config_summary", lambda *_args, **_kwargs: {"ok": True}
+    )
+    monkeypatch.setattr(
+        train_mod, "_install_lightzero_full_resume_state_hooks", lambda **_kwargs: None
+    )
+    monkeypatch.setattr(train_mod, "_install_checkpoint_progress_writer", lambda **_kwargs: None)
+    monkeypatch.setattr(train_mod, "_install_live_checkpoint_publisher", lambda **_kwargs: None)
+    monkeypatch.setattr(train_mod, "_install_lightzero_target_audit", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        train_mod,
+        "_scan_lightzero_artifacts",
+        lambda _exp_name: {
+            "checkpoint_files": [{"name": "iteration_0.pth.tar"}],
+            "resume_state_files": [],
+        },
+    )
+    monkeypatch.setattr(
+        train_mod,
+        "_mirror_lightzero_checkpoints",
+        lambda **_kwargs: {"copied_checkpoints": [{"checkpoint": "iteration_0"}]},
+    )
+    monkeypatch.setattr(
+        train_mod,
+        "_summarize_env_step_telemetry",
+        lambda _path: {"row_count": 1, "action_summary": {"collapsed": False}},
+    )
+    monkeypatch.setattr(
+        train_mod,
+        "_source_state_fixed_opponent_training_readiness_gate",
+        lambda **_kwargs: {"ok": True},
+    )
+
+    train_calls = []
+
+    def fake_train_muzero(configs, *, seed, max_train_iter, max_env_step):
+        main_config, create_config = configs
+        env = CurvyZeroSourceStateVisualSurvivalLightZeroEnv(main_config["env"])
+        try:
+            observation = env.reset(seed=seed)
+            timestep = env.step(1)
+        finally:
+            env.close()
+        train_calls.append(
+            {
+                "seed": seed,
+                "max_train_iter": max_train_iter,
+                "max_env_step": max_env_step,
+                "main_config": main_config,
+                "create_config": create_config,
+                "observation_shape": tuple(observation["observation"].shape),
+                "step_info": timestep.info,
+            }
+        )
+        return {"trained": True}
+
+    fake_entry_module = types.ModuleType("lzero.entry")
+    fake_entry_module.train_muzero = fake_train_muzero
+    monkeypatch.setitem(sys.modules, "lzero.entry", fake_entry_module)
+
+    result = train_mod._run_visual_survival_train(
+        mode="train",
+        compute="cpu",
+        seed=321,
+        run_id="real-builder-stock-entrypoint-local-test",
+        attempt_id="attempt-001",
+        max_env_step=8,
+        max_train_iter=1,
+        source_max_steps=8,
+        decision_ms=train_mod.DEFAULT_DECISION_MS,
+        collector_env_num=1,
+        evaluator_env_num=1,
+        n_evaluator_episode=1,
+        n_episode=1,
+        num_simulations=1,
+        batch_size=4,
+        lightzero_eval_freq=0,
+        skip_lightzero_eval_in_profile=False,
+        profile_cuda_sync_enabled=False,
+        profile_allow_auto_resume=False,
+        profile_volume_commit=False,
+        lightzero_multi_gpu=False,
+        save_ckpt_after_iter=1,
+        commit_on_checkpoint=False,
+        stop_after_learner_train_calls=0,
+        env_variant=train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT,
+        reward_variant=train_mod.REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME,
+        source_state_trail_render_mode=train_mod.DEFAULT_SOURCE_STATE_TRAIL_RENDER_MODE,
+        source_state_bonus_render_mode=train_mod.DEFAULT_SOURCE_STATE_BONUS_RENDER_MODE,
+        policy_observation_backend=train_mod.DEFAULT_POLICY_OBSERVATION_BACKEND_CHOICE,
+        learner_seat_mode=train_mod.DEFAULT_LEARNER_SEAT_MODE,
+        ego_action_straight_override_probability=0.0,
+        policy_action_repeat_min=1,
+        policy_action_repeat_max=1,
+        policy_action_repeat_extra_probability=0.0,
+        control_noise_profile_id=train_mod.DEFAULT_CONTROL_NOISE_PROFILE_ID,
+        disable_death_for_profile=False,
+        opponent_death_mode=train_mod.DEFAULT_OPPONENT_DEATH_MODE,
+        opponent_runtime_mode=train_mod.DEFAULT_OPPONENT_RUNTIME_MODE,
+        env_telemetry_stride=1,
+        env_manager_type="base",
+        opponent_policy_kind=train_mod.OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
+        opponent_use_cuda=False,
+        opponent_checkpoint_ref=None,
+        opponent_snapshot_ref=None,
+        opponent_checkpoint_report_ref=None,
+        opponent_checkpoint_state_key=None,
+        opponent_mixture_spec={
+            "entries": [
+                {
+                    "name": "blank",
+                    "weight": 1,
+                    "opponent_policy_kind": train_mod.OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
+                    "opponent_runtime_mode": train_mod.OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP,
+                    "opponent_immortal": True,
+                }
+            ]
+        },
         opponent_assignment_ref=None,
         background_eval_enabled=False,
         background_eval_launch_kind=train_mod.BACKGROUND_EVAL_LAUNCH_HOOK,
@@ -526,28 +1767,24 @@ def test_stock_train_mode_calls_lightzero_train_muzero_entrypoint(monkeypatch, t
         background_gif_frame_size=train_mod.DEFAULT_BACKGROUND_GIF_FRAME_SIZE,
         background_gif_collect_temperature=train_mod.DEFAULT_BACKGROUND_GIF_COLLECT_TEMPERATURE,
         background_gif_collect_epsilon=train_mod.DEFAULT_BACKGROUND_GIF_COLLECT_EPSILON,
+        td_steps=5,
     )
 
     assert result["ok"] is True
     assert result["called_train_muzero"] is True
-    assert result["mode"] == "train"
-    assert result["final_volume_commit"]["attempted"] is True
-    assert result["final_volume_commit"]["ok"] is True
-    assert fake_volume.commit_count == 1
-    summary = json.loads((tmp_path / result["summary_ref"]).read_text(encoding="utf-8"))
-    assert summary["trainer_entrypoint"] == "lzero.entry.train_muzero"
-    assert summary["command"]["env_variant"] == train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT
-    assert summary["command"]["two_seat_self_play"] is False
-    assert summary["command"]["current_policy_two_seat_action_collection"] is False
-    assert summary["command"]["fixed_opponent_is_two_seat_self_play"] is False
     assert len(train_calls) == 1
-    assert train_calls[0]["seed"] == 123
-    assert train_calls[0]["max_train_iter"] == 1
-    assert train_calls[0]["max_env_step"] == 8
-    assert train_calls[0]["configs"] == [
-        {"env": {"type": "fake-env"}, "policy": {"cuda": False}},
-        {"env": {"type": "fake-env"}},
-    ]
+    call = train_calls[0]
+    assert call["seed"] == 321
+    assert call["max_train_iter"] == 1
+    assert call["max_env_step"] == 8
+    assert call["create_config"]["env"]["type"] == LIGHTZERO_SOURCE_STATE_VISUAL_SURVIVAL_ENV_TYPE
+    assert call["main_config"]["env"]["reward_variant"] == (
+        train_mod.REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME
+    )
+    assert call["main_config"]["env"]["opponent_mixture"]["entries"][0]["name"] == "blank"
+    assert call["observation_shape"] == (4, 64, 64)
+    assert call["step_info"]["opponent_mixture_entry_name"] == "blank"
+    assert call["step_info"]["blank_canvas_noop"] is True
 
 
 def test_initial_policy_checkpoint_matching_shape_prepares_model_only_seed(
@@ -1062,6 +2299,70 @@ def test_resolve_opponent_assignment_for_env_can_refresh_from_control_volume(
     assert control_volume.reload_count == 1
 
 
+def test_resolve_opponent_assignment_checkpoint_reload_failure_can_be_nonfatal(
+    monkeypatch,
+    tmp_path,
+):
+    runs_mount = tmp_path / "runs"
+    runs_mount.mkdir()
+    checkpoint_ref = "checkpoints/iteration_1.pth.tar"
+    checkpoint_path = runs_mount / checkpoint_ref
+    checkpoint_path.parent.mkdir(parents=True)
+    checkpoint_path.write_bytes(b"fake checkpoint")
+    assignment_path = runs_mount / "assignment.json"
+    assignment_path.write_text(
+        json.dumps(
+            {
+                "schema_id": OPPONENT_ASSIGNMENT_SCHEMA_ID,
+                "assignment_id": "assignment-with-checkpoint",
+                "source_epoch": 9,
+                "source_ref": "tournaments/curvytron/leaderboards/main/snapshots/009.json",
+                "seed": 17,
+                "entries": [
+                    {
+                        "name": "rank1",
+                        "weight": 1,
+                        "opponent_policy_kind": (
+                            train_mod.OPPONENT_POLICY_KIND_FROZEN_LIGHTZERO_CHECKPOINT
+                        ),
+                        "opponent_checkpoint_ref": checkpoint_ref,
+                        "opponent_immortal": False,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class FailingRunsVolume:
+        def __init__(self) -> None:
+            self.reload_count = 0
+
+        def reload(self) -> None:
+            self.reload_count += 1
+            raise RuntimeError("open tensorboard file")
+
+    runs_volume = FailingRunsVolume()
+    monkeypatch.setattr(train_mod, "RUNS_MOUNT", runs_mount)
+    monkeypatch.setattr(train_mod, "runs_volume", runs_volume)
+
+    resolved = train_mod._resolve_opponent_assignment_for_env(
+        opponent_assignment_ref="assignment.json",
+        reload_checkpoint_volume_before_read=True,
+        checkpoint_volume_reload_errors_fatal=False,
+    )
+
+    assert resolved is not None
+    entry = resolved["opponent_mixture"]["entries"][0]
+    assert entry["opponent_checkpoint_path"] == str(checkpoint_path)
+    assert "opponent_checkpoint_volume_reload_warning" not in entry
+    warnings = resolved["opponent_checkpoint_volume_reload_warnings"]
+    assert warnings[0]["entry_name"] == "rank1"
+    assert warnings[0]["opponent_checkpoint_ref"] == checkpoint_ref
+    assert "open tensorboard file" in warnings[0]["warning"]
+    assert runs_volume.reload_count == 1
+
+
 def test_resolve_opponent_assignment_for_env_rejects_bad_pointer_sha(tmp_path):
     assignment_path = tmp_path / "assignment-live.json"
     pointer_path = tmp_path / "assignment-pointer.json"
@@ -1107,13 +2408,20 @@ def _install_minimal_visual_train_mocks(
     fake_volume = _FakeRunsVolume()
     monkeypatch.setattr(train_mod, "RUNS_MOUNT", tmp_path)
     monkeypatch.setattr(train_mod, "runs_volume", fake_volume)
-    monkeypatch.setattr(train_mod, "_version_or_missing", lambda *_args: train_mod.LIGHTZERO_VERSION)
-    monkeypatch.setattr(train_mod.os, "chdir", lambda _path: None)
     monkeypatch.setattr(
-        train_mod,
-        "_build_visual_survival_configs",
-        lambda **kwargs: {
-            "main_config": {"env": {"type": "fake-env"}, "policy": {"cuda": False}},
+        train_mod, "_version_or_missing", lambda *_args: train_mod.LIGHTZERO_VERSION
+    )
+    monkeypatch.setattr(train_mod.os, "chdir", lambda _path: None)
+    def fake_build_visual_survival_configs(**kwargs):
+        bonus_spec = xb.normalize_exploration_bonus_config(kwargs.get("exploration_bonus"))
+        main_config = {"env": {"type": "fake-env"}, "policy": {"cuda": False}}
+        if bonus_spec.enabled:
+            main_config["reward_model"] = xb.lightzero_reward_model_config(
+                bonus_spec,
+                seed=kwargs["seed"],
+            )
+        return {
+            "main_config": main_config,
             "create_config": {"env": {"type": "fake-env"}},
             "patches": [{"path": "fake", "new": True}],
             "surface": {
@@ -1121,11 +2429,16 @@ def _install_minimal_visual_train_mocks(
                 "env_type": "fake-env",
                 "called_from": "minimal-visual-train-mock",
             },
-        },
+        }
+
+    monkeypatch.setattr(train_mod, "_build_visual_survival_configs", fake_build_visual_survival_configs)
+    monkeypatch.setattr(
+        train_mod, "_compile_config_summary", lambda *_args, **_kwargs: {"ok": True}
     )
-    monkeypatch.setattr(train_mod, "_compile_config_summary", lambda *_args, **_kwargs: {"ok": True})
     monkeypatch.setattr(train_mod, "_validate_visual_survival_surface", lambda **_kwargs: [])
-    monkeypatch.setattr(train_mod, "_install_lightzero_full_resume_state_hooks", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        train_mod, "_install_lightzero_full_resume_state_hooks", lambda **_kwargs: None
+    )
     monkeypatch.setattr(train_mod, "_install_checkpoint_progress_writer", lambda **_kwargs: None)
     monkeypatch.setattr(train_mod, "_install_live_checkpoint_publisher", lambda **_kwargs: None)
     monkeypatch.setattr(train_mod, "_install_lightzero_target_audit", lambda **_kwargs: None)
@@ -1276,7 +2589,18 @@ def test_opponent_assignment_refresh_pure_helpers_are_strict_and_copied():
     )
 
     assert sorted(reset_param) == [0, 1]
-    assert reset_param[0]["opponent_assignment_context"] == {
+    context0 = reset_param[0]["opponent_assignment_context"]
+    assert {
+        key: context0[key]
+        for key in (
+            "assignment_id",
+            "assignment_ref",
+            "assignment_sha256",
+            "source_epoch",
+            "source_ref",
+            "refresh_index",
+        )
+    } == {
         "assignment_id": "assignment-b",
         "assignment_ref": "training/assignment-b/assignment.json",
         "assignment_sha256": "b" * 64,
@@ -1284,13 +2608,71 @@ def test_opponent_assignment_refresh_pure_helpers_are_strict_and_copied():
         "source_ref": "tournaments/main/snapshots/003.json",
         "refresh_index": 4,
     }
+    assert context0["opponent_split_env_num"] == 2
+    assert context0["opponent_split_env_index"] == 0
+    assert reset_param[1]["opponent_assignment_context"]["opponent_split_env_index"] == 1
+    assert context0["opponent_split_entry_name"] == "blank"
     reset_param[0]["opponent_mixture"]["entries"][0]["name"] = "mutated"
     assert reset_param[1]["opponent_mixture"]["entries"][0]["name"] == "blank"
     assert assignment["opponent_mixture"]["entries"][0]["name"] == "blank"
 
 
+def test_opponent_assignment_refresh_reset_param_uses_exact_collector_slot_split():
+    assignment = _fake_resolved_opponent_assignment()
+    assignment["opponent_mixture"]["entries"] = [
+        {
+            "name": "blank",
+            "weight": 8.0,
+            "opponent_policy_kind": train_mod.OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
+            "opponent_runtime_mode": train_mod.OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP,
+            "opponent_immortal": True,
+        },
+        {
+            "name": "wall",
+            "weight": 8.0,
+            "opponent_policy_kind": train_mod.OPPONENT_POLICY_KIND_PROACTIVE_WALL_AVOIDANT,
+            "opponent_immortal": True,
+        },
+        {
+            "name": "rank2",
+            "weight": 16.0,
+            "opponent_policy_kind": train_mod.OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
+        },
+        {
+            "name": "rank1",
+            "weight": 32.0,
+            "opponent_policy_kind": train_mod.OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
+        },
+    ]
+
+    reset_param = train_mod._opponent_assignment_refresh_reset_param(
+        env_num=256,
+        opponent_assignment=assignment,
+        refresh_index=7,
+    )
+    selected_names = [
+        reset_param[env_id]["opponent_mixture"]["entries"][0]["name"]
+        for env_id in sorted(reset_param)
+    ]
+    counts = {name: selected_names.count(name) for name in set(selected_names)}
+
+    assert counts == {"blank": 32, "wall": 32, "rank2": 64, "rank1": 128}
+    assert all(
+        len(reset_param[env_id]["opponent_mixture"]["entries"]) == 1 for env_id in reset_param
+    )
+    assert {
+        reset_param[env_id]["opponent_assignment_context"]["opponent_split_plan_sha256"]
+        for env_id in reset_param
+    } == {reset_param[0]["opponent_assignment_context"]["opponent_split_plan_sha256"]}
+
+
 def test_opponent_assignment_refresh_ready_report_requires_all_envs():
     assignment = _fake_resolved_opponent_assignment()
+    reset_param = train_mod._opponent_assignment_refresh_reset_param(
+        env_num=2,
+        opponent_assignment=assignment,
+        refresh_index=2,
+    )
 
     class FakeEnvManager:
         env_num = 2
@@ -1301,12 +2683,14 @@ def test_opponent_assignment_refresh_ready_report_requires_all_envs():
                 "opponent_assignment_ref": "training/assignment-b/assignment.json",
                 "opponent_assignment_sha256": "b" * 64,
                 "opponent_assignment_refresh_index": 2,
+                **reset_param[0]["opponent_assignment_context"],
             },
             {
                 "opponent_assignment_id": "assignment-b",
                 "opponent_assignment_ref": "training/assignment-b/assignment.json",
                 "opponent_assignment_sha256": "b" * 64,
                 "opponent_assignment_refresh_index": 2,
+                **reset_param[1]["opponent_assignment_context"],
             },
         ]
 
@@ -1345,6 +2729,28 @@ def test_opponent_assignment_refresh_ready_report_requires_all_envs():
     assert stale_report["ok"] is False
     assert stale_report["reason"] == "env assignment info mismatch after refresh"
     assert stale_report["mismatches"][0]["env_id"] == 1
+
+    class MissingSplitInfo(FakeEnvManager):
+        last_reset_info = [
+            {
+                key: value
+                for key, value in FakeEnvManager.last_reset_info[0].items()
+                if not key.startswith("opponent_split_")
+            },
+            FakeEnvManager.last_reset_info[1],
+        ]
+
+    missing_split_report = train_mod._opponent_assignment_refresh_ready_report(
+        env_manager=MissingSplitInfo(),
+        opponent_assignment=assignment,
+        refresh_index=2,
+    )
+    assert missing_split_report["ok"] is False
+    assert missing_split_report["reason"] == "env assignment info mismatch after refresh"
+    assert any(
+        mismatch["field"] == "opponent_split_plan_sha256"
+        for mismatch in missing_split_report["mismatches"]
+    )
 
 
 def test_opponent_assignment_refresh_apply_resets_before_collect():
@@ -1585,6 +2991,72 @@ def test_opponent_assignment_refresh_hook_can_apply_at_first_collect(monkeypatch
     assert events[-1]["assignment_id"] == "assignment-b"
 
 
+def test_opponent_assignment_refresh_hook_rebalances_initial_assignment(monkeypatch):
+    assignment_a = _fake_resolved_opponent_assignment(
+        assignment_id="assignment-a",
+        sha="a" * 64,
+    )
+    events = []
+
+    class FakeEnvManager:
+        env_num = 1
+
+        def __init__(self):
+            self.reset_calls = []
+            self.ready_obs = {0: {"observation": "old"}}
+            self.last_reset_info = []
+
+        def reset(self, reset_param):
+            self.reset_calls.append(reset_param)
+            context = reset_param[0]["opponent_assignment_context"]
+            self.ready_obs = {0: {"observation": "new"}}
+            self.last_reset_info = [
+                {
+                    "opponent_assignment_id": context["assignment_id"],
+                    "opponent_assignment_ref": context["assignment_ref"],
+                    "opponent_assignment_sha256": context["assignment_sha256"],
+                    "opponent_assignment_refresh_index": context["refresh_index"],
+                    "opponent_mixture_entry_name": (
+                        reset_param[0]["opponent_mixture"]["entries"][0]["name"]
+                    ),
+                    "opponent_split_plan_sha256": context["opponent_split_plan_sha256"],
+                }
+            ]
+
+    class FakeCollector:
+        def __init__(self):
+            self._env = FakeEnvManager()
+            self.collect_calls = []
+
+        def collect(self, train_iter=0):
+            self.collect_calls.append(train_iter)
+            return {"collected": True, "train_iter": train_iter}
+
+    def fake_train_muzero():
+        return None
+
+    monkeypatch.setitem(fake_train_muzero.__globals__, "Collector", FakeCollector)
+    restore = train_mod._install_lightzero_opponent_assignment_refresh_hook(
+        train_muzero=fake_train_muzero,
+        interval_train_iter=50,
+        load_pending_assignment=lambda: assignment_a,
+        initial_assignment=assignment_a,
+        event_sink=events.append,
+    )
+
+    try:
+        collector = FakeCollector()
+        assert collector.collect(train_iter=0) == {"collected": True, "train_iter": 0}
+    finally:
+        assert restore is not None
+        restore()
+
+    assert len(collector._env.reset_calls) == 1
+    assert events[-1]["decision"] == "applied"
+    assert events[-1]["reason"] == "initial_collect_deterministic_split"
+    assert events[-1]["env_ready_report"]["opponent_split_slot_counts"] == {"blank": 1}
+
+
 def test_opponent_assignment_refresh_hook_bad_pending_retries_without_reset(monkeypatch):
     assignment_a = _fake_resolved_opponent_assignment(
         assignment_id="assignment-a",
@@ -1818,7 +3290,9 @@ def test_run_visual_survival_train_installs_refresh_hook_and_writes_events(
     fake_volume = FakeVolume()
     monkeypatch.setattr(train_mod, "RUNS_MOUNT", tmp_path)
     monkeypatch.setattr(train_mod, "runs_volume", fake_volume)
-    monkeypatch.setattr(train_mod, "_version_or_missing", lambda *_args: train_mod.LIGHTZERO_VERSION)
+    monkeypatch.setattr(
+        train_mod, "_version_or_missing", lambda *_args: train_mod.LIGHTZERO_VERSION
+    )
     monkeypatch.setattr(train_mod.os, "chdir", lambda _path: None)
     monkeypatch.setattr(
         train_mod,
@@ -1834,9 +3308,13 @@ def test_run_visual_survival_train_installs_refresh_hook_and_writes_events(
             },
         },
     )
-    monkeypatch.setattr(train_mod, "_compile_config_summary", lambda *_args, **_kwargs: {"ok": True})
+    monkeypatch.setattr(
+        train_mod, "_compile_config_summary", lambda *_args, **_kwargs: {"ok": True}
+    )
     monkeypatch.setattr(train_mod, "_validate_visual_survival_surface", lambda **_kwargs: [])
-    monkeypatch.setattr(train_mod, "_install_lightzero_full_resume_state_hooks", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        train_mod, "_install_lightzero_full_resume_state_hooks", lambda **_kwargs: None
+    )
     monkeypatch.setattr(train_mod, "_install_checkpoint_progress_writer", lambda **_kwargs: None)
     monkeypatch.setattr(train_mod, "_install_live_checkpoint_publisher", lambda **_kwargs: None)
     monkeypatch.setattr(train_mod, "_install_lightzero_target_audit", lambda **_kwargs: None)
@@ -2079,6 +3557,62 @@ def test_run_visual_survival_train_fails_when_refresh_hook_is_not_installed(
     assert summary["train_result"]["ok"] is False
 
 
+def test_own_checkpoint_refresh_reads_run_local_pointer_without_volume_reload(
+    monkeypatch,
+    tmp_path,
+):
+    def fake_train_muzero(_configs, *, seed, max_train_iter, max_env_step):
+        return {"trained": True, "seed": seed, "max_train_iter": max_train_iter}
+
+    _install_minimal_visual_train_mocks(monkeypatch, tmp_path, fake_train_muzero)
+    resolve_calls = []
+
+    def fake_resolve_opponent_assignment_for_env(**kwargs):
+        resolve_calls.append(kwargs)
+        if kwargs.get("opponent_assignment_ref") is None:
+            return None
+        raise FileNotFoundError("own checkpoint pointer not written yet")
+
+    def fake_install_refresh_hook(**kwargs):
+        try:
+            kwargs["load_pending_assignment"]()
+        except FileNotFoundError:
+            pass
+        return lambda: None
+
+    monkeypatch.setattr(
+        train_mod,
+        "_resolve_opponent_assignment_for_env",
+        fake_resolve_opponent_assignment_for_env,
+    )
+    monkeypatch.setattr(
+        train_mod,
+        "_install_lightzero_opponent_assignment_refresh_hook",
+        fake_install_refresh_hook,
+    )
+
+    result = train_mod._run_visual_survival_train(
+        **_minimal_visual_train_kwargs(
+            run_id="own-checkpoint-refresh-local-read-test",
+            attempt_id="attempt-001",
+            opponent_assignment_refresh_interval_train_iter=1,
+        ),
+        own_checkpoint_opponent_refresh_enabled=True,
+    )
+
+    assert result["ok"] is True
+    refresh_resolve = resolve_calls[-1]
+    assert refresh_resolve["reload_volume_before_read"] is False
+    assert refresh_resolve["reload_checkpoint_volume_before_read"] is False
+    assert refresh_resolve["checkpoint_volume_reload_errors_fatal"] is False
+    assert refresh_resolve["opponent_assignment_ref"].startswith(
+        "runs:training/lightzero-curvytron-visual-survival/"
+    )
+    summary = json.loads((tmp_path / result["summary_ref"]).read_text(encoding="utf-8"))
+    refresh = summary["command"]["opponent_assignment_refresh"]
+    assert refresh["own_checkpoint_opponent_refresh_enabled"] is True
+
+
 def test_live_checkpoint_publisher_calls_original_save_before_spawning(monkeypatch, tmp_path):
     monkeypatch.setattr(train_mod, "RUNS_MOUNT", tmp_path)
     events = []
@@ -2263,6 +3797,17 @@ def test_stock_frozen_opponent_cuda_can_still_be_explicitly_enabled(monkeypatch,
 
     assert patched["main_config"]["env"]["opponent_use_cuda"] is True
     assert patched["surface"]["opponent_use_cuda"] is True
+    assert patched["main_config"]["env"]["opponent_checkpoint_path"] == "/tmp/frozen.pth.tar"
+    assert patched["main_config"]["env"]["opponent_checkpoint_ref"] == (
+        "runs/checkpoints/iteration_7.pth.tar"
+    )
+    assert patched["main_config"]["env"]["opponent_snapshot_ref"] == "stage-007"
+    assert patched["main_config"]["env"]["opponent_checkpoint_state_key"] == "model"
+    assert patched["surface"]["opponent_checkpoint_ref"] == (
+        "runs/checkpoints/iteration_7.pth.tar"
+    )
+    assert patched["surface"]["opponent_snapshot_ref"] == "stage-007"
+    assert patched["surface"]["opponent_checkpoint_state_key"] == "model"
 
 
 def test_stock_train_accepts_proactive_wall_avoidant_source_state_opponent(
@@ -2481,6 +4026,7 @@ def test_opponent_assignment_context_is_passed_to_env_config(monkeypatch, tmp_pa
         opponent_checkpoint_state_key=None,
         opponent_mixture=resolved["opponent_mixture"],
         opponent_assignment_context=context,
+        learner_seat_mode=LEARNER_SEAT_MODE_FIXED_PLAYER_1,
     )
 
     assert context == {
@@ -2491,6 +4037,11 @@ def test_opponent_assignment_context_is_passed_to_env_config(monkeypatch, tmp_pa
         "source_ref": "tournaments/curvytron/leaderboards/main/snapshots/003.json",
     }
     assert patched["main_config"]["env"]["opponent_assignment_context"] == context
+    assert patched["main_config"]["env"]["learner_seat_mode"] == (
+        LEARNER_SEAT_MODE_FIXED_PLAYER_1
+    )
+    assert patched["surface"]["opponent_assignment_context"] == context
+    assert patched["surface"]["learner_seat_mode"] == LEARNER_SEAT_MODE_FIXED_PLAYER_1
 
 
 def test_opponent_assignment_artifact_writer_stores_assignment_and_audit(
@@ -2536,12 +4087,10 @@ def test_opponent_assignment_artifact_writer_stores_assignment_and_audit(
     assert result["schema_id"] == "curvyzero_opponent_assignment_artifact_write/v0"
     assert result["assignment_id"] == "assignment-smoke"
     assert result["assignment_ref"].endswith(
-        "assignment-run/attempts/attempt-a/opponents/assignments/"
-        "assignment-smoke/assignment.json"
+        "assignment-run/attempts/attempt-a/opponents/assignments/assignment-smoke/assignment.json"
     )
     assert result["audit_ref"].endswith(
-        "assignment-run/attempts/attempt-a/opponents/assignments/"
-        "assignment-smoke/audit.json"
+        "assignment-run/attempts/attempt-a/opponents/assignments/assignment-smoke/audit.json"
     )
     assert commit_labels == ["opponent_assignment_artifact_commit"]
 
@@ -2895,6 +4444,7 @@ def test_checkpoint_eval_poller_command_rejects_assignment_and_inline_mixture(tm
                         "name": "blank",
                         "weight": 1,
                         "opponent_policy_kind": train_mod.OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
+                        "opponent_immortal": True,
                     }
                 ],
             }
@@ -2912,7 +4462,16 @@ def test_checkpoint_eval_poller_command_rejects_assignment_and_inline_mixture(tm
             opponent_checkpoint_ref=None,
             opponent_snapshot_ref=None,
             opponent_checkpoint_state_key=None,
-            opponent_mixture_spec={"entries": [{"name": "blank", "weight": 1, "opponent_policy_kind": "fixed_straight"}]},
+            opponent_mixture_spec={
+                "entries": [
+                    {
+                        "name": "blank",
+                        "weight": 1,
+                        "opponent_policy_kind": "fixed_straight",
+                        "opponent_immortal": True,
+                    }
+                ]
+            },
             opponent_assignment_ref=str(assignment_path),
             background_eval_enabled=True,
             background_eval_compute=train_mod.DEFAULT_BACKGROUND_EVAL_COMPUTE,
@@ -3056,9 +4615,7 @@ def test_survival_plus_bonus_no_outcome_uses_capped_separate_supports(
     assert train_mod.REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME in (
         train_mod.REWARD_VARIANT_CHOICES
     )
-    assert env_cfg["reward_variant"] == (
-        train_mod.REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME
-    )
+    assert env_cfg["reward_variant"] == (train_mod.REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME)
     assert reward_policy["sparse_outcome_reward"] is False
     assert reward_policy["sparse_outcome_telemetry_only"] is True
     assert reward_policy["same_step_bonus_pickup_reward"] is True
@@ -3128,18 +4685,14 @@ def test_survival_plus_bonus_plus_outcome_uses_scaled_terminal_supports(
     assert train_mod.REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME in (
         train_mod.REWARD_VARIANT_CHOICES
     )
-    assert env_cfg["reward_variant"] == (
-        train_mod.REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME
-    )
+    assert env_cfg["reward_variant"] == (train_mod.REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME)
     assert reward_policy["dense_survival_reward"] is True
     assert reward_policy["same_step_bonus_pickup_reward"] is True
     assert reward_policy["sparse_outcome_reward"] is True
     assert reward_policy["sparse_outcome_telemetry_only"] is False
-    assert (
-        reward_policy["terminal_outcome_scaled_by_episode_source_steps"]
-        is True
-    )
-    assert reward_policy["terminal_outcome_scale"] == "episode_source_step_count"
+    assert reward_policy["terminal_outcome_scaled_by_episode_source_steps"] is False
+    assert reward_policy["terminal_outcome_scaled_by_accumulated_non_outcome_reward"] is True
+    assert reward_policy["terminal_outcome_scale"] == "accumulated_non_outcome_training_reward"
     assert target_config["uncapped_model_reward_support_scale"] == 65_538
     assert target_config["uncapped_model_value_support_scale"] == 196_608
     assert target_config["model_reward_support_capped"] is True
@@ -3150,6 +4703,111 @@ def test_survival_plus_bonus_plus_outcome_uses_scaled_terminal_supports(
     assert model_cfg["value_support_size"] == 601
     assert "td_steps" not in target_config
     assert patched["main_config"]["policy"]["td_steps"] == 5
+
+
+def test_survival_plus_bonus_plus_outcome_alpha_threads_to_env_policy_and_supports(
+    monkeypatch,
+    tmp_path,
+):
+    _install_fake_lightzero_atari_config(monkeypatch)
+
+    patched = train_mod._build_visual_survival_configs(
+        seed=7,
+        exp_name=tmp_path / "exp",
+        telemetry_path=tmp_path / "env_steps.jsonl",
+        cuda=False,
+        max_env_step=100,
+        source_max_steps=100,
+        decision_ms=train_mod.DEFAULT_DECISION_MS,
+        collector_env_num=1,
+        evaluator_env_num=1,
+        n_evaluator_episode=1,
+        n_episode=1,
+        num_simulations=8,
+        batch_size=16,
+        lightzero_eval_freq=0,
+        lightzero_multi_gpu=False,
+        max_train_iter=8,
+        save_ckpt_after_iter=100,
+        env_variant=train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT,
+        reward_variant=train_mod.REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME,
+        reward_outcome_alpha=0.5,
+        ego_action_straight_override_probability=0.0,
+        control_noise_profile_id=train_mod.DEFAULT_CONTROL_NOISE_PROFILE_ID,
+        disable_death_for_profile=False,
+        env_telemetry_stride=64,
+        env_manager_type="base",
+        opponent_policy_kind=train_mod.OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
+        opponent_use_cuda=False,
+        opponent_checkpoint=None,
+        opponent_snapshot_ref=None,
+        opponent_checkpoint_state_key=None,
+    )
+
+    env_cfg = patched["main_config"]["env"]
+    target_config = env_cfg["lightzero_target_config"]
+    reward_policy = env_cfg["reward_policy"]
+
+    assert env_cfg["reward_outcome_alpha"] == 0.5
+    assert reward_policy["reward_outcome_alpha"] == 0.5
+    assert reward_policy["terminal_outcome_bonus"] == 0.5
+    assert reward_policy["winner_bonus"] == 0.5
+    assert reward_policy["loser_penalty"] == -0.5
+    assert target_config["uncapped_model_reward_support_scale"] == 52
+    assert target_config["uncapped_model_value_support_scale"] == 250
+    assert target_config["model_reward_support_capped"] is False
+    assert target_config["model_value_support_capped"] is False
+
+
+def test_fixed_opponent_target_support_and_td_steps_can_be_overridden(
+    monkeypatch,
+    tmp_path,
+):
+    _install_fake_lightzero_atari_config(monkeypatch)
+
+    patched = train_mod._build_visual_survival_configs(
+        seed=7,
+        exp_name=tmp_path / "exp",
+        telemetry_path=tmp_path / "env_steps.jsonl",
+        cuda=False,
+        max_env_step=65_536,
+        source_max_steps=65_536,
+        decision_ms=train_mod.DEFAULT_DECISION_MS,
+        collector_env_num=1,
+        evaluator_env_num=1,
+        n_evaluator_episode=1,
+        n_episode=1,
+        num_simulations=8,
+        batch_size=16,
+        lightzero_eval_freq=0,
+        lightzero_multi_gpu=False,
+        max_train_iter=8,
+        save_ckpt_after_iter=100,
+        env_variant=train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT,
+        reward_variant=train_mod.REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME,
+        ego_action_straight_override_probability=0.0,
+        control_noise_profile_id=train_mod.DEFAULT_CONTROL_NOISE_PROFILE_ID,
+        disable_death_for_profile=False,
+        env_telemetry_stride=64,
+        env_manager_type="base",
+        opponent_policy_kind=train_mod.OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
+        opponent_use_cuda=False,
+        opponent_checkpoint=None,
+        opponent_snapshot_ref=None,
+        opponent_checkpoint_state_key=None,
+        model_support_cap=2048,
+        td_steps=50,
+    )
+
+    model_cfg = patched["main_config"]["policy"]["model"]
+    target_config = patched["main_config"]["env"]["lightzero_target_config"]
+
+    assert target_config["model_support_cap"] == 2048
+    assert target_config["model_value_support_capped"] is True
+    assert target_config["model_support_scale"] == 2048
+    assert target_config["td_steps"] == 50
+    assert model_cfg["support_scale"] == 2048
+    assert patched["main_config"]["policy"]["td_steps"] == 50
 
 
 def test_modal_config_passes_opponent_runtime_mode_through(monkeypatch, tmp_path):
@@ -3305,9 +4963,7 @@ def test_modal_config_defaults_to_one_source_frame_per_policy_action(monkeypatch
     assert env_cfg["policy_action_repeat_max"] == 1
     assert env_cfg["policy_action_repeat_extra_probability"] == 0.0
     assert patched["surface"]["decision_source_frames"] == 1
-    assert patched["surface"]["source_physics_step_ms"] == pytest.approx(
-        SOURCE_PHYSICS_STEP_MS
-    )
+    assert patched["surface"]["source_physics_step_ms"] == pytest.approx(SOURCE_PHYSICS_STEP_MS)
 
 
 def test_modal_config_can_pass_explicit_cadence_to_non_trusted_eval_surface(
@@ -3462,10 +5118,7 @@ def test_stock_source_state_trail_render_mode_passes_to_env_config(monkeypatch, 
     assert env_cfg["supported_trail_render_modes"] == list(
         train_mod.SOURCE_STATE_TRAIL_RENDER_MODE_CHOICES
     )
-    assert (
-        env_cfg["default_bonus_render_mode"]
-        == train_mod.DEFAULT_SOURCE_STATE_BONUS_RENDER_MODE
-    )
+    assert env_cfg["default_bonus_render_mode"] == train_mod.DEFAULT_SOURCE_STATE_BONUS_RENDER_MODE
     assert env_cfg["supported_bonus_render_modes"] == list(
         train_mod.SOURCE_STATE_BONUS_RENDER_MODE_CHOICES
     )
@@ -3521,14 +5174,10 @@ def test_stock_opponent_death_mode_passes_to_env_config(monkeypatch, tmp_path):
     assert env_cfg["death_mode"] == "normal"
     assert env_cfg["opponent_death_mode"] == train_mod.OPPONENT_DEATH_MODE_IMMORTAL
     assert env_cfg["opponent_death_mode_diagnostic"] is True
-    assert patched["surface"]["opponent_death_mode"] == (
-        train_mod.OPPONENT_DEATH_MODE_IMMORTAL
-    )
+    assert patched["surface"]["opponent_death_mode"] == (train_mod.OPPONENT_DEATH_MODE_IMMORTAL)
 
 
-def test_local_stock_launcher_passes_source_state_trail_render_mode(
-    capsys, monkeypatch
-):
+def test_local_stock_launcher_passes_source_state_trail_render_mode(capsys, monkeypatch):
     class FakeCall:
         object_id = "fc-stock"
 
@@ -3619,23 +5268,15 @@ def test_background_eval_inspection_and_gif_can_be_explicitly_enabled():
     assert config["selfplay_gif"]["natural_bonus_spawn"] is True
     assert config["selfplay_gif"]["decision_ms"] == pytest.approx(SOURCE_PHYSICS_STEP_MS)
     assert config["selfplay_gif"]["decision_source_frames"] == 1
-    assert config["selfplay_gif"]["source_physics_step_ms"] == pytest.approx(
-        SOURCE_PHYSICS_STEP_MS
-    )
+    assert config["selfplay_gif"]["source_physics_step_ms"] == pytest.approx(SOURCE_PHYSICS_STEP_MS)
     assert config["selfplay_gif"]["source_max_steps_semantics"] == "source_physics_steps"
     assert config["selfplay_gif"]["max_steps"] is None
     assert config["selfplay_gif"]["step_limit_kind"] == "until_environment_done"
     assert config["selfplay_gif"]["collect_temperature"] == 1.0
     assert config["selfplay_gif"]["collect_epsilon"] == 0.25
     assert config["opponent_death_mode"] == train_mod.DEFAULT_OPPONENT_DEATH_MODE
-    assert (
-        config["selfplay_gif"]["opponent_death_mode"]
-        == train_mod.DEFAULT_OPPONENT_DEATH_MODE
-    )
-    assert (
-        train_mod._background_gif_max_steps_arg(config["selfplay_gif"]["max_steps"])
-        == 0
-    )
+    assert config["selfplay_gif"]["opponent_death_mode"] == train_mod.DEFAULT_OPPONENT_DEATH_MODE
+    assert train_mod._background_gif_max_steps_arg(config["selfplay_gif"]["max_steps"]) == 0
     assert config["env_variant"] == train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT
     assert config["selfplay_gif"]["training_reward_variant"] == train_mod.DEFAULT_REWARD_VARIANT
     assert (
@@ -3643,8 +5284,7 @@ def test_background_eval_inspection_and_gif_can_be_explicitly_enabled():
         == train_mod.REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME
     )
     assert (
-        reward_config["reward_variant"]
-        == train_mod.REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME
+        reward_config["reward_variant"] == train_mod.REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME
     )
     assert (
         reward_config["training_reward_variant"]
@@ -3675,18 +5315,11 @@ def test_background_eval_inspection_and_gif_can_be_explicitly_enabled():
     assert custom_config["selfplay_gif"]["natural_bonus_spawn"] is False
     assert capped_config["selfplay_gif"]["max_steps"] == 17
     assert capped_config["selfplay_gif"]["step_limit_kind"] == "physical_step_cap"
-    assert (
-        train_mod._background_gif_max_steps_arg(
-            capped_config["selfplay_gif"]["max_steps"]
-        )
-        == 17
-    )
+    assert train_mod._background_gif_max_steps_arg(capped_config["selfplay_gif"]["max_steps"]) == 17
 
 
 def test_modal_training_image_copies_curvytron_bonus_sprite_sheet():
-    relative_path = Path(
-        train_mod.SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_SPRITE_SHEET_RELATIVE_PATH
-    )
+    relative_path = Path(train_mod.SOURCE_STATE_RGB_CANVAS_LIKE_BONUS_SPRITE_SHEET_RELATIVE_PATH)
     expected_local_path = Path.cwd() / relative_path
     expected_remote_path = train_mod.REMOTE_ROOT / relative_path
     entries = _modal_image_copy_mount_entries(train_mod.image)
@@ -4083,10 +5716,7 @@ def test_two_seat_payload_forwards_frozen_opponent_knobs(tmp_path, monkeypatch):
     assert result["ok"] is True
     assert received["frozen_opponent_probability"] == 0.25
     assert received["frozen_opponent_checkpoint_path"] == str(checkpoint)
-    assert (
-        received["frozen_opponent_checkpoint_ref"]
-        == "training/example/iteration_50.pth.tar"
-    )
+    assert received["frozen_opponent_checkpoint_ref"] == "training/example/iteration_50.pth.tar"
     assert received["frozen_opponent_snapshot_ref"] == "snapshot-50"
     assert received["frozen_opponent_checkpoint_state_key"] == "model"
     assert received["frozen_opponent_player_id"] == 1
@@ -4125,8 +5755,9 @@ def test_source_state_fixed_opponent_surface_identity_is_explicit_control_lane()
     assert spec["runtime_topology"] == wrapper_info["runtime_topology"]
     assert spec["two_seat_self_play"] == wrapper_info["two_seat_self_play"]
     assert spec["two_seat_self_play_status"] == wrapper_info["two_seat_self_play_status"]
-    assert spec["fixed_opponent_is_two_seat_self_play"] == (
-        wrapper_info["fixed_opponent_is_two_seat_self_play"]
+    assert (
+        spec["fixed_opponent_is_two_seat_self_play"]
+        == (wrapper_info["fixed_opponent_is_two_seat_self_play"])
     )
     assert spec["browser_pixel_fidelity"] == wrapper_info["browser_pixel_fidelity"]
     assert spec["uses_ale"] == wrapper_info["uses_ale"]
@@ -4171,8 +5802,8 @@ def test_source_state_fixed_opponent_readiness_gate_carries_to_live_summary():
         assert summary[key] == expected
         assert gate["checks"][f"command.{key}"]["ok"] is True
         assert gate["checks"][f"surface.{key}"]["ok"] is True
-    assert gate["action_observability"]["observed_fields"] == (
-        action_observability["observed_fields"]
+    assert (
+        gate["action_observability"]["observed_fields"] == (action_observability["observed_fields"])
     )
     assert summary["training_readiness_gate"]["ok"] is True
     assert summary["training_readiness_gate"]["expected"] == gate["expected"]
@@ -4193,9 +5824,7 @@ def test_source_state_fixed_opponent_readiness_gate_rejects_two_seat_or_browser_
 
 def test_source_state_readiness_gate_allows_frozen_checkpoint_opponent_metadata():
     command = _source_state_training_command()
-    command["opponent_policy_kind"] = (
-        train_mod.OPPONENT_POLICY_KIND_FROZEN_LIGHTZERO_CHECKPOINT
-    )
+    command["opponent_policy_kind"] = train_mod.OPPONENT_POLICY_KIND_FROZEN_LIGHTZERO_CHECKPOINT
     command["opponent_training_relation"] = (
         train_mod.OPPONENT_TRAINING_RELATION_FROZEN_LIGHTZERO_CHECKPOINT
     )
@@ -4269,6 +5898,7 @@ def test_env_step_telemetry_summary_reports_action_and_death_observability(tmp_p
         "profile_env_timing_sec": {
             "opponent_action_sec": 0.1,
             "observation_sec": 0.2,
+            "base_env_timestep_pickle_bytes": 4096,
         },
     }
     path.write_text(json.dumps(row) + "\n", encoding="utf-8")
@@ -4288,9 +5918,21 @@ def test_env_step_telemetry_summary_reports_action_and_death_observability(tmp_p
     }
     assert summary["profile_env_timing_sec"] == {
         "scope": "all_telemetry_rows",
-        "sampled_sum": {"observation_sec": 0.2, "opponent_action_sec": 0.1},
-        "sampled_count": {"observation_sec": 1, "opponent_action_sec": 1},
-        "sampled_mean": {"observation_sec": 0.2, "opponent_action_sec": 0.1},
+        "sampled_sum": {
+            "base_env_timestep_pickle_bytes": 4096.0,
+            "observation_sec": 0.2,
+            "opponent_action_sec": 0.1,
+        },
+        "sampled_count": {
+            "base_env_timestep_pickle_bytes": 1,
+            "observation_sec": 1,
+            "opponent_action_sec": 1,
+        },
+        "sampled_mean": {
+            "base_env_timestep_pickle_bytes": 4096.0,
+            "observation_sec": 0.2,
+            "opponent_action_sec": 0.1,
+        },
     }
 
 
@@ -4673,7 +6315,9 @@ def test_live_checkpoint_trigger_spawns_eval_and_selfplay_gif_without_volume_com
         fake_gif_function,
     )
 
-    attempt_train_root = tmp_path / "training" / train_mod.TASK_ID / "run-a" / "attempts" / "attempt-a" / "train"
+    attempt_train_root = (
+        tmp_path / "training" / train_mod.TASK_ID / "run-a" / "attempts" / "attempt-a" / "train"
+    )
     publish = {
         "run_id": "run-a",
         "attempt_id": "attempt-a",
@@ -4748,10 +6392,7 @@ def test_live_checkpoint_trigger_spawns_eval_and_selfplay_gif_without_volume_com
     assert eval_call["checkpoint_ref"].endswith("iteration_1.pth.tar")
     assert gif_call["checkpoint_ref"].endswith("iteration_1.pth.tar")
     assert eval_call["env_variant"] == train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT
-    assert (
-        eval_call["reward_variant"]
-        == train_mod.REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME
-    )
+    assert eval_call["reward_variant"] == train_mod.REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME
     assert eval_call["eval_seed_count"] == 2
     assert eval_call["decision_ms"] == 10.0
     assert eval_call["decision_source_frames"] == 2
@@ -4770,8 +6411,7 @@ def test_live_checkpoint_trigger_spawns_eval_and_selfplay_gif_without_volume_com
     assert gif_call["frame_size"] == train_mod.SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE
     assert gif_call["training_env_variant"] == train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT
     assert (
-        gif_call["training_reward_variant"]
-        == train_mod.REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME
+        gif_call["training_reward_variant"] == train_mod.REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME
     )
     assert gif_call["natural_bonus_spawn"] is False
     assert fake_volume.commit_count == 0
@@ -4789,10 +6429,7 @@ def test_live_checkpoint_trigger_spawns_eval_and_selfplay_gif_without_volume_com
     assert request["selfplay_gif"]["config"]["decision_ms"] == 10.0
     assert request["selfplay_gif"]["config"]["decision_source_frames"] == 2
     assert request["selfplay_gif"]["config"]["source_physics_step_ms"] == 5.0
-    assert (
-        request["selfplay_gif"]["config"]["source_max_steps_semantics"]
-        == "source_physics_steps"
-    )
+    assert request["selfplay_gif"]["config"]["source_max_steps_semantics"] == "source_physics_steps"
     assert request["selfplay_gif"]["config"]["base_seed"] == 10_007
     assert request["selfplay_gif"]["config"]["effective_seed"] == gif_call["seed"]
     assert request["selfplay_gif"]["config"]["checkpoint_seed_mixing_enabled"] is True
@@ -4990,7 +6627,9 @@ def test_hook_trigger_retries_after_spawn_failure_and_skips_mutable_best_checkpo
     )
 
     assert len(fake_function.calls) == 2
-    assert all(call["checkpoint_ref"].endswith("iteration_8.pth.tar") for call in fake_function.calls)
+    assert all(
+        call["checkpoint_ref"].endswith("iteration_8.pth.tar") for call in fake_function.calls
+    )
     assert not any("ckpt_best" in call["checkpoint_ref"] for call in fake_function.calls)
     assert failed[0]["status"] == "spawn_failed"
     assert retried[0]["status"] == "spawned"
@@ -5014,6 +6653,106 @@ def test_selfplay_gif_spawn_is_guarded_for_joint_action_checkpoints():
     assert call is None
     assert request["scheduled"] is False
     assert request["reason"] == "background_gif_unsupported_for_source_state_joint_action"
+
+
+def test_checkpoint_gif_capture_preserves_blank_canvas_runtime(monkeypatch, tmp_path):
+    captured_make_env: dict[str, object] = {}
+
+    class FakeEnv:
+        def reset(self, seed):
+            return {"observation": np.zeros((1,), dtype=np.float32), "action_mask": [1.0], "to_play": 0}
+
+        def step(self, action):
+            return {"action": action}
+
+    class FakeEvalModule:
+        def _make_policy_and_env(self, **kwargs):
+            captured_make_env.update(kwargs)
+            return object(), FakeEnv(), {"compiled_policy": {"action_space_size": 1}}
+
+        def _policy_eval_action(self, policy, observation):
+            return {"ok": True, "action": 0}
+
+        def _timestep_parts(self, timestep):
+            return (
+                {"observation": np.zeros((1,), dtype=np.float32), "action_mask": [1.0], "to_play": 0},
+                0.0,
+                True,
+                {
+                    "physical_env_advanced": True,
+                    "terminal_reason": "test_done",
+                    "opponent_runtime_mode": train_mod.OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP,
+                },
+            )
+
+    def fake_frame(env, *, frame_size):
+        return (
+            np.zeros((int(frame_size), int(frame_size), 3), dtype=np.uint8),
+            {"source": "fake_frame"},
+        )
+
+    def fake_write_frames(*, frames, path, metadata):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"npz")
+        return {"path": str(path), "metadata": metadata}
+
+    def fake_save_gif(*, frames, gif_path, fps, scale):
+        gif_path.parent.mkdir(parents=True, exist_ok=True)
+        gif_path.write_bytes(b"GIF89a")
+        return {"path": str(gif_path), "frame_count": len(frames)}
+
+    monkeypatch.setattr(train_mod, "RUNS_MOUNT", tmp_path)
+    monkeypatch.setattr(train_mod, "_copy_source_state_human_rgb_frame_with_source", fake_frame)
+    monkeypatch.setattr(train_mod, "_write_selfplay_raw_frames_npz", fake_write_frames)
+    monkeypatch.setattr(train_mod, "_save_raw_frames_gif", fake_save_gif)
+
+    result = train_mod._capture_checkpoint_selfplay_gif_variant(
+        eval_mod=FakeEvalModule(),
+        state_dict={},
+        seed=123,
+        checkpoint_ref=(
+            "training/lightzero-curvytron-visual-survival/run/"
+            "checkpoints/lightzero/iteration_1.pth.tar"
+        ),
+        clean_checkpoint_label="iteration_1",
+        artifact_root=tmp_path / "eval" / "selfplay",
+        variant=train_mod._checkpoint_gif_variant_specs(
+            collect_temperature=1.0,
+            collect_epsilon=0.25,
+        )[0],
+        source_max_steps=8,
+        effective_source_max_steps=8,
+        decision_ms=10.0,
+        decision_source_frames=1,
+        source_physics_step_ms=5.0,
+        source_max_steps_semantics="source_physics_steps",
+        max_step_limit=1,
+        step_limit_kind="physical_step_cap",
+        num_simulations=1,
+        batch_size=1,
+        frame_stride=1,
+        fps=12.0,
+        scale=1,
+        frame_size=64,
+        training_env_variant=train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT,
+        training_reward_variant=train_mod.REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME,
+        training_reward_outcome_alpha=1.0,
+        opponent_death_mode=train_mod.DEFAULT_OPPONENT_DEATH_MODE,
+        opponent_runtime_mode=train_mod.OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP,
+        opponent_mixture=None,
+        natural_bonus_spawn=False,
+    )
+
+    assert result["ok"] is True
+    assert captured_make_env["env_variant"] == train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT
+    assert (
+        captured_make_env["reward_variant"]
+        == train_mod.REWARD_VARIANT_SURVIVAL_PLUS_BONUS_NO_OUTCOME
+    )
+    assert (
+        captured_make_env["opponent_runtime_mode"]
+        == train_mod.OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP
+    )
 
 
 def test_two_seat_rejects_mutable_frozen_opponent_checkpoint_ref():
@@ -5095,8 +6834,7 @@ def test_checkpoint_eval_poller_completes_eval_inspection_and_selfplay_gif_jobs(
     )
 
     exp_name_ref = (
-        train_mod.runs.attempt_train_ref(train_mod.TASK_ID, "run-c", "attempt-c")
-        / "lightzero_exp"
+        train_mod.runs.attempt_train_ref(train_mod.TASK_ID, "run-c", "attempt-c") / "lightzero_exp"
     ).as_posix()
     exp_name = train_mod.runs.volume_path(tmp_path, exp_name_ref)
     ckpt_dir = exp_name / "ckpt"
@@ -5106,8 +6844,7 @@ def test_checkpoint_eval_poller_completes_eval_inspection_and_selfplay_gif_jobs(
 
     summary_path = train_mod.runs.volume_path(
         tmp_path,
-        train_mod.runs.attempt_train_ref(train_mod.TASK_ID, "run-c", "attempt-c")
-        / "summary.json",
+        train_mod.runs.attempt_train_ref(train_mod.TASK_ID, "run-c", "attempt-c") / "summary.json",
     )
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     summary_path.write_text('{"ok": true}', encoding="utf-8")
@@ -5186,10 +6923,7 @@ def test_checkpoint_eval_poller_completes_eval_inspection_and_selfplay_gif_jobs(
     assert gif_call["source_max_steps_semantics"] == "source_physics_steps"
     assert gif_call["frame_size"] == train_mod.SOURCE_STATE_RGB_CANVAS_LIKE_DEFAULT_FRAME_SIZE
     assert eval_call["eval_id"] == "live_checkpoint_iteration_1"
-    assert (
-        eval_call["reward_variant"]
-        == train_mod.REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME
-    )
+    assert eval_call["reward_variant"] == train_mod.REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME
     assert gif_call["eval_id"] == "live_checkpoint_iteration_1"
     assert gif_call["seed"] != 10_003
     assert scheduled["selfplay_gif"]["config"]["base_seed"] == 10_003
@@ -5202,8 +6936,7 @@ def test_checkpoint_eval_poller_completes_eval_inspection_and_selfplay_gif_jobs(
     assert gif_call["collect_epsilon"] == 0.125
     assert gif_call["natural_bonus_spawn"] is False
     assert (
-        gif_call["training_reward_variant"]
-        == train_mod.REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME
+        gif_call["training_reward_variant"] == train_mod.REWARD_VARIANT_DENSE_SURVIVAL_PLUS_OUTCOME
     )
     assert fake_volume.commit_count == 0
     status_path = train_mod._checkpoint_eval_poller_status_path(
@@ -5216,9 +6949,7 @@ def test_checkpoint_eval_poller_completes_eval_inspection_and_selfplay_gif_jobs(
     assert status["gif_completed_count"] == 1
 
 
-def test_local_launcher_passes_gif_config_to_poller_and_prints_enabled(
-    capsys, monkeypatch
-):
+def test_local_launcher_passes_gif_config_to_poller_and_prints_enabled(capsys, monkeypatch):
     class FakeCall:
         def __init__(self, object_id: str) -> None:
             self.object_id = object_id
@@ -5277,23 +7008,28 @@ def test_local_launcher_passes_gif_config_to_poller_and_prints_enabled(
 
     assert len(fake_train.calls) == 1
     assert len(fake_poller.calls) == 1
-    assert fake_train.calls[0]["background_eval_launch_kind"] == train_mod.BACKGROUND_EVAL_LAUNCH_POLLER
-    assert fake_train.calls[0]["env_variant"] == train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT
-    assert fake_train.calls[0]["opponent_policy_kind"] == train_mod.OPPONENT_POLICY_KIND_FIXED_STRAIGHT
-    assert fake_poller.calls[0]["exp_name_ref"].endswith(
-        "attempts/attempt-d/train/lightzero_exp"
+    assert (
+        fake_train.calls[0]["background_eval_launch_kind"]
+        == train_mod.BACKGROUND_EVAL_LAUNCH_POLLER
     )
+    assert fake_train.calls[0]["env_variant"] == train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT
+    assert (
+        fake_train.calls[0]["opponent_policy_kind"] == train_mod.OPPONENT_POLICY_KIND_FIXED_STRAIGHT
+    )
+    assert fake_poller.calls[0]["exp_name_ref"].endswith("attempts/attempt-d/train/lightzero_exp")
     assert fake_poller.calls[0]["env_variant"] == train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT
     assert fake_poller.calls[0]["decision_ms"] == train_mod.DEFAULT_DECISION_MS
     assert (
-        fake_poller.calls[0]["decision_source_frames"]
-        == train_mod.DEFAULT_DECISION_SOURCE_FRAMES
+        fake_poller.calls[0]["decision_source_frames"] == train_mod.DEFAULT_DECISION_SOURCE_FRAMES
     )
     assert fake_poller.calls[0]["source_physics_step_ms"] == pytest.approx(
         train_mod.DEFAULT_SOURCE_PHYSICS_STEP_MS
     )
     assert fake_poller.calls[0]["source_max_steps_semantics"] == "source_physics_steps"
-    assert fake_poller.calls[0]["opponent_policy_kind"] == train_mod.OPPONENT_POLICY_KIND_FIXED_STRAIGHT
+    assert (
+        fake_poller.calls[0]["opponent_policy_kind"]
+        == train_mod.OPPONENT_POLICY_KIND_FIXED_STRAIGHT
+    )
     assert fake_train.calls[0]["opponent_assignment_ref"].endswith(
         "opponents/assignments/a/assignment.json"
     )
@@ -5357,9 +7093,7 @@ def test_local_two_seat_launcher_passes_trail_render_mode(capsys, monkeypatch):
     assert printed["command"]["death_mode"] == "profile_no_death"
 
 
-def test_local_two_seat_launcher_defaults_gif_browser_marker_enabled(
-    capsys, monkeypatch
-):
+def test_local_two_seat_launcher_defaults_gif_browser_marker_enabled(capsys, monkeypatch):
     class FakeCall:
         object_id = "fc-two-seat"
 

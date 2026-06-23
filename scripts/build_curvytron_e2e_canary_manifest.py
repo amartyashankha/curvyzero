@@ -29,9 +29,19 @@ from curvyzero.contracts.curvytron import (
     DEFAULT_LEARNER_SEAT_MODE,
     REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME,
 )
+from curvyzero.contracts.curvytron_naming import (
+    CURVYTRON_CANARY_BATCH,
+    action_noise_tag,
+    curvytron_attempt_id,
+    curvytron_run_id,
+    leaderboard_immortal_tag,
+    reward_alpha_tag,
+)
 from curvyzero.training.opponent_mixture import (
+    OPPONENT_POLICY_KIND_FROZEN_LIGHTZERO_CHECKPOINT,
     OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
     OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP,
+    OPPONENT_RUNTIME_MODE_NORMAL,
 )
 from curvyzero.training.opponent_registry import (
     OPPONENT_ASSIGNMENT_SCHEMA_ID,
@@ -52,6 +62,15 @@ TRAIN_FUNCTION_BY_COMPUTE = {
     COMPUTE_CPU: "lightzero_curvytron_visual_survival_cpu",
     COMPUTE_H100_CPU40: "lightzero_curvytron_visual_survival_h100_cpu40",
 }
+DEFAULT_RECIPE_CODE = "b50r1"
+DEFAULT_CANARY_RUN_ID = curvytron_run_id(
+    batch=CURVYTRON_CANARY_BATCH,
+    row_number=1,
+    reward_tag=reward_alpha_tag(1.0),
+    noise_tag=action_noise_tag(0.0),
+    immortal_tag=leaderboard_immortal_tag(0.0),
+    recipe_code=DEFAULT_RECIPE_CODE,
+)
 
 
 def _safe_id(value: str, *, label: str) -> str:
@@ -95,30 +114,47 @@ def _pointer_ref(*, run_id: str, attempt_id: str) -> str:
     )
 
 
-def _assignment(*, assignment_id: str, seed: int) -> dict[str, Any]:
+def _assignment(
+    *,
+    assignment_id: str,
+    seed: int,
+    starter_checkpoint_ref: str,
+) -> dict[str, Any]:
     payload = {
         "schema_id": OPPONENT_ASSIGNMENT_SCHEMA_ID,
         "assignment_id": assignment_id,
         "source_epoch": 0,
-        "source_ref": "operator_seed:blank_canvas_canary",
+        "source_ref": "operator_seed:rank_slot_canary",
         "seed": seed,
         "entries": [
             {
                 "name": "canary_blank_canvas",
-                "weight": 1.0,
+                "weight": 1,
                 "age_label": "blank_canvas",
                 "tags": ["canary", "blank", "immortal"],
                 "opponent_policy_kind": OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
                 "opponent_runtime_mode": OPPONENT_RUNTIME_MODE_BLANK_CANVAS_NOOP,
                 "opponent_immortal": True,
-            }
+            },
+            {
+                "name": "rank1",
+                "weight": 1,
+                "age_label": "rank1",
+                "tags": {"canary": True, "rank": 1, "source_slot": "rank1"},
+                "opponent_policy_kind": OPPONENT_POLICY_KIND_FROZEN_LIGHTZERO_CHECKPOINT,
+                "opponent_runtime_mode": OPPONENT_RUNTIME_MODE_NORMAL,
+                "opponent_immortal": False,
+                "opponent_checkpoint_ref": starter_checkpoint_ref,
+            },
         ],
     }
     parse_opponent_assignment_snapshot(payload)
     return payload
 
 
-def _train_kwargs(args: argparse.Namespace, *, assignment_ref: str, pointer_ref: str) -> dict[str, Any]:
+def _train_kwargs(
+    args: argparse.Namespace, *, assignment_ref: str, pointer_ref: str
+) -> dict[str, Any]:
     return {
         "mode": "train",
         "seed": args.seed,
@@ -145,6 +181,7 @@ def _train_kwargs(args: argparse.Namespace, *, assignment_ref: str, pointer_ref:
         "stop_after_learner_train_calls": args.stop_after_learner_train_calls,
         "env_variant": "source_state_fixed_opponent",
         "reward_variant": args.reward_variant,
+        "reward_outcome_alpha": args.reward_outcome_alpha,
         "source_state_trail_render_mode": CURVYTRON_POLICY_TRAIL_RENDER_MODE,
         "source_state_bonus_render_mode": CURVYTRON_POLICY_BONUS_RENDER_MODE,
         "learner_seat_mode": args.learner_seat_mode,
@@ -211,6 +248,7 @@ def _poller_kwargs(args: argparse.Namespace, *, assignment_ref: str) -> dict[str
         "source_max_steps": CURVYTRON_SOURCE_MAX_STEPS,
         "env_variant": "source_state_fixed_opponent",
         "reward_variant": args.reward_variant,
+        "reward_outcome_alpha": args.reward_outcome_alpha,
         "opponent_policy_kind": OPPONENT_POLICY_KIND_FIXED_STRAIGHT,
         "opponent_checkpoint_ref": None,
         "opponent_snapshot_ref": None,
@@ -254,7 +292,11 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
     pointer_run_id = _safe_id(args.pointer_run_id, label="pointer_run_id")
     pointer_attempt_id = _safe_id(args.pointer_attempt_id, label="pointer_attempt_id")
     assignment_id = _safe_id(args.assignment_id, label="assignment_id")
-    assignment = _assignment(assignment_id=assignment_id, seed=args.seed)
+    assignment = _assignment(
+        assignment_id=assignment_id,
+        seed=args.seed,
+        starter_checkpoint_ref=args.initial_policy_checkpoint_ref,
+    )
     assignment_sha256 = canonical_assignment_json_sha256(assignment)
     assignment_ref = _assignment_ref(
         run_id=assignment_bank_run_id,
@@ -267,18 +309,18 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
         "assignment_id": assignment_id,
         "assignment_sha256": assignment_sha256,
         "selection": {
-            "strategy_id": "e2e_canary_blank_canvas_v0",
-            "reason": "starter assignment for deployed full-loop canary",
+            "strategy_id": "e2e_canary_rank_slot_v0",
+            "reason": "starter assignment with a replaceable rank1 slot for deployed full-loop proof",
             "seed": args.seed,
         },
     }
     row = {
         "schema_id": ROW_SCHEMA_ID,
-        "row_id": "canary001",
+        "row_id": "r001",
         "row_kind": "e2e_canary_training",
         "status": "ready_for_operator_launch_gate",
         "label": args.run_id,
-        "plain_name": "fresh deployed E2E canary",
+        "plain_name": "cz26c canary: blank plus rank1",
         "run_id": args.run_id,
         "attempt_id": args.attempt_id,
         "mode": "train",
@@ -287,6 +329,7 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
         "calls_stock_train_muzero": True,
         "env_variant": "source_state_fixed_opponent",
         "reward_variant": args.reward_variant,
+        "reward_outcome_alpha": args.reward_outcome_alpha,
         "opponent_source": "assignment",
         "opponent_assignment_id": assignment_id,
         "opponent_assignment_ref": assignment_ref,
@@ -365,14 +408,14 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
         "assignment_bank": {
             "run_id": assignment_bank_run_id,
             "attempt_id": assignment_bank_attempt_id,
-            "source_ref": "operator_seed:blank_canvas_canary",
+            "source_ref": "operator_seed:rank_slot_canary",
             "target_volume": "control",
             "assignments": {
-                "canary_blank": {
+                DEFAULT_RECIPE_CODE: {
                     "assignment_id": assignment_id,
                     "assignment_ref": assignment_ref,
                     "assignment_sha256": assignment_sha256,
-                    "recipe_id": "canary_blank",
+                    "recipe_id": DEFAULT_RECIPE_CODE,
                     "assignment": assignment,
                     "audit": audit,
                 }
@@ -381,13 +424,13 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
             "refresh_pointer_run_id": pointer_run_id,
             "refresh_pointer_attempt_id": pointer_attempt_id,
             "refresh_pointers": {
-                "canary_blank": {
+                DEFAULT_RECIPE_CODE: {
                     "schema_id": "curvyzero_opponent_assignment_refresh_pointer/v0",
                     "pointer_ref": pointer_ref,
                     "pointer_volume": "control",
                     "assignment_ref": assignment_ref,
                     "assignment_sha256": assignment_sha256,
-                    "recipe_id": "canary_blank",
+                    "recipe_id": DEFAULT_RECIPE_CODE,
                     "audit": {
                         "schema_id": "curvyzero_opponent_assignment_refresh_pointer_audit/v0",
                         "reason": "initial E2E canary pointer",
@@ -413,22 +456,25 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--matrix-name", default="curvy-e2e-clean-canary-20260515a")
-    parser.add_argument("--run-id", default="curvy-e2e-clean-canary-20260515a")
-    parser.add_argument("--attempt-id", default="try-e2e-clean-canary-20260515a")
-    parser.add_argument("--assignment-id", default="e2e-clean-canary-initial-blank-20260515a")
+    parser.add_argument("--matrix-name", default=CURVYTRON_CANARY_BATCH)
+    parser.add_argument("--run-id", default=DEFAULT_CANARY_RUN_ID)
+    parser.add_argument("--attempt-id", default=curvytron_attempt_id(DEFAULT_CANARY_RUN_ID))
+    parser.add_argument(
+        "--assignment-id",
+        default=f"{CURVYTRON_CANARY_BATCH}-r001-{DEFAULT_RECIPE_CODE}-initial",
+    )
     parser.add_argument(
         "--assignment-bank-run-id",
-        default="e2e-clean-canary-assignment-bank-20260515a",
+        default=f"{CURVYTRON_CANARY_BATCH}-assignments",
     )
     parser.add_argument(
         "--assignment-bank-attempt-id",
-        default="try-e2e-clean-canary-assignment-bank-20260515a",
+        default=f"try-{CURVYTRON_CANARY_BATCH}-assignments",
     )
-    parser.add_argument("--pointer-run-id", default="e2e-clean-canary-control-20260515a")
+    parser.add_argument("--pointer-run-id", default=f"{CURVYTRON_CANARY_BATCH}-control")
     parser.add_argument(
         "--pointer-attempt-id",
-        default="try-e2e-clean-canary-control-20260515a",
+        default=f"try-{CURVYTRON_CANARY_BATCH}-control",
     )
     parser.add_argument("--initial-policy-checkpoint-ref", required=True)
     parser.add_argument("--compute", choices=COMPUTE_CHOICES, default=COMPUTE_H100_CPU40)
@@ -447,6 +493,7 @@ def parse_args() -> argparse.Namespace:
         "--reward-variant",
         default=REWARD_VARIANT_SURVIVAL_PLUS_BONUS_PLUS_OUTCOME,
     )
+    parser.add_argument("--reward-outcome-alpha", type=float, default=1.0)
     return parser.parse_args()
 
 
@@ -455,7 +502,11 @@ def main() -> None:
     manifest = build_manifest(args)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(json.dumps({"manifest": args.output.as_posix(), "row_count": len(manifest["rows"])}, indent=2))
+    print(
+        json.dumps(
+            {"manifest": args.output.as_posix(), "row_count": len(manifest["rows"])}, indent=2
+        )
+    )
 
 
 if __name__ == "__main__":

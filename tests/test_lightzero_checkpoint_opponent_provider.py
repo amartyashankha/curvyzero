@@ -1,8 +1,111 @@
 import sys
+import json
 
 import numpy as np
 
+from curvyzero.env.observation_surface_contract import (
+    DEFAULT_POLICY_OBSERVATION_BACKEND,
+    POLICY_BONUS_RENDER_MODE,
+    POLICY_OBSERVATION_CONTRACT_ID,
+    POLICY_OBSERVATION_PERSPECTIVE,
+    POLICY_OBSERVATION_PERSPECTIVE_SCHEMA_ID,
+    POLICY_OBSERVATION_SEAT_MAPPING,
+    POLICY_STACK_SHAPE,
+    POLICY_TRAIL_RENDER_MODE,
+)
 from curvyzero.training import lightzero_checkpoint_opponent_provider as provider
+
+
+def _valid_policy_observation_sidecar() -> dict:
+    return {
+        "schema_id": "curvyzero_checkpoint_policy_metadata/v0",
+        "policy_trail_render_mode": POLICY_TRAIL_RENDER_MODE,
+        "policy_bonus_render_mode": POLICY_BONUS_RENDER_MODE,
+        "policy_observation_backend": DEFAULT_POLICY_OBSERVATION_BACKEND,
+        "policy_observation_contract_id": POLICY_OBSERVATION_CONTRACT_ID,
+        "policy_observation_perspective_schema_id": (
+            POLICY_OBSERVATION_PERSPECTIVE_SCHEMA_ID
+        ),
+        "observation_contract": {
+            "contract_id": POLICY_OBSERVATION_CONTRACT_ID,
+            "perspective_schema_id": POLICY_OBSERVATION_PERSPECTIVE_SCHEMA_ID,
+            "perspective": POLICY_OBSERVATION_PERSPECTIVE,
+            "seat_mapping": POLICY_OBSERVATION_SEAT_MAPPING,
+            "trail_render_mode": POLICY_TRAIL_RENDER_MODE,
+            "bonus_render_mode": POLICY_BONUS_RENDER_MODE,
+            "backend": DEFAULT_POLICY_OBSERVATION_BACKEND,
+            "stack_shape": list(POLICY_STACK_SHAPE),
+        },
+    }
+
+
+def test_checkpoint_provider_requires_policy_observation_metadata(tmp_path):
+    checkpoint = tmp_path / "iteration_0.pth.tar"
+    checkpoint.write_bytes(b"checkpoint")
+
+    with np.testing.assert_raises_regex(ValueError, "required policy observation metadata"):
+        provider.require_checkpoint_policy_observation_metadata(
+            checkpoint_path=checkpoint,
+            checkpoint_payload={"model": {}},
+        )
+
+
+def test_checkpoint_provider_accepts_current_policy_observation_sidecar(tmp_path):
+    checkpoint = tmp_path / "iteration_0.pth.tar"
+    checkpoint.write_bytes(b"checkpoint")
+    provider.checkpoint_policy_metadata_sidecar_path(checkpoint).write_text(
+        json.dumps(_valid_policy_observation_sidecar()),
+        encoding="utf-8",
+    )
+
+    metadata = provider.require_checkpoint_policy_observation_metadata(
+        checkpoint_path=checkpoint,
+        checkpoint_payload={"model": {}},
+    )
+
+    assert metadata == {
+        "policy_trail_render_mode": POLICY_TRAIL_RENDER_MODE,
+        "policy_bonus_render_mode": POLICY_BONUS_RENDER_MODE,
+        "policy_observation_backend": DEFAULT_POLICY_OBSERVATION_BACKEND,
+        "policy_observation_contract_id": POLICY_OBSERVATION_CONTRACT_ID,
+        "policy_observation_perspective_schema_id": (
+            POLICY_OBSERVATION_PERSPECTIVE_SCHEMA_ID
+        ),
+    }
+
+
+def test_checkpoint_provider_rejects_shadowed_nested_contract_mismatch(tmp_path):
+    checkpoint = tmp_path / "iteration_0.pth.tar"
+    checkpoint.write_bytes(b"checkpoint")
+    sidecar = _valid_policy_observation_sidecar()
+    sidecar["observation_contract"]["contract_id"] = "legacy/raw-player-zero/v0"
+    provider.checkpoint_policy_metadata_sidecar_path(checkpoint).write_text(
+        json.dumps(sidecar),
+        encoding="utf-8",
+    )
+
+    with np.testing.assert_raises_regex(ValueError, "observation_contract.contract_id"):
+        provider.require_checkpoint_policy_observation_metadata(
+            checkpoint_path=checkpoint,
+            checkpoint_payload={"model": {}},
+        )
+
+
+def test_checkpoint_provider_rejects_lab_policy_observation_backend(tmp_path):
+    checkpoint = tmp_path / "iteration_0.pth.tar"
+    checkpoint.write_bytes(b"checkpoint")
+    sidecar = _valid_policy_observation_sidecar()
+    sidecar["policy_observation_backend"] = "jax_gpu"
+    provider.checkpoint_policy_metadata_sidecar_path(checkpoint).write_text(
+        json.dumps(sidecar),
+        encoding="utf-8",
+    )
+
+    with np.testing.assert_raises_regex(ValueError, "policy_observation_backend"):
+        provider.require_checkpoint_policy_observation_metadata(
+            checkpoint_path=checkpoint,
+            checkpoint_payload={"model": {}},
+        )
 
 
 def test_infer_model_support_config_from_checkpoint_head_shapes():

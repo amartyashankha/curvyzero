@@ -11,8 +11,12 @@ from curvyzero.infra.modal import (
 from curvyzero.training.opponent_mixture import (
     OPPONENT_MIXTURE_SCHEMA_ID,
     OPPONENT_MIXTURE_SELECTION_UNIT,
+    OPPONENT_SPLIT_MODE_EXPLICIT_SLOT_COUNT_BAG_SHUFFLED,
+    OPPONENT_SPLIT_UNIT_COLLECTOR_ENV,
+    deterministic_collector_env_mixture_plan,
     parse_opponent_mixture_spec,
     select_opponent_mixture_entry,
+    singleton_mixture_for_split_entry,
 )
 
 
@@ -37,6 +41,7 @@ def test_opponent_mixture_parse_validates_supported_entry_shapes():
                 "name": "wall",
                 "weight": 1,
                 "opponent_policy_kind": "proactive_wall_avoidant",
+                "opponent_immortal": True,
             },
             {
                 "name": "recent_001",
@@ -130,6 +135,31 @@ def test_opponent_mixture_rejects_ambiguous_or_invalid_entries(entry, match):
         parse_opponent_mixture_spec({"entries": [entry]})
 
 
+def test_opponent_mixture_keeps_policy_kind_and_immortality_separate():
+    parsed = parse_opponent_mixture_spec(
+        {
+            "entries": [
+                {
+                    "name": "mortal_wall",
+                    "weight": 1,
+                    "opponent_policy_kind": "proactive_wall_avoidant",
+                    "opponent_immortal": False,
+                },
+                {
+                    "name": "immortal_wall",
+                    "weight": 1,
+                    "opponent_policy_kind": "proactive_wall_avoidant",
+                    "opponent_immortal": True,
+                },
+            ]
+        }
+    )
+
+    entries = {entry["name"]: entry for entry in parsed["entries"]}
+    assert entries["mortal_wall"]["opponent_immortal"] is False
+    assert entries["immortal_wall"]["opponent_immortal"] is True
+
+
 def test_opponent_mixture_selection_is_deterministic_and_episode_scoped():
     spec = parse_opponent_mixture_spec(
         {
@@ -146,6 +176,7 @@ def test_opponent_mixture_selection_is_deterministic_and_episode_scoped():
                     "name": "wall",
                     "weight": 1,
                     "opponent_policy_kind": "proactive_wall_avoidant",
+                    "opponent_immortal": True,
                 },
             ],
         }
@@ -160,6 +191,150 @@ def test_opponent_mixture_selection_is_deterministic_and_episode_scoped():
     assert first["opponent_death_mode"] in {"immortal", "normal"}
     assert later["selection_unit"] == OPPONENT_MIXTURE_SELECTION_UNIT
     assert {first["name"], later["name"]} <= {"blank", "wall"}
+
+
+def test_opponent_mixture_deterministic_collector_plan_repeats_slot_count_bag():
+    spec = parse_opponent_mixture_spec(
+        {
+            "seed": 3,
+            "entries": [
+                {
+                    "name": "blank",
+                    "weight": 8,
+                    "opponent_policy_kind": "fixed_straight",
+                    "opponent_runtime_mode": "blank_canvas_noop",
+                    "opponent_immortal": True,
+                },
+                {
+                    "name": "wall",
+                    "weight": 8,
+                    "opponent_policy_kind": "proactive_wall_avoidant",
+                    "opponent_immortal": True,
+                },
+                {
+                    "name": "rank2",
+                    "weight": 16,
+                    "opponent_policy_kind": "fixed_straight",
+                },
+                {
+                    "name": "rank1",
+                    "weight": 32,
+                    "opponent_policy_kind": "fixed_straight",
+                },
+            ],
+        }
+    )
+
+    plan = deterministic_collector_env_mixture_plan(
+        spec,
+        env_num=256,
+        seed_context={"assignment_sha256": "a" * 64, "refresh_index": 1},
+    )
+    repeated = deterministic_collector_env_mixture_plan(
+        spec,
+        env_num=256,
+        seed_context={"assignment_sha256": "a" * 64, "refresh_index": 1},
+    )
+    shifted = deterministic_collector_env_mixture_plan(
+        spec,
+        env_num=256,
+        seed_context={"assignment_sha256": "a" * 64, "refresh_index": 2},
+    )
+
+    assert plan == repeated
+    assert plan["unit"] == OPPONENT_SPLIT_UNIT_COLLECTOR_ENV
+    assert plan["mode"] == OPPONENT_SPLIT_MODE_EXPLICIT_SLOT_COUNT_BAG_SHUFFLED
+    assert plan["slot_count_total"] == 64
+    assert plan["repetition_count"] == 4
+    assert {row["entry_name"]: row["count"] for row in plan["slot_counts"]} == {
+        "blank": 32,
+        "wall": 32,
+        "rank2": 64,
+        "rank1": 128,
+    }
+    assert len(plan["assignments"]) == 256
+    assert plan["plan_sha256"] != shifted["plan_sha256"]
+
+    rank1 = singleton_mixture_for_split_entry(spec, entry_index=3)
+    assert [entry["name"] for entry in rank1["entries"]] == ["rank1"]
+    assert rank1["entries"][0]["weight"] == 1.0
+
+
+def test_singleton_mixture_preserves_entry_refs_and_only_reweights():
+    spec = parse_opponent_mixture_spec(
+        {
+            "seed": 9,
+            "entries": [
+                {
+                    "name": "frozen_a",
+                    "weight": 8,
+                    "opponent_policy_kind": "frozen_lightzero_checkpoint",
+                    "opponent_checkpoint_ref": "runs/checkpoints/lightzero/iteration_42.pth.tar",
+                    "opponent_checkpoint_path": "/tmp/iteration_42.pth.tar",
+                    "opponent_checkpoint_report_ref": "runs/reports/iteration_42.json",
+                    "opponent_snapshot_ref": "snapshot-42",
+                    "opponent_checkpoint_state_key": "model",
+                    "age_label": "recent",
+                    "tags": ["rank:3", "source:leaderboard"],
+                    "opponent_immortal": False,
+                },
+                {
+                    "name": "blank",
+                    "weight": 8,
+                    "opponent_policy_kind": "fixed_straight",
+                    "opponent_runtime_mode": "blank_canvas_noop",
+                    "opponent_immortal": True,
+                },
+            ],
+        }
+    )
+
+    singleton = singleton_mixture_for_split_entry(spec, entry_index=0)
+
+    assert singleton["total_weight"] == 1.0
+    assert len(singleton["entries"]) == 1
+    entry = singleton["entries"][0]
+    assert entry == {
+        "name": "frozen_a",
+        "weight": 1.0,
+        "opponent_policy_kind": "frozen_lightzero_checkpoint",
+        "opponent_runtime_mode": "normal",
+        "opponent_checkpoint_ref": "runs/checkpoints/lightzero/iteration_42.pth.tar",
+        "opponent_checkpoint_path": "/tmp/iteration_42.pth.tar",
+        "opponent_checkpoint_report_ref": "runs/reports/iteration_42.json",
+        "opponent_snapshot_ref": "snapshot-42",
+        "opponent_checkpoint_state_key": "model",
+        "age_label": "recent",
+        "tags": ["rank:3", "source:leaderboard"],
+        "opponent_immortal": False,
+    }
+    assert "opponent_death_mode" not in entry
+
+
+@pytest.mark.parametrize(
+    ("weights", "env_num", "match"),
+    [
+        ((1, 2), 256, "power of two"),
+        ((2, 2), 3, "cannot exceed env_num"),
+        ((2, 2), 6, "must divide env_num"),
+        ((1.5, 2.5), 256, "integer entry weights"),
+    ],
+)
+def test_opponent_mixture_deterministic_collector_plan_rejects_bad_slot_totals(
+    weights, env_num, match
+):
+    entries = [
+        {
+            "name": f"slot_{index}",
+            "weight": weight,
+            "opponent_policy_kind": "fixed_straight",
+        }
+        for index, weight in enumerate(weights)
+    ]
+    spec = parse_opponent_mixture_spec({"entries": entries})
+
+    with pytest.raises(ValueError, match=match):
+        deterministic_collector_env_mixture_plan(spec, env_num=env_num)
 
 
 def test_modal_mixture_resolution_rejects_non_iteration_checkpoint_ref():
@@ -429,3 +604,9 @@ def test_checkpoint_gif_summary_records_selected_opponent_mixture_component(
     assert summary["opponent_mixture_entry_name"] == "blank"
     assert summary["gif_variants"]["eval_greedy"]["opponent_mixture_entry_name"] == "blank"
     assert summary["capture_env_variant"] == train_mod.ENV_VARIANT_SOURCE_STATE_FIXED_OPPONENT
+    marker_path = train_mod.runs.volume_path(
+        tmp_path,
+        train_mod.runs.gif_browser_run_marker_ref(train_mod.TASK_ID, "run"),
+    )
+    assert marker_path.exists()
+    assert summary["gif_browser_run_marker"]["ref"].endswith("show_in_gif_browser.flag")
