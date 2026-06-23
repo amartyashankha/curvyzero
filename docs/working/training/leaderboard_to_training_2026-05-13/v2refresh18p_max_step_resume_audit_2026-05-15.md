@@ -3,11 +3,15 @@
 Read-only audit before raising trainer/tournament step caps from `65_536` to
 `1_048_576`.
 
-## Current Metrics
+Historical note: this is invalidated `v2refresh18p` evidence. Its refresh
+interval `50` is not the current restart18 cadence; current restart manifests
+default to `2000`.
+
+## Historical Metrics
 
 - Manifest:
   `artifacts/local/curvytron_tonight18_manifests/curvy-v2refresh18p-20260514b/curvy-v2refresh18p-20260514b.json`.
-- Current manifest settings: 18 rows, `source_max_steps=65536`,
+- Historical manifest settings: 18 rows, `source_max_steps=65536`,
   `max_train_iter=300000`, `opponent_assignment_refresh_interval_train_iter=50`,
   and all rows still carry `initial_policy_checkpoint_ref`.
 - Latest checkpoint range from `curvyzero-runs-v2` is roughly `70k-130k`.

@@ -57,9 +57,9 @@ Status as of 2026-05-14 after the Modal launch-lifetime finding:
 - rating function call id from seed/spawn: `fc-01KRJFVHQQAPQ9YSNS5DM7RQJN`
 - second-wave continuation call id: `fc-01KRJGB2BXTY7D5AD6PDW9RZAB`
 
-## Source Leaderboard
+## Historical Ranked Source
 
-- selected source leaderboard: `curvytron-latest212-smoke-20260513`
+- selected historical ranked source: `curvytron-latest212-smoke-20260513`
 - source snapshot: `latest212-smoke-20260513`
 - durable source ref:
   `tournaments/curvytron/leaderboards/curvytron-latest212-smoke-20260513/snapshots/latest212-smoke-20260513.json`
@@ -84,7 +84,7 @@ template for background continuation. Any future command that spawns child
 tournament workers and should keep running after the command returns must add
 `modal run --detach` or wait for child completion.
 
-Verify source leaderboards:
+Verify historical ranked sources:
 
 ```text
 modal volume ls curvyzero-curvytron-tournaments /tournaments/curvytron/leaderboards

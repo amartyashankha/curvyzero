@@ -24,33 +24,165 @@ Current restart decision:
   `curvy-e2e-allv2-canary-20260515a`: trainer checkpoint -> v2 intake ->
   v2 tournament -> public leaderboard -> assignment materialization ->
   v2 control pointer -> same running trainer refresh -> provider-ok env rows.
+- The latest warningfix canary also passed the important refresh proof after
+  the reload-warning cleanup. `curvy-e2e-warningfix-canary-20260516a` applied
+  promoted assignment sha
+  `8b171c177c401b886a5658fafc1c16076b5797c640b6d6a689003575e6d46208` at train
+  iter `5693`; `env_steps.jsonl` then had `87` rows with that sha, all with
+  `opponent_provider_load_ok=true`.
+- The latest current-code live run-id proof also passed at canary scale.
+  `curvy-e2e-currentlive-sparse-canary-20260516a` wrote `iteration_0` and
+  `iteration_1000`; live intake from the run id seeded
+  `curvy-e2e-currentlive-sparse-live-20260516a` /
+  `elo-e2e-currentlive-sparse-live-20260516a`; the tournament finished
+  `round-000007` with `1` pair, `21` games, `0` failures, and `stable=true`;
+  promotion wrote assignment sha
+  `774b70dd15fa71bc59a92819f3d417c9025184d6a24634ad4dbebe490dbb1009`; the
+  same trainer applied it at train iter `5373`; later env telemetry had `357`
+  rows with that sha, `312` provider-ok rows, and `0` observed provider-load
+  failures.
+- Do not confuse that sparse proof with the larger high-frequency
+  `curvy-e2e-currentlive-canary-20260516a` stress lane. The larger lane produced
+  many checkpoints/evals and proved discovery pressure, but it never applied a
+  promoted assignment. Its failed status was traced to a wrapper artifact-scan
+  path bug, now locally fixed and tested.
 - Do not use old non-v2 assignments/checkpoints as current launch inputs unless
   they are explicitly copied or rematerialized into the all-v2 lane.
+- Do not invent a blocker called "stable source leaderboard." A source
+  leaderboard is only a ranked list for choosing nicer starting frozen
+  opponents. Bootstrap can start from exact refs plus immortal blank/hard-coded
+  sentinels while the tournament learns a better ordering.
+- Do not invent a blocker called "stable live-training leaderboard" either.
+  Stable ratings are useful for final claims. The live training loop can consume
+  a clearly labeled training-candidate snapshot if the controller writes
+  immutable assignments, preserves recipe shapes, validates pointer hashes, and
+  trainers visibly apply the new assignment.
 - The next manifest should use `random_per_episode`, a control-volume refresh
   pointer, all-v2 objects from `src/curvyzero/contracts/curvytron.py`, and at
   least about `20%` blank/immortal pressure with some higher-immortal variants.
   Do not repeat the previous weak `5%` wall recipes as the main plan.
-- The restart18 builder now fails closed for real launch shape: explicit
-  ratings snapshot required, default opponent source is immutable assignment,
-  assignment and refresh pointer refs are `control:`, and the default refresh
-  interval is `2000` learner train iterations.
+- The current review manifest is
+  `artifacts/local/curvytron_tonight18_manifests/curvy-r18v2-bootstrap-20260516a/curvy-r18v2-bootstrap-20260516a.json`.
+  It is launched against deployed app
+  `curvyzero-lightzero-curvytron-visual-survival-train-v2`. It passed syntax
+  audit, Modal ref audit against `curvyzero-runs-v2` (`4/4` refs present),
+  grouped submitter dry-run, focused opponent/manifest/env/tournament/plumbing
+  tests, and trainer/tournament redeploy checks. It has 18 rows,
+  `random_per_episode`, `save_ckpt_after_iter=10000`, control-volume assignment
+  refs and refresh pointers, and `20/25/30%` immortal-pressure recipes.
+  Submission wrote `3` immutable assignments, `3` refresh pointers, and spawned
+  `18` trainers plus `18` pollers. Current status is no longer "no
+  checkpoints yet": the 18 trainers have produced numbered checkpoints and the
+  live tournament has durable ratings through `round-000002`; `round-000003` is
+  running on a larger pool. The large snapshot is not final ranking truth, but
+  the next live-training gate is not numeric stability. The gate is automatic
+  controller refresh -> recipe control pointer rewrite -> same-trainer
+  consumption proof.
+- Current live-watch rule: exact checkpoint refs are frozen seeds, while run
+  ids or run-id prefixes are live watches. The large intake briefly collapsed to
+  explicit refs only after an exact-ref submission; it was repaired by
+  re-seeding with the 18 run ids and `checkpoint_selection=all`. Direct Volume
+  config later showed `18` run ids and `92` seen refs. Deployed code now
+  preserves live watches when exact refs are pinned. Live testing then exposed
+  two more concrete tournament bugs: an empty `waiting_for_round_input`
+  `progress.json` could falsely block the round writer, and detached rating
+  loops used `.remote()` for child rounds. Both were patched, tested, and
+  redeployed. Current large state: `round-000003` is durable but unstable
+  (`57` rated checkpoints), and `round-000004/input.json` now exists with real
+  games running. Latest cheap progress read at `2026-05-16T03:02Z` showed
+  `886/4186` pairs started and about `18,606/87,906` games seen, with logs from
+  worker `ap-t8dhK6PpMxvqhyGo6hMRrG` showing balanced random seats and
+  `max_steps=1048576`. Do not call this final ranking truth while
+  `stable=false`; for live training, use the separate training-candidate
+  controller path and prove trainer consumption.
+- The restart18 builder now fails closed for real launch shape: it requires
+  exactly one explicit input source, either a ranked snapshot or a curated
+  checkpoint refs file. Bootstrap should use the refs-file path when we do not
+  want to pretend a trusted ranking exists. Default opponent source is
+  immutable assignment, assignment and refresh pointer refs are `control:`, and
+  the default refresh interval is `2000` learner train iterations.
 - The grouped submitter now rejects app-name mismatches. A manifest row, the
   selected app, and `curvytron_train_app_name()` must all agree on the current
   `-v2` trainer app.
+- New checkpoint metadata hardening has landed locally: every fresh LightZero
+  checkpoint should write a tiny sidecar next to the weight file,
+  `iteration_N.pth.tar.metadata.json`, carrying the exact policy observation
+  surface (`backend`, trail mode, bonus mode, contract id), timing contract,
+  model env/reward variants, and learner seat mode. Tournament discovery and
+  policy loading now read this sidecar before falling back to run/attempt
+  metadata or defaults.
 - Latest all-v2 source audit: current v2 tournament storage contains only the
-  all-v2 canary leaderboard. It is not a production-quality restart source
-  because it has only `4` active rows and the top row is `iteration_0.pth.tar`.
-  Any old leaderboard/champion source must be explicitly copied or rerated into
-  v2, and every referenced checkpoint file must exist in `curvyzero-runs-v2`,
-  before building a real restart18 launch.
+  all-v2 canary leaderboard. It is not a production-quality leaderboard-derived
+  opponent source because it has only `4` active rows and the top row is
+  `iteration_0.pth.tar`. Any old leaderboard/champion source must be explicitly
+  copied or rerated into v2, and every referenced checkpoint file must exist in
+  `curvyzero-runs-v2`, before building leaderboard-derived restart18 opponent
+  assignments. Bootstrap/static training can still use curated assignments and
+  exact checkpoint refs without pretending this leaderboard is high quality.
 - Current recommendation: use the old `loop18-main-adaptive417` leaderboard
   only to choose top active candidate checkpoint refs, copy those exact files
   into `curvyzero-runs-v2`, then run a fresh v2 rerate. The new v2 rating is
   the source of truth, not the old leaderboard.
+- Prepared artifact for that step:
+  `artifacts/local/curvytron_restart_source_refs/restart18-source-loop18-top100-20260515a/`.
+  It has `100` candidate refs, `selection.json`, and reviewed command text.
+  Source audit passed with `100/100` refs present in old `curvyzero-runs`;
+  target-before-copy audit showed `100/100` missing from `curvyzero-runs-v2`, as
+  expected; rematerialization copied `100/100` refs into v2; target-after-copy
+  audit passed with `100/100` present.
+- The 100-ref source rerate is diagnostic only now:
+  `curvy-restart18-source-rerate-20260515a` /
+  `elo-restart18-source-rerate-20260515a`, call
+  `fc-01KRPJE1C28EJZQK6VRYQ75JT7`. Round 0 through round 6 each completed
+  `300` pairs / `6300` games, but all were `stable=false` (`max_abs_delta`
+  about `32.6`, `25.1`, `23.3`, `24.8`, then `22.5`, `19.0`, then `18.4`).
+  Because `iteration_0` rows are now ranks `1` and `2`, do not use the 100-ref
+  lane as restart source even if a later diagnostic round crosses the numeric
+  stability threshold.
+- A clean nonzero fallback pool exists at
+  `artifacts/local/curvytron_restart_source_refs/restart18-source-loop18-top96-nonzero-20260515a/`.
+  It excludes `iteration_0` checkpoints and has passed v2 existence audit with
+  `96/96` refs present. This is the current leaderboard-derived source
+  candidate and is
+  running as
+  `curvy-restart18-source-rerate-nonzero-20260515a` /
+  `elo-restart18-source-rerate-nonzero-20260515a`. Round 3 completed with all
+  `96` rows active and `0` failures, but still `stable=false` with
+  `max_abs_delta=39.7420779825474`. Round 4 completed with `300` pairs /
+  `6300` games, `0` failures, `96` active rows, and a better but still failing
+  stability delta: `stable=false`, `max_abs_delta=17.371056613899057`.
+  Round 5 completed with `300` pairs / `6300` games, `0` failures,
+  `96` active rows, and another better but still failing stability delta:
+  `stable=false`, `max_abs_delta=15.636412948237727`. Round 6 completed with
+  `300` pairs / `6300` games, `0` failures, all `96` rows active, and a worse
+  failing stability delta: `stable=false`,
+  `max_abs_delta=25.199213332028748`. The biggest mover was
+  `ckpt-079-train-lightzero_exp-ckpt-iteration_240000-a391d866`, which jumped
+  from rank 21 to rank 7 after mostly `random_bridge` exposure. Diagnose this
+  scheduler/exposure effect before another blind continuation.
+- For leaderboard-derived restart18 opponent assignment/promotion,
+  `stable=false` is a hard blocker. Current publisher code rejects unstable
+  non-diagnostic training snapshots; diagnostic-only unstable output is allowed
+  only as evidence and must not steer opponent selection. Publish only after
+  the latest source rerate is `stable=true`, coverage-mature, and guarded by
+  expected round/context/roster/snapshot hashes.
+- Stable leaderboard-derived handoff path when the gate passes:
+  `scripts/promote_curvytron_rating_round.py` publishes the stable round with
+  expected hashes, then materializes one stable-slot assignment. For restart18,
+  pass `--assignment-target-volume control`; the script default is not the
+  current restart pattern. Then build the 18-row restart manifest from the
+  fetched public snapshot, dry-run the submitter, audit every checkpoint ref
+  against `curvyzero-runs-v2`, and run `submit_curvytron_survivaldiag_manifest.py
+  --allow-launch --publish-assignments-only` before any trainer launch.
 - New prelaunch guardrail:
   `scripts/audit_curvytron_launch_manifest_refs.py` audits every
   initial-policy and frozen-opponent checkpoint ref in a launch manifest and
-  can verify those refs exist in the active all-v2 runs volume.
+  can verify those refs exist in the active all-v2 runs volume. It also accepts
+  `--refs-file` for source and target rematerialization audits.
+- Current Curvy launch code fails closed on old Volume names:
+  `modal_volume_kwargs_for_name(...)` rejects `curvyzero-runs` and other
+  non-v2 Curvy volumes. Historical reads must be explicit migration/audit steps,
+  not hidden launch defaults.
 - Modal operating pattern: use deployed apps for durable services, Volume JSON
   as truth, Dict/Queue for coordination only, stop stale detached apps, and
   avoid broad reload-dependent behavior.

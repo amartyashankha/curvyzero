@@ -10,22 +10,32 @@ refresh, champion bootstrap, and live interventions.
   VolumeFS v2.
 - Active assignment/control Volume: `curvyzero-curvytron-control-v2`, opened as
   Modal VolumeFS v2.
-- Active leaderboard source for assignments:
+- Active live pointer/Dict for assignments:
   `curvyzero-curvytron-opponent-leaderboard-live-v2`.
 - Do not launch trainer rows that point at old non-v2/hybrid assignment refs
   unless those refs are first rematerialized into the all-v2 lane.
 
 ## 2026-05-15 09:40 EDT P0 Player Perspective Risk
 
-Current stop rule:
+Current rule:
 
-- The current v2 real18 run is invalid enough to stop. Keep artifacts for smoke
-  and diagnosis, but do not spend more training budget treating it as a
-  candidate production run.
-- Do not launch the next training batch until all restart blockers below have
-  tests: randomized learner seat/perspective, no-op/straight action semantics,
-  tournament eval parity, and cleanup of stale Modal apps/artifacts that can
-  confuse evidence.
+- The v2real18 run is already invalidated as a production candidate. Keep its
+  artifacts for smoke and diagnosis only.
+- The next training batch must come from the all-v2 restart path, but it does
+  not need a perfect starting ranking. Bootstrap may use curated exact
+  checkpoint refs, immortal blank/hard-coded pressure, and live tournament
+  intake. The stricter ranked rerate is only for optional leaderboard-derived
+  top slots. The 100-ref rerate is diagnostic only because iteration-zero rows
+  rose to the top; the current ranked-source candidate is the 96-ref nonzero
+  fallback
+  `curvy-restart18-source-rerate-nonzero-20260515a` /
+  `elo-restart18-source-rerate-nonzero-20260515a`. Immutable assignments must
+  live in the v2 control Volume, and the manifest must audit cleanly before
+  submission.
+- Do not use the ranked rerate for leaderboard-derived assignment/promotion
+  until it is `stable=true` and published/materialized with expected hashes.
+  Existing player-perspective, no-op/straight action, tournament eval parity,
+  and public immortality fixes remain required guardrails for any launch.
 
 Open question:
 
@@ -49,8 +59,10 @@ Why this matters:
 
 Current rule:
 
-- Do not call the current rerate final or relaunch the real batch until the
-  training and tournament perspective fixes land with tests.
+- Do not call any current ranked rerate final until it is `stable=true`,
+  coverage-mature, and published with expected hashes. Bootstrap/static launch
+  can still proceed from curated exact refs once the training/tournament
+  perspective fixes and ref audits are green.
 - If a relaunch is needed before the full fix, it must be explicitly named a
   smoke/probe and must not replace the restart plan.
 
@@ -95,17 +107,24 @@ Restart manifest requirements:
 | Requirement | Rule |
 | --- | --- |
 | Learner perspective | `random_per_episode` |
-| Blank/immortal baseline | At least about `20%` globally |
-| Higher-pressure variants | Include some rows above the baseline immortal/blank mix |
+| Blank/hard-coded immortality | Blank and hard-coded sentinel opponents are immortal |
+| Total immortal pressure | About `20-30%`; generally do not exceed about `30%` |
+| Frozen checkpoint immortality | Mostly mortal; only small explicit immortal slices |
 | Leaderboard exposure | Keep enough ranked-checkpoint probability for real-policy learning |
 | Old weak recipes | Do not reuse `blank5-wall5-*` as the default restart shape |
+
+Plain rule: do not make the blank/hard-coded sentinels mortal in the normal
+recipes. They are weak pressure unless they are immortal. If we want a mortal
+scripted diagnostic later, name it explicitly as a diagnostic, not as the
+default sentinel.
 
 ## Current Batch
 
 Historical note: this table describes the invalidated `v2real18` batch. It is
 not the current launch target after the all-v2 reset. The current active next
-step is the one-row all-v2 canary described in `TODO.md` and
-`FULL_LOOP_PROOF.md`.
+step is the fresh all-v2 source rerate described in `NOW.md`, `TODO.md`, and
+`TOURNAMENT_DEBUG.md`; the small all-v2 canary is already a completed wiring
+proof.
 
 | Field | Value |
 | --- | --- |
@@ -123,7 +142,7 @@ step is the one-row all-v2 canary described in `TODO.md` and
 | Refresh storage | three per-recipe v2 control pointers |
 | Refresh cadence | every `2000` learner train iterations |
 
-Fresh launch candidate, 2026-05-15:
+Invalidated historical v2real18 launch candidate, 2026-05-15:
 
 - manifest:
   `artifacts/local/curvytron_tonight18_manifests/curvy-v2real18-20260515a/curvy-v2real18-20260515a.json`;
@@ -145,9 +164,15 @@ Fresh launch candidate, 2026-05-15:
   `curvyzero-runs-v2`; first progress timestamps are around
   `2026-05-15T10:08:33Z` to `2026-05-15T10:09:01Z`, all at learner iter `0`.
 
-## Current Coach Handoff
+## Superseded Coach Handoff
 
-Use the trusted stock LightZero path:
+This section is historical May 14 guidance. Do not use it for the current broad
+launch shape. Current defaults live in
+`../r18fresh_postmortem_2026-05-16/CURRENT_LAUNCH_DEFAULTS.md` and
+`src/curvyzero/contracts/curvytron.py`: `gpu-l4-t4-cpu40`, C256/N256,
+`batch_size=64`, sim8, and `browser_lines + simple_symbols + cpu_oracle`.
+
+Historical trusted stock LightZero path:
 
 ```text
 src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py
@@ -155,7 +180,7 @@ src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_trai
 --env-variant source_state_fixed_opponent
 ```
 
-Recommended next run settings:
+Historical recommended next run settings from this older handoff:
 
 | Setting | Current recommendation |
 | --- | --- |
@@ -167,7 +192,7 @@ Recommended next run settings:
 | GPU observation lane | lab/profile-only `browser_lines + simple_symbols` until trainer-visible contract parity passes |
 | historical CPU control | `body_circles_fast + simple_symbols` only when explicitly labeled ablation/control |
 | checkpoint cadence | `save_ckpt_after_iter=5000-10000`, lower for canaries |
-| avoid | `batch64`, multi-GPU, broad `sim16` |
+| historical avoid list | At the time: `batch64`, multi-GPU, broad `sim16`. Superseded for the current broad L4 lane, where `batch_size=64` is now the default. |
 
 Speed probes:
 
@@ -212,21 +237,19 @@ Important boundary:
   updates.
 - Any refresh must happen at a clean boundary and write telemetry/audit.
 
-## Weak-Run Immortal Intervention
+## Immortal Opponent Pressure
 
-User request:
+Current rule:
 
-- Find the five current runs that are improving least.
-- First inspect their current slot probabilities.
-- Then increase total blank/immortal exposure to about `50%` for only those
-  five runs.
-- The 50% can include:
-  - blank-canvas/no-op;
-  - frozen checkpoint opponent with immortal/invincible death mode;
-  - hand-coded wall-avoidance immortal opponent if wired and safe.
-- Keep some leaderboard checkpoint exposure; do not turn the whole batch into
-  all immortal opponents.
-- If these five runs get worse, that is acceptable signal.
+- Do not do a special weak-run-only intervention for the current restart.
+- Blank-canvas/no-op and hard-coded sentinel opponents should be immortal all
+  the time.
+- Leaderboard/checkpoint slots should remain mortal most of the time, but some
+  recipes may include small explicit immortal checkpoint slices.
+- Total immortal exposure should generally stay around `20-30%`, not above
+  roughly `30%`, unless we intentionally label a future diagnostic.
+- The current bootstrap manifest follows this rule with recipe totals of
+  `20%`, `25%`, and `30%`.
 
 Implementation guard:
 
@@ -237,9 +260,10 @@ Implementation guard:
 
 2026-05-15 read-only update:
 
-- Current control path for the v2 refresh batch is a shared control-volume
+- Historical v2real18 control path was a shared control-volume
   `refresh_pointer.json` plus immutable assignment files, checked by trainers
-  every `50` learner iterations.
+  every `50` learner iterations. Restart18 builder/shared-contract default is
+  now `2000` learner iterations.
 - Fresh eval-summary read over the 18 submitted run ids identified these five
   weakest rows by latest-minus-first survival, with best-minus-first as the
   secondary sanity check:
@@ -252,15 +276,11 @@ Implementation guard:
 | `survbonusnoout-blank20-wall5-rank1_75-clean` | `-5.3` | `+14.0` | `blank 20%`, `wall_avoidant_immortal 5%`, `rank1 75%` |
 | `survbonusnoout-blank10-wall5-rank4_10-rank3_20-rank2_20-rank1_35-clean` | `-4.3` | `+60.0` | `blank 10%`, `wall_avoidant_immortal 5%`, `rank4 10%`, `rank3 20%`, `rank2 20%`, `rank1 35%` |
 
-- Proposed intervention, not applied in this pass: write new immutable
-  assignments for only these five run labels with about `50%` combined
-  blank/immortal exposure, preserve at least `50%` leaderboard-checkpoint
-  exposure, then atomically update the shared control pointer with an audit
-  record naming old assignment sha, new assignment sha, affected run labels, and
-  reason.
-- Blocker: do not update the live pointer until the assignment-writer command
-  and audit path are selected for this exact v2 refresh control pointer. A bad
-  pointer would affect running trainers.
+- Decision update: no live weak-row mutation is planned for the restart lane.
+  Keep the read-only weak-row table as historical evidence only. Fold the
+  lesson into launch recipes instead: all rows get some immortal pressure,
+  hard-coded/blank slots are always immortal, and the total is capped near
+  `30%`.
 
 ## Champion Bootstrap
 
@@ -276,10 +296,11 @@ Rules:
 
 ## Refresh Cadence
 
-Current local regenerated manifest uses refresh interval `50` learner
-iterations. This may be too chatty.
+Invalidated v2real18 manifests used a 50-iteration refresh cadence.
+Restart18 builder/shared-contract default is now `2000`; keep that unless a
+fresh test proves a different cadence is needed.
 
-Do not change to `1000` or `2000` until resume/refresh safety is known:
+Before changing cadence again, check:
 
 - same-run auto-resume behavior;
 - assignment pointer behavior;

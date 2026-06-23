@@ -53,9 +53,14 @@ frozen reward recipe recorded in the launch/attempt artifacts.
 The slot Dict should evolve into a more general run-control Dict.
 
 ```text
-dict name: curvyzero-training-run-control
+dict name: TBD all-v2 run-control dict from the shared CurvyTron contract
 key: run_control:<training_run_id>
 ```
+
+Historical note: the earlier placeholder name
+`curvyzero-training-run-control` is not an active object in the current all-v2
+contract. Do not copy that name into launch code without adding it to
+`src/curvyzero/contracts/curvytron.py` and documenting the v2 lifecycle.
 
 Value:
 
@@ -211,8 +216,8 @@ For an already-running attempt:
 - Should reward refresh ever happen at checkpoint boundary within one attempt?
   Recommendation: not in V0. Use a new attempt until replay handling is designed.
 - Should reward control live in the same Dict as slot control? Recommendation:
-  yes, as `curvyzero-training-run-control`, with `opponents` and `reward`
-  sections.
+  yes, in a future all-v2 run-control Dict from the shared CurvyTron contract,
+  with `opponents` and `reward` sections.
 
 ## Anti-Patterns
 

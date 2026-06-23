@@ -2,6 +2,19 @@
 
 ## Status
 
+2026-05-16 current lane: use
+`artifacts/local/curvytron_tonight18_manifests/curvy-r18v2-bootstrap-20260516a/curvy-r18v2-bootstrap-20260516a.json`
+for the fresh all-v2 bootstrap batch. That manifest has been launched against
+`curvyzero-lightzero-curvytron-visual-survival-train-v2` and is the active
+large-batch lane to monitor. Older `curvy-night18-*` and `curvy-v2real18-*`
+sections below are historical evidence only.
+
+2026-05-15 supersession: this page is historical launch evidence only. Do not
+copy its `body_circles_fast + simple_symbols` fixed knobs into fresh production
+runs. Current production policy observations are CPU `cpu_oracle`
+`browser_lines + simple_symbols`; GPU rendering is lab/profiling-only until
+trainer-visible contract parity passes.
+
 Live launch is in progress from the top-10 fallback snapshot. The top-100 gate
 is still a useful tournament-debug lane, but it is not blocking tonight's
 training launch.
@@ -72,15 +85,14 @@ Live intake wiring, 2026-05-14:
 - A later training status poll showed five rows at `iteration_10000`, ten rows
   with visible train artifacts, and eight rows still `train_root_absent`
   (probably not started/queued yet unless logs prove otherwise).
-- Round 0 completed cleanly after the seed/first continuation:
+- Historical note, superseded by the current v2 publisher gate. Round 0
+  completed cleanly after the seed/first continuation:
   11 checkpoint players, 55 pairs, 1155 games, 0 failed games,
   `ratings_written=true`, final `latest.json` present, one-frame settings, GIFs
-  on, and 11 active rating rows. `stable=false` only means Elo moved more than
-  the convergence threshold; it is not provisional and not a publish blocker.
-- Round 0 uses the top10-compatible maturity gate. Publish it with
-  `leaderboard_active_min_distinct_opponents=9` and
-  `leaderboard_active_min_valid_games=189`; the publisher defaults of 20
-  opponents / 300 games are too strict for this small fallback arena.
+  on, and 11 active rating rows. Under the current publisher contract this
+  `stable=false` round is not publishable/materializable as a non-diagnostic
+  training source. Diagnostic-only publication may record evidence, but must
+  not move the latest training pointer.
 - Round 0 was published successfully as
   `curvy-night18-top10r1-20260514a-elo-night18-top10r1-20260514a` with snapshot
   id `round0-20260514`: 11 active rows, 0 provisional rows, pointer published,
@@ -402,13 +414,14 @@ survival; a loss roughly cancels it.
 
 Opponent recipes:
 
-- `blank5-wall5-rank2_25-rank1_65`: blank 5, immortal wall-avoidant scripted opponent 5, rank2 25, rank1 65
-- `blank10-wall5-rank4_10-rank3_20-rank2_20-rank1_35`: blank 10, immortal wall-avoidant scripted opponent 5, rank4 10, rank3 20, rank2 20, rank1 35
-- `blank20-wall5-rank1_75`: blank 20, immortal wall-avoidant scripted opponent 5, rank1 75
+- `blank5-wall5-rank2_25-rank1_65`: historical recipe with blank 5, immortal wall-avoidant scripted opponent 5, rank2 25, rank1 65
+- `blank10-wall5-rank4_10-rank3_20-rank2_20-rank1_35`: historical recipe with blank 10, immortal wall-avoidant scripted opponent 5, rank4 10, rank3 20, rank2 20, rank1 35
+- `blank20-wall5-rank1_75`: historical recipe with blank 20, immortal wall-avoidant scripted opponent 5, rank1 75
 
-The frozen leaderboard checkpoint slots use normal death mode. The only explicit
-invincible pressure in this manifest is the 5% `wall_avoidant_immortal` scripted
-slot, which uses legal left/straight/right moves and no bounce/teleport.
+Current restart guidance supersedes these recipes: blank and hard-coded sentinel
+slots should be immortal always. Frozen checkpoint/leaderboard slots should be
+mostly mortal, with only small explicit immortal slices, and total immortal
+exposure should stay around 20-30%, generally not above 30%.
 
 The policy already has an explicit no-turn/no-op choice: action id `1`, named
 `straight`, maps to source move `0`. Do not add a fourth action for tonight; that
@@ -418,9 +431,9 @@ Historical correction: the clean3/loop18c3 batch did not initialize learners
 from the leaderboard champion. That was acceptable only as a static diagnostic
 batch. It is not acceptable for the next production-shaped feedback batch.
 
-Next-batch requirement: every fresh learner should receive
-`initial_policy_checkpoint_ref` from the trusted rank-1 active leaderboard
-checkpoint, using model-only load semantics. Do not use same-run auto-resume for
+Optional quality input: a fresh learner may receive `initial_policy_checkpoint_ref`
+from a trusted rank-1 active checkpoint using model-only load semantics, but this
+is not required for bootstrap or loop proof. Do not use same-run auto-resume for
 this; auto-resume restores learner progress/optimizer state and is a different
 contract.
 
@@ -811,8 +824,9 @@ shape:
 - reward variants: `sparse_outcome`,
   `survival_plus_bonus_no_outcome`,
   `survival_plus_bonus_plus_outcome`;
-- seat recipes: blank5/wall5/top2-top1,
-  blank10/wall5/top4-top3-top2-top1, blank20/wall5/top1;
+- superseded seat recipes from the first connected batch were
+  blank5/wall5/top2-top1, blank10/wall5/top4-top3-top2-top1, and
+  blank20/wall5/top1;
 - noise: clean and `straight_override_p10_repeat_p10`.
 
 The connected rows use `opponent_assignment_ref` and do not include inline
@@ -821,10 +835,17 @@ deployed trainer app to:
 
 `training/lightzero-curvytron-visual-survival/curvy-n18conn-assignments-20260514d/attempts/try-n18conn-assignments-20260514d/opponents/assignments/.../assignment.json`.
 
-Each assignment preserves the intended scripted seats:
+Those historical assignments preserved the intended scripted seats:
 
 - blank canvas no-op;
 - 5% proactive wall-avoidant immortal opponent.
+
+Current restart guidance has changed. Do not reuse the weak 5% immortal-pressure
+recipes as the next default. The next manifest should use blank and hard-coded
+sentinel opponents as immortal, allow only small explicit immortal frozen
+checkpoint slices, and keep total immortal opponent pressure around `20-30%`.
+Bootstrap can use curated exact checkpoint refs; it does not need a perfect
+starting ranking.
 
 Pre-launch checks:
 
@@ -849,7 +870,7 @@ Second post-launch check:
 Tournament plan for connected checkpoints:
 
 - Do not mutate `curvy-night18-tdfix-20260514c / elo-night18-tdfix-20260514c`;
-  that lane is the clean source leaderboard for this batch.
+  that lane is historical evidence, not a current bootstrap blocker.
 - When `curvy-n18conn` has at least two visible checkpoints, create a fresh
   connected tournament/rating lane:
   `curvy-night18-connected-20260514d / elo-night18-connected-20260514d`.
@@ -1090,5 +1111,48 @@ Next proof gates:
 - materialize/write an immutable `stable_slots_v1` assignment;
 - run a trainer smoke that consumes that fresh assignment and logs loaded
   checkpoint opponents;
-- for the next production-shaped batch, also set
-  `initial_policy_checkpoint_ref` from the trusted rank-1 active checkpoint.
+- for a leaderboard-derived quality batch, optionally set
+  `initial_policy_checkpoint_ref` from a trusted active checkpoint.
+
+## 2026-05-16 Current Bootstrap Review Artifact
+
+The old loop18/clean3 material above is historical. The current prepared
+bootstrap artifact is:
+
+```text
+artifacts/local/curvytron_tonight18_manifests/curvy-r18v2-bootstrap-20260516a/curvy-r18v2-bootstrap-20260516a.json
+```
+
+Status:
+
+- built from
+  `artifacts/local/curvytron_restart_source_refs/restart18-source-loop18-top96-nonzero-20260515a/refs.txt`;
+- not launched;
+- `18` rows;
+- all-v2 trainer app and Volumes from `src/curvyzero/contracts/curvytron.py`;
+- `random_per_episode`;
+- `save_ckpt_after_iter=10000`;
+- `browser_lines + simple_symbols`;
+- control-volume immutable assignments and refresh pointers;
+- recipe immortal pressure totals: `20%`, `25%`, and `30%`;
+- blank and hard-coded sentinels are always `opponent_immortal=true`;
+- frozen checkpoint slots are mortal except explicit small `_immortal` slices.
+
+Verification:
+
+- manifest syntax audit: `ok=true`, `4` exact checkpoint refs, `0` bad refs;
+- Modal ref audit: `ok=true`, all `4/4` referenced checkpoint files exist in
+  `curvyzero-runs-v2`;
+- grouped submitter dry-run: selected all `18` rows, would write `3`
+  assignments and `3` refresh pointers, and did not spawn jobs;
+- focused tests after the cleanup:
+  `tests/test_opponent_registry.py tests/test_opponent_mixture.py tests/test_opponent_leaderboard.py`
+  -> `53 passed`;
+  `tests/test_curvytron_tonight18_manifest.py tests/test_env_contract.py tests/test_curvyzero_source_state_visual_survival_lightzero_env.py`
+  -> `69 passed`;
+  `tests/test_curvytron_checkpoint_tournament.py tests/test_curvytron_live_checkpoint_eval_plumbing.py`
+  -> `226 passed, 14 skipped`.
+
+Plain warning: this artifact does not need a high-quality starting leaderboard.
+It uses exact refs plus explicit immortal sentinels. A ranked source leaderboard
+is only optional quality input for future leaderboard-derived slot choices.

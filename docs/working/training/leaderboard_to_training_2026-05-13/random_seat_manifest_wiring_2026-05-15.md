@@ -85,9 +85,10 @@ The next real manifest should use:
 - `source_state_trail_render_mode=browser_lines`
 - `source_state_bonus_render_mode=simple_symbols`
 - at least about `20%` combined blank/immortal pressure in every row
-- frozen leaderboard checkpoint slots with `opponent_immortal=false`
-- blank and proactive wall-avoidant sentinel slots with
-  `opponent_immortal=true`
+- frozen checkpoint/leaderboard slots mostly with `opponent_immortal=false`,
+  allowing only small explicit immortal slices
+- blank and hard-coded/proactive sentinel slots with `opponent_immortal=true`
+- total immortal exposure around `20-30%`, generally not above `30%`
 
 Explicit fixed-seat rows are allowed only for a named diagnostic, smoke, or old
 artifact replay.

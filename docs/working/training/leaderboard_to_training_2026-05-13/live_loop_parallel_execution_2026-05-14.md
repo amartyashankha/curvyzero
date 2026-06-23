@@ -1,5 +1,10 @@
 # Live Loop Parallel Execution - 2026-05-14
 
+Historical note: this page contains invalidated `v2refresh18*` launch details.
+Its `opponent_assignment_refresh_interval_train_iter=50` examples are history,
+not the current restart18 default. Current restart manifests use the shared
+all-v2 contract and default to refresh interval `2000`.
+
 ## North Star
 
 Prove the real loop, not just busy pieces of it:

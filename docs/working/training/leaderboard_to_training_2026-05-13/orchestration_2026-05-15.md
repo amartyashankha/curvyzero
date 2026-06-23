@@ -4,8 +4,9 @@ Live-control note: this file is now background detail. For the current control
 panel, start with `NOW.md`, `TODO.md`, `TOURNAMENT_DEBUG.md`,
 `TRAINING_CONTROL.md`, `FULL_LOOP_PROOF.md`, and `OPERATING_PATTERN.md`.
 
-This doc is the live task board for the main thread plus subagents. Keep it
-short, factual, and updated as lanes move.
+This doc is now background history for the main thread plus subagents. Keep
+new current facts in `NOW.md` and `TODO.md` first, then summarize here only
+when it prevents stale handoff mistakes.
 
 ## Operating Pattern
 
@@ -25,7 +26,7 @@ short, factual, and updated as lanes move.
 | --- | --- | --- |
 | P0 | Make fresh training defaults unambiguous. | Active: `random_per_episode` is the default learner seat mode; old `ego_player_index` config is removed; `fixed_player_0/1` are diagnostic-only. |
 | P0 | Separate opponent policy from immortality. | Locally fixed for fresh manifest + stable-slot assignment: public entries use `opponent_immortal`; `opponent_death_mode` is derived only at episode selection/runtime. |
-| P0 | Purge invalid v2 namespace before restart. | Done: exact v2 volumes/dicts/queue deleted and verified absent; non-v2 storage remains. |
+| P0 | Purge invalid v2 namespace before restart. | Done: exact v2 volumes/dicts/queue were deleted, recreated, verified as VolumeFS v2 where relevant, and are now the active all-v2 lane; non-v2 storage remains only as history/source material. |
 | P0 | Integrate tournament balanced-seat implementation. | Active: Zeno implemented `seat_order_mode=balanced_random` and focused tests; main must keep docs/tests aligned before any deploy/restart. |
 | P0 | Resolve player-perspective validity before a clean real relaunch. | Active: delegated training and tournament seat audits at 09:40 EDT |
 | P0 | Quantify current live run and leaderboard state before purge/relaunch. | Active: delegated live metrics inventory at 09:40 EDT |
@@ -34,15 +35,17 @@ short, factual, and updated as lanes move.
 | P0 | Keep tournament-to-trainer loop honest for real18. | Active: v2 tournament round completed `231` pairs / `4,851` games / `0` failures with `22` active rows; pointers updated; full survival improvement not proven |
 | P0 | Isolate tournament worker stall. | Resolved as stale progress read; direct and intake smokes passed |
 | P0 | Decide whether tournament evaluation is valid enough to trust ratings. | Active |
+| P0 | Make checkpoint observation/runtime metadata exact. | Landed locally: fresh checkpoint hooks write `iteration_N.pth.tar.metadata.json`; tournament discovery and policy loading read that sidecar before metadata/default fallbacks. Focused tests pass; run broad validation before deploy. |
 | P0 | Patch and redeploy corrected real18 tournament evaluator. | Active: current 67-ref rerate is liveness-only because it used 20ms source ticks instead of trainer/checkpoint 16.6667ms ticks |
 | P0 | Keep full-loop proof honest: small loop proven, long behavior proof stopped/blocked. | Superseded by controlrun2 deployed proof |
 | P0 | Close the behavior proof while the trainer is still alive. | Passed: controlrun2 applied promoted sha at train iter `1798` |
 | P0 | Prove the same storage pattern in v2. | Passed: v2 intake-spawned rating completed, direct rating also completed, and v2 proof3 applied promoted sha `adb04ed3905fb9c8984e5e213a9261079f0e4be188315912d12ae5290d55b770` at train iter `1904` |
 | P0 | Prove the recreated all-v2 lane after deleting/recreating v2 objects. | Passed: `curvy-e2e-allv2-canary-20260515a` wrote checkpoints, v2 intake/tournament completed `round-000003` with `18/18` games and `0` failures, promotion wrote sha `0597bceb176580d19d658fd513f752a47a7d4e0f5c9094d5c0f58f60f422c2e0`, and the same trainer applied it at train iter `5061`; latest env telemetry fetch had `1836` provider-ok rows with that sha. |
-| P0 | Find a production-quality all-v2 source leaderboard for restart18. | Recommended path: use historical `loop18-main-adaptive417` only to select top active checkpoint refs, copy them into `curvyzero-runs-v2`, then rerate fresh in v2. |
-| P0 | Prevent missing-ref launches. | Done locally: `scripts/audit_curvytron_launch_manifest_refs.py` checks manifest checkpoint syntax and local/Modal existence for initial and frozen opponent refs. |
+| P0 | Keep bootstrap launch separate from optional ranked-source quality work. | Active: bootstrap can use curated exact checkpoint refs plus immortal blank/hard-coded pressure. The 100-ref and 96-ref rerates are optional leaderboard-derived source candidates only, not launch blockers. |
+| P0 | Prevent missing-ref launches. | Done locally: `scripts/audit_curvytron_launch_manifest_refs.py` checks manifest or `refs.txt` checkpoint syntax plus local/Modal existence for initial and frozen opponent refs. |
 | P0 | Track survival metrics with numbers, not vibes. | Eval summary done; fresh checkpoint/survival audit delegated |
 | P0 | Keep docs current while work moves in parallel. | Active |
+| P0 | Current large `r18v2` loop proof. | Active: `18/18` trainers are alive and writing checkpoints; live intake has `92` refs; latest durable rating is `round-000003` with `57` rated checkpoints and `stable=false`; `round-000004/input.json` exists and games are running with `4,186` pairs / `87,906` planned games. Do not publish/materialize until latest is `stable=true`. |
 | P1 | Redeploy/verify Tournament Arena current-marker UI. | Patched locally; not the current blocker |
 
 ## Parallel Lanes
@@ -57,19 +60,23 @@ short, factual, and updated as lanes move.
 | Live artifacts | Carver | What does the current tournament actually run? | Returned: live is eval mode, one-frame, sim8, body-circles policy observations, max_steps currently 8000. |
 | Full-loop proof | Wegener | Did checkpoint -> tournament -> leaderboard -> assignment -> trainer actually happen? | Wait for concrete refs/timestamps. |
 | V2 intake smoke | Main | Does the v2 subscriber/intake path complete cleanly, not just direct rating? | Passed on recheck: `elo-v2-looplive-proof3-r0-20260515a` is complete, `1` pair / `3` games / `0` failures, `stable=true`. |
-| Resume/refresh safety | Ptolemy | Can trainer relaunch safely and can refresh interval move from 50? | Wait for proof before changing interval. |
+| Resume/refresh safety | Ptolemy | Can trainer relaunch safely and should refresh cadence move away from the current `2000` default? | Wait for proof before changing interval. |
 | Old champion anchors | Wegener | Which old full-sweep tournament had the best checkpoint standings, and what are the top five exact refs? | Reused existing agent because new spawn limit is hit; inject only after refs and target tournament are clear. |
 | Render path sanity | Aristotle + main | Is the fresh production surface CPU `cpu_oracle` `browser_lines + simple_symbols`, with GPU rendering lab-only? | Main-thread read: H100 compute is not GPU rendering; body-circles is historical/control only. Aristotle follow-up will verify. |
 | Cleanup | Ptolemy | Hide/purge old arenas/apps/artifacts without deleting current live lane or old full-sweep anchor source. | Reused existing agent because new spawn limit is hit. |
-| Weak-run immortal bump | Erdos | Which five runs are weak and how do we raise blank/immortal exposure to about 50%? | Follow-up sent. Do not mutate live assignment until exact current mix and update mechanism are known. |
+| Manifest immortal pressure | Main | Are blank/hard-coded opponents immortal, and are frozen checkpoints only sometimes immortal? | Locally implemented in builder: recipe totals are about `20%`, `25%`, and `30%`; weak-run-only live mutation is dropped. |
 | Contract cleanup | Main later | Remove hidden fallback soup in tournament observation fields. | Track as follow-up after urgent parity fix, redeploy, and re-rating. |
-| Corrected v2real18 rerate | Main | Produce final 67-ref tournament evidence. | Patch timing guard + bonus render contract, redeploy, launch `elo-v2real18-rerate67-allpairs-16ms-20260515a`, then publish/materialize recipe assignments only from corrected output. |
+| Corrected v2real18 rerate | Main | Diagnostic/forensic only. | Patch timing guard + bonus render contract, redeploy, and launch `elo-v2real18-rerate67-allpairs-16ms-20260515a` only as historical evidence. Do not publish/materialize restart training assignments from v2real18 output. |
 | Training seat perspective | Averroes | Does Coach ever train the learner as seat 1, and what minimal fix/test plan is needed if not? | New at 09:40 EDT. Write `player_perspective_audit_2026-05-15.md`. |
 | Tournament seat perspective | McClintock | Does tournament eval compare policies under the same POV/action semantics used in training? | New at 09:40 EDT. Write `tournament_eval_seat_perspective_audit_2026-05-15.md`. |
 | Live v2real18 inventory | Rawls | What is actually running, how many checkpoints exist, are metrics improving, and what does the leaderboard contain? | New at 09:40 EDT. Write `v2real18_live_metrics_inventory_2026-05-15.md`. |
 | Workspace cleanup inventory | Volta | Which apps/arenas/artifacts are necessary and which are cleanup candidates? | New at 09:40 EDT. Write `workspace_cleanup_inventory_2026-05-15.md`. |
-| Weak-run immortal intervention | Godel | Was the requested 50% blank/immortal intervention applied, and how can it be applied safely to only weak rows? | New at 09:40 EDT. Write `weak_run_immortal_intervention_2026-05-15.md`. |
-| Production source strategy | Rawls | Which source should feed restart18 now that v2 contains only the canary? | Returned: rematerialize top active refs from `loop18-main-adaptive417` into v2, then rerate fresh. Do not copy old leaderboard as truth. |
+| Weak-run immortal intervention | Godel | Historical audit only; do not apply to restart lane. | Superseded. Current restart recipes use launch-wide `20-30%` immortal pressure, with blank/hard-coded sentinel slots always immortal and checkpoint slots mostly mortal. |
+| Ranked-source strategy | Rawls + Main | Which optional ranked source could feed leaderboard-derived top slots later? | Returned and executing: rematerialized top active refs from `loop18-main-adaptive417` into v2, then launched fresh rerate. Do not copy old leaderboard as truth; wait for the v2 rerate output to become `stable=true` before publishing ranked top-slot assignments. This is not a bootstrap blocker. |
+| Source stability critique | Faraday + Main | Should unstable rounds be fixed by more rounds, bigger rounds, lower K, or looser gates? | Faraday returned: run a few more same-context `300`-pair adaptive rounds. Do not lower K, raise the threshold, switch to all-pairs, or publish unstable output. If rounds 4-6 hover near `20-25`, treat it as a metric/scheduler calibration problem and use a separate confirmation diagnostic. |
+| Nonzero source fallback | Sagan + Main | Is there a cleaner source pool that excludes iteration-zero candidates? | Blocked: `restart18-source-loop18-top96-nonzero-20260515a` has `96/96` refs present in old and v2 storage; round 0 and 1 completed provisional; round 2 completed with `15` active / `81` provisional and `stable=false`; round 3 completed with all `96` rows active but `stable=false` / `max_abs_delta=39.7420779825474`; round 4 completed with `96` active rows, `0` failures, and `max_abs_delta=17.371056613899057`; round 5 improved to `15.636412948237727`; round 6 worsened to `25.199213332028748` with `0` failures. Keep publish blocked and diagnose max mover / scheduler exposure before another continuation. |
+| Stable publish/materialize prep | Helmholtz + Main | What exact commands are needed after a source rerate becomes stable? | Returned: use `promote_curvytron_rating_round.py` with expected hashes and explicit `--assignment-target-volume control`; then build restart18 from fetched public snapshot, dry-run, audit refs, and publish assignments only before launching trainers. |
+| Current slot/seat contract audit | Bohr + Main | Are the fresh public contracts still aligned after cleanup? | Returned: code passes for immortal blank/hard-coded slots, explicit frozen immortal slices, `random_per_episode`, balanced tournament seats, action `1` as straight/no-turn, and checkpoint observation sidecars. Main rechecked opponent registry/mixture/leaderboard tests: `53 passed`. |
 
 ## Current V2 Real18 Lane
 
@@ -155,12 +162,13 @@ User request:
 
 - Pick the five current runs whose survival is improving least.
 - Measure their current opponent slot probabilities first.
-- Change only those five so blank-canvas/no-op plus immortal/invincible
-  opponent exposure is roughly 50% overall.
-- Keep some leaderboard checkpoint exposure. This is a live experiment, not the
-  default for all runs.
-- If those five runs get worse, that is acceptable; the point is to learn
-  whether high immortal/blank pressure recovers weak survival.
+- Do not apply the old weak-row-only high-pressure intervention to the restart
+  lane.
+- Current default: blank-canvas/no-op and hard-coded sentinel slots are always
+  immortal; leaderboard/checkpoint slots are mostly mortal with small explicit
+  immortal slices.
+- Keep total immortal exposure around `20-30%` unless a future diagnostic is
+  clearly labeled.
 
 ## Old Champion Anchor Plan
 

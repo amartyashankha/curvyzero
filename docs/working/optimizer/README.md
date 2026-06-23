@@ -4,9 +4,79 @@ Date: 2026-05-10
 
 Status: active optimizer lane front door.
 
-Active working memory:
-[optimizer active working memory](active_working_memory_2026-05-14.md). Read
-this first for the current optimizer plates, to-do list, and operating pattern.
+Active working memory starts at the repository root:
+[goal.md](../../../goal.md).
+
+Read `goal.md` first, then use:
+
+- [current state](reorientation_2026-05-23/CURRENT_STATE.md)
+- [task board](reorientation_2026-05-23/TASK_BOARD.md)
+- [next moves](reorientation_2026-05-23/NEXT_MOVES.md)
+- [orchestration](reorientation_2026-05-23/ORCHESTRATION.md)
+- [measurement ledger](reorientation_2026-05-23/MEASUREMENT_LEDGER.md)
+- [operating patterns](reorientation_2026-05-23/OPERATING_PATTERNS.md)
+
+The current guardrail is the combination of `goal.md`, `NEXT_MOVES.md`, and
+`OPERATING_PATTERNS.md`.
+
+Important: this README keeps historical context below. When older sections
+disagree with `goal.md` or `CURRENT_STATE.md`, ignore the older section. Do not
+use `TODO.md`, `EXPERIMENT_QUEUE.md`, or old dated sections as the current next
+action unless an item has been copied into `TASK_BOARD.md` or `FOLLOWUPS.md`.
+
+2026-05-31 OPT-065 correction: the final-sync H100 row removed the explicit
+initial host sync but did not improve wall speed. Safe
+`model_compile_mode=default` now avoids the CUDAGraph overwrite and reduces the
+model/service bucket. Fresh paired H100 repeats now favor compile, but a
+hash-bound compile/eager comparator blocked approval because action/trajectory
+checksums diverge. The new dispatch residual split says dispatch residual is
+only about `0.003s`, so the remaining work is compile/eager action-fidelity plus
+compact Torch action/model/search service work, not GPU game mechanics and not
+more phase-sync deletion.
+
+The older active working memory remains historical:
+[optimizer active working memory](active_working_memory_2026-05-14.md).
+
+2026-05-23 compact-service update:
+[current state audit](batched_gpu_full_loop_reorientation_2026-05-20/current_state_audit_20260523.md).
+Plain read: the trusted Coach lane is still stock LightZero
+`train_muzero`/`source_state_fixed_opponent` with
+`browser_lines + simple_symbols -> cpu_oracle -> [4,64,64]`. The compact
+search-service lane is optimizer-only. `compact_torch_search_service` now runs
+and replay-proofs remotely, but it is not a Coach backend and it is not a 5x/10x
+breakthrough yet. The latest H100 B512/A16/sim16 rows put compact Torch around
+direct CTree speed to about 1.4x faster, with most time inside the eager
+Torch tree/recurrent loop.
+
+2026-05-20 batched-GPU/full-loop reorientation:
+[batched GPU full-loop reorientation](batched_gpu_full_loop_reorientation_2026-05-20/README.md).
+Plain read: scalar `jax_gpu` is not the speed path. The current promising lane
+is a profile-only batched GPU boundary, plus a broader host-overhead/full-loop
+Amdahl investigation. Keep production training on `cpu_oracle` until the
+batched vector facade passes trainer-visible gates.
+
+2026-05-21 optimizer correction: the latest profile-only evidence moved the
+active wall again. Pure-policy collect is much faster than MCTS collect
+(`~6286` vs `~2572` roots/sec on H100), model calls are small, and raw ctree
+traverse/backpropagate is small. Current optimizer work should target the
+MCTS-branch wrapper/root/result representation path with profile-only ceiling
+probes. This is not production Coach launch advice.
+
+Array-ceiling update: H100 `recurrent_toy` reached about `8681` roots/sec and
+H100 `policy_arrays` reached about `9958` roots/sec. This justifies designing a
+real compact arrays-in / arrays-out MCTS boundary. It does not justify skipping
+PUCT, legal masks, root noise, temperature, transforms, or visit-count target
+semantics.
+
+2026-05-20 speed correction: the newest stock-path profile top point is H100,
+subprocess, C512, `num_simulations=4`, at about `1061 steps/s`. C768/sim4
+nearly tied and C1024/sim4 regressed, so the current practical speed lever is
+H100 C512/sim4 plus subprocess collection, not sim16, C1024, scalar `jax_gpu`,
+or old body-circle lanes.
+
+2026-05-16 launch-default correction, now historical: L4/T4 was acceptable for
+cheaper broad runs in that older grid, but it is no longer the optimizer's top
+throughput recommendation. Keep those rows as cost/control evidence only.
 
 2026-05-15 strict correction: the target launch policy observation surface is
 `browser_lines + simple_symbols`. That is the semantic surface, not a hardware
@@ -22,9 +92,10 @@ learner/search compute is not the same thing as GPU rendering.
 
 Current GPU-observation promotion gates:
 [GPU observation next gates](gpu_observation_next_gates_2026-05-15.md). Plain
-read: the isolated H100 renderer has exact smoke-row parity now, but stock
-training stays on `cpu_oracle` until adversarial parity and the profile-only
-batched observation facade prove the whole trainer-visible contract.
+read: the isolated H100 renderer and profile-only batched boundary have useful
+parity/speed evidence now, but stock training stays on `cpu_oracle` until a
+vector facade and full trainer-visible gates prove row order, player view,
+reset/final-observation, RND, checkpoint, and tournament semantics.
 
 Current Coach-facing stock-path recommendation:
 [fast stock recommendation](coach_handoff_fast_stock_recommendation_2026-05-14.md).
@@ -45,20 +116,12 @@ optimizer questions.
 
 Fresh stock full-loop speed picture:
 [stock full-loop profile](stock_full_loop_profile_2026-05-13.md). Plain read:
-the biggest measured full-loop speedup so far is wider stock LightZero
-collection, not the renderer alone. C1 did about `10.8` env steps/sec, C32 did
-about `153.6`, C64 did about `408.4`, and C96 did about `487.3` on the current
-one-frame source-state fixed-opponent profile. The C64 H100 sim8 row was slower
-than the C64 L4/T4 row, so the current sim8 shape is not worth moving to H100.
-The C64 L4/T4 sim16 row did about `366.7` env steps/sec, so doubling MCTS sims
-only cost about `10%` throughput in that shape. The paired C64 H100 sim16 row
-did about `488.4`, so H100 may be useful when search pressure is higher even
-though it was worse at sim8. Drop `body_circles_fast` as an optimizer decision
-proxy; the relevant render lane is CPU `browser_lines` versus exact
-GPU/compiled `browser_lines`.
-The paired sim32 rows were L4/T4 `255.6` steps/sec and H100 `370.2`, so H100
-helps once search is heavy, but sim32 is slower overall than sim16 in the rows
-we have.
+this is historical context. The newest profile packet supersedes its hardware
+recommendation: H100 C512/sim4 is the current top measured row, while C768
+does not improve it and C1024 regresses. The old rows are still useful for the
+shape of the bottleneck: wider stock LightZero collection produced the largest
+measured full-loop speedup, renderer-only work did not explain the whole wall,
+and very high simulation counts can lose throughput.
 Render work remains important for long trajectories, but current full-loop
 Amdahl points at collection/search/process overhead first. The CPU renderer is
 the production oracle today; the intended replacement is a future batched GPU

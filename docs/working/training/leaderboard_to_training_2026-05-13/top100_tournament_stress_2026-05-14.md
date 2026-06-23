@@ -64,7 +64,7 @@ before moving to step 2.
   `latest212-smoke-20260513`.
 - Candidate count: 100 checkpoint refs.
 - Verification: the rating config's checkpoint-ref set exactly matches the top
-  100 active refs from the source leaderboard. Order differs after rating
+  100 active refs from the historical ranked source. Order differs after rating
   normalization, but no source refs are missing and no extra refs were added.
 - Despite the `plus-latest` name, no second-wave recent-training checkpoints
   are visible in this run. The observed pool is the base top-100 source set.

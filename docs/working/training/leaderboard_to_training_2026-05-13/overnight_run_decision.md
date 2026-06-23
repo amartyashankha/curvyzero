@@ -90,7 +90,7 @@ For leaderboard-derived overnight:
 - public leaderboard snapshot exists or manually curated equivalent exists;
 - assignment snapshot is immutable and hashable;
 - trainer can consume assignment ref or static manifest mirrors assignment;
-- audit records source leaderboard/rating rows.
+- audit records ranked snapshot/rating rows.
 
 ## Current Practical Recommendation
 

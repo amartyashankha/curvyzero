@@ -1,5 +1,9 @@
 # Modal Stale Proof Cleanup - 2026-05-15
 
+Historical cleanup note: this predates the all-v2 reset and the active nonzero
+source rerate. Current cleanup authority is `cleanup_lane_2026-05-15.md`; do
+not use this file to decide whether to stop `ap-j21sPzVU0Ow0OS6RUZSXV0`.
+
 Scope: Modal app catalog/cleanup only in environment `shankha-dev`. No volumes,
 dicts, queues, artifacts, or deployed apps were deleted or stopped.
 

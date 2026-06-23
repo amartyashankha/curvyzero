@@ -63,7 +63,7 @@ One read-only visibility command created short-lived helper app
 | Historical v2 lane | `ap-jHbblnzHiTfhKh57P53iNg` | `curvyzero-lightzero-curvytron-visual-survival-train-v2` | deployed | 51 | V2 trainer app at capture time. Historical. |
 | Historical v2 lane | `ap-7JwT5bBirxOTgst6yV1slg` | `curvyzero-checkpoint-tournament-v2` | deployed | 509 | V2 tournament/web/intake service at capture time. Historical. |
 | Historical v2 lane | `ap-1qlYXmmofwXNmrtZ4XTyjC` | `curvyzero-curvytron-gif-browser-v2` | deployed | 1 | V2 GIF browser at capture time. Historical. |
-| Necessary current lane | `ap-MKU8vQNXqZWCqX6Dle0ztG` | `curvyzero-checkpoint-tournament-v2` | ephemeral detached | 505 | Corrected 16.6667ms v2real18 rerate. Preserve until final/latest exists and is promoted or abandoned intentionally. |
+| Historical diagnostic lane | `ap-MKU8vQNXqZWCqX6Dle0ztG` | `curvyzero-checkpoint-tournament-v2` | ephemeral detached | 505 | Corrected 16.6667ms v2real18 rerate. Preserve as forensic evidence only; do not promote or use for restart18. |
 | Necessary current lane | `ap-DmCKutNc5xDg2x2N1hdEtS` | `curvyzero-lightzero-curvytron-visual-survival-eval` | deployed | 0 | Eval utility; zero tasks but likely still useful. Preserve until eval path owner retires it. |
 | Smoke/debug lane | `ap-V7tpkneuQJv0tgM48reBfa` | `curvyzero-checkpoint-tournament-v2` | ephemeral detached | 2 | Detached v2 tournament worker. Created during v2real18 era; preserve unless logs prove no current claim/work. |
 | Smoke/debug lane | `ap-ofmTZIujPWu8btf9HFx9UI` | `curvyzero-checkpoint-tournament-v2` | ephemeral detached | 2 | Same. |
@@ -140,7 +140,7 @@ showed these roots:
 
 | Class | Arena/artifact root | Visible? | Reason |
 | --- | --- | --- | --- |
-| Necessary current lane | `curvy-v2real18-live-20260515a` | yes | Current v2real18 tournament. Corrected rerate `elo-v2real18-rerate67-allpairs-16ms-20260515a` is running under this tournament. Keep visible. |
+| Historical diagnostic lane | `curvy-v2real18-live-20260515a` | yes | Invalidated v2real18 tournament. Corrected rerate `elo-v2real18-rerate67-allpairs-16ms-20260515a` is forensic evidence only, not current restart guidance. Preserve artifacts, but do not treat as the active launch source. |
 | Stale but preserve temporarily | `curvy-v2champ18-live-20260514a` | yes | Still had active logs from deployed v2 tournament app around `09:41 EDT` (`elo-v2champ18` round 5 games). Keep visible until final status is captured, then archive/hide. |
 | Stale but preserve temporarily | `curvy-v2refresh18p-live-20260514b` | yes | Important historical full-loop evidence, but current docs say old `v2refresh18p` readings are not final proof. Keep visible only if operators still need side-by-side comparison. Otherwise hide after a final screenshot/status capture. |
 | Stale but preserve temporarily | `curvy-v2refresh18-live-20260514a` | yes | Superseded by v2refresh18p and v2real18. Preserve artifacts, hide from public/current browser. |
@@ -192,8 +192,8 @@ modal app logs ap-MKU8vQNXqZWCqX6Dle0ztG --tail 100 --timestamps
 
 ### 2. Reversible Website Cleanup
 
-Conservative visibility cleanup, keeping current v2real18 plus active v2champ18
-and old v2refresh18p comparison visible:
+Conservative visibility cleanup from the historical v2real18 pass, keeping
+v2real18 plus active v2champ18 and old v2refresh18p comparison visible:
 
 ```bash
 uv run --extra modal modal run -m curvyzero.infra.modal.curvyzero_checkpoint_tournament \
@@ -293,8 +293,8 @@ modal app stop ap-C4WZyxRAZUNyhMY1xtEbMW
 ### 4. Artifact/Volume Cleanup, Later Only
 
 After all relevant apps are stopped and visibility is clean, delete exact stale
-v2 smoke roots only. Do not delete `leaderboards`, current v2real18, v2champ18,
-or any root still needed for evidence.
+v2 smoke roots only. Do not delete `leaderboards`, diagnostic v2real18,
+v2champ18, or any root still needed for evidence.
 
 Candidate exact-path deletions after confirmation:
 

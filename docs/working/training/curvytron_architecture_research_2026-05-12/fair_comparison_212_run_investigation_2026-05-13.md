@@ -3,6 +3,14 @@
 Date: 2026-05-13  
 Status: consolidated read from survival curves, fair comparisons, and latest-212 leaderboard.
 
+> Superseded launch-default note, 2026-05-16: this document is historical
+> evidence from the 212-run cohort. Its `sim8 / batch32` recommendation is not
+> current broad-launch guidance. Current broad CurvyTron defaults are
+> `gpu-l4-t4-cpu40`, `collector_env_num=256`, `n_episode=256`,
+> `batch_size=64`, `num_simulations=8`, and `browser_lines + simple_symbols +
+> cpu_oracle`; see
+> `../r18fresh_postmortem_2026-05-16/CURRENT_LAUNCH_DEFAULTS.md`.
+
 ## Executive Read
 
 The 212-run cohort gives two different kinds of evidence:
@@ -25,8 +33,10 @@ Current best read:
   `repH` row, not a pure survival row.
 - Fast render looked better in latest snapshots mostly because fast rows were
   more mature. Same-checkpoint render comparisons are basically tied.
-- `sim8 / batch32` should remain the default. `batch64` looks bad. `sim16`
-  is not earning its cost. `collector64` is plausible only as a small probe.
+- Historical May 13 read: `sim8 / batch32` looked like the preferred shape then,
+  `batch64` looked bad, `sim16` had not earned its cost, and `collector64` was
+  plausible only as a small probe. This line is superseded for current broad
+  launches by the 2026-05-16 L4/C256/N256/batch64 profile.
 - For survival stochasticity, `medium` is the best leaderboard center; `light`
   is the clean survival-gain point estimate; `heavy` has top-tail value but
   should not dominate.

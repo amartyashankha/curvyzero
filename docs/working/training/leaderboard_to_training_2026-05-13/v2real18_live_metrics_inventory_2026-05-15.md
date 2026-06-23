@@ -122,11 +122,11 @@ bounded status check, so final corrected leaderboard rows are not available yet.
 
 ## Weak-Run Immortal Intervention
 
-The five weak-run immortal/blank intervention has not happened. The existing
-weak-run doc says no row-scoped `~50%` blank/immortal pointer was written, and
-the fresh status read shows only the normal shared refresh assignment hashes
-applied to 15 original rows. There is no evidence of a row-scoped intervention
-for only `r007`, `r008`, `r009`, `r011`, and `r016`.
+The five weak-run immortal/blank intervention has not happened and is now
+superseded for the restart lane. The fresh status read shows only the normal
+shared refresh assignment hashes applied to 15 original rows. There is no
+evidence of a row-scoped intervention for only `r007`, `r008`, `r009`, `r011`,
+and `r016`.
 
 ## Recommendation
 

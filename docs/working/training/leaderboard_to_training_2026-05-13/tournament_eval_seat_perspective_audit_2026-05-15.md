@@ -24,7 +24,8 @@ the correct deployment/eval contract rather than an invalid distribution shift.
   diagnostics. Its LightZero observation still has `to_play=-1`, so the seat
   assignment must be recorded through reset/step metadata rather than inferred
   from `to_play`.
-- Frozen checkpoint opponent inference is visually seat-aware because the wrapper builds both controlled-player stacks and selects the opponent slot. Drift risk remains: `LightZeroCheckpointOpponentProvider` currently receives `player_id` and forwards it as `to_play=[player_id]`; that should be repaired to `to_play=[-1]` for the current non-board-game contract. See `contract_drift_audit_2026-05-15.md`.
+- Frozen checkpoint opponent inference is visually seat-aware because the wrapper builds both controlled-player stacks and selects the opponent slot. The old drift risk around LightZero `to_play` has been repaired: `LightZeroCheckpointOpponentProvider` ignores physical `player_id` for LightZero `to_play` and forwards `to_play=[-1]` for the current non-board-game contract. Seat identity lives in the selected observation/action-mask slice.
+- New checkpoint metadata hardening is in progress locally: fresh checkpoints now write a small `iteration_N.pth.tar.metadata.json` sidecar with policy observation backend, trail render mode, bonus render mode, observation contract id, runtime timing, model env/reward variants, and learner seat mode. Tournament checkpoint discovery and policy loading read that sidecar before falling back to run/attempt metadata or defaults.
 
 ## Action Semantics
 

@@ -8,34 +8,51 @@ Use `raw-handoffs/` for undigested handoff text and agent context dumps.
 
 ## Active Lane Spines
 
-- `optimizer/README.md`: optimizer front door for speed, profiling, Amdahl,
-  CPU/GPU split, Modal boundaries, and setup measurement.
+- `../../goal.md`: optimizer front door for speed, training-loop ownership,
+  CPU/GPU split, current baseline, and next gates.
+- `optimizer/README.md`: optimizer folder index. It points back to `goal.md`
+  before any historical optimizer notes.
+- `optimizer/reorientation_2026-05-23/CURRENT_STATE.md`: current optimizer
+  truth after `goal.md`.
+- `optimizer/reorientation_2026-05-23/TASK_BOARD.md`: current optimizer task
+  board after `goal.md` and `CURRENT_STATE.md`.
+- `optimizer/batched_gpu_full_loop_reorientation_2026-05-20/README.md`:
+  historical/supporting optimizer investigation for batched GPU observations,
+  RND compatibility, host-overhead/dataflow, and full-loop Amdahl. Do not use
+  it as the current optimizer spine when it disagrees with `goal.md`.
 - `optimizer/lane_contract_2026-05-10.md`: short boundary between Optimizer,
   Coach, and Environment/RAM reconstruction.
-- `optimizer/runtime_verdict_2026-05-10.md`: compact current CurvyTron
-  source path, CPU/GPU boundary, profile numbers, and near-term optimizer
-  verdict.
+- `optimizer/runtime_verdict_2026-05-10.md`: historical compact verdict. Use
+  only for audit if it disagrees with the current optimizer README.
 - `environment/active_lanes.md`: environment/source-fidelity lane map.
-- `training_state_index_2026-05-09.md`: coach/training lane map.
+- `training/r18fresh_postmortem_2026-05-16/CURRENT_LAUNCH_DEFAULTS.md`: current
+  broad CurvyTron launch defaults and CZ26 control-plane truth.
+- `training/training_loop_extension_refactor_2026-05-19/CURRENT_PHASE.md`:
+  current trainer-refactor truth.
 
 ## Current Training Working Docs
 
-Active spine. Read these first:
+Current spine. Read these first:
 
-- `training_state_index_2026-05-09.md`: compact map of the training docs
-  hierarchy. Use this first when deciding which detailed doc to open.
-- `training_coach_handoff_2026-05-09.md`: compact restart packet. Read this
-  first after memory wipe; it states the truth, operating pattern, reward
-  rules, active research lanes, and shorthand.
-- `training_experiment_backlog.md`: active lane ledger and newest run-lineage
-  synthesis. It is long; use the top current-truth sections first.
-- `../runbooks/training_smokes.md`: commands; self-play commands are
-  reproduction only.
+- `training/r18fresh_postmortem_2026-05-16/CURRENT_LAUNCH_DEFAULTS.md`: current
+  broad CurvyTron defaults, despite the historical folder name.
+- `training/training_loop_extension_refactor_2026-05-19/CURRENT_PHASE.md`:
+  current trainer code-shape/refactor truth.
+- `training/exploration_bonus_rnd_2026-05-19/README.md`: RND/exploration-bonus
+  lane, including the fact that positive `rnd_replay_target_v0` has been
+  launched experimentally but is not production-settled.
+- `training/curvytron_feedback_loop/POLICY_OBSERVATION_CONTRACT.md`: controlled
+  player policy-observation contract.
+- `../runbooks/training_smokes.md`: commands; check command age before copying.
 - `../design/training_eval_protocol.md`: stable eval rules.
 - `../experiments/README.md`: dated evidence index.
 
 Historical/supporting notes. Do not let their old next-action lists compete:
 
+- `training_state_index_2026-05-09.md`: old map. Useful only if a newer doc
+  explicitly points back to it.
+- `training_coach_handoff_2026-05-09.md`: old restart packet.
+- `training_experiment_backlog.md`: old ledger.
 - `training_loop_agenda.md`: broader current state and historical queue.
 - `training_coach_packet.md`: older purpose/priorities packet; prefer the
   state index plus handoff for current navigation.

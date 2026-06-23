@@ -1,13 +1,19 @@
 # Weak-Run Immortal Intervention - 2026-05-15
 
-Read-only audit. No code or live Modal control object was changed by this pass.
+Read-only historical audit. No code or live Modal control object was changed by
+this pass.
+
+Current restart decision: do **not** apply this weak-run-only intervention.
+Instead, use launch-wide recipes where blank/hard-coded sentinel slots are
+always immortal, checkpoint slots are mostly mortal with small explicit
+immortal slices, and total immortal exposure is generally `20-30%`.
 
 ## Request
 
-For the five `v2real18` runs with weakest survival/progress, raise combined
-blank-canvas/no-op plus immortal/invincible opponent exposure to roughly `50%`
-overall while preserving some leaderboard-checkpoint exposure. The change must
-affect only those weak rows, not all 18.
+Historical request: for the five `v2real18` runs with weakest
+survival/progress, raise combined blank-canvas/no-op plus immortal/invincible
+opponent exposure aggressively while preserving some leaderboard-checkpoint
+exposure. That request is now superseded for the restart lane.
 
 ## Existing Weak-Row Identification
 
@@ -66,8 +72,8 @@ Current recipe probabilities:
 
 ## Was The Intervention Applied?
 
-No evidence found that the requested five-row-only `~50%` blank/immortal
-intervention was applied.
+No evidence found that the requested five-row-only high-pressure
+blank/immortal intervention was applied.
 
 What did happen:
 
@@ -82,12 +88,12 @@ What did happen:
 Why that is not this intervention:
 
 - The r1 assignments keep the same `blank5`, `blank10`, and `blank20` recipes:
-  combined blank/immortal exposure remains `10%`, `15%`, or `25%`, not `~50%`.
+  combined blank/immortal exposure remains `10%`, `15%`, or `25%`.
 - The r1 pointer update was per recipe and selected all 18 rows, not only the
   five weak rows.
 - I found no local artifact or live pointer whose audit reason names the
-  weak-run intervention, no assignment with a `~50%` blank/immortal mix, and no
-  row-scoped pointer for only `r007`, `r008`, `r009`, `r011`, and `r016`.
+  weak-run intervention, and no row-scoped pointer for only `r007`, `r008`,
+  `r009`, `r011`, and `r016`.
 
 No Modal Dict mutation was found for this intervention. The active control
 surface here is the control-volume `refresh_pointer.json` files, not a live
@@ -116,7 +122,8 @@ containing both `assignment_ref` and `assignment_sha256`.
 Do not use `scripts/materialize_curvytron_leaderboard_assignment.py` as the
 primary writer for this specific intervention. It is the leaderboard
 materializer for normal `stable_slots_v1`/`top_slots_v0` assignments, not a
-row-scoped custom 50% diagnostic recipe writer for already-running rows.
+row-scoped custom high-pressure diagnostic recipe writer for already-running
+rows.
 
 ## Minimal Safe Apply Path
 
@@ -139,11 +146,9 @@ Exact minimal safe path if we decide to apply:
    `r009/r016 -> 9717c8b00d1e4a030026ca4188611f04d961b6d6a6f477f8758f11489d8f8d45`,
    `r011 -> e348714b7c960ea62423fd5a8cedaf20427778f764957a4142d5968bc2080f36`.
 2. Create new immutable assignment JSONs with unique assignment ids per weak
-   row or per weak-row group, not per old shared recipe. Example target mix:
-   `blank 25%`, `wall_avoidant_immortal 25%`, and `50%` leaderboard
-   checkpoints. For `blank10` rows, a checkpoint split such as
-   `rank1 25%`, `rank2 15%`, `rank3 7%`, `rank4 3%` preserves broad
-   leaderboard exposure while keeping total checkpoint weight at `50%`.
+   row or per weak-row group, not per old shared recipe. This is historical
+   guidance only; current restart recipes should use launch-wide `20-30%`
+   total immortal exposure instead of a row-scoped high-pressure intervention.
 3. Write those assignments to the control Volume with
    `lightzero_curvytron_write_opponent_assignment_artifacts`, using a new
    assignment bank run id such as

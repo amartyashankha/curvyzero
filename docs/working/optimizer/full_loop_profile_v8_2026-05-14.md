@@ -5,6 +5,12 @@ Date: 2026-05-14
 Purpose: measure whether the V8 fast observation path speeds up the real stock
 LightZero loop, not just the local env renderer.
 
+2026-05-15 supersession: this is historical/control speed evidence. Do not
+copy the `body_circles_fast + simple_symbols` row into fresh production
+launches. Current production policy observations are CPU `cpu_oracle`
+`browser_lines + simple_symbols`; GPU rendering remains lab/profiling-only
+until trainer-visible contract parity passes.
+
 ## Scope
 
 Both rows used the trusted stock path:

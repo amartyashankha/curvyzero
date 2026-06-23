@@ -115,7 +115,7 @@ uses the wrong tournament id.
 | `curvy-n18diag` | Diagnostic `r017` captured `num_transitions=42014`, lookup length `42014`, priorities length `107155`. | Root cause pinned: trainer set `td_steps=source_max_steps` (`65536`), far larger than stock LightZero chunk window. Fix stopped overriding `policy.td_steps` and added config guard for `td_steps + num_unroll_steps > game_segment_length`. | `curvy-n18tdfix` is the first trusted full 18-row generation after this fix. |
 | `curvy-n18new` fullfresh | Submitted before final td-window fix; latest read shows 4 failures. | Superseded by `curvy-n18tdfix`; not killed. | Treat as noisy/pre-fix. |
 | Tdfix intake | Old active watch was still `curvy-night18top10r1`, so it would never discover `curvy-n18tdfix`. | Seeded clean `curvy-night18-tdfix-20260514c / elo-night18-tdfix-20260514c` with prefix `curvy-n18tdfix`. | Tdfix checkpoints now feed the clean tdfix tournament, not the old top10r1 arena. |
-| Connected assignment batch | `tdfix` was healthy but static, using inline `opponent_mixture_spec`. | Published tdfix leaderboard `curvy-night18-tdfix-20260514c-elo-night18-tdfix-20260514c`, snapshot `round1-active-20260514a`, wrote three assignment artifacts, and launched `curvy-n18conn` with `opponent_assignment_ref`. | This is the first real assignment-ref launch. It is not production-shaped under the current contract because it lacks champion bootstrap via `initial_policy_checkpoint_ref` and has not produced the next tournament/leaderboard cycle. |
+| Connected assignment batch | `tdfix` was healthy but static, using inline `opponent_mixture_spec`. | Published tdfix leaderboard `curvy-night18-tdfix-20260514c-elo-night18-tdfix-20260514c`, snapshot `round1-active-20260514a`, wrote three assignment artifacts, and launched `curvy-n18conn` with `opponent_assignment_ref`. | This is the first real assignment-ref launch. It has not produced the next tournament/leaderboard cycle. Lack of champion bootstrap is now treated as an optional quality limitation, not a bootstrap blocker. |
 
 ## Progress Snapshot
 
@@ -178,7 +178,7 @@ it as clean end-to-end proof or as the current source for Coach decisions.
 | `curvy-n18fb` | Yes | 13 running in latest read | 5 | Up to about `iteration_270000` | None clean/current | None clean/current | None; static manifest opponents | Decide whether to stop/ignore; do not feed clean leaderboard. |
 | `curvy-n18diag` | Four rows intended | 3 running, 1 failed in latest read | 1 | Diagnostic rows only | None | None | None | No production next signal; it already found the replay invariant. |
 | `curvy-n18new` | Yes | 14 running in latest read | 4 | Up to about `iteration_50000` | None trusted | None trusted | None; static manifest opponents | Decide whether to stop/ignore; superseded by tdfix. |
-| `curvy-n18tdfix` | Yes | 18 running in latest read | 0 | About `iteration_30000` to `iteration_60000` at last read | `curvy-night18-tdfix-20260514c / elo-night18-tdfix-20260514c` | `run_id_prefix=curvy-n18tdfix`, 49 seen checkpoints | None; static manifest opponents | Continue monitoring and preserve as clean source leaderboard. |
+| `curvy-n18tdfix` | Yes | 18 running in latest read | 0 | About `iteration_30000` to `iteration_60000` at last read | `curvy-night18-tdfix-20260514c / elo-night18-tdfix-20260514c` | `run_id_prefix=curvy-n18tdfix`, 49 seen checkpoints | None; static manifest opponents | Historical evidence only; do not treat as current launch truth. |
 | `curvy-n18conn` | Yes | 18 running in latest read | 0 | Mostly startup/`iteration_0`; no `summary.json` yet | Planned `curvy-night18-connected-20260514d / elo-night18-connected-20260514d`; missing now | Not seeded yet; planned `run_id_prefix=curvy-n18conn` | Tdfix leaderboard `round1-active-20260514a` assignment refs | Wait for at least `iteration_10000` checkpoints, then seed connected intake/tournament. |
 
 ## What To Review Next
@@ -204,7 +204,8 @@ Concrete read-only checks:
    `uv run --extra modal modal volume get --force curvyzero-curvytron-tournaments tournaments/curvytron/leaderboards/curvy-night18-tdfix-20260514c-elo-night18-tdfix-20260514c/latest.json /private/tmp/audit-tdfix-leaderboard-latest.json`.
 6. Compare connected assignment audits:
    `artifacts/local/curvytron_tonight18_manifests/curvy-night18-connected-20260514d/assignments/*/audit.json`
-   and verify the source leaderboard id, snapshot id, and exact checkpoint refs.
+   and verify the historical ranked source id, snapshot id, and exact checkpoint
+   refs.
 7. If capacity becomes an issue, review old live batches before acting:
    `curvy-n18fb`, `curvy-n18new`, and `curvy-n18diag` are the candidates to
    ignore or stop, but this audit did not stop anything.

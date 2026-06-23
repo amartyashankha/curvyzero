@@ -1,5 +1,8 @@
 # Current Launcher Profile Surface
 
+> [!IMPORTANT]
+> Superseded/archive note (2026-05-15): production policy observation is CPU `cpu_oracle` `browser_lines + simple_symbols`; GPU `browser_lines + simple_symbols` remains lab-only until trainer contract parity. `body_circles_fast` is historical/control only.
+
 Date: 2026-05-12
 
 Scope: read-only audit of the current CurvyTron LightZero Modal launcher and

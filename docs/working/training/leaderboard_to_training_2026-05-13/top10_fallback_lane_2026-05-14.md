@@ -25,7 +25,7 @@ Duplicate cleanup:
 
 ## Source
 
-- source leaderboard: `curvytron-latest212-smoke-20260513`
+- historical ranked source: `curvytron-latest212-smoke-20260513`
 - source ref:
   `tournaments/curvytron/leaderboards/curvytron-latest212-smoke-20260513/latest.json`
 - local source copy:

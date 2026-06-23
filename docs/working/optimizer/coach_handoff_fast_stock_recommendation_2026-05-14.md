@@ -1,3 +1,12 @@
+> **HISTORICAL ONLY - DO NOT LAUNCH FROM THIS DOC.** Stale `body_circles_fast`,
+> `fast_gray64_direct`, and scalar `jax_gpu` recommendations below are not
+> trainer/tournament defaults. Current truth: real training/tournament default
+> remains CPU `cpu_oracle` with `browser_lines + simple_symbols`; `compute=gpu`
+> moves LightZero model/search/learner, not rendering.
+> `direct_gray64 + simple_symbols` is a profile-only promising H100 surface
+> candidate until vector facade/full-loop gates pass. No trainer/tournament
+> default change yet.
+
 # Coach Handoff: Fast Stock CurvyTron Recommendation
 
 Date: 2026-05-14
@@ -15,6 +24,12 @@ renderer is lab/profiling only, even after first H100 real-env smoke rows match
 the CPU oracle. Keep the speed numbers as historical evidence only. Do not copy
 the body-circles commands into new runs unless the row is explicitly an
 ablation.
+
+2026-05-16 correction: the old `batch32`/H100 warning set below is also
+superseded for broad launches. Current broad defaults are
+`gpu-l4-t4-cpu40`, C256/N256, `batch_size=64`, sim8, and
+`browser_lines + simple_symbols + cpu_oracle`; see
+`../training/r18fresh_postmortem_2026-05-16/CURRENT_LAUNCH_DEFAULTS.md`.
 
 ```text
 src/curvyzero/infra/modal/lightzero_curvyzero_stacked_debug_visual_survival_train.py
@@ -111,7 +126,8 @@ evidence.
 
 ## What Not To Use
 
-- Do not use `batch64`. It is worse in learning evidence and did not help speed.
+- Historical warning only: this handoff warned against `batch64`, but fresh
+  L4/C256 profiles now make `batch_size=64` the current broad L4 default.
 - Do not make `sim16` a default. It is a sentinel only.
 - Do not use multi-GPU for this run. The current `--lightzero-multi-gpu` profile
   failed before collection because no distributed process group was initialized.

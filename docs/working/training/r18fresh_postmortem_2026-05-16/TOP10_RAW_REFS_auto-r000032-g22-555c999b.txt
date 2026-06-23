@@ -1,0 +1,36 @@
+# Raw active top-10 checkpoint refs
+# Source: trainer/public leaderboard snapshot auto-r000032-g22-555c999b
+# Source path:
+# tournaments/curvytron/leaderboards/curvy-r18fresh-live-bounded-dsf1-20260516b-elo-r18fresh-live-bounded-dsf1-20260516b-training/latest.json
+# Captured: 2026-05-16
+# Note: raw top 10 is not deduped by run.
+
+rank=1 rating=1632.6800339881258 checkpoint_id=ckpt-432-train-lightzero_exp-ckpt-iteration_180000-0ed114de
+training/lightzero-curvytron-visual-survival/curvy-r18fresh-survbonusout-blank20-wall5-rank1_70-rank1imm5-so10rep10-s134842423/attempts/try-r18fresh-survbonusout-blank20-wall5-rank1_70-rank1imm5-so10rep10-s134842423/train/lightzero_exp/ckpt/iteration_180000.pth.tar
+
+rank=2 rating=1615.019574299904 checkpoint_id=ckpt-541-train-lightzero_exp-ckpt-iteration_250000-9db934d8
+training/lightzero-curvytron-visual-survival/curvy-r18fresh-survbonusout-blank20-wall5-rank1_70-rank1imm5-so10rep10-s134842423/attempts/try-r18fresh-survbonusout-blank20-wall5-rank1_70-rank1imm5-so10rep10-s134842423/train/lightzero_exp/ckpt/iteration_250000.pth.tar
+
+rank=3 rating=1606.1711440162405 checkpoint_id=ckpt-313-train-lightzero_exp_260516_110032-ckpt-ite-514e46fe
+training/lightzero-curvytron-visual-survival/curvy-r18fresh-survbonusout-blank10-wall10-rank4_10-rank3_15-rank2_20-rank1_30-rank1i-2115bef336/attempts/try-r18fresh-survbonusout-blank10-wall10-rank4_10-rank3_15-rank2_20-rank1_30-rank1imm-972db4c548/train/lightzero_exp_260516_110032/ckpt/iteration_150000.pth.tar
+
+rank=4 rating=1594.839164411031 checkpoint_id=ckpt-433-train-lightzero_exp-ckpt-iteration_190000-530e6681
+training/lightzero-curvytron-visual-survival/curvy-r18fresh-survbonusout-blank20-wall5-rank1_70-rank1imm5-so10rep10-s134842423/attempts/try-r18fresh-survbonusout-blank20-wall5-rank1_70-rank1imm5-so10rep10-s134842423/train/lightzero_exp/ckpt/iteration_190000.pth.tar
+
+rank=5 rating=1594.3621494417544 checkpoint_id=ckpt-460-train-lightzero_exp-ckpt-iteration_200000-fd7d2374
+training/lightzero-curvytron-visual-survival/curvy-r18fresh-survbonusout-blank20-wall5-rank1_70-rank1imm5-so10rep10-s134842423/attempts/try-r18fresh-survbonusout-blank20-wall5-rank1_70-rank1imm5-so10rep10-s134842423/train/lightzero_exp/ckpt/iteration_200000.pth.tar
+
+rank=6 rating=1588.1493412491225 checkpoint_id=ckpt-555-train-lightzero_exp-ckpt-iteration_260000-f365c280
+training/lightzero-curvytron-visual-survival/curvy-r18fresh-survbonusout-blank20-wall5-rank1_70-rank1imm5-so10rep10-s134842423/attempts/try-r18fresh-survbonusout-blank20-wall5-rank1_70-rank1imm5-so10rep10-s134842423/train/lightzero_exp/ckpt/iteration_260000.pth.tar
+
+rank=7 rating=1587.8718651854106 checkpoint_id=ckpt-529-train-lightzero_exp-ckpt-iteration_240000-e3badb5a
+training/lightzero-curvytron-visual-survival/curvy-r18fresh-survbonusout-blank20-wall5-rank1_70-rank1imm5-so10rep10-s134842423/attempts/try-r18fresh-survbonusout-blank20-wall5-rank1_70-rank1imm5-so10rep10-s134842423/train/lightzero_exp/ckpt/iteration_240000.pth.tar
+
+rank=8 rating=1584.4267016560555 checkpoint_id=ckpt-321-train-lightzero_exp-ckpt-iteration_150000-a49409d1
+training/lightzero-curvytron-visual-survival/curvy-r18fresh-survbonusout-blank20-wall5-rank1_70-rank1imm5-so10rep10-s134842423/attempts/try-r18fresh-survbonusout-blank20-wall5-rank1_70-rank1imm5-so10rep10-s134842423/train/lightzero_exp/ckpt/iteration_150000.pth.tar
+
+rank=9 rating=1581.3302672818784 checkpoint_id=ckpt-378-train-lightzero_exp-ckpt-iteration_170000-c67f268e
+training/lightzero-curvytron-visual-survival/curvy-r18fresh-survbonusout-blank20-wall5-rank1_70-rank1imm5-so10rep10-s134842423/attempts/try-r18fresh-survbonusout-blank20-wall5-rank1_70-rank1imm5-so10rep10-s134842423/train/lightzero_exp/ckpt/iteration_170000.pth.tar
+
+rank=10 rating=1569.8217302111632 checkpoint_id=ckpt-291-train-lightzero_exp-ckpt-iteration_150000-9f8dd2b1
+training/lightzero-curvytron-visual-survival/curvy-r18fresh-survbonusout-blank10-wall10-rank4_10-rank3_15-rank2_20-rank1_30-rank1i-2115bef336/attempts/try-r18fresh-survbonusout-blank10-wall10-rank4_10-rank3_15-rank2_20-rank1_30-rank1imm-972db4c548/train/lightzero_exp/ckpt/iteration_150000.pth.tar

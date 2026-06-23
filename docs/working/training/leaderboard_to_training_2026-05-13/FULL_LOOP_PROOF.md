@@ -7,13 +7,139 @@ it has concrete artifact refs or timestamps.
 
 ```text
 trainer writes checkpoint
--> subscriber sees checkpoint
+-> live run-id intake/subscriber sees checkpoint
 -> tournament rates checkpoint
--> public leaderboard updates
--> Coach materializes assignment
--> trainer refresh/launch consumes assignment
--> survival improves or clearly fails
+-> public leaderboard snapshot + Modal Dict pointer update
+-> Coach materializes immutable assignment + control pointer
+-> same running trainer refreshes at a safe boundary
+-> env telemetry shows the new assignment sha with provider-ok rows
 ```
+
+Survival improvement is a separate learning-quality claim. It is important, but
+it is not part of the wiring proof.
+
+Correction, 2026-05-16: a stable Elo snapshot is not required for the training
+loop to keep learning. `stable=true` only means the rating numbers have mostly
+settled. The production loop still needs auditability, immutable assignments,
+zero silent pointer rewrites, and visible labels, but it can consume a moving
+training-candidate leaderboard. The missing large-batch proof is therefore not
+"wait for stable"; it is "the controller automatically turns current tournament
+output into per-recipe assignment pointers, and running trainers actually use
+them."
+
+Local toy proof added, 2026-05-16:
+`tests/test_curvytron_training_candidate_controller_local.py` proves the
+dangerous controller boundary without Modal remote compute. It uses fake local
+tournament/runs/control mounts and a fake Dict. Covered cases: writes a
+training-candidate leaderboard snapshot/latest and Dict pointer; rewrites a
+control refresh pointer to a new immutable assignment; preserves blank/wall and
+rank-slot recipe shape; rejects corrupted input pointer sha; aborts on reload
+failure; aborts on tournament or control commit failure before trainer-facing
+pointer rewrite; rejects stale pointer races; rejects missing active ranks; and
+the trainer resolver can read the rewritten `control:` pointer and resolve the
+new frozen checkpoint refs. This proves the controller shape locally. It does
+not prove the deployed large 18-run lane until a remote controller call rewrites
+the recipe pointers and the same running trainers log `decision=applied` plus
+provider-ok env rows.
+
+Corrected current live proof lane, 2026-05-16 05:43 EDT:
+`curvy-r18fresh-live-bounded-dsf1-20260516b` /
+`elo-r18fresh-live-bounded-dsf1-20260516b`. This is now the Tournament Arena
+default because it carries explicit one-frame metadata. It was seeded from the
+same 18 r18fresh run ids and found `287` checkpoints. Persisted
+`round-000000/input.json` has `decision_source_frames=1`, `300` adaptive pairs,
+`6,300` games, `21` games per pair, `games_per_shard=21`, `active_pool_limit=100`,
+and `save_gif=false`. Rating call `fc-01KRR2PG4NN24PH9Q1B0QTB90V` continued
+through multiple bounded rounds.
+
+Corrected live loop proof closed, 2026-05-16 06:56 EDT:
+`round-000002` wrote a one-frame `latest.json` with `304` rated rows and max
+checkpoint iteration `220000`. The controller wrote training-candidate snapshot
+`r18fresh-dsf1-r2-training-g9-20260516b`, published the Modal Dict pointer, and
+rewrote the three live recipe control pointers to generation-9 assignment shas
+`bb33908f...`, `03b97093...`, and `c6b5d111...`. After the long wait, every
+one of the `18` running trainers had env telemetry rows using one of those
+assignment shas. Remote tail proof across the 18 env logs found `177,382`
+target-sha rows, `89,934` frozen-checkpoint opponent rows with
+`opponent_provider_load_ok=true`, and `0` provider-load false rows. Sample rows
+show `decision_source_frames=1`, `frozen_lightzero_checkpoint` opponents, and
+control-volume frozen checkpoint refs copied from the tournament-derived
+training-candidate assignments. This closes the live wiring proof:
+checkpoints reached the tournament, tournament output became assignment
+pointers, the same running trainers refreshed, and self-play actually loaded
+the new frozen opponents.
+
+Follow-up long-running proof turn, 2026-05-16 07:30 EDT:
+the tournament kept advancing after generation 9. Current latest is
+`round-000008` with `365` rated rows, max checkpoint iteration `260000`,
+`decision_source_frames=1`, `300` pairs, and `6,300` games. Controller
+generation 10 was published from `round-000006` as
+`r18fresh-dsf1-r6-training-g10-20260516b`, with assignment shas
+`ffc5bc3f...`, `c25af087...`, and `673381d4...`. After a 30-minute sleep, every
+one of the `18` running trainers had env telemetry rows using the gen-10 shas.
+Remote tail proof across the 18 env logs found `177,203` target-sha rows,
+`93,427` frozen-checkpoint opponent rows with `opponent_provider_load_ok=true`,
+and `0` provider-load false rows. This proves the loop keeps working across a
+later tournament snapshot, not only the first refresh. The controller call
+itself is still operator-triggered in this lane; full autonomy needs a durable
+periodic controller.
+
+Automation turn, 2026-05-16 11:55 EDT:
+`curvytron_training_candidate_refresh_tick` is deployed in
+`curvyzero-checkpoint-tournament-v2` with a 30-minute schedule. A manual smoke
+of that same scheduled function published generation 11 from tournament
+`round-000009` as `auto-r000009-g11-f2805622`; assignment shas were
+`2f33dab8...`, `8e6f41c1...`, and `0564089c...`. After the shorter post-smoke
+wait, the tournament latest had advanced again to `round-000011` with `398`
+rated rows and max checkpoint iteration `290000`. Remote env-tail proof showed
+partial gen-11 trainer uptake: `14/18` trainers had gen-11 rows, with
+`137,019` target-sha env rows, `83,945` frozen-checkpoint provider-ok rows, and
+`0` provider-load false rows. Four trainers were still on gen-10, so gen-11 is
+not counted as a closed 18/18 proof yet. Next proof action is a full 30-minute
+sleep followed by another tournament/latest and assignment-uptake check.
+
+Scheduled controller proof, 2026-05-16 12:40 EDT:
+after the requested full 30-minute sleep, the deployed scheduled controller had
+published generation 12 from the live tournament `round-000011` as
+`auto-r000011-g12-65387f58`, with assignment shas `899ed9c6...`,
+`1d9c86ff...`, and `2af7c6ff...`. The tournament latest at that point had
+`398` rated rows, max checkpoint iteration `290000`, one-frame metadata, `300`
+pairs, and `6,300` games. Status showed `15/18` trainers still running and
+`3/18` completed. Remote env-tail proof over the still-running trainers found
+`15/15` with gen-12 target-sha rows, `146,976` total target rows, `84,578`
+frozen-checkpoint provider-ok rows, and `0` provider-load false rows. Plain
+meaning: new checkpoints reached the tournament, the scheduled controller
+turned a current tournament snapshot into fresh assignments, and every trainer
+that was still alive consumed those tournament-derived frozen opponents.
+
+First bounded live proof lane, 2026-05-16 05:26 EDT:
+`curvy-r18fresh-live-bounded-20260516a` /
+`elo-r18fresh-live-bounded-20260516a`. It completed and wrote final
+`latest.json` with `272` rated rows through max iteration `190000`, `300` rated
+pairs, and `6,300` games. It is not publishable as trainer source because
+`rating_spec.decision_source_frames` was `null`; the training-candidate
+controller correctly refused it. The code default was fixed after this failure
+so future rating snapshots carry explicit `decision_source_frames=1`.
+
+Remote r18fresh controller proof, 2026-05-16: subagent artifact audit found the
+generation-8 training-candidate snapshot
+`r18fresh-round-000007-training-g8-20260516a` with `71` rows. Three gen-8
+assignments were materialized and installed into the three live control
+pointers, with shas beginning `de7b812c`, `d5c73188`, and `ac99e534`. Same
+running trainers consumed those assignments: `18/18` trainer refresh logs had
+`decision=applied` and `env_ready_report.ok=true` between
+`2026-05-16T06:47:22Z` and `2026-05-16T07:09:37Z`. Env rows with those
+assignment shas and provider-loaded checkpoint opponents exist for all three
+recipes. Plain meaning: r18fresh wiring is proven at live-batch scale once.
+The freshness gap remains: that controller generation was based on an older
+completed snapshot, while newer checkpoints now reach `iteration_190000`.
+
+Scheduler bug fixed, 2026-05-16: live run-id intake previously inherited
+unbounded all-pairs behavior. The dirty live lane proved the failure mode when
+`round-000013` admitted `261` refs and scheduled `33,930` pairs / `712,530`
+games. Current code now makes live intake continuation default to
+`adaptive_v0`, `pairs_per_round=300`, and `active_pool_limit=100`; exact-ref
+stress/validation lanes can still use all-pairs.
 
 ## Proof Table
 
@@ -33,6 +159,260 @@ Current all-v2 proof result: `curvy-e2e-allv2-canary-20260515a` /
 recreated all-v2 objects: checkpoint -> v2 intake -> v2 tournament -> v2
 leaderboard/promotion -> v2 control pointer -> same running trainer applies the
 promoted assignment and records env rows using it.
+
+Current 2026-05-16 all-205 validation truth: the clean validation tournament
+`curvy-r18fresh-validate-all205-20260516a` has a persisted all-pairs input with
+`205` checkpoint refs, max iteration `140000`, `20,910` pairs, and `439,110`
+games. Logs prove games are running with balanced randomized seats and
+`max_steps=1048576`. It is not yet a full-loop proof because no completed
+`ratings.json`/`latest.json` exists for this validation rating, and no
+controller-produced assignment from this validation leaderboard has been
+observed in the same running trainers. A 30-minute observation poll is in
+progress to check whether new checkpoints complete the path.
+
+Current larger-batch proof status, 2026-05-15:
+`curvy-r18bootfix-20260515a` is the active 18-row bootstrap batch. It was
+launched from curated exact checkpoint refs, not from a trusted ranked
+leaderboard. The three assignment recipes use immortal blank/hard-coded
+sentinel pressure plus mostly mortal frozen checkpoint slots, with total
+immortal exposure of `20%`, `25%`, and `30%`. The first failed bootstrap launch
+(`curvy-r18bootrefs-20260515a`) exposed a control-volume visibility race; the
+fresh launch after the fix showed all `18` trainers and pollers alive and later
+all `18` rows had at least `iteration_0` checkpoints. A later current-prefix
+discovery found `13/18` latest refs at `iteration_10000.pth.tar`, `5/18` latest
+refs still at `iteration_0.pth.tar`, `0` missing refs, and expected checkpoint
+sidecar metadata. Live tournament intake then seeded `32` current-batch
+checkpoints into `curvy-r18bootfix-live-20260515a` /
+`elo-r18bootfix-live-20260515a`; `round-000000` completed all-pairs with
+`496` pairs, `10,416` games, `0` failed games, and `ratings_written=true`.
+The round is `stable=false` with `max_abs_delta=117.51743133112922`. Plain
+meaning: the tournament ran and wrote ratings, but one pass moved ratings a lot,
+so this snapshot is useful live-system proof, not final ranking truth. This
+proves launch, checkpoint writing, checkpoint discoverability, intake seeding,
+and active tournament play. It does not yet prove the larger-batch full loop.
+The next required proof is public leaderboard publication,
+tournament-derived assignment/pointer materialization, and then use by a running
+patched trainer with provider-ok env telemetry.
+
+Plain correction: a strong starting leaderboard is not required for this proof.
+It only improves the quality of starting frozen opponents. The loop can and
+should be proved with exact refs, immortal blank/hard-coded sentinels, and the
+new checkpoints produced by the trainers.
+
+Current larger-batch proof status, 2026-05-16:
+`curvy-r18v2-bootstrap-20260516a` is the fresh all-v2 bootstrap batch. It was
+submitted to `curvyzero-lightzero-curvytron-visual-survival-train-v2` after the
+latest hardening and redeploy checks. Submission wrote `3` control assignments,
+`3` control refresh pointers, and spawned `18` trainers plus `18` pollers. First
+status showed all `18` rows have `iteration_0` checkpoints and poller/eval/GIF
+artifacts. Live run-id tournament intake was seeded as
+`curvy-r18v2-bootstrap-live-20260516a` /
+`elo-r18v2-bootstrap-live-20260516a` with `checkpoint_selection=all`; it found
+`18/18` startup checkpoints, missed `0`, enqueued `18`, drained queue length to
+`0`, and spawned rating call `fc-01KRQ78KSP09GH0R4K5B4YH3QE`. Rating
+`round-000000` has `18` players, `153` all-pairs battles, and `3213` games,
+with one-frame timing, `max_steps=1048576`, eval mode, and the trained
+`browser_lines + simple_symbols` policy surface. This proves launch,
+checkpoint writing, intake seeding, and tournament rating startup for the fresh
+large batch. It does not yet prove completed ratings, public leaderboard
+publication, assignment materialization, same-trainer refresh, provider-ok use,
+or survival improvement.
+
+Follow-up in the same fresh batch: every row reached at least `iteration_10000`,
+many reached `iteration_20000`, and the live intake manifest grew from `18`
+startup refs to `47` refs with `0` missing. This proves new numbered trainer
+checkpoints are visible to the live intake. The first rating round has started
+all `153` pairs and planned `3213` games; wait for final pair summaries/latest
+before publication or continuation.
+
+Current large-batch check, 2026-05-16: the same `18` trainers are still alive
+and still writing/evaluating checkpoints. Latest status showed every row at
+least `iteration_10000`, most rows at `iteration_20000` or `iteration_30000`,
+and `2-4` checkpoints per row. The live intake manifest now has `64` refs, so
+numbered checkpoints from the running trainers are continuing to enter the
+watch state. Durable rating output exists through `round-000002` with `37`
+checkpoints, `666` pairs, `13,986` games, and `stable=false`
+(`max_abs_delta=137.8483556121352`). `round-000003` is running with `64`
+checkpoints, `1,596` all-pairs matchups, and `33,516` planned games. This
+proves the large-batch trainer -> intake -> tournament path is functioning
+under load. It still does not prove a production public leaderboard snapshot,
+large-batch assignment materialization, same-trainer refresh from that large
+leaderboard, or survival improvement.
+
+Large-batch live-watch repair, 2026-05-16: an exact-ref submission had made the
+large intake scan explicit-ref only. That was wrong for a live batch because it
+would keep the submitted files but stop watching the 18 run ids for future
+checkpoints. The running intake was re-seeded with the 18 run ids and
+`checkpoint_selection=all`; direct Volume config now shows `18` run ids,
+`83` seen refs, and `continue_from_latest=true`. Local code now preserves an
+existing live watch when exact refs are pinned into the same manifest, and
+drain now refuses to spawn a continuation while a newer rating round is still
+missing its `ratings.json`. Focused tests and ruff passed, and the v2
+tournament app was redeployed. This repair supports future discovery and avoids
+duplicate/overlapping continuations; it does not by itself prove the large
+leaderboard has been published or consumed by trainers.
+
+Live large-batch continuation repair, later 2026-05-16: the previous paragraph
+was not the whole story. `round-000003` finished and wrote durable ratings, but
+the snapshot was still unstable with `57` rated checkpoints. The live intake
+then held `92` checkpoint refs. Trying to continue exposed two practical bugs:
+first, reading progress before a round starts can write a zero-work
+`round-000004/progress.json`, and the round writer incorrectly treated that as
+a real artifact; second, a detached rating loop started child rounds with
+`.remote()`, which Modal can cancel when the local caller disconnects. Both
+bugs now have focused tests and deployed fixes. Current proof state:
+`round-000004/input.json` exists, games are running, logs show balanced random
+seat order and `max_steps=1048576`, and the large lane is again moving.
+Progress read at `2026-05-16T03:02Z`: `4,186` pairs, `87,906` games planned,
+`886` pairs started, about `18,606` games seen by shard-summary estimate, and
+`0` estimated failures. Logs from active detached worker
+`ap-t8dhK6PpMxvqhyGo6hMRrG` show successful game summaries, balanced random
+seat order, current r18v2 checkpoint ids, and `max_steps=1048576`. `latest.json`
+still points at unstable `round-000003`, so no public leaderboard or assignment
+should be made from this large lane yet. Broad tournament/intake regression
+passes (`162 passed, 11 skipped`) and ruff passes for touched files. It is still
+not full large-loop proof until latest becomes stable, is published, is
+materialized into an assignment, and is consumed by the same running trainers.
+
+Do not confuse this with the sparse canary proof above. The canary already
+proved the full wiring path at small scale. The big batch is now proving scale
+and learning signal. Because its latest large snapshot is still unstable, the
+correct action is to keep rating/monitoring, not to force a non-diagnostic
+publish.
+
+Slot correction: blank and hard-coded sentinel opponents should be immortal
+every time they are sampled. Frozen checkpoint slots should usually remain
+mortal, with explicit small immortal slices where a recipe asks for harder
+pressure. Keep total immortal exposure around `20-30%`; do not block launch on
+perfect slot composition if the loop proof itself is still pending.
+
+Local and remote hardening note, 2026-05-16: the trainer resolver no longer
+puts internal checkpoint Volume reload warnings inside `opponent_mixture.entries`.
+Those entries are env-facing gameplay slots and must stay clean. The warning is
+now resolved-assignment metadata. Regression and ruff passed locally; the v2
+trainer app was redeployed.
+
+Fresh warningfix canary proof, 2026-05-16:
+`curvy-e2e-warningfix-canary-20260516a` launched from the redeployed trainer
+image. It wrote checkpoints through at least `iteration_5600`. A tiny frozen
+tournament `curvy-e2e-warningfix-live-20260516a` /
+`elo-e2e-warningfix-live-20260516a` rated `iteration_0` against
+`iteration_1000` with `21` games, `0` failures, `stable=true`, and
+`ratings_written=true`. Promotion published public leaderboard snapshot
+`e2e-warningfix-live-r0-20260516a`, wrote assignment sha
+`8b171c177c401b886a5658fafc1c16076b5797c640b6d6a689003575e6d46208`, and
+rewrote the running trainer's control pointer. The same trainer then logged
+`decision=applied` for that sha at train iter `5693` with
+`env_ready_report.ok=true`. Its env-step log contained `87` rows using the new
+assignment sha; all `87` rows had `opponent_provider_load_ok=true`, and no
+provider-load-false row was observed. This closes the current canary-scale
+refresh proof after the warning-leak fix.
+
+Current-code live-watch canary, 2026-05-16:
+`curvy-e2e-currentlive-canary-20260516a` launched after the latest v2 trainer
+and tournament redeploys. Submission spawned trainer
+`fc-01KRQ4B3MMWSX44VS8ENSDAQM5` and poller
+`fc-01KRQ4B3FKT7VS3QZA2AFQQHY7`; starter assignment sha:
+`af4167dd73868e5d7444b4b40b7ef28c86f6cfdc71c41f62a5cda368e02df81f`.
+First status showed checkpoints through at least `iteration_1250` and refresh
+events still `unchanged`, which is expected before promotion. Live-watch intake
+was seeded from the run id, not explicit checkpoint refs:
+`curvy-e2e-currentlive-live-20260516a` /
+`elo-e2e-currentlive-live-20260516a`. The seed discovered `34` current
+checkpoints, enqueued `34` checkpoint events, preserved checkpoint sidecar
+metadata, and spawned rating call `fc-01KRQ4E0P30S5N6HECHXYQ8VPJ`. Round 0 has
+`630` all-pairs battles and `13,230` planned games. This proves current-code
+run-id intake can see fresh checkpoints and hand them to a tournament. It does
+not yet prove public leaderboard publication, assignment materialization,
+same-trainer refresh, or provider-ok env use for this current-code canary.
+Those remain the live proof gate.
+
+Parallel sparse canary for a faster live proof:
+`curvy-e2e-currentlive-sparse-canary-20260516a` was launched with checkpoint
+cadence `1000` and max train iter `8000`. Dry-run and Modal ref audit passed;
+trainer `fc-01KRQ4K9RGG7P5VAQBS9H19Z3W`, poller
+`fc-01KRQ4K9N4M9WMA0SGWF5D56GW`, starter assignment sha
+`4b7261e7a795da17517360a768b581879dd20ffa034d30f8cc7540858a731f4b`.
+First status showed the process alive before any checkpoint was written. The
+planned proof is to seed live run-id intake after `iteration_1000` exists so
+the tournament has only `iteration_0` and `iteration_1000`, then require the
+same publish/materialize/pointer/apply/provider-ok chain.
+That live seed is now done: intake found exactly the two sparse checkpoints,
+queued two events, preserved sidecar metadata, and spawned rating call
+`fc-01KRQ4VESF8BRCWYY763KDG09S`; round 0 is `1` pair and `21` games.
+The sparse rating completed final `round-000007` with `1` pair, `21` games,
+`0` failures, `stable=true`, and `max_abs_delta=4.060196778430208`.
+Promotion published leaderboard snapshot sha
+`a1a003523adde3f3fc273ecba9b825da60f3c75f0b7ff23064e2db34ea24a79b`,
+materialized assignment sha
+`774b70dd15fa71bc59a92819f3d417c9025184d6a24634ad4dbebe490dbb1009`, and
+rewrote the sparse trainer's control pointer. The same running trainer then
+emitted `decision=applied` for that sha at train iter `5373` with
+`env_ready_report.ok=true`. A later `env_steps.jsonl` fetch had `357` rows with
+the promoted sha, including `312` rows with `opponent_provider_load_ok=true` and
+`0` observed rows with `opponent_provider_load_ok=false`. This closes the
+current-code live run-id proof at canary scale: trainer checkpoint -> live
+run-id intake -> tournament -> public leaderboard -> assignment/pointer -> same
+trainer refresh -> provider-ok env use.
+
+Follow-up status: the sparse watch later contained `6` checkpoints through
+`iteration_5000` with queue length `0`, and the trainer remained alive on the
+promoted assignment. The larger high-frequency current-live canary is recorded
+only as stress evidence: it produced many checkpoints and evals, but never
+applied a promoted assignment, and its failed status was caused by a wrapper
+artifact-scan path bug rather than a clear LightZero train failure. Local fix:
+scan `RUNS_MOUNT / exp_name` for relative `exp_name` values; validation:
+`tests/test_curvytron_live_checkpoint_eval_plumbing.py` -> `88 passed, 3
+skipped`.
+
+False-proof warning: the active r18bootfix trainers were launched before the
+latest deployed refresh-reload patch. Their checkpoints can prove the
+tournament lane, but they cannot close the patched-trainer refresh proof. Close
+that separately with a fresh patched canary or a relaunch.
+
+2026-05-15 patched refresh canary, current run:
+`curvy-e2e-patched-refresh-canary-20260515a` /
+`try-e2e-patched-refresh-canary-20260515a` launched after the trainer
+refresh-reload patch. Starter assignment sha:
+`9ebcba51ffa02e7ef39efb06cd7feebaae457901465c47807d17712601ee0ea7`.
+The trainer reached at least iteration `1500` on the first status read and
+checkpoint discovery has already found numbered checkpoints through at least
+`iteration_2700.pth.tar`. Live canary tournament intake:
+`curvy-e2e-patched-refresh-live-20260515a` /
+`elo-e2e-patched-refresh-live-20260515a`. The first seed admitted `22`
+checkpoints with `0` missing and correct sidecar metadata
+(`cpu_oracle`, `browser_lines + simple_symbols`, `random_per_episode`, one
+source frame). A later status showed the manifest at `28` seen checkpoints.
+The active rating round `round-000000` started with `26` checkpoints,
+`325` all-pairs battles, and `975` planned games; progress at
+`2026-05-16T00:02:09Z` showed `270/975` estimated games seen. Round 0 later
+completed with `975/975` games, `0` failed games, and ratings written, but
+promotion correctly refused because `stable=false`
+(`max_abs_delta=90.66666666666667`). Round 1 is running with the growing live
+pool, so it is useful live-watch evidence but not the clean promotion gate.
+Caveat: the first non-detached seed hit a Modal app-lifecycle conflict while
+spawning a background rating worker, but the durable rating artifacts exist and
+the live-watch round did run.
+
+To close the promotion gate without a moving pool, a frozen two-checkpoint
+canary was seeded from exact refs produced by the same patched trainer:
+`curvy-e2e-patched-refresh-frozen2-20260515a` /
+`elo-e2e-patched-refresh-frozen2-20260515a`. It uses `iteration_0.pth.tar` and
+`iteration_1000.pth.tar`, explicit-ref intake, `21` games per pair,
+`round_count=8`, `stop_when_stable=true`, one-frame timing, eval mode, and
+`browser_lines + simple_symbols`. Frozen2 reached final `round-000007` with
+`1` pair, `21` games, `0` failed games, `stable=true`, and
+`max_abs_delta=1.1749968212540947`. Promotion succeeded at
+`2026-05-16T00:13:44Z`: public leaderboard snapshot
+`tournaments/curvytron/leaderboards/e2e-patched-refresh-frozen2-20260515a/snapshots/e2e-patched-refresh-frozen2-r7-20260515a.json`,
+snapshot sha `9e162f96d1f7fa7ef2ef8204df488862ef0a57ad63f839f5366790c00f39eae9`,
+assignment ref
+`control:training/lightzero-curvytron-visual-survival/e2e-patched-refresh-promotion-bank-20260515a/attempts/try-e2e-patched-refresh-promotion-bank-20260515a/opponents/assignments/e2e-patched-refresh-frozen2-r7-assignment-20260515a/assignment.json`,
+and assignment sha
+`f8a469b5ff8598fe64bd42906de64fb68d06a8aa75f6f4a2c20be82fa4c8eedc`. The
+canary refresh pointer was rewritten to this assignment. Required close:
+confirm the same running patched trainer emits `decision=applied` and later env
+rows with this assignment sha and `opponent_provider_load_ok=true`.
 
 2026-05-15 all-v2 launch note: before launching this canary, the submitter was
 patched so direct refresh-pointer writes use
@@ -294,7 +674,7 @@ Long canary tournament/promotion:
 | Link | Status | Evidence |
 | --- | --- | --- |
 | Trainer writes checkpoints | Proven for most original real18 rows | Status snapshot after launch showed `15/18` original rows still running; most had `iteration_10000`, several had `iteration_20000`. |
-| Tournament rates current checkpoints | Proven for current v2 arena | `curvy-v2real18-live-20260515a` / `elo-v2real18-live-20260515a`, `round-000001`, completed `231` pairs / `4,851` games / `0` failures. |
+| Tournament rates historical v2real18 checkpoints | Diagnostic only | `curvy-v2real18-live-20260515a` / `elo-v2real18-live-20260515a`, `round-000001`, completed `231` pairs / `4,851` games / `0` failures. This is not current restart source evidence. |
 | Rows are usable for training | Proven for this v2 round | Latest rating snapshot has `22` active rows and `0` provisional rows. Earlier `status=provisional` was caused by an impossible `placement_min_games=420` gate for a 17-player pool. |
 | Coach materializes recipe assignments | Proven for this v2 round | Refreshed manifest `curvy-v2real18-refresh-r1-20260515a` wrote three control-volume assignments and three recipe refresh pointers without spawning duplicate rows. |
 | Running trainers consume refreshed assignments | Partly proven for real18 | `run_status_after_refresh.json` showed `4/18` rows had `decision=applied` with one of the new assignment hashes: `9717c8...` or `e34871...`. Continue monitoring until all live rows either apply or fail clearly. |
@@ -308,7 +688,7 @@ Long canary tournament/promotion:
 | --- | --- | --- |
 | Trainer writes checkpoints | Proven for most tracked rows | Current status over 21 tracked rows shows `90` durable checkpoint files, with max latest checkpoint `iteration_60000`. |
 | Running trainers consume refreshed assignments | Stronger partial proof | `15/21` rows have `assignment_refresh_applied_count > 0`, split evenly across the three recipe assignment shas. |
-| Tournament rates current checkpoints | Running, not complete | Fresh clean all-pairs rerate `elo-v2real18-rerate67-allpairs-20260515a` is running; logs show successful games with `max_steps=1048576`, but `latest.json` is not written yet. |
+| Tournament rates historical v2real18 checkpoints | Running diagnostic, not launch evidence | Fresh clean all-pairs rerate `elo-v2real18-rerate67-allpairs-20260515a` is running; logs show successful games with `max_steps=1048576`, but `latest.json` is not written yet. Do not publish/materialize restart assignments from it. |
 | Survival improves | Still not proven | `eval_manifest_count=0` for the tracked real18 rows; background eval completions total only `7`. |
 
 2026-05-15 update:
@@ -572,13 +952,15 @@ refresh mechanics. Next evidence target is survival/progress after the refresh.
 2. Verify completed games and zero/accepted failures.
 3. Publish immutable public leaderboard snapshot.
 4. Materialize immutable assignment.
-5. Launch or refresh a tiny trainer using that assignment.
-6. Verify telemetry shows:
+5. Rewrite the intended control pointer.
+6. Show the same running trainer logs `decision=applied` for that assignment at
+   a clean refresh boundary.
+7. Verify later env telemetry shows:
    - assignment sha;
    - opponent checkpoint refs;
    - `opponent_provider_load_ok=true`;
    - correct slot probabilities.
-7. Quantify survival before/after for the affected run or smoke.
+8. Separately quantify survival before/after for the affected run or smoke.
 
 ## Parallel Fallback Rule
 

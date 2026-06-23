@@ -246,18 +246,27 @@ capacity issue is solved.
 - [x] Add a real-env rollout state source to the GPU benchmark.
 - [x] Add controlled-player self/other luma to the GPU benchmark.
 - [x] Add mismatch samples when parity is not exact.
-- [ ] Decide whether the `max_abs_diff=1` parity gap should be fixed exactly or
-  accepted behind a documented tolerance gate.
-- [ ] Fix and prove JAX `browser_lines` previous-point semantics: connect each
+- [x] Decide whether the `max_abs_diff=1` parity gap should be fixed exactly or
+  accepted behind a documented tolerance gate. Current decision: accept the
+  observed one-luma edge-pixel float32 mismatch for the aggressive GPU
+  candidate. Keep `geometry_dtype=float64` only as the exact-parity reference
+  and diagnosis mode.
+- [x] Fix and prove JAX `browser_lines` previous-point semantics: connect each
   visual trail point to the previous active same-owner point, respecting
   `break_before`, inactive slots, cursor/prefix compaction, owner grouping, and
-  wrap/reset cases.
+  wrap/reset cases. Current best candidate is the owner-ordered compact
+  two-view boundary, still lab-only.
 - [x] Run both controlled-player views through the real-env benchmark.
 - [x] Run at least one larger batch and one longer-trail real-env GPU row.
 - [ ] Extract or wrap the renderer behind a separate batched backend name, for
   example `policy_observation_backend=jax_gpu_batched`. Keep `jax_gpu`
-  documented as the scalar canary unless/until it is replaced.
+  documented as the scalar canary unless/until it is replaced. Before trainer
+  promotion, the boundary must pass a full-loop canary, not only the
+  profile-only sidecar.
 - [ ] Add a fail-fast backend flag. No hidden fallback from `jax_gpu` to CPU.
+- [x] Add a first timeout/autoreset profile row to the batched boundary. Current
+  result: B64/S1024 x64 with `max_ticks=5` passes exact step,
+  final-observation, and autoreset stack parity; terminal p95 is about `920ms`.
 - [ ] Decide the trainer integration shape: batched render at an env-manager or
   collector boundary is likely better than a scalar per-env GPU call.
 - [x] Profile the stock LightZero trainer with CPU oracle versus the scalar GPU

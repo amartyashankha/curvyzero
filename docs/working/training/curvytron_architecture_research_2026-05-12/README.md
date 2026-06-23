@@ -7,6 +7,13 @@ true before another large learning claim.
 This folder is the working area. Short stable conclusions should flow upward to
 the design docs and the Coach index.
 
+> Supersession note, 2026-05-16: this folder is now historical architecture
+> research. Current broad launch defaults are centralized in
+> `../r18fresh_postmortem_2026-05-16/CURRENT_LAUNCH_DEFAULTS.md` and
+> `src/curvyzero/contracts/curvytron.py`. Older references here to
+> `body_circles_fast`, `fast_gray64_direct`, `browser_sprites`, batch32, or H100
+> are evidence from earlier lanes, not instructions for the current broad lane.
+
 ## Current Source
 
 Start here for active work:

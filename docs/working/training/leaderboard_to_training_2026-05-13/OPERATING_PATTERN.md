@@ -16,6 +16,16 @@ the thread feels confused.
   probes for later steps early, knowing some may fail.
 - Be aggressive with parallelism, but keep a small written task board so the
   lanes do not disappear.
+- Every time a "blocker" appears, ask whether it blocks all progress or only
+  one quality path. Do not turn an optional quality improvement, like a better
+  historical leaderboard, into a fake launch blocker for bootstrap training.
+- Use plain names for proof gates. A "source leaderboard" is only a ranked list
+  for choosing starting checkpoint opponents. It is optional. The actual gate is
+  whether the loop works: trainer checkpoint -> intake -> tournament ->
+  assignment -> trainer use.
+- If work starts orbiting one issue for too long, write the question in plain
+  language, name the smaller honest experiment, and run that experiment while
+  the deeper diagnosis continues.
 
 ## Reporting Pattern
 
@@ -55,6 +65,10 @@ the thread feels confused.
 - `blank_canvas_noop` is an inert/immune opponent shape in practice. Public
   slot recipes must say `opponent_immortal=true` for it; do not rely on the env
   quietly making it immune.
+- Hard-coded opponents are also immortal by contract when used as training
+  pressure. If a run needs mortal opposition, use frozen checkpoint opponents
+  from exact refs; do not create a mortal fixed-straight or wall-avoidant
+  sentinel.
 
 ## Live-System Pattern
 
@@ -68,6 +82,10 @@ the thread feels confused.
 - Verify child work completed; do not trust "scheduled" as success.
 - Treat Volume JSON as the durable truth for manifests, checkpoints, ratings,
   assignments, audits, and debug bundles.
+- If old workers have already polluted a live artifact tree, do not explain
+  around it. Name it dirty, stop stale apps, and either use a fresh id or run an
+  explicit repair/purge. A dirty root `progress.json` is not proof even if some
+  later code is fixed.
 - After an interruption, context compaction, or long pause, restart from durable
   state: read `NOW.md`/`TODO.md`/`FULL_LOOP_PROOF.md`, re-query Modal Volumes
   for the current artifacts, then update docs before taking the next mutating
@@ -79,11 +97,29 @@ the thread feels confused.
 - Avoid broad reload-dependent behavior during active file reads. Design readers
   and websites so they can recover from explicit Volume commit/reload semantics
   instead of depending on lucky cache state.
+- Do not reload the same Modal Volume from a long-running trainer when the
+  trainer itself may have open files on that Volume. For run-local handoffs
+  written by the same process, read the local path directly; reserve
+  `Volume.reload()` for external control/tournament state that must cross
+  container boundaries.
 - Preserve current live lanes while cleaning old garbage.
 - Clean dashboards matter: hide/purge old arenas and apps once they are not
   needed for current proof or old champion extraction.
 - Use long sleeps only when the expected next artifact genuinely takes time.
   While sleeping is not needed, keep working other lanes.
+- Do not turn a large stress proof into the only path. If an all-pairs live
+  tournament is useful but slow, start a smaller honest live proof in parallel
+  and keep the large one as stress evidence.
+- Exact checkpoint refs are frozen seeds. Run ids or run-id prefixes are live
+  watches. If a live service needs both, preserve the run watch and pin the
+  exact refs beside it; do not collapse the service back to explicit refs only.
+- Progress reads must not poison future work. A zero-work
+  `waiting_for_round_input` progress file is only an observation marker, not an
+  active rating artifact. A real round input or non-empty progress can block
+  overlap; an empty marker must not.
+- In detached Modal flows, child work that must outlive the local caller should
+  be started with `.spawn()`, not `.remote()`. Then verify durable Volume
+  artifacts, not just function call ids.
 
 ## Validation Phase Pattern
 
@@ -99,17 +135,55 @@ the thread feels confused.
   assignment sha with `opponent_provider_load_ok=true`.
 - When a proof finds a bug, add one regression test for the bug and record the
   exact broken artifact. Do not only patch the live artifact.
+- When a live-feedback path is suspect, run no-tournament controls in parallel:
+  static fixed opponents and an own-latest frozen-checkpoint control. These
+  answer different questions and should not be merged into one blurry
+  "self-play" claim.
 - Before a larger launch, verify the launch manifest names the current contract:
   `random_per_episode`, control-volume assignment pointer, fresh tournament and
   rating ids, policy observation surface, checkpoint cadence, and public
   `opponent_immortal` slot intent.
-- Real launch builders should fail closed: require the source leaderboard
-  snapshot explicitly, default to immutable assignments plus refresh pointers,
-  and reject stale app/Volume names instead of relying on operator memory.
+- Leaderboard-derived launch builders should fail closed: require the source
+  leaderboard snapshot explicitly, default to immutable assignments plus
+  refresh pointers, and reject stale app/Volume names instead of relying on
+  operator memory. Bootstrap/static launch builders may use curated assignments
+  and exact checkpoint refs without claiming a trusted top leaderboard.
 - A manifest is not launchable just because its refs are syntactically exact.
   Before launch, audit that every initial/frozen checkpoint ref exists in the
-  active all-v2 runs volume. Old leaderboard snapshots can contain perfectly
-  shaped refs that point at files outside the current storage lane.
+  active runs Volume and that the assignment/control refs point at the active
+  control Volume. Old leaderboard snapshots can contain perfectly shaped refs
+  that point at files outside the current storage lane.
+- A rating snapshot is not a production-quality opponent source just because
+  games completed. For leaderboard-derived restart opponents, require the
+  latest source rerate to be coverage-mature, `stable=true`, and published with
+  expected round/context/roster/snapshot hashes. Treat `stable=false` as a hard
+  blocker for opponent-source publish/materialization, not for bootstrap
+  training from curated/static assignments.
+- Do not confuse opponent-source quality with system proof. If the ranked
+  source is weak, stale, or unstable, bootstrap can still proceed from exact
+  checkpoint refs and immortal sentinels while the tournament learns a better
+  public ordering over time.
+- Do not say "stable source leaderboard" as if it is one required object. Say
+  the plain claim instead: either "this ranked source is good enough to choose
+  leaderboard-derived slots" or "bootstrap does not need it." The system proof
+  is the feedback loop, not the starting rank quality.
+- When the user challenges a premise, stop and rewrite the premise in plain
+  language before adding more machinery. If the premise is fake, delete it from
+  the docs/tests instead of explaining around it.
+- For long tournament/rating checks, prefer direct Volume artifacts over a
+  browser/progress endpoint when the endpoint is slow or stale:
+  `ratings/<rating_run_id>/latest.json`,
+  `ratings/<rating_run_id>/results.json`, and
+  `ratings/<rating_run_id>/rounds/<round_id>/{input,progress,ratings}.json`.
+  The persisted round input is the truth about roster size and previous-round
+  linkage.
+- If the source is being rematerialized from old storage, audit both sides:
+  first prove the selected old refs exist in the historical source, then after
+  copying prove the same refs exist in the all-v2 target. The fresh rerate only
+  starts after the v2 target audit passes.
+- Current launch helpers should reject old Curvy Volume names. Historical
+  storage reads belong in explicit migration/audit tools with loud names, not in
+  the default trainer, tournament, submitter, or dashboard paths.
 
 ## Tournament Pattern
 
@@ -144,6 +218,13 @@ the thread feels confused.
 - Learner seat/perspective belongs in the training config. The current default
   is `random_per_episode`; fixed-seat modes are diagnostics, not the restart
   default.
+- Slot intent is simple: blank/hard-coded sentinel opponents are immortal all
+  the time; frozen checkpoint slots are mortal most of the time, with explicit
+  small immortal slices only when a recipe asks for them. Keep total immortal
+  exposure around `20-30%` unless a diagnostic says otherwise.
+- Keep internal debug/audit fields out of env-facing slot dictionaries. If
+  Modal reloads produce warnings, record them beside the resolved assignment or
+  in refresh events, never inside `opponent_mixture.entries`.
 
 ## Self-Critique Loop
 

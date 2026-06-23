@@ -149,13 +149,19 @@ interruptions. `DataLossError` and `PytorchStreamReader` failures are mainly
 eval/GIF artifact and checkpoint-reader problems. No CUDA OOM or clear learner
 update-loop crash was found in that read-only log pass.
 
-Fast-render clarification: the trusted stock `--mode train` source-state path
+Historical fast-render clarification, not current optimizer advice: the trusted stock `--mode train` source-state path
 does not use the old custom/two-seat name `fast_gray64_direct`. Its fast
 training render is `source_state_trail_render_mode=body_circles_fast`. The
 current preserved run set is not browser-only: it has `107` `body_circles_fast`
 roots and `105` `browser_lines` roots. A spot check of remote Modal `run.json`
 for a mix3 `rf` row confirmed `config.source_state_trail_render_mode` is
 `body_circles_fast`; the paired `rb` row is `browser_lines`.
+
+Optimizer update, 2026-05-22: do not read this render-mode paragraph as a
+current speed recommendation. The current optimizer bottleneck is the LightZero
+collect/search boundary. Rendering/body-circles/browser-lines differences are
+historical run-set context unless a fresh profile explicitly makes rendering
+hot again.
 
 Opponent-mixture local status: episode-level weighted opponent mixtures are now
 wired in the trusted stock train path. Background checkpoint eval/GIF carries

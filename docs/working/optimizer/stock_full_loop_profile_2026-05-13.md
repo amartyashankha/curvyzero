@@ -151,16 +151,17 @@ lanes:
 | Training shape | self-play batch per learner update, sims, horizon, checkpoint cadence | affects both speed and learning quality; Coach owns learning claims | high impact but must be coordinated |
 | Distributed/fanout | separate collect workers, chunked GameSegments, merge/import into replay, learner freshness | potentially large future win; not trusted for overnight | high difficulty and high learning risk |
 
-Current best optimizer conclusion:
+Superseded optimizer conclusion, updated 2026-05-20:
 
-- Use L4/T4 + 40 CPU for current sim8 profiles and likely near-term training
-  probes.
-- Use around C64 to C96 collectors for stock fixed-opponent throughput tests.
-- Do not recommend H100 for sim8. Do consider H100 for sim16/sim32 if Coach
-  chooses higher-search training, because the first sim16 H100 row beat the L4
-  row materially.
-- Next useful rows should increase search pressure (`num_simulations=32`) and
-  compare L4/T4 vs H100 again.
+- This document is useful historical profile evidence, but not the current
+  speed recommendation.
+- The newest stock-path top point is H100 + subprocess + C512 +
+  `num_simulations=4`, about `1061 steps/s`.
+- L4/T4 remains the cheaper broad-run option, but it is not the top throughput
+  recommendation.
+- C768/sim4 did not improve on C512/sim4, C1024/sim4 regressed, and sim16 was
+  not a free win. The next wall is collector/process/observation-stack
+  orchestration, not simply "use more GPU."
 - If future policies survive much longer, render and observation become more
   important again. Keep no-death/long profiles as a standing guardrail.
 
@@ -221,9 +222,11 @@ Plain read:
   mixed on eval (`+1.9` median latest steps) but positive on latest iteration
   (`+10k`). Optimizer profiles also show much better throughput from wider
   collection. This remains the cleanest speed knob to probe.
-- Search sims: `sim16` was negative in matched 212-run contrasts and slower in
-  profiles. Keep `sim8` as default; use `sim16` only as a small search-sensitivity
-  sentinel or if Coach wants to test higher-search quality.
+- Search sims: historical matched contrasts made `sim8` look safer than sim16,
+  but the current speed recommendation uses sim4 because H100 C512/sim4 was the
+  best measured throughput/search compromise. Treat sim16 only as a small
+  search-sensitivity sentinel or if Coach explicitly wants higher-search
+  quality.
 
 The browser-lines GPU-render prototype should stay active but separate. It has shown
 `20x-46x` renderer-side wins versus scalar CPU production render in small

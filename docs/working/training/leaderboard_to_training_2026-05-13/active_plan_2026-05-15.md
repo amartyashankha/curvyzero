@@ -24,19 +24,33 @@ trainer writes checkpoint
 
 Do not treat a partial loop as proof of the whole loop.
 
-## Current Artifacts
+## Superseded Artifact Table
 
-| Item | Current value |
+These rows describe the invalidated `v2refresh18p` lane. They are not current
+restart guidance.
+
+| Item | Historical value |
 | --- | --- |
 | Training app | `curvyzero-lightzero-curvytron-visual-survival-train-v2` |
 | Tournament app | `curvyzero-checkpoint-tournament-v2` |
-| Current tournament | `curvy-v2refresh18p-live-20260514b` |
-| Current rating run | `elo-v2refresh18p-live-20260514b` |
-| Current batch prefix | `curvy-v2refresh18p-` |
-| Current local manifest | `artifacts/local/curvytron_tonight18_manifests/curvy-v2refresh18p-20260514b/curvy-v2refresh18p-20260514b.json` |
+| Historical tournament | `curvy-v2refresh18p-live-20260514b` |
+| Historical rating run | `elo-v2refresh18p-live-20260514b` |
+| Historical batch prefix | `curvy-v2refresh18p-` |
+| Historical local manifest | `artifacts/local/curvytron_tonight18_manifests/curvy-v2refresh18p-20260514b/curvy-v2refresh18p-20260514b.json` |
 | Manifest builder | `scripts/build_curvytron_tonight18_manifest.py` |
 | Main status doc | `current_state.md` |
 | Orchestration doc | `orchestration_2026-05-15.md` |
+
+Current ranked-source status lives in `TOURNAMENT_DEBUG.md`: the 100-ref
+rerate `curvy-restart18-source-rerate-20260515a` is diagnostic only, and the
+96-ref nonzero rerate `curvy-restart18-source-rerate-nonzero-20260515a` is only
+a candidate if we want leaderboard-derived top slots. It is not a bootstrap
+launch blocker.
+
+Plain correction: do not wait for a perfect starting leaderboard before
+launching bootstrap training. Use exact old checkpoint refs, immortal
+blank/hard-coded pressure, and live tournament intake. The tournament rankings
+can improve while training runs.
 
 ## Facts Right Now
 
@@ -44,12 +58,12 @@ Do not treat a partial loop as proof of the whole loop.
   caps to `1_048_576`.
 - The already-running jobs do not automatically inherit that new cap. A clean
   relaunch/resume must come from a regenerated manifest.
-- The local `curvy-v2refresh18p-20260514b` manifest was stale and recorded
+- Historical `curvy-v2refresh18p-20260514b` manifest was stale and recorded
   `source_max_steps=65_536`. It has now been regenerated with
   `source_max_steps=1_048_576`, `background_eval_max_steps=1_048_576`, and
-  refresh interval `50` for all 18 rows.
-- The trainer refresh interval has not been changed to `1000` or `2000`.
-  Changing it is blocked on resume-safety evidence.
+  the old 50-iteration refresh cadence for all 18 rows.
+- Restart18 builder/shared-contract default is now refresh interval `2000`.
+  The `50` interval belongs to invalidated v2real18/v2refresh18p history.
 - Tournament GIFs sampled from the current live arena are not frame-truncated:
   sampled games had `frame_count = physical_steps + 1`, `frame_stride=1`, and
   `duration_ms_per_frame=12`.
@@ -110,18 +124,11 @@ Do not treat a partial loop as proof of the whole loop.
   game summaries; update `SourceStateGray64Stack4` so
   `body_circles_fast + simple_symbols` uses the same direct fast gray64 path as
   training; add focused regression tests before redeploy.
-- New side experiment requested: identify the five weakest current training
-  runs by survival progress and, if assignment refresh supports it safely, bump
-  their total blank/immortal opponent exposure to about 50%. This is useful
-  exploration but must not block the tournament parity fix.
-- Specific weak-run slot request: for the five runs that are not improving much,
-  first measure their current slot probabilities, then aggressively raise total
-  exposure to invincible/immortal opponents to roughly half of samples. The
-  half can be split between blank-canvas/no-op and actual frozen opponents with
-  immortal death mode. Do not make every opponent immortal; leaderboard
-  checkpoints should still be the majority signal for the broader batch. This
-  is intentionally a wonky live intervention: if those five runs get worse, that
-  is acceptable signal.
+- Weak-run live intervention is dropped for the current invalidated rows. The
+  lesson goes into the next manifest instead: blank and hard-coded sentinel
+  opponents are immortal; frozen checkpoint slots are mostly mortal, with small
+  explicit immortal slices; keep total immortal exposure around `20-30%` and
+  generally not above about `30%`.
 - Code-quality note from the tournament patch: the current code has too many
   implicit fallback names (`policy_*`, `observation_*`, `source_state_*`,
   generic `trail_render_mode` / `bonus_render_mode`). Use fallbacks only to
@@ -141,9 +148,9 @@ Do not treat a partial loop as proof of the whole loop.
 | Is survival actually improving since new checkpoints came in? | Main + Ptolemy | Eval says best-seen survival improves in every row; latest is noisy. Still need collector summary. |
 | Has the full loop happened at least once? | Wegener | Concrete refs/timestamps for every handoff in the loop. |
 | Is tournament evaluation valid? | Main + subagents | Compare tournament observation stack, one-frame timing, game rules, checkpoint loading, MCTS/eval action selection, and training collect action selection. Decide whether ranking should be greedy/eval or noisy/collect. |
-| Do tournament eval observations match training observations? | Main + Meitner | P0. Specifically verify `body_circles_fast + simple_symbols` parity, including bonus render mode. A matching trail mode alone is not enough. |
+| Do tournament eval observations match training observations? | Main + Meitner | P0. Fresh production must verify CPU `cpu_oracle` `browser_lines + simple_symbols`; historical rerates may still need `body_circles_fast + simple_symbols` parity for forensic reads. A matching trail mode alone is not enough. |
 | Is relaunch/resume safe if we change cap and refresh interval? | Ptolemy | What state resumes, what resets, and what artifacts prove it. |
-| Should refresh interval move from `50` to `1000`/`2000`? | Main after Ptolemy | Resume safety plus rough overhead evidence. |
+| Should refresh interval move away from the current `2000` default? | Main after Ptolemy | Resume safety plus rough overhead evidence. |
 | How should tournament GIFs stay safe with `1_048_576` max steps? | Main + Carver | Explicit frame sampling policy that still shows useful games. |
 | Does the current Tournament Arena dropdown visibly say current? | Main | Fresh page HTML after deploy, not just API JSON. |
 | Why are only 51 checkpoints ranked? | Main + delegated audit | Current answer: latest reduced round has 51; running round has 193 checkpoints / 18,528 pairs. Need decide whether to kill/replace that giant round. |
@@ -170,7 +177,7 @@ Do not treat a partial loop as proof of the whole loop.
 | P1 | Decide explicit GIF safety policy for huge tournament max steps. | Pending |
 | P1 | Refresh interval decision: keep `50` until resume-safety audit returns. | Pending |
 | P2 | Cleanup old arenas/apps after the current lane is stable. | Pending |
-| P2 | Bump immortal/blank exposure for five weak runs to about 50% if live assignment update is safe. | Delegated |
+| P2 | Keep next-manifest immortal exposure simple: blank/hard-coded immortal, small frozen immortal slices, total around `20-30%`. | Locally implemented in builder; keep testing |
 | P2 | Refactor tournament observation-surface field fallbacks into a clean explicit contract. | After urgent patch/redeploy |
 
 ## Delegation State

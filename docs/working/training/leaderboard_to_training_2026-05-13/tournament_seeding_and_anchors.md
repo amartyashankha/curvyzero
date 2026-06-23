@@ -14,10 +14,9 @@ are official competitors, which are anchors, and which are diagnostics.
 | Survival champions | high survival eval rows | Yes | Yes | Good objective-progress anchors. |
 | Historical anchors | prior known-good checkpoints | Yes | Yes | Calibrate drift across cohorts. |
 | Failure sentinels | collapse/weak checkpoints | Maybe | Maybe | Useful for diagnostics, not promotion. |
-| Scripted policies | wall-avoidant, fixed-straight | Not yet | Yes | Tournament needs general player specs first. |
-| Blank/no-op control | `blank_canvas_noop` | Diagnostic only | Yes | Good survival-pressure baseline. |
-| Passive/immortal control | fixed-straight + immortal | Diagnostic only | Yes, small share | Dirty control; not source-faithful. |
-| Invincible wrapper | death-immunity modifier around another opponent | No for official Elo | Yes, if explicit | It changes scoring semantics. |
+| Scripted sentinels | wall-avoidant, fixed-straight | No for official checkpoint Elo | Yes | Training-pressure sentinels are immortal by contract. |
+| Blank/no-op control | `blank_canvas_noop` | Diagnostic only | Yes | Immortal inert baseline; useful survival pressure. |
+| Immortal checkpoint slice | death-immunity overlay around a frozen checkpoint | No for official Elo | Yes, if explicit and small | Use duplicated mixture entries; keep total immortal pressure bounded. |
 
 ## Near-Term Seeding Plan
 
@@ -27,9 +26,10 @@ For the next clean checkpoint-only leaderboard:
 2. Include top survival-eval checkpoints.
 3. Include a few anchors from older/preserved cohorts.
 4. Include failure/collapse sentinels only if labeled diagnostic.
-5. Do not include invincible wrappers in official Elo.
-6. Do not include scripted policies until the tournament runner supports
-   non-checkpoint players.
+5. Do not include immortal wrappers or scripted sentinels in official checkpoint
+   Elo.
+6. Use scripted/blank sentinels only in training assignments or diagnostic pools,
+   with explicit `opponent_immortal=true`.
 
 ## May 14 Live Tournament Seed Decision
 
@@ -75,13 +75,12 @@ Participants must be fair under first-death scoring.
 
 Allowed now:
 
-- neural checkpoints with exact immutable refs;
-- possibly non-invincible scripted policies after general player specs exist.
+- neural checkpoints with exact immutable refs.
 
 Excluded now:
 
-- invincible wrappers;
-- passive immortal rows unless explicitly labeled as diagnostic;
+- immortal wrappers;
+- scripted/blank sentinel rows unless explicitly labeled as diagnostic;
 - hidden runtime modifiers.
 
 ### Diagnostic Pressure Pool
@@ -90,10 +89,9 @@ Participants or entries may be unfair because the goal is pressure or inspection
 
 Allowed:
 
-- blank/no-op;
-- passive immortal;
-- invincible variants;
-- scripted wall-avoidant policies;
+- immortal blank/no-op sentinels;
+- immortal fixed-straight or wall-avoidant sentinels;
+- small explicit immortal slices of frozen checkpoints;
 - failure sentinels.
 
 These should not be merged into the official Elo pool without explicit context
@@ -117,7 +115,8 @@ Each seed row should record:
 ## Open Design Questions
 
 - Should the first one-frame public leaderboard be checkpoint-only?
-- Should scripted wall-avoidant policies be rated in the same Elo pool as neural checkpoints?
-- Should passive immortal controls be excluded from all official score pools?
+- Should scripted wall-avoidant sentinels remain training-only forever, or get a
+  clearly separate diagnostic rating pool?
+- Should immortal controls be excluded from all official score pools?
 - How many old anchors are needed to stabilize rating drift?
 - Should top leaderboard checkpoints be chosen by rank, by diversity, or by both?

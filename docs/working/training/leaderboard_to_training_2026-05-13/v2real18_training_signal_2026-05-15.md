@@ -18,8 +18,8 @@ Read-only note from local artifacts. No live Modal apps were changed.
 
 ## Best Available Answer
 
-The current v2real18 lane has strong progress/liveness evidence, but not yet a
-trustworthy quantified survival-improvement signal.
+The v2real18 lane has strong historical progress/liveness evidence, but it is
+diagnostic only and is not the current restart launch source.
 
 The strongest trustworthy signal is checkpoint and loop progress:
 
@@ -96,4 +96,3 @@ manifest path is still empty.
   learning claim.
 - Tournament Elo/rating progress proves the loop is evaluating checkpoints
   against each other; it is not the same as absolute survival improvement.
-

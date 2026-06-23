@@ -56,9 +56,10 @@ There is also a separate start-weight contract:
 
 - old/static batches started from fresh model weights unless same-run
   auto-resume applied;
-- the next production-shaped batch must start every fresh learner from the
-  trusted rank-1 tournament checkpoint using a model-only champion bootstrap;
-- that is not the same thing as using the champion as an opponent.
+- a trusted rank-1 tournament checkpoint can be used as an optional model-only
+  champion bootstrap when a ranked source is available;
+- that optional start-weight source is not the same thing as using the champion
+  as an opponent, and it is not required for bootstrap or loop proof.
 
 ## Current Validation Status
 
@@ -206,10 +207,11 @@ Do a bounded proof that does not depend on live trainer refresh:
 8. Launch a fresh tiny trainer using the materialized assignment.
 
 This proves every implemented link. It does not prove automatic in-run refresh.
-For a production-shaped batch, the fresh trainer must also start from
-`initial_policy_checkpoint_ref=<rank1 active checkpoint ref>`, and opponents
-must come from an immutable `stable_slots_v1` assignment. Without both, it is
-only a diagnostic assignment-consumption proof.
+For a leaderboard-derived quality batch, the fresh trainer may start from
+`initial_policy_checkpoint_ref=<rank1 active checkpoint ref>` and opponents
+should come from an immutable `stable_slots_v1` assignment. Bootstrap/static
+loop proof can instead use curated exact refs plus immortal sentinels without a
+trusted ranked source.
 
 Launch rule for step 5: if a `modal run` command spawns background game/rating
 workers and then returns, it must be detached or must wait for those workers.

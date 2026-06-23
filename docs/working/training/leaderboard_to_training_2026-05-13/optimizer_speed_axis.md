@@ -18,6 +18,30 @@ it is slower than CPU and fails in subprocess workers. The optimizer
 implementation target is a batched GPU backend or render service for the same
 surface. H100 learner/search compute is not GPU rendering.
 
+2026-05-16 update: current handoff lives in
+`../r18fresh_postmortem_2026-05-16/H100_L4_OPTIMIZER_HANDOFF.md`. Float32 is now
+the aggressive default for the profile-only batched GPU observation boundary
+sidecar; float64 is the exact-parity/debug reference. This does not change
+production training yet, because the sidecar is not wired into the real trainer
+and scalar `policy_observation_backend=jax_gpu` remains out of production.
+
+2026-05-16 current launch default update: broad training defaults moved to
+`gpu-l4-t4-cpu40`, `collector_env_num=256`, `n_episode=256`, `batch_size=64`,
+`num_simulations=8`, `browser_lines + simple_symbols + cpu_oracle`. Fresh
+current-surface profiles measured best L4 `713.83` env steps/s and best H100
+`1001.94`; L4 throughput is about `28.8%` lower and acceptable for cheaper broad
+runs. Batch64 helped the L4/C256 row but hurt H100, so treat it as an L4-lane
+default, not a universal rule.
+
+2026-05-21 supersession: the active optimizer source of truth is now
+`docs/working/optimizer/active_working_memory_2026-05-14.md` plus
+`docs/working/optimizer/batched_gpu_full_loop_reorientation_2026-05-20/`.
+The older L4/C256 launch guidance above is historical. Current profiling says
+renderer work helped, but the main optimizer wall is public LightZero
+collect/MCTS/search/output handling. Do not copy the older C256/L4 defaults as
+the current optimizer recommendation without checking the active optimizer
+docs.
+
 ## Current Trusted Optimizer Context
 
 Source docs:
@@ -67,7 +91,7 @@ Other reads:
 
 | Setting | Learning/leaderboard read | Optimizer read | Current stance |
 | --- | --- | --- | --- |
-| `batch32` | better than `batch64` in matched learning/leaderboard evidence | no conflict | default |
+| `batch64` on L4/C256 | old learning evidence was mixed/negative for batch64 on other lanes | fresh L4 current-surface profile says it is the fastest L4 row | current L4 broad default; keep batch32 as ablation/sentinel |
 | `sim8` | default; `sim16` not earning quality cost | sim16 may be affordable | keep sim16 sentinel only |
 | `collector32` | clean baseline | C64/C96 improve throughput | consider C64 probe separately |
 | browser-lines render | target semantics | CPU path is current reliable backend; batched GPU path is target architecture | use `cpu_oracle` now; use batched GPU only after it is wired and profiled |
@@ -90,7 +114,7 @@ For the next static overnight manifest:
 
 - keep learning defaults from survival/leaderboard evidence;
 - consider collector-width probes separately from quality probes;
-- do not scale `batch64`;
+- use `batch64` only for the current L4/C256 broad lane; do not generalize it to H100;
 - do not confuse H100 compute probes with GPU renderer work;
 - keep `cpu_oracle` until a batched GPU backend exists; do not use scalar
   `jax_gpu` for overnight training.

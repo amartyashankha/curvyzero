@@ -14,13 +14,18 @@ target is coarse:
 ```text
 operator/Coach updates run-control intent
 -> Coach materializes a concrete assignment
--> trainer notices at a coarse boundary, about every 50 learner iterations
+-> trainer notices at a coarse boundary, currently every 2000 learner train iterations
 -> next collection batch uses the new assignment
 ```
 
 ## Current Truth
 
 Implemented today:
+
+- Current restart default cadence is
+  `CURVYTRON_ASSIGNMENT_REFRESH_INTERVAL_TRAIN_ITER = 2000` in
+  `src/curvyzero/contracts/curvytron.py`. The earlier `50`-iteration cadence
+  was a design probe, not the active restart default.
 
 - `stable_slots_v1` can turn a leaderboard snapshot into an immutable
   `assignment.json`;
@@ -228,7 +233,7 @@ There is also a simpler direct path for near-term overnight runs:
 ```text
 launch with initial opponent_assignment_ref=A
 launch with opponent_assignment_refresh_ref=B
-launch with opponent_assignment_refresh_interval_train_iter=50
+launch with opponent_assignment_refresh_interval_train_iter=50  # historical test cadence, not current restart18 default
 -> trainer checks B at the collect boundary
 -> if B differs from A and resolves cleanly, reset/prove/apply before collect
 ```

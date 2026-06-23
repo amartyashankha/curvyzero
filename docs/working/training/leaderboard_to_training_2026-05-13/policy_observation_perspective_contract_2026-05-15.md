@@ -70,6 +70,19 @@ Every policy artifact should make these visible when practical:
 
 ## Current Evidence
 
+- 2026-05-16 fork check: current source-state training is not fixed to player
+  0. `DEFAULT_LEARNER_SEAT_MODE` is `random_per_episode`; each reset chooses
+  player 0 or player 1 deterministically from the episode seed/reset index, the
+  learner action is routed to that physical player, and reward/action mask/info
+  use the same selected player.
+- 2026-05-16 fork check: tournament eval uses `balanced_random` seating and
+  per-seat controlled-player observations. Seat 0 gets `observation[0,0]` and
+  acts as player 0; seat 1 gets `observation[0,1]` and acts as player 1.
+- 2026-05-16 cleanup: actual tournament policy loading now fails closed when a
+  checkpoint lacks explicit `policy_trail_render_mode`,
+  `policy_bonus_render_mode`, or `policy_observation_backend` in checkpoint
+  payload/sidecar/run metadata. Fresh eval must not silently assume the current
+  surface for a checkpoint whose training surface is unknown.
 - `player_perspective_audit_2026-05-15.md`: training-seat audit and fixed-seat
   regression plan.
 - `random_seat_manifest_wiring_2026-05-15.md`: manifest contract for

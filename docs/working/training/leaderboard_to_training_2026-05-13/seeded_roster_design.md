@@ -7,9 +7,9 @@ It may need:
 
 - current best checkpoints from the latest-212 tournament;
 - anchors from older tournaments;
-- scripted or hand-coded baselines;
-- blank/no-op and passive/immortal controls;
-- future special opponent modes such as invincible-opponent episodes.
+- scripted or hand-coded sentinels;
+- blank/no-op controls;
+- explicit `opponent_immortal` overlays on training opponents.
 
 These are not all the same kind of object. Mixing them carelessly can make the
 leaderboard hard to interpret.
@@ -19,10 +19,9 @@ leaderboard hard to interpret.
 | Type | Example | Should be leaderboard player? | Should be training opponent? |
 | --- | --- | --- | --- |
 | Neural checkpoint | exact `iteration_N.pth.tar` | Yes | Yes |
-| Scripted wall-avoidant policy | `proactive_force_field` | Maybe, with explicit schema | Yes, after canary |
-| Blank/no-op opponent | `blank_canvas_noop` | Probably as sentinel, if represented clearly | Yes |
-| Passive immortal diagnostic | `opponent_immortal=true` | Maybe diagnostic only | Maybe small pressure share |
-| Global invincible modifier | "make opponent invincible X% of episodes" | No, modifier not player | Yes as training/eval condition |
+| Scripted wall-avoidant sentinel | `proactive_wall_avoidant` | No for official checkpoint Elo | Yes, immortal |
+| Blank/no-op opponent | `blank_canvas_noop` | Diagnostic only | Yes, immortal |
+| Immortal checkpoint slice | `opponent_immortal=true` on a frozen checkpoint entry | No, modifier not player | Yes, as a small explicit slice |
 | Source bonus invincibility | SelfMaster/Godzilla-like source effect | No, unless modeled as environment mode | Maybe later |
 
 ## Current Code Reality
@@ -42,7 +41,8 @@ Training opponent mixtures are more general:
 - `proactive_wall_avoidant`;
 - `frozen_lightzero_checkpoint`;
 - `blank_canvas_noop` runtime;
-- `immortal` opponent death mode.
+- public `opponent_immortal` intent, with runtime death mode derived at the env
+  boundary.
 
 Therefore: non-checkpoint policies can be used as **training opponents** today,
 but need tournament schema/loader work before they can be ranked as
@@ -108,10 +108,10 @@ Required changes:
   when needed;
 - preserve scripted rows across continuation from `latest.json`.
 
-### Option C: Scripted Policies Outside Leaderboard
+### Option C: Scripted Sentinels Outside Leaderboard
 
-Leaderboard remains neural-only; assignment selector appends scripted/blank/
-invincible entries to training mixtures.
+Leaderboard remains neural-only; assignment selector appends scripted, blank, and
+small immortal checkpoint-slice entries to training mixtures.
 
 Pros:
 
@@ -126,12 +126,12 @@ Cons:
 Use for: immediate next overnight if training needs these pressures before
 tournament schema generalization.
 
-## Invincible Opponent Design
+## Immortal Opponent Design
 
 Important distinction:
 
-- An **invincible policy** is a player identity.
-- An **invincible modifier** is an environment/opponent condition.
+- A **policy** is the thing that chooses actions.
+- `opponent_immortal` is a separate death-immunity flag on a training entry.
 
 For training, the clean near-term design is a separate weighted slot entry:
 
@@ -152,19 +152,21 @@ bounds and leave trails. The lower-level env may report derived
 `opponent_death_mode=immortal` telemetry, but slot specs should not use that as
 their public intent field.
 
-There is no clean global "invincible fraction regardless of policy" knob today.
-To approximate it now, duplicate mixture entries with different
-`opponent_immortal` values and weights. That is semantically workable but can
-duplicate frozen policy loading because mixture cache keys are entry names.
+There is no clean global "make any selected policy immortal X% of the time" knob
+today. The clean current path is to duplicate mixture entries with different
+`opponent_immortal` values and weights. Keep total immortal exposure around
+`20-30%`, generally not above about `30%`.
 
 ## Recommended Near-Term Plan
 
 For the next overnight run:
 
-1. Do **not** make invincibility a leaderboard player yet.
+1. Do **not** make immortality a leaderboard player yet.
 2. Keep the new public leaderboard checkpoint-only or neural-checkpoint-first.
-3. Add scripted/blank/passive/immortal pressures through assignment snapshots or
-   manifest-defined opponent mixtures.
+3. Add scripted/blank/immortal pressures through assignment snapshots or
+   manifest-defined opponent mixtures. Blank and hard-coded sentinels must be
+   immortal; frozen checkpoint opponents should be mortal unless a small explicit
+   immortal slice is intended.
 4. Include explicit metadata in assignment audit:
    - `opponent_policy_kind`;
    - `opponent_runtime_mode`;
@@ -177,17 +179,17 @@ For a future clean public leaderboard:
 
 1. Start checkpoint-only with best existing neural policies and anchors.
 2. Add scripted policies only after general player specs are implemented.
-3. Treat passive/immortal and invincible-modifier rows as diagnostics unless
+3. Treat immortal/modifier rows as diagnostics unless
    their exact game/evaluator semantics are documented and hashed.
 
 ## Open Questions
 
 - Should the first clean public leaderboard include scripted wall-avoidant
   players, or should those stay assignment-only?
-- Should passive immortal be allowed in public ratings, or only diagnostic
-  tournaments?
-- What exact env flags define "invincible opponent episode" without creating a
-  misleading source-fidelity claim?
+- Should immortal rows be allowed in public ratings, or only diagnostic
+  tournaments/training assignments?
+- Should we later add a first-class "immortal overlay probability" knob, or keep
+  explicit duplicated mixture entries?
 - How should a non-checkpoint player appear in website labels and rating rows?
 
 ## Test Requirements Before General Player Specs

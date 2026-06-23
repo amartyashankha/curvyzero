@@ -2,15 +2,17 @@
 
 ## Current Restart Gate
 
-Do not launch new training until all boxes in this section are checked.
+Do not launch leaderboard-derived/refresh-enabled training from this checklist
+until all applicable boxes are checked. Bootstrap/static training has its own
+gate below and does not require a perfect starting ranking.
 
 - [x] All-v2 reset is complete: exact v2 Volumes/Dicts/Queue were
   delete/recreated, v2 apps redeployed, and `modal.Volume.from_name(...,
   version=2).info()` passed for `curvyzero-runs-v2`,
   `curvyzero-curvytron-tournaments-v2`, and
   `curvyzero-curvytron-control-v2`.
-- [x] Current v2 real18 run is stopped or explicitly archived as diagnostic
-  smoke; no restart assignment is published from it.
+- [x] Invalidated v2real18 artifacts are explicitly archived as diagnostic
+  smoke/history; no restart assignment is published from them.
 - [x] Learner seat/perspective fix is implemented and tested, with the next
   manifest set to `random_per_episode`.
 - [x] No-op/straight action semantics are checked and documented for both
@@ -19,8 +21,9 @@ Do not launch new training until all boxes in this section are checked.
   tested.
 - [x] Stale detached Modal apps and confusing old dashboards are cleaned up or
   clearly labeled before restart.
-- [x] Next manifest globally includes at least about `20%` blank/immortal
-  pressure, plus some higher-immortal variants.
+- [x] Next manifest globally includes `20-30%` total immortal opponent pressure:
+  blank/hard-coded sentinel entries are immortal, and small explicit immortal
+  frozen-checkpoint slices are allowed.
 - [x] The previous weak `5%` wall-avoidant immortal recipes are not reused as
   the main restart pressure plan.
 - [x] Storage namespace is explicitly chosen for the launch: the current lane is
@@ -28,8 +31,9 @@ Do not launch new training until all boxes in this section are checked.
 - [x] Run a fresh all-v2 canary before a larger batch. The recreated all-v2
   canary `curvy-e2e-allv2-canary-20260515a` proved wiring at canary scale.
 - [x] Launch builder fails closed instead of silently using stale defaults:
-  explicit ratings snapshot required, assignment mode/control-volume targets
-  are default, refresh pointers are default, and coarse assignment refresh is
+  exactly one explicit input source is required, either a ranked snapshot or a
+  curated checkpoint refs file. Assignment mode/control-volume targets are
+  default, refresh pointers are default, and coarse assignment refresh is
   nonzero by default.
 - [x] Submitter rejects app-name mismatches so a v2 manifest cannot be launched
   into an old trainer app by stale guards or a bad `--app-name`.
@@ -39,13 +43,16 @@ Do not launch new training until all boxes in this section are checked.
 - [x] Add a manifest checkpoint-ref existence audit. The canary dry-run
   manifest passed against `curvyzero-runs-v2`; run it again on the final real
   restart18 manifest before launch.
-- [ ] Identify or run a production-shaped bounded leaderboard/assignment
-  validation with real active-row gates. The all-v2 canary's provisional
-  relaxations do not prove production-quality ranking.
+- [ ] Before using leaderboard-derived opponent assignments, wait for the
+  current v2 source rerate to become `stable=true`, coverage-mature, and
+  publishable with expected round/context/roster/snapshot hashes. The all-v2
+  canary's provisional relaxations do not prove production-quality ranking.
 
 ## Static Overnight Training Manifest
 
 Use this if launching before full leaderboard-to-training wiring.
+This path may use curated/static assignments and exact old checkpoint refs. It
+does not require the optional source rerate to be `stable=true`.
 
 - [ ] Manifest uses trusted `--mode train`.
 - [ ] Cadence is one-frame: `decision_source_frames=1`.
@@ -69,7 +76,10 @@ Use this only when assignment plumbing exists or when static manifest mirrors th
 assignment manually.
 
 - [ ] Source leaderboard/rating snapshot identified.
-- [ ] Snapshot is final or explicitly marked provisional.
+- [ ] Snapshot is final for leaderboard-derived restart18 opponent assignment:
+  `stable=true`, non-diagnostic, coverage-mature, and hash-guarded.
+  Provisional/unstable snapshots are not launch inputs for this stricter path.
+- [ ] Hash-guarded publish and assignment materialization have both succeeded.
 - [ ] Snapshot path is explicit in the build command; no default `/private/tmp`
   snapshot path is accepted.
 - [ ] Rows have games, distinct opponents, status, context hash, and checkpoint refs.

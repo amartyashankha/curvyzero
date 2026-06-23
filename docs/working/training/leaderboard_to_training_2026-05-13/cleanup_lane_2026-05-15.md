@@ -9,7 +9,7 @@ arena names as authority.
   storage/control objects, then redeployed the current apps against them. This
   supersedes the earlier "do not rerun purge" note for the exact v2 objects
   only.
-- Current exact v2 objects to recreate:
+- Current exact v2 objects already recreated and in use:
   `curvyzero-runs-v2`, `curvyzero-curvytron-tournaments-v2`,
   `curvyzero-curvytron-control-v2`,
   `curvyzero-curvytron-checkpoint-intake-v2`,
@@ -33,6 +33,31 @@ arena names as authority.
   `curvyzero-runs-v2` after the 12:28 EDT recreation.
 - No wildcard deletes.
 
+## 2026-05-15 Live App Cleanup
+
+- Current necessary Curvy apps:
+  `curvyzero-checkpoint-tournament-v2`,
+  `curvyzero-lightzero-curvytron-visual-survival-train-v2`, and
+  `curvyzero-curvytron-gif-browser-v2`.
+- Latest detached tournament work:
+  `ap-EqV1pzucLCW8fZjMA3FEqM`, round-6 same-context continuation for
+  `curvy-restart18-source-rerate-nonzero-20260515a` /
+  `elo-restart18-source-rerate-nonzero-20260515a`.
+  Round 6 completed cleanly with `300` pairs / `6300` games, `0` failures,
+  `96` active rows, and the same context/roster hashes, but stayed
+  `stable=false` with `max_abs_delta=25.199213332028748`. It is stopped now;
+  keep it as evidence, not active work.
+- Stopped stale detached app `ap-ROvrtOp1TPQUYFEcB1OGDh` after verifying from
+  logs that it belonged to old 100-ref diagnostic round-4 work
+  (`elo-restart18-source-rerate-20260515a`) and had already written its final
+  snapshot. That lane is rejected as a restart source, so keeping leftover tasks
+  alive was just noise.
+- Round-2 app `ap-0HzVT85O8UHt0rgUdMVyRg` is stopped after completing.
+- Round-3 app `ap-91EOlo30iDhxlwDqVgJhYw` is stopped after completing.
+- Round-4 app `ap-j21sPzVU0Ow0OS6RUZSXV0` is stopped after completing.
+- Round-5 app `ap-9mpXrA6OsyLGY85WAz7KsM` is stopped after completing.
+- Round-6 app `ap-EqV1pzucLCW8fZjMA3FEqM` is stopped after completing.
+
 ## Purge Result
 
 Completed and verified around 2026-05-15 10:50 EDT.
@@ -54,12 +79,13 @@ Verification after deletion:
 - Non-v2 Curvy storage remains present: `curvyzero-runs`,
   `curvyzero-curvytron-tournaments`, and `curvyzero-curvytron-control`.
 
-## Latest Recheck
+## Superseded Recheck
 
-Checked again after the seat/slot cleanup.
+This was checked after the seat/slot cleanup and before the all-v2 redeploy.
+It is preserved as history only.
 
-- No CurvyZero app in `modal app list` is active with tasks. Remaining active
-  deployed apps are unrelated non-Curvy apps.
+- Superseded: the v2 trainer, tournament, and GIF browser apps have since been
+  redeployed, and the active source rerate is running in the all-v2 lane.
 - Non-v2 Curvy volumes remain present and should be preserved unless a future
   plan explicitly chooses a full namespace reset:
   `curvyzero-runs`, `curvyzero-curvytron-tournaments`,

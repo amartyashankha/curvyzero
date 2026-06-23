@@ -5,6 +5,21 @@ Date: 2026-05-14
 Purpose: measure the fastest practical current stock LightZero profile shape
 after the V8 fast observation wiring. This is speed evidence only.
 
+2026-05-15 supersession: treat this as historical speed/control evidence. The
+profile rows below used CPU `body_circles_fast + simple_symbols`; fresh
+production policy observations should use CPU `cpu_oracle`
+`browser_lines + simple_symbols`. H100 rows here are compute/profile rows, not
+GPU-rendering proof.
+
+2026-05-16 launch-default supersession: the `batch_size=32` rows below are
+historical speed-grid settings, not current broad launch defaults.
+
+2026-05-20 speed supersession: this whole document is historical
+body-circle/control evidence. The newest optimizer profile top point is H100,
+subprocess, C512, `num_simulations=4`, `browser_lines + simple_symbols +
+cpu_oracle`, at about `1061 steps/s`. Do not copy the body-circle rows below as
+current training recommendations.
+
 ## Scope
 
 All rows use the trusted stock path:
@@ -22,8 +37,8 @@ Shared profile controls:
   profiling;
 - render: `body_circles_fast`;
 - bonus render: `simple_symbols`;
-- learner batch: `batch_size=32`, because this is the current learning-safe
-  batch from the Coach/leaderboard docs;
+- learner batch: `batch_size=32`, because that was the historical learning-safe
+  batch from the Coach/leaderboard docs at the time of this grid;
 - no-death: enabled, to force long trajectories;
 - source horizon: `source_max_steps=512`;
 - profile stop: `12` learner train calls;
@@ -149,9 +164,10 @@ Failure details:
 - C768/H100/sim8 is the fastest completed overall sim8 row so far, at
   `1204.0` env steps/sec. This is speed-only evidence: the learning docs still
   treat very wide collector counts as probes, not proven quality defaults.
-- C256/H100/sim8 remains the cleanest aggressive speed/quality compromise from
-  the completed grid, at `1081.9` env steps/sec. H100 was worse at C64/sim8,
-  but wins once root batches are wide enough.
+- Within this historical body-circle grid, C256/H100/sim8 was the cleanest
+  aggressive speed/quality compromise, at `1081.9` env steps/sec. It is
+  superseded for current recommendations by the 2026-05-20 CPU-oracle H100
+  C512/sim4 stock-path row.
 - H100 is much better than L4/T4 at sim16/sim32, but those higher-sim rows are
   not supported as quality defaults by the 212-run learning evidence. Treat
   them as sentinels unless Coach explicitly wants a higher-search experiment.

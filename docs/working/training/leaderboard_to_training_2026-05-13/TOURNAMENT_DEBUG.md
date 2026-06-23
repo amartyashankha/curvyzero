@@ -3,6 +3,48 @@
 This doc owns tournament correctness. Do not scatter tournament bugs across
 chat, `current_state.md`, and ad hoc notes.
 
+## 2026-05-16 Clean All-205 Validation Lane
+
+- Tournament: `curvy-r18fresh-validate-all205-20260516a`
+- Rating run: `elo-r18fresh-validate-all205-20260516a`
+- Detached app: `ap-VQZzMzRPLR5ZojFpN1iHbR`
+- Rating call: `fc-01KRQXFK7WSS1ZEEMAW5GYAHFK`
+- Seed result: exactly `205/205` checkpoint refs accepted.
+- Persisted input: `round-000000/input.json`, `20,910` pairs,
+  `439,110` games, all-pairs, `21` games per pair, `max_steps=1048576`.
+- GIFs were disabled for this proof to avoid huge I/O; this lane proves
+  submission, game execution, and ranking, not visual output.
+- Liveness proof: app has hundreds of active tasks and logs show successful
+  `curvytron_tournament_game` results with `ok=true`, no per-game error,
+  `seat_order.mode=balanced_random`, both `swapped=true` and `swapped=false`,
+  and normal terminal scores.
+- Important observability caveat: with `games_per_shard=1`, the parent writes
+  progress at map start and then after all game tasks return. Therefore
+  `completed_game_count=0` in progress is not proof of no games. Final proof is
+  `ratings.json`/`latest.json` with `205` ranked rows and
+  `completed_game_count=439110`.
+- 04:30 EDT poll: detached app still had `505` tasks; log tail reached pair
+  indices around `1975..2034`; parsed tail had `175/175` ok games, `0` errors,
+  `max_steps=1048576`, and both swapped/non-swapped seating. No final
+  `ratings.json` or `latest.json` yet.
+- Website/current fix: `src/curvyzero/contracts/curvytron.py` now marks this
+  validation lane as the current tournament/rating id, and the deployed
+  tournament website selects it by default. The UI panel formerly called
+  `Rankings` now says `Leaderboard` and explicitly says rows are pending until
+  the rating snapshot is written.
+- Checkpoint visibility distinction: old live `latest.json` is stale at `98`
+  rows and max iteration `70000`; running validation input has `205` refs and
+  max iteration `140000`; running dirty/live `round-000012` input has `180` refs
+  and max iteration `130000`. This means high-iteration checkpoints are in
+  running tournament rounds even though completed leaderboard rows are not yet
+  visible.
+- Recovery hardening deployed after the latest review: a skipped stale round is
+  now a consumed index for `continue_from_latest`, direct retry of that skipped
+  round returns `status=skipped`, and shard-tally recovery can rebuild missing
+  seat-aware win counts from stored shard games. This prevents a repaired stale
+  round from being re-entered by accident. Targeted tests passed and
+  `curvyzero-checkpoint-tournament-v2` was redeployed.
+
 ## 2026-05-15 Current Storage/App Contract
 
 - Active tournament app: `curvyzero-checkpoint-tournament-v2`.
@@ -18,19 +60,140 @@ chat, `current_state.md`, and ad hoc notes.
 - Old tournament ids and old non-v2/hybrid storage are diagnostic history, not
   current launch truth.
 
+## 2026-05-16 Active Live Lane
+
+| Field | Value |
+| --- | --- |
+| Tournament | `curvy-r18fresh-live-20260516a` |
+| Rating run | `elo-r18fresh-live-20260516a` |
+| App | `curvyzero-checkpoint-tournament-v2` |
+| Intended role | Live all-v2 rating service for the current 18-run scratch batch |
+
+Plain current read:
+
+- Completed/in-progress rounds use all-pairs over the active pool for that
+  round. Uneven per-checkpoint game counts on the website are expected when
+  checkpoints arrive over time. The old `71`-row dashboard symptom was stale
+  `latest.json`, not a hard cap.
+- As of 2026-05-16 04:03 EDT, the live lane is dirty. `latest.json` is
+  `round-000008` with `98` rated checkpoints, `4,753` pairs, `99,813` games,
+  `58` failed games in progress, `stable=false`, and
+  `max_abs_delta=318.85214603560865`. This is useful stress evidence only.
+- Root `progress.json` points at old `round-000010` as `running`
+  (`12,720` pairs, `267,120` planned games, `1,068` completed games). Later
+  round folders also exist: `round-000011` and `round-000012` were started by
+  older code. Do not trust root progress from this lane as a clean live-service
+  pointer.
+- Known dirty artifacts: `round-000009` was falsely skipped by an older
+  `zero_progress_smaller_pool` predicate; `round-000010`, `round-000011`, and
+  `round-000012` overlap instead of forming one orderly continuation chain.
+- Current deployed fixes: no-output skip now requires the real stale age floor;
+  public pointers are monotonic; `continue_from_latest` intake uses one active
+  claim per lane; and intake does not spawn reducer recovery for an unfinished
+  running round. Focused intake/recovery/pointer tests and ruff passed before
+  redeploy.
+- Current intake read: manifest has `196` seen checkpoint refs and
+  `updated_at=2026-05-16T08:02:52.922179Z`; Queue length reports `0`, while
+  manifest `queued_checkpoint_count=196` should be treated as suspect
+  bookkeeping until a clean run proves queue drain behavior.
+- Next checks: stop/recheck stale detached tournament apps, then use a clean
+  tournament/rating id or a deliberate artifact purge before claiming the
+  tournament service is fixed at large scale. The proof target is clean latest
+  -> controller-produced assignments -> same running trainer refresh/provider
+  use.
+
 ## Current Tournament
 
+Current production-source candidate is the nonzero rerate. The older 100-ref
+rerate is now diagnostic only because `iteration_0` candidates reached active
+top ranks.
+
+| Field | Value |
+| --- | --- |
+| Tournament | `curvy-restart18-source-rerate-nonzero-20260515a` |
+| Rating run | `elo-restart18-source-rerate-nonzero-20260515a` |
+| App | `curvyzero-checkpoint-tournament-v2` |
+| Intended role | Fresh all-v2 rerate of 96 nonzero rematerialized historical candidate refs before restart18 training |
+| Source refs | `artifacts/local/curvytron_restart_source_refs/restart18-source-loop18-top96-nonzero-20260515a/refs.txt`; copied into `curvyzero-runs-v2` and audited `96/96` present |
+
+Current status:
+
+- Nonzero `round-000000`: complete, `300/300` pairs, `6300/6300` games,
+  `stable=false`, `max_abs_delta=34.07017967162989`, `96` rows, `0` active
+  rows. Not publishable/materializable as a trusted ranked source.
+- Nonzero `round-000001`: complete, `300/300` pairs, `6300/6300` games,
+  `0` failures, `stable=false`, `max_abs_delta=21.880940181012807`, `96` rows,
+  `0` active rows. Not publishable/materializable as a trusted ranked source.
+- Nonzero `round-000002`: complete, `300/300` pairs, `6300/6300` games,
+  `stable=false`, `max_abs_delta=22.572625403714373`, `15` active rows and
+  `81` provisional rows. Not publishable/materializable as a trusted ranked
+  source.
+- Nonzero `round-000003`: complete, `300/300` pairs, `6300/6300` games,
+  `stable=false`, `max_abs_delta=39.7420779825474`, all `96` rows active,
+  `0` provisional rows, `0` failures. Coverage is mature, but the stability
+  gate is still failing.
+- Nonzero `round-000004`: complete, `300/300` pairs, `6300/6300` games,
+  `stable=false`, `max_abs_delta=17.371056613899057`, all `96` rows active,
+  `0` provisional rows, `0` failures. Better, but still not publishable as a
+  trusted ranked source.
+- Nonzero `round-000005`: complete, `300/300` pairs, `6300/6300` games,
+  `stable=false`, `max_abs_delta=15.636412948237727`, all `96` rows active,
+  `0` provisional rows, `0` failures. Better, but still not publishable as a
+  trusted ranked source.
+- Nonzero `round-000006`: complete, `300/300` pairs, `6300/6300` games,
+  `stable=false`, `max_abs_delta=25.199213332028748`, all `96` rows active,
+  `0` provisional rows, `0` failures. Worse than round 5. Biggest mover:
+  `ckpt-079-train-lightzero_exp-ckpt-iteration_240000-a391d866`, mostly from
+  `random_bridge` exposure; diagnose scheduler/exposure before another round.
+- Leaderboard-derived opponent-source publish/materialization remains blocked
+  until a latest non-diagnostic source snapshot is `stable=true`,
+  coverage-mature, published with expected round/context/roster/snapshot hashes,
+  and materialized through the guarded assignment path. Bootstrap/static restart
+  is not blocked by this; it can proceed from audited exact refs plus immortal
+  blank/hard-coded sentinels while the tournament learns a better ordering.
+
+Diagnostic 100-ref rerate status:
+
+- `round-000000`: complete, `300/300` pairs, `6300/6300` games,
+  `stable=false`, `max_abs_delta=32.58886751199381`.
+- `round-000001`: complete, `300/300` pairs, `6300/6300` games,
+  `stable=false`, `max_abs_delta=25.065565057086832`.
+- `round-000002`: launched as a detached continuation,
+  `fc-01KRPKQYQJGGDKBYPME1KP20BZ`; direct v2 Volume check shows full
+  `100`-checkpoint roster, `previous_round_id=round-000001`, and
+  `300` pairs / `6300` planned games. It later completed and advanced
+  `latest.json` with `stable=false`, `max_abs_delta=23.31069784361553`.
+- `round-000003`: running as detached continuation
+  `fc-01KRPM5AS1TSSJMGQ961JYACBT`; direct v2 Volume input check shows full
+  `100`-checkpoint roster, `previous_round_id=round-000002`, and
+  `300` pairs / `6300` planned games. It later completed and advanced
+  `latest.json` with `stable=false`, `max_abs_delta=24.82819365645907`.
+- `round-000004`: complete, `300/300` pairs, `6300/6300` games,
+  `stable=false`, `max_abs_delta=22.54218539334727`. Latest rank 1 is a
+  nonzero checkpoint, but rank 2 is still `iteration_0`.
+- `round-000005`: complete, `300/300` pairs, `6300/6300` games,
+  `stable=false`, `max_abs_delta=19.048764303143294`. Coverage is mature
+  (`games_min=567`, `distinct_opponents_min=25`), but four `iteration_0` rows
+  remain active at ranks `2`, `3`, `7`, and `100`.
+- `round-000006`: complete, `300/300` pairs, `6300/6300` games,
+  `stable=false`, `max_abs_delta=18.39723682286698`. Coverage is mature
+  (`games_min=714`, `distinct_opponents_min=29`), but `iteration_0` rows are
+  ranks `1`, `2`, `7`, and `100`.
+- Decision: treat this 100-ref lane as diagnostic, not restart source. It
+  answered the important question: the old top-100 source pool is contaminated
+  by strong `iteration_0` rows.
+- Do not publish the 100-ref lane as a restart training source. It is useful
+  diagnostic evidence only.
+
 Historical note: the table below describes the invalidated v2real18 tournament
-lane. After the all-v2 reset, no tournament in the recreated v2 Volume is
-current yet. The next current tournament should be the fresh all-v2 deployed
-canary, with new tournament/rating ids and durable proof in this doc.
+lane. Keep it as diagnostic history, not current restart guidance.
 
 | Field | Value |
 | --- | --- |
 | Tournament | `curvy-v2real18-live-20260515a` |
 | Rating run | `elo-v2real18-live-20260515a` plus corrected rerate TBD |
 | App | `curvyzero-checkpoint-tournament-v2` |
-| Intended role | Current v2 real18 loop tournament for the 18-run/replacement batch |
+| Intended role | Historical/diagnostic v2 real18 loop tournament for the 18-run/replacement batch |
 
 ## Current Critical Bug: Wrong Tick Duration Rerate
 

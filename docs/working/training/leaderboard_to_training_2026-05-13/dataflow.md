@@ -4,7 +4,7 @@
 
 ```mermaid
 flowchart TD
-  trainRun["Training Run"] -->|"writes exact iteration checkpoints"| checkpointVolume["curvyzero-runs Volume"]
+  trainRun["Training Run"] -->|"writes exact iteration checkpoints"| checkpointVolume["runs Volume from shared contract; currently curvyzero-runs-v2"]
   checkpointVolume -->|"scan train/lightzero_exp*/ckpt"| intakeScanner["Intake Scanner"]
   intakeScanner -->|"checkpoint_seen event"| intakeQueue["Modal Queue"]
   intakeScanner -->|"manifest and dedupe state"| intakeDict["Modal Dict"]
@@ -45,10 +45,11 @@ flowchart TD
 
 ```text
 checkpoint Volume -> intake manifest/Queue -> rating loop -> latest.json ->
-public leaderboard snapshot -> stable_slots_v1 assignment -> trainer launch
+public leaderboard snapshot + Dict pointer -> immutable assignment ->
+control pointer -> same-running-trainer refresh -> provider-ok env telemetry
 ```
 
-This has been proven manually in tiny remote smokes. It is not production
+This has been proven at current-code canary scale. It is not production-scale
 automation yet.
 
 Launch lifetime caveat:

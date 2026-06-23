@@ -1,3 +1,12 @@
+> **HISTORICAL ONLY - DO NOT LAUNCH FROM THIS DOC.** Stale `body_circles_fast`,
+> `fast_gray64_direct`, and scalar `jax_gpu` recommendations below are not
+> trainer/tournament defaults. Current truth: real training/tournament default
+> remains CPU `cpu_oracle` with `browser_lines + simple_symbols`; `compute=gpu`
+> moves LightZero model/search/learner, not rendering.
+> `direct_gray64 + simple_symbols` is a profile-only promising H100 surface
+> candidate until vector facade/full-loop gates pass. No trainer/tournament
+> default change yet.
+
 # Coach Next Training Run Recommendations
 
 Date: 2026-05-12

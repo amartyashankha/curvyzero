@@ -25,6 +25,7 @@ assignment command path, and safe refresh, see `README.md`.
 | Pure leaderboard-to-assignment bridge | Implemented locally: build/validate public leaderboard snapshots, live pointers, `top_slots_v0` smoke assignments, `stable_slots_v1` production-direction assignments, and assignment audits. `slot_rules_v0` is purged as the production path. | `src/curvyzero/training/opponent_leaderboard.py`, `tests/test_opponent_leaderboard.py`, `slot_architecture_feedback.md` |
 | Local materialization CLI | Implemented locally: turns exported rating/API JSON into snapshot, pointer, `stable_slots_v1` assignment, and audit JSON artifacts by default. | `scripts/materialize_curvytron_leaderboard_assignment.py` |
 | Checkpoint recency metadata | Locally repaired: tournament checkpoint normalization, explicit refs, intake manifest continuation, rating spec restoration, rating rows, public leaderboard rows, and `stable_slots_v1` now preserve the metadata needed for a real `recent_strong` slot. | `checkpoint_metadata_from_ref`, `_intake_manifest_rating_checkpoints`, `rating_roster_by_checkpoint`, focused metadata tests |
+| Checkpoint policy observation sidecar | Landed locally: fresh checkpoints write `iteration_N.pth.tar.metadata.json` beside the `.pth.tar`, and tournament discovery/loading reads it before run/attempt metadata or defaults. This makes the policy observation surface, timing contract, model env/reward variants, and learner seat mode checkpoint-owned evidence. | `_write_checkpoint_policy_metadata_sidecar`, `checkpoint_policy_metadata_sidecar_ref`, focused sidecar tests |
 | Assignment artifact writer | Implemented and smoke-tested: stores `assignment.json` and optional `audit.json` under a training attempt. | `mode=write-assignment`, `_write_opponent_assignment_artifacts`, focused regression |
 | Trainer assignment-ref plumbing | Implemented locally: train and poller command construction accept an assignment ref, resolve it through the existing mixture resolver, and propagate metadata. | `_resolve_opponent_assignment_for_env`, `_run_visual_survival_train`, `_checkpoint_eval_poller_command`, focused tests |
 | Tournament-side leaderboard publisher | Implemented and remote-smoked: reads rating `latest.json`, writes public snapshot/latest refs, commits the Volume, then updates Dict pointer. Refuses provisional ratings unless explicitly allowed. | `curvytron_opponent_leaderboard_publish`, `test_opponent_leaderboard_publish_writes_snapshot_latest_and_pointer`, smoke `curvytron-latest212-smoke-20260513` |
@@ -68,8 +69,10 @@ Refined refresh rule:
 - That Dict read is only for a prepared pending assignment pointer.
 - The trainer must not read leaderboard rows, tournament state, slot recipes, or
   reward weights while learning.
-- The first target cadence is about every 50 learner iterations, applied before
-  a future `Collector.collect` call.
+- The current restart default cadence is every `2000` learner train iterations,
+  from `CURVYTRON_ASSIGNMENT_REFRESH_INTERVAL_TRAIN_ITER` in
+  `src/curvyzero/contracts/curvytron.py`. Older notes mentioning `50` describe
+  an early design probe, not the restart default.
 
 Concrete ownership:
 
@@ -100,20 +103,30 @@ timestamped `lightzero_exp_*` folders are expected.
 
 Current focus:
 
-1. Stop the current v2 real18 run because it is invalid enough to end as a
-   training candidate, while preserving artifacts for diagnosis.
-2. Keep the docs clear and truthful.
-3. Keep the Coach/training boundary clean: trainer reads frozen assignment files,
-   not live tournament state.
-4. Do not launch new training until the restart blockers are tested:
-   randomized learner seat/perspective, no-op/straight action checks,
-   tournament eval parity, and cleanup of stale Modal app/artifact confusion.
-5. Prove the online tournament path at bounded scale:
-   - add new checkpoint candidates;
-   - schedule many games for each new candidate against the active pool;
-   - run those games in parallel on Modal;
-   - keep old ratings/history;
-   - recover if Queue or claim state is stale.
+1. Treat the active lane as all-v2 only. The current Volumes, Dicts, Queue, and
+   app names come from `src/curvyzero/contracts/curvytron.py`.
+2. Keep the Coach/training boundary clean: trainer reads frozen assignment files
+   and a small control-volume pointer, not live tournament state.
+3. For leaderboard-derived opponent quality, continue diagnosing the fresh v2
+   source rerate. The 100-ref lane
+   `curvy-restart18-source-rerate-20260515a` /
+   `elo-restart18-source-rerate-20260515a` is diagnostic only because
+   iteration-zero rows rose to the top. The active leaderboard-derived source
+   candidate is the 96-ref nonzero fallback
+   `curvy-restart18-source-rerate-nonzero-20260515a` /
+   `elo-restart18-source-rerate-nonzero-20260515a`; round 6 has all `96`
+   rows active and `0` failures but remains `stable=false`
+   (`max_abs_delta=25.199213332028748`), worse than round 5. Diagnose the
+   scheduler/exposure swing before another blind continuation.
+4. Do not use the nonzero source rerate for restart18 leaderboard-derived
+   opponent assignment until it is coverage-mature, `stable=true`, published
+   with expected round/context/roster/snapshot hashes, hash-guarded
+   materialization succeeds, and the manifest audits cleanly. This is optional
+   quality work; bootstrap/static training can proceed from curated assignments
+   and exact refs.
+5. Keep v2real18/loop18 artifacts as diagnostic or source-selection history
+   only. They are not current launch truth unless explicitly rematerialized and
+   rerated in the all-v2 lane.
 
 Restart manifest rule:
 
@@ -121,8 +134,10 @@ Restart manifest rule:
 - Public opponent specs use `opponent_immortal` for death immunity. Do not
   hand-author `opponent_death_mode` in public slot recipes, assignments, or
   manifests; the env-facing runtime field is derived at the trainer boundary.
-- Include at least about `20%` blank/immortal pressure globally, with some
-  higher-immortal variants.
+- Include `20-30%` total immortal opponent pressure. Blank and hard-coded
+  sentinel entries should be immortal; small explicit immortal frozen-checkpoint
+  slices are allowed, but total immortal exposure should stay at or below about
+  `30%`.
 - Keep enough leaderboard-checkpoint exposure for real policy learning.
 - Do not repeat the previous weak `5%` wall-avoidant immortal recipes as the
   main restart plan.

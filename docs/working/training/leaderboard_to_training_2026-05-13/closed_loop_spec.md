@@ -2,6 +2,11 @@
 
 Date: 2026-05-13
 
+Current general contracts:
+
+- `docs/working/training/curvytron_feedback_loop/POLICY_OBSERVATION_CONTRACT.md`
+- `docs/working/training/curvytron_feedback_loop/OBSERVABILITY_CONTRACT.md`
+
 ## Plain Goal
 
 Build a real closed loop:
@@ -15,13 +20,16 @@ Build a real closed loop:
 6. Training runs periodically refresh their opponent assignment at safe
    boundaries.
 
-This is not fully implemented today.
+This path is implemented and proven at canary scale in the active all-v2 lane.
+It is not yet proven at production scale.
 
 ## Current Truth
 
 Implemented:
 
-- Training writes checkpoints to `curvyzero-runs`.
+- Training writes checkpoints to the runs Volume from
+  `src/curvyzero/contracts/curvytron.py`, currently `curvyzero-runs-v2` for the
+  active all-v2 lane.
 - Tournament can discover checkpoints via `train/lightzero_exp*/ckpt`.
 - Tournament intake has Modal Dict/Queue and scheduled tick/drain functions.
 - Tournament ratings write Volume artifacts (`latest.json`, `ratings.json`,
@@ -38,15 +46,16 @@ Implemented:
   `assignment.json` and optional `audit.json` under a training attempt.
 - The trainer and checkpoint eval/GIF poller can consume an explicit
   assignment ref and resolve it through the existing opponent-mixture contract.
-- A tiny manual closed-loop smoke completed: assignment-backed train smoke,
-  checkpoint discovery/intake, tiny rating, public leaderboard publish, fresh
-  assignment selection, and second assignment-backed train smoke.
+- A current-code canary completed the live run-id loop: trainer checkpoints,
+  live intake/subscriber discovery, tiny tournament rating, public leaderboard
+  publish, immutable assignment materialization, control-pointer rewrite, same
+  running trainer refresh, and provider-ok env telemetry rows.
 
 Not yet proven at production scale or automated:
 
 - Modal Dict pointer repair/fallback for public leaderboard snapshots. Local
   repair coverage, a tiny remote smoke, and a minimal operator runbook exist.
-- Periodic safe assignment refresh during long training.
+- Periodic safe assignment refresh during long production training.
 - Online Elo continuation from existing `latest.json` at production scale.
   Local continuation coverage exists.
 - Queue/dedupe repair from durable scans when Dict/Queue state is stale. Local
@@ -54,7 +63,7 @@ Not yet proven at production scale or automated:
 - One-frame public leaderboard validation at real scale. Local gating and a
   tiny two-checkpoint remote smoke exist.
 - Automated end-to-end test from checkpoint emission to tournament promotion to
-  trainer refresh.
+  trainer refresh at production scale.
 
 Launch lifetime rule:
 
@@ -415,6 +424,12 @@ Then integrate:
 The conceptual blocker is not the leaderboard math or first trainer wiring.
 Those have both been proven in small smoke paths.
 
+Also, a perfect starting leaderboard is not required for bootstrap training.
+Bootstrap runs may start from curated/static assignments with immortal
+blank/hard-coded pressure and any exact frozen checkpoint refs. A stable,
+coverage-mature leaderboard is only required before we let leaderboard-derived
+top slots steer opponent quality heavily.
+
 The remaining gate is making the loop safe to operate without handholding:
 repair stale pointers, continue ratings without losing evidence, dedupe or
 repair lost intake events, document the assignment writer path, and validate a
@@ -425,3 +440,9 @@ After the manual smoke, the current blocker is automation and safety:
 ```text
 periodic refresh policy + online continuation + repair/idempotency + production runbook
 ```
+# Closed Loop Spec
+
+General current contracts now live at:
+
+- `docs/working/training/curvytron_feedback_loop/POLICY_OBSERVATION_CONTRACT.md`
+- `docs/working/training/curvytron_feedback_loop/OBSERVABILITY_CONTRACT.md`
