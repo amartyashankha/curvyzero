@@ -9,6 +9,7 @@ smokes.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
 from typing import Any
 
 import numpy as np
@@ -24,6 +25,7 @@ from curvyzero.env.trainer_contract import stable_contract_hash
 from curvyzero.env.vector_multiplayer_env import JOINT_ACTION_SCHEMA_ID
 from curvyzero.env.vector_multiplayer_env import VectorMultiplayerEnv
 from curvyzero.env.vector_visual_observation import BONUS_RENDER_MODE_DEFAULT
+from curvyzero.env.vector_visual_observation import SOURCE_STATE_CANVAS_GRAY64_SHAPE
 from curvyzero.env.vector_visual_observation import SOURCE_STATE_CANVAS_GRAY64_SCHEMA_HASH
 from curvyzero.env.vector_visual_observation import SOURCE_STATE_CANVAS_GRAY64_SCHEMA_ID
 from curvyzero.env.vector_visual_observation import SOURCE_STATE_CANVAS_GRAY64_USES_ALE
@@ -35,6 +37,9 @@ from curvyzero.training.curvytron_current_policy_selfplay_smoke import (
 )
 from curvyzero.training.curvytron_current_policy_selfplay_smoke import (
     SourceStateGray64Stack4,
+)
+from curvyzero.training.curvytron_current_policy_selfplay_smoke import (
+    source_state_gray64_stack4_render_metadata,
 )
 from curvyzero.training.curvytron_current_policy_selfplay_smoke import (
     validate_stack_trail_render_mode,
@@ -51,6 +56,11 @@ from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env imp
 from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
     SURVIVAL_PLUS_BONUS_NO_OUTCOME_REWARD_SCHEMA_ID,
 )
+from curvyzero.training.source_state_batched_observation_profile import (
+    SOURCE_STATE_BATCHED_OBSERVATION_GPU_CANDIDATE_BACKEND,
+    SourceStateBatchedObservationRenderer,
+    SourceStateBatchedRenderRequest,
+)
 
 
 MULTIPLAYER_TRAINER_SURFACE_SCHEMA_ID = (
@@ -64,6 +74,13 @@ FRAME_STACK_OWNER = "SourceStateMultiplayerTrainerSurface"
 NATIVE_SOURCE_CONTROL_MODEL = "real_time_control_state_plus_elapsed_ms_source_frames"
 JOINT_ACTION_LABEL = "wrapper-facing player-major control action"
 TRAINER_OBSERVATION_SOURCE = "SourceStateGray64Stack4"
+TRAINER_OBSERVATION_SOURCE_RENDERER_BACKED = "RendererBackedSourceStateGray64Stack4"
+TRAINER_STACK_BACKEND_CPU_DIRTY_CACHE = "cpu_dirty_cache"
+TRAINER_STACK_BACKEND_RENDERER_BACKED_PROFILE = "renderer_backed_profile"
+TRAINER_STACK_BACKENDS = (
+    TRAINER_STACK_BACKEND_CPU_DIRTY_CACHE,
+    TRAINER_STACK_BACKEND_RENDERER_BACKED_PROFILE,
+)
 TRAINER_ALLOWED_TRAIL_RENDER_MODES = (TRAIL_RENDER_MODE_BROWSER_LINES,)
 
 MULTIPLAYER_TRAINER_SURFACE_SCHEMA = {
@@ -108,6 +125,148 @@ class MultiplayerTrainerStepV0:
     info: dict[str, Any]
 
 
+class _RendererBackedSourceStateGray64Stack4:
+    """Profile-only stack adapter that gets all player frames from one renderer call."""
+
+    stack_class_name = TRAINER_OBSERVATION_SOURCE_RENDERER_BACKED
+
+    def __init__(
+        self,
+        *,
+        batch_size: int,
+        player_count: int,
+        trail_render_mode: str,
+        renderer: SourceStateBatchedObservationRenderer,
+    ) -> None:
+        self.batch_size = int(batch_size)
+        self.player_count = int(player_count)
+        self.trail_render_mode = validate_stack_trail_render_mode(trail_render_mode)
+        self.renderer = renderer
+        self.renderer_backend_name = str(renderer.backend_name)
+        self.stack = np.zeros(
+            (self.batch_size, self.player_count, 4, 64, 64),
+            dtype=np.float32,
+        )
+        self._raw_all = np.zeros(
+            (self.batch_size * self.player_count, *SOURCE_STATE_CANVAS_GRAY64_SHAPE),
+            dtype=np.uint8,
+        )
+        self._all_rows = np.arange(self.batch_size, dtype=np.int64)
+        self._all_row_indices = np.repeat(self._all_rows, self.player_count)
+        self._all_controlled_players = np.tile(
+            np.arange(self.player_count, dtype=np.int64),
+            self.batch_size,
+        )
+        self._render_calls = 0
+        self.last_renderer_telemetry: dict[str, Any] = {}
+
+    def render_metadata(self) -> dict[str, Any]:
+        metadata = source_state_gray64_stack4_render_metadata(self.trail_render_mode)
+        metadata.update(
+            {
+                "single_frame_render_api": "SourceStateBatchedObservationRenderer.render",
+                "two_seat_optimized_render_api": "batched_renderer_all_player_views",
+                "renderer_backed_profile": True,
+                "renderer_backend_name": self.renderer_backend_name,
+                "no_hidden_cpu_fallback": True,
+                "profile_gpu_candidate_backend": (
+                    SOURCE_STATE_BATCHED_OBSERVATION_GPU_CANDIDATE_BACKEND
+                ),
+            }
+        )
+        return metadata
+
+    def dirty_render_stats(self) -> dict[str, Any]:
+        return {
+            "enabled": False,
+            "rows": self.batch_size,
+            "attempts": self._render_calls,
+            "hits": 0,
+            "cold_starts": self._render_calls,
+            "fallbacks": 0,
+            "dirty_blocks_total": 0,
+            "hit_rate": None,
+            "dirty_blocks_per_hit": None,
+        }
+
+    def update(self, env: VectorMultiplayerEnv, *, copy: bool = True) -> np.ndarray:
+        self._validate_env(env)
+        self.stack[:, :, :-1] = self.stack[:, :, 1:]
+        rows = np.arange(self.batch_size, dtype=np.int64)
+        frames = self._render_rows(env, rows)
+        self._write_latest(rows, frames)
+        return self.stack.copy() if copy else self.stack
+
+    def reset_rows(
+        self,
+        env: VectorMultiplayerEnv,
+        row_mask: np.ndarray,
+        *,
+        copy: bool = True,
+    ) -> np.ndarray:
+        self._validate_env(env)
+        mask = np.asarray(row_mask, dtype=bool)
+        if mask.shape != (self.batch_size,):
+            raise ValueError("row_mask must have shape [B]")
+        rows = np.flatnonzero(mask).astype(np.int64)
+        if rows.size:
+            self.stack[rows] = 0.0
+            frames = self._render_rows(env, rows)
+            self._write_latest(rows, frames)
+        return self.stack.copy() if copy else self.stack
+
+    def _validate_env(self, env: VectorMultiplayerEnv) -> None:
+        if env.batch_size != self.batch_size or env.player_count != self.player_count:
+            raise ValueError("env shape changed after stack creation")
+
+    def _render_rows(self, env: VectorMultiplayerEnv, rows: np.ndarray) -> np.ndarray:
+        rows = rows.astype(np.int64, copy=False)
+        if rows.shape == self._all_rows.shape and bool(np.array_equal(rows, self._all_rows)):
+            row_indices = self._all_row_indices
+            controlled_players = self._all_controlled_players
+        else:
+            row_indices = np.repeat(rows, self.player_count)
+            controlled_players = np.tile(
+                np.arange(self.player_count, dtype=np.int64),
+                rows.size,
+            )
+        out = self._raw_all[: row_indices.size]
+        request = SourceStateBatchedRenderRequest(
+            state=env.state,
+            row_indices=row_indices,
+            controlled_players=controlled_players,
+            out=out,
+            trail_render_mode=self.trail_render_mode,
+            bonus_render_mode=BONUS_RENDER_MODE_DEFAULT,
+        )
+        result = self.renderer.render(request)
+        frames = np.asarray(result.frames)
+        if frames.shape != out.shape:
+            raise ValueError(
+                "renderer returned frames with unexpected shape; "
+                f"got {frames.shape}, expected {out.shape}"
+            )
+        if frames.dtype != np.uint8:
+            raise ValueError(f"renderer frames must be uint8, got {frames.dtype}")
+        self._render_calls += 1
+        self.last_renderer_telemetry = dict(result.telemetry)
+        return frames.reshape(rows.size, self.player_count, *SOURCE_STATE_CANVAS_GRAY64_SHAPE)
+
+    def _write_latest(self, rows: np.ndarray, frames: np.ndarray) -> None:
+        if rows.shape == self._all_rows.shape and bool(np.array_equal(rows, self._all_rows)):
+            np.multiply(
+                frames[:, :, 0],
+                np.float32(1.0 / 255.0),
+                out=self.stack[:, :, -1],
+                casting="unsafe",
+            )
+        else:
+            self.stack[rows, :, -1] = frames[:, :, 0].astype(
+                np.float32,
+                copy=False,
+            ) * np.float32(1.0 / 255.0)
+
+
 class SourceStateMultiplayerTrainerSurface:
     """Small source-state visual trainer surface backed by ``VectorMultiplayerEnv``."""
 
@@ -118,10 +277,14 @@ class SourceStateMultiplayerTrainerSurface:
         player_count: int = 2,
         seed: int | None = None,
         trail_render_mode: str = TRAIL_RENDER_MODE_BROWSER_LINES,
+        observation_stack_backend: str = TRAINER_STACK_BACKEND_CPU_DIRTY_CACHE,
+        observation_renderer: SourceStateBatchedObservationRenderer | None = None,
+        required_observation_renderer_backend: str | None = None,
         env: VectorMultiplayerEnv | None = None,
         **env_kwargs: Any,
     ) -> None:
         mode = validate_stack_trail_render_mode(trail_render_mode)
+        stack_backend = _validate_observation_stack_backend(observation_stack_backend)
 
         if env is not None and env_kwargs:
             raise ValueError("env_kwargs cannot be supplied when env is provided")
@@ -138,11 +301,50 @@ class SourceStateMultiplayerTrainerSurface:
         self.batch_size = int(self.env.batch_size)
         self.player_count = int(self.env.player_count)
         self.trail_render_mode = mode
-        self.stack = SourceStateGray64Stack4(
-            batch_size=self.batch_size,
-            player_count=self.player_count,
-            trail_render_mode=self.trail_render_mode,
+        self.observation_stack_backend = stack_backend
+        self.required_observation_renderer_backend = (
+            None
+            if required_observation_renderer_backend is None
+            else str(required_observation_renderer_backend)
         )
+        if stack_backend == TRAINER_STACK_BACKEND_CPU_DIRTY_CACHE:
+            if observation_renderer is not None:
+                raise ValueError(
+                    "observation_renderer is only valid with "
+                    f"{TRAINER_STACK_BACKEND_RENDERER_BACKED_PROFILE!r}"
+                )
+            if self.required_observation_renderer_backend is not None:
+                raise ValueError(
+                    "required_observation_renderer_backend is only valid with "
+                    f"{TRAINER_STACK_BACKEND_RENDERER_BACKED_PROFILE!r}"
+                )
+            self.stack = SourceStateGray64Stack4(
+                batch_size=self.batch_size,
+                player_count=self.player_count,
+                trail_render_mode=self.trail_render_mode,
+            )
+        else:
+            if observation_renderer is None:
+                raise ValueError(
+                    f"{TRAINER_STACK_BACKEND_RENDERER_BACKED_PROFILE!r} requires an "
+                    "explicit observation_renderer; no hidden CPU fallback is allowed"
+                )
+            renderer_backend = str(observation_renderer.backend_name)
+            if (
+                self.required_observation_renderer_backend is not None
+                and renderer_backend != self.required_observation_renderer_backend
+            ):
+                raise ValueError(
+                    "observation_renderer backend mismatch; "
+                    f"expected {self.required_observation_renderer_backend!r}, "
+                    f"got {renderer_backend!r}"
+                )
+            self.stack = _RendererBackedSourceStateGray64Stack4(
+                batch_size=self.batch_size,
+                player_count=self.player_count,
+                trail_render_mode=self.trail_render_mode,
+                renderer=observation_renderer,
+            )
 
     def reset(
         self,
@@ -184,20 +386,41 @@ class SourceStateMultiplayerTrainerSurface:
         disabled_player_mask: np.ndarray | None = None,
     ) -> MultiplayerTrainerStepV0:
         action = self._joint_action_array(joint_action)
+        timing_enabled = self.observation_stack_backend == TRAINER_STACK_BACKEND_RENDERER_BACKED_PROFILE
+        started = time.perf_counter()
         batch = self.env.step(
             action,
             timer_advance_ms=timer_advance_ms,
             disabled_player_mask=disabled_player_mask,
         )
-        observation = self.stack.update(self.env)
+        env_step_sec = time.perf_counter() - started
+        started = time.perf_counter()
+        observation = self.stack.update(self.env, copy=not timing_enabled)
+        stack_update_sec = time.perf_counter() - started
+        started = time.perf_counter()
         reward = self._survival_plus_bonus_reward(batch.info, batch.done)
-        return self._surface_step(
+        reward_sec = time.perf_counter() - started
+        started = time.perf_counter()
+        surface_step = self._surface_step(
             batch=batch,
             observation=observation,
             reward=reward,
             joint_action=action,
             api="step",
         )
+        package_sec = time.perf_counter() - started
+        if timing_enabled:
+            surface_timing = dict(surface_step.info.get("trainer_surface_profile_timing", {}))
+            surface_timing.update(
+                {
+                "env_step_sec": env_step_sec,
+                "stack_update_sec": stack_update_sec,
+                "reward_sec": reward_sec,
+                "package_sec": package_sec,
+                }
+            )
+            surface_step.info["trainer_surface_profile_timing"] = surface_timing
+        return surface_step
 
     def remove_player(
         self,
@@ -298,18 +521,48 @@ class SourceStateMultiplayerTrainerSurface:
         joint_action: np.ndarray,
         api: str,
     ) -> MultiplayerTrainerStepV0:
+        timing_enabled = (
+            self.observation_stack_backend == TRAINER_STACK_BACKEND_RENDERER_BACKED_PROFILE
+        )
+        profile_timing: dict[str, float] | None = {} if timing_enabled else None
+        started = time.perf_counter() if profile_timing is not None else 0.0
         legal_action_mask = np.asarray(batch.action_mask, dtype=bool).copy()
         lightzero_action_mask = legal_action_mask.copy()
         done = np.asarray(batch.done, dtype=bool).copy()
         terminated = np.asarray(batch.terminated, dtype=bool).copy()
         truncated = np.asarray(batch.truncated, dtype=bool).copy()
+        if profile_timing is not None:
+            profile_timing["package_mask_copy_sec"] = time.perf_counter() - started
+            started = time.perf_counter()
         live_mask = self._live_mask(batch.info, done, legal_action_mask)
+        if profile_timing is not None:
+            profile_timing["package_live_mask_sec"] = time.perf_counter() - started
+            started = time.perf_counter()
         policy_env_row, policy_player = self._policy_rows(live_mask)
-        policy_observation = observation[policy_env_row, policy_player].astype(
-            np.float32,
-            copy=True,
-        )
+        if profile_timing is not None:
+            profile_timing["package_policy_rows_sec"] = time.perf_counter() - started
+            started = time.perf_counter()
+        observation_array = np.asarray(observation, dtype=np.float32)
+        if (
+            self.observation_stack_backend == TRAINER_STACK_BACKEND_RENDERER_BACKED_PROFILE
+            and self._policy_rows_are_full_row_major(policy_env_row, policy_player)
+        ):
+            policy_observation = observation_array.reshape(
+                self.batch_size * self.player_count,
+                *observation_array.shape[2:],
+            )
+        else:
+            policy_observation = observation_array[policy_env_row, policy_player].astype(
+                np.float32,
+                copy=True,
+            )
+        if profile_timing is not None:
+            profile_timing["package_policy_observation_sec"] = time.perf_counter() - started
+            started = time.perf_counter()
         policy_action_mask = legal_action_mask[policy_env_row, policy_player].copy()
+        if profile_timing is not None:
+            profile_timing["package_policy_action_mask_sec"] = time.perf_counter() - started
+            started = time.perf_counter()
         final_row_mask = np.asarray(
             batch.info.get("final_observation_row_mask", np.zeros(self.batch_size, dtype=bool)),
             dtype=bool,
@@ -317,11 +570,18 @@ class SourceStateMultiplayerTrainerSurface:
         if final_row_mask.shape != (self.batch_size,):
             final_row_mask = np.zeros(self.batch_size, dtype=bool)
 
-        final_observation = np.zeros_like(observation, dtype=np.float32)
-        final_reward_map = np.zeros_like(reward, dtype=np.float32)
-        if bool(final_row_mask.any()):
-            final_observation[final_row_mask] = observation[final_row_mask]
+        final_any = bool(final_row_mask.any())
+        if final_any:
+            final_observation = np.zeros_like(observation_array, dtype=np.float32)
+            final_reward_map = np.zeros_like(reward, dtype=np.float32)
+            final_observation[final_row_mask] = observation_array[final_row_mask]
             final_reward_map[final_row_mask] = reward[final_row_mask]
+        else:
+            final_observation = np.broadcast_to(np.float32(0.0), observation_array.shape)
+            final_reward_map = np.broadcast_to(np.float32(0.0), reward.shape)
+        if profile_timing is not None:
+            profile_timing["package_final_observation_sec"] = time.perf_counter() - started
+            started = time.perf_counter()
 
         info = self._info(
             batch_info=batch.info,
@@ -339,8 +599,19 @@ class SourceStateMultiplayerTrainerSurface:
             underlying_final_observation=batch.final_observation,
             underlying_observation=batch.observation,
         )
+        if profile_timing is not None:
+            profile_timing["package_info_sec"] = time.perf_counter() - started
+            started = time.perf_counter()
+            info["trainer_surface_profile_timing"] = profile_timing
+        observation_output = (
+            observation_array
+            if self.observation_stack_backend == TRAINER_STACK_BACKEND_RENDERER_BACKED_PROFILE
+            else observation_array.copy()
+        )
+        if profile_timing is not None:
+            profile_timing["package_output_copy_sec"] = time.perf_counter() - started
         return MultiplayerTrainerStepV0(
-            observation=np.asarray(observation, dtype=np.float32).copy(),
+            observation=observation_output,
             legal_action_mask=legal_action_mask,
             lightzero_action_mask=lightzero_action_mask,
             live_mask=live_mask,
@@ -353,9 +624,9 @@ class SourceStateMultiplayerTrainerSurface:
             done=done,
             terminated=terminated,
             truncated=truncated,
-            final_observation=final_observation.copy(),
+            final_observation=final_observation.copy() if final_any else final_observation,
             final_observation_row_mask=final_row_mask,
-            final_reward_map=final_reward_map.copy(),
+            final_reward_map=final_reward_map.copy() if final_any else final_reward_map,
             info=info,
         )
 
@@ -379,6 +650,11 @@ class SourceStateMultiplayerTrainerSurface:
     ) -> dict[str, Any]:
         rows = np.flatnonzero(final_observation_row_mask).astype(np.int32)
         render_metadata = self.stack.render_metadata()
+        visual_stack_class = str(
+            getattr(self.stack, "stack_class_name", TRAINER_OBSERVATION_SOURCE)
+        )
+        renderer_backend = getattr(self.stack, "renderer_backend_name", None)
+        renderer_telemetry = getattr(self.stack, "last_renderer_telemetry", None)
         approximate = False
         info = dict(batch_info)
         info.update(
@@ -403,8 +679,28 @@ class SourceStateMultiplayerTrainerSurface:
                 ),
                 "underlying_env_observation_used_as_trainer_observation": False,
                 "underlying_env_class": "VectorMultiplayerEnv",
-                "visual_stack_class": TRAINER_OBSERVATION_SOURCE,
-                "trainer_observation_source": TRAINER_OBSERVATION_SOURCE,
+                "visual_stack_class": visual_stack_class,
+                "trainer_observation_source": visual_stack_class,
+                "trainer_observation_stack_backend": self.observation_stack_backend,
+                "trainer_observation_renderer_backend": renderer_backend,
+                "trainer_observation_required_renderer_backend": (
+                    self.required_observation_renderer_backend
+                ),
+                "renderer_backed_stack_profile": (
+                    self.observation_stack_backend
+                    == TRAINER_STACK_BACKEND_RENDERER_BACKED_PROFILE
+                ),
+                "profile_gpu_candidate_backend": (
+                    SOURCE_STATE_BATCHED_OBSERVATION_GPU_CANDIDATE_BACKEND
+                ),
+                "trainer_observation_no_hidden_fallback": (
+                    self.observation_stack_backend
+                    != TRAINER_STACK_BACKEND_RENDERER_BACKED_PROFILE
+                    or renderer_backend is not None
+                ),
+                "renderer_backed_stack_telemetry": (
+                    None if renderer_telemetry is None else dict(renderer_telemetry)
+                ),
                 "trainer_observation_claim": True,
                 "trainer_observation_claim_id": (
                     "source_state_visual_stack_per_live_seat/v0"
@@ -473,7 +769,11 @@ class SourceStateMultiplayerTrainerSurface:
                 "policy_env_row": policy_env_row.copy(),
                 "policy_player": policy_player.copy(),
                 "policy_action_mask": policy_action_mask.copy(),
-                "final_observation": final_observation.copy(),
+                "final_observation": (
+                    final_observation.copy()
+                    if bool(final_observation_row_mask.any())
+                    else None
+                ),
                 "final_observation_rows": rows.copy(),
                 "final_observation_row_mask": final_observation_row_mask.copy(),
                 "final_observation_policy": {
@@ -487,7 +787,11 @@ class SourceStateMultiplayerTrainerSurface:
                     "source_claim": "source_state_visual_terminal_rows/v0",
                     "metadata_only": False,
                 },
-                "final_reward_map": final_reward_map.copy(),
+                "final_reward_map": (
+                    final_reward_map.copy()
+                    if bool(final_observation_row_mask.any())
+                    else None
+                ),
                 "final_reward_rows": rows.copy(),
                 "final_reward_row_mask": final_observation_row_mask.copy(),
                 "final_reward_policy": {
@@ -588,6 +892,24 @@ class SourceStateMultiplayerTrainerSurface:
         env_row, player = np.nonzero(mask)
         return env_row.astype(np.int32, copy=True), player.astype(np.int16, copy=True)
 
+    def _policy_rows_are_full_row_major(
+        self,
+        policy_env_row: np.ndarray,
+        policy_player: np.ndarray,
+    ) -> bool:
+        expected_count = self.batch_size * self.player_count
+        if policy_env_row.shape != (expected_count,) or policy_player.shape != (expected_count,):
+            return False
+        expected_rows = np.repeat(np.arange(self.batch_size, dtype=np.int32), self.player_count)
+        expected_players = np.tile(
+            np.arange(self.player_count, dtype=np.int16),
+            self.batch_size,
+        )
+        return bool(
+            np.array_equal(policy_env_row, expected_rows)
+            and np.array_equal(policy_player, expected_players)
+        )
+
     def _reset_row_mask(self, row_mask: np.ndarray | None) -> np.ndarray:
         if row_mask is None:
             return np.ones(self.batch_size, dtype=bool)
@@ -605,6 +927,16 @@ class SourceStateMultiplayerTrainerSurface:
         return action.astype(np.int16, copy=True)
 
 
+def _validate_observation_stack_backend(value: str) -> str:
+    backend = str(value)
+    if backend not in TRAINER_STACK_BACKENDS:
+        supported = ", ".join(TRAINER_STACK_BACKENDS)
+        raise ValueError(
+            f"observation_stack_backend must be one of [{supported}], got {value!r}"
+        )
+    return backend
+
+
 __all__ = [
     "FINAL_REWARD_MAP_POLICY_ID",
     "FINAL_VISUAL_OBSERVATION_POLICY_ID",
@@ -615,5 +947,8 @@ __all__ = [
     "MultiplayerTrainerStepV0",
     "NATIVE_SOURCE_CONTROL_MODEL",
     "SourceStateMultiplayerTrainerSurface",
+    "TRAINER_OBSERVATION_SOURCE_RENDERER_BACKED",
     "TRAINER_OBSERVATION_SOURCE",
+    "TRAINER_STACK_BACKEND_CPU_DIRTY_CACHE",
+    "TRAINER_STACK_BACKEND_RENDERER_BACKED_PROFILE",
 ]

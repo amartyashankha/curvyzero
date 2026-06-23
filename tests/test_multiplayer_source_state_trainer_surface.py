@@ -39,8 +39,61 @@ from curvyzero.training.multiplayer_source_state_trainer_surface import (
     SourceStateMultiplayerTrainerSurface,
 )
 from curvyzero.training.multiplayer_source_state_trainer_surface import (
+    TRAINER_OBSERVATION_SOURCE_RENDERER_BACKED,
+)
+from curvyzero.training.multiplayer_source_state_trainer_surface import (
     TRAINER_OBSERVATION_SOURCE,
 )
+from curvyzero.training.multiplayer_source_state_trainer_surface import (
+    TRAINER_STACK_BACKEND_CPU_DIRTY_CACHE,
+)
+from curvyzero.training.multiplayer_source_state_trainer_surface import (
+    TRAINER_STACK_BACKEND_RENDERER_BACKED_PROFILE,
+)
+from curvyzero.training.source_state_batched_observation_profile import (
+    SOURCE_STATE_BATCHED_OBSERVATION_GPU_CANDIDATE_BACKEND,
+    CpuOracleBatchedObservationRenderer,
+    SourceStateBatchedRenderRequest,
+    SourceStateBatchedRenderResult,
+)
+
+
+class _SurfaceRecordingGpuRenderer:
+    backend_name = SOURCE_STATE_BATCHED_OBSERVATION_GPU_CANDIDATE_BACKEND
+
+    def __init__(self) -> None:
+        self.rows: np.ndarray | None = None
+        self.players: np.ndarray | None = None
+
+    def render(self, request: SourceStateBatchedRenderRequest) -> SourceStateBatchedRenderResult:
+        self.rows = np.asarray(request.row_indices, dtype=np.int64).copy()
+        self.players = np.asarray(request.controlled_players, dtype=np.int64).copy()
+        for output_row, (row, player) in enumerate(zip(self.rows, self.players, strict=True)):
+            request.out[output_row, 0].fill(int(row) * 16 + int(player))
+        return SourceStateBatchedRenderResult(
+            frames=request.out,
+            telemetry={"render_sec": 0.0},
+        )
+
+
+class _CountingSurfaceRenderer:
+    backend_name = SOURCE_STATE_BATCHED_OBSERVATION_GPU_CANDIDATE_BACKEND
+
+    def __init__(self) -> None:
+        self.call_index = 0
+
+    def render(self, request: SourceStateBatchedRenderRequest) -> SourceStateBatchedRenderResult:
+        rows = np.asarray(request.row_indices, dtype=np.int64)
+        players = np.asarray(request.controlled_players, dtype=np.int64)
+        for output_row, (row, player) in enumerate(zip(rows, players, strict=True)):
+            request.out[output_row, 0].fill(
+                self.call_index * 64 + int(row) * 16 + int(player)
+            )
+        self.call_index += 1
+        return SourceStateBatchedRenderResult(
+            frames=request.out,
+            telemetry={"render_sec": 0.0},
+        )
 
 
 def _assert_surface_reset_contract(step, *, batch_size: int, player_count: int) -> None:
@@ -87,6 +140,10 @@ def _assert_surface_reset_contract(step, *, batch_size: int, player_count: int) 
     assert info["underlying_env_class"] == "VectorMultiplayerEnv"
     assert info["visual_stack_class"] == TRAINER_OBSERVATION_SOURCE
     assert info["trainer_observation_source"] == TRAINER_OBSERVATION_SOURCE
+    assert info["trainer_observation_stack_backend"] == TRAINER_STACK_BACKEND_CPU_DIRTY_CACHE
+    assert info["trainer_observation_renderer_backend"] is None
+    assert info["renderer_backed_stack_profile"] is False
+    assert info["trainer_observation_no_hidden_fallback"] is True
     assert info["trainer_observation_claim"] is True
     assert info["trainer_observation_claim_id"] == (
         "source_state_visual_stack_per_live_seat/v0"
@@ -547,6 +604,147 @@ def test_body_circles_fast_is_rejected_by_current_trainer_surface():
             trail_render_mode=TRAIL_RENDER_MODE_BODY_CIRCLES_FAST,
             natural_bonus_spawn=False,
         )
+
+
+def test_renderer_backed_profile_requires_explicit_renderer():
+    with pytest.raises(ValueError, match="no hidden CPU fallback"):
+        SourceStateMultiplayerTrainerSurface(
+            batch_size=1,
+            player_count=2,
+            observation_stack_backend=TRAINER_STACK_BACKEND_RENDERER_BACKED_PROFILE,
+            natural_bonus_spawn=False,
+        )
+
+
+def test_renderer_backed_profile_can_require_exact_renderer_backend():
+    with pytest.raises(ValueError, match="backend mismatch"):
+        SourceStateMultiplayerTrainerSurface(
+            batch_size=1,
+            player_count=2,
+            observation_stack_backend=TRAINER_STACK_BACKEND_RENDERER_BACKED_PROFILE,
+            observation_renderer=CpuOracleBatchedObservationRenderer(),
+            required_observation_renderer_backend=(
+                SOURCE_STATE_BATCHED_OBSERVATION_GPU_CANDIDATE_BACKEND
+            ),
+            natural_bonus_spawn=False,
+        )
+
+    surface = SourceStateMultiplayerTrainerSurface(
+        batch_size=1,
+        player_count=2,
+        observation_stack_backend=TRAINER_STACK_BACKEND_RENDERER_BACKED_PROFILE,
+        observation_renderer=_SurfaceRecordingGpuRenderer(),
+        required_observation_renderer_backend=(
+            SOURCE_STATE_BATCHED_OBSERVATION_GPU_CANDIDATE_BACKEND
+        ),
+        natural_bonus_spawn=False,
+    )
+    step = surface.reset(seed=20260520)
+    assert step.info["trainer_observation_required_renderer_backend"] == (
+        SOURCE_STATE_BATCHED_OBSERVATION_GPU_CANDIDATE_BACKEND
+    )
+
+
+def test_renderer_backed_cpu_oracle_matches_dirty_cache_surface():
+    seed = 20260520
+    action = np.asarray([[0, 2], [2, 0]], dtype=np.int16)
+    dirty = SourceStateMultiplayerTrainerSurface(
+        batch_size=2,
+        player_count=2,
+        seed=seed,
+        natural_bonus_spawn=False,
+    )
+    renderer_backed = SourceStateMultiplayerTrainerSurface(
+        batch_size=2,
+        player_count=2,
+        seed=seed,
+        natural_bonus_spawn=False,
+        observation_stack_backend=TRAINER_STACK_BACKEND_RENDERER_BACKED_PROFILE,
+        observation_renderer=CpuOracleBatchedObservationRenderer(),
+    )
+
+    dirty_reset = dirty.reset(seed=seed)
+    renderer_reset = renderer_backed.reset(seed=seed)
+    np.testing.assert_array_equal(renderer_reset.observation, dirty_reset.observation)
+    np.testing.assert_array_equal(
+        renderer_reset.policy_observation,
+        dirty_reset.policy_observation,
+    )
+
+    dirty_step = dirty.step(action)
+    renderer_step = renderer_backed.step(action)
+
+    np.testing.assert_array_equal(renderer_step.observation, dirty_step.observation)
+    np.testing.assert_array_equal(
+        renderer_step.policy_observation,
+        dirty_step.policy_observation,
+    )
+    assert renderer_step.info["visual_stack_class"] == TRAINER_OBSERVATION_SOURCE_RENDERER_BACKED
+    assert (
+        renderer_step.info["trainer_observation_stack_backend"]
+        == TRAINER_STACK_BACKEND_RENDERER_BACKED_PROFILE
+    )
+    assert renderer_step.info["trainer_observation_renderer_backend"] == "cpu_oracle"
+    assert renderer_step.info["renderer_backed_stack_profile"] is True
+    assert renderer_step.info["trainer_observation_no_hidden_fallback"] is True
+    assert renderer_step.info["visual_stack_dirty_render_stats"]["fallbacks"] == 0
+
+
+def test_renderer_backed_gpu_candidate_preserves_row_player_order():
+    renderer = _SurfaceRecordingGpuRenderer()
+    surface = SourceStateMultiplayerTrainerSurface(
+        batch_size=2,
+        player_count=2,
+        seed=33,
+        natural_bonus_spawn=False,
+        observation_stack_backend=TRAINER_STACK_BACKEND_RENDERER_BACKED_PROFILE,
+        observation_renderer=renderer,
+    )
+
+    step = surface.reset(seed=33)
+
+    np.testing.assert_array_equal(renderer.rows, np.asarray([0, 0, 1, 1]))
+    np.testing.assert_array_equal(renderer.players, np.asarray([0, 1, 0, 1]))
+    expected_latest = np.asarray([[0, 1], [16, 17]], dtype=np.float32) / np.float32(255.0)
+    np.testing.assert_allclose(step.observation[:, :, -1, 0, 0], expected_latest)
+    assert step.policy_observation.shape == (4, 4, 64, 64)
+    np.testing.assert_array_equal(step.policy_env_row, np.asarray([0, 0, 1, 1], dtype=np.int32))
+    np.testing.assert_array_equal(step.policy_player, np.asarray([0, 1, 0, 1], dtype=np.int16))
+    assert step.info["trainer_observation_renderer_backend"] == (
+        SOURCE_STATE_BATCHED_OBSERVATION_GPU_CANDIDATE_BACKEND
+    )
+    assert step.info["render_metadata"]["no_hidden_cpu_fallback"] is True
+
+
+def test_renderer_backed_gpu_candidate_stack_fifo_newest_frame_last():
+    renderer = _CountingSurfaceRenderer()
+    surface = SourceStateMultiplayerTrainerSurface(
+        batch_size=2,
+        player_count=2,
+        seed=44,
+        natural_bonus_spawn=False,
+        observation_stack_backend=TRAINER_STACK_BACKEND_RENDERER_BACKED_PROFILE,
+        observation_renderer=renderer,
+    )
+
+    reset_step = surface.reset(seed=44)
+    reset_latest = np.asarray([[0, 1], [16, 17]], dtype=np.float32) / np.float32(255.0)
+    np.testing.assert_allclose(reset_step.observation[:, :, -1, 0, 0], reset_latest)
+    np.testing.assert_allclose(reset_step.observation[:, :, :-1, 0, 0], 0.0)
+
+    action = np.asarray([[0, 1], [2, 1]], dtype=np.int16)
+    step = surface.step(action)
+    step_latest = np.asarray([[64, 65], [80, 81]], dtype=np.float32) / np.float32(255.0)
+    np.testing.assert_allclose(step.observation[:, :, -2, 0, 0], reset_latest)
+    np.testing.assert_allclose(step.observation[:, :, -1, 0, 0], step_latest)
+    assert {
+        "env_step_sec",
+        "stack_update_sec",
+        "reward_sec",
+        "package_sec",
+        "package_policy_observation_sec",
+        "package_info_sec",
+    }.issubset(step.info["trainer_surface_profile_timing"])
 
 
 def test_profile_no_death_mode_is_preserved_and_labeled_not_source_fidelity():

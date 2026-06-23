@@ -191,6 +191,21 @@ class SourceStateMultiplayerSampleBatchV0:
     record_index: np.ndarray
     next_record_index: np.ndarray
     policy_row: np.ndarray
+    next_action_mask: np.ndarray | None = None
+    next_policy_target: np.ndarray | None = None
+    next_root_value: np.ndarray | None = None
+    unroll_action: np.ndarray | None = None
+    unroll_reward: np.ndarray | None = None
+    unroll_policy_target: np.ndarray | None = None
+    unroll_root_value: np.ndarray | None = None
+    unroll_action_mask: np.ndarray | None = None
+    unroll_action_valid_mask: np.ndarray | None = None
+    unroll_reward_valid_mask: np.ndarray | None = None
+    unroll_policy_valid_mask: np.ndarray | None = None
+    unroll_value_valid_mask: np.ndarray | None = None
+    unroll_done: np.ndarray | None = None
+    unroll_terminated: np.ndarray | None = None
+    unroll_truncated: np.ndarray | None = None
 
 
 def build_source_state_multiplayer_target_rows_v0(

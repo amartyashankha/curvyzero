@@ -43,6 +43,13 @@ SOURCE_STATE_BATCHED_OBSERVATION_PROFILE_SCHEMA_ID = (
 )
 SOURCE_STATE_BATCHED_OBSERVATION_PROFILE_ROLE = "profile_only_mock_collector_facade"
 SOURCE_STATE_BATCHED_OBSERVATION_FUTURE_GPU_BACKEND = "future_batched_gpu_renderer"
+SOURCE_STATE_BATCHED_OBSERVATION_GPU_CANDIDATE_BACKEND = "jax_gpu_batched_profile"
+SOURCE_STATE_BATCHED_OBSERVATION_PLAYER_VIEW_CONTROLLED_ROWS = "controlled_rows"
+SOURCE_STATE_BATCHED_OBSERVATION_PLAYER_VIEW_BOTH_PLAYERS = "both_players"
+SOURCE_STATE_BATCHED_OBSERVATION_PLAYER_VIEW_MODES = (
+    SOURCE_STATE_BATCHED_OBSERVATION_PLAYER_VIEW_CONTROLLED_ROWS,
+    SOURCE_STATE_BATCHED_OBSERVATION_PLAYER_VIEW_BOTH_PLAYERS,
+)
 SOURCE_STATE_BATCHED_OBSERVATION_STRAIGHT_ACTION_ID = 1
 SOURCE_STATE_BATCHED_OBSERVATION_SELF_LUMA = 96
 SOURCE_STATE_BATCHED_OBSERVATION_OTHER_LUMA = 128
@@ -75,6 +82,12 @@ def _elapsed(started: float) -> float:
 
 
 @dataclass(frozen=True, slots=True)
+class SourceStateBatchedRenderStateRowOverlay:
+    rows: np.ndarray
+    state: Mapping[str, np.ndarray]
+
+
+@dataclass(frozen=True, slots=True)
 class SourceStateBatchedRenderRequest:
     """Boundary object a future GPU renderer should be able to consume."""
 
@@ -84,12 +97,16 @@ class SourceStateBatchedRenderRequest:
     out: np.ndarray
     trail_render_mode: str = POLICY_TRAIL_RENDER_MODE
     bonus_render_mode: str = POLICY_BONUS_RENDER_MODE
+    device_only: bool = False
+    synchronize_device: bool = True
+    state_row_overlays: Sequence[SourceStateBatchedRenderStateRowOverlay] = ()
 
 
 @dataclass(frozen=True, slots=True)
 class SourceStateBatchedRenderResult:
     frames: np.ndarray
     telemetry: dict[str, float]
+    device_frames: Any | None = None
 
 
 class SourceStateBatchedObservationRenderer(Protocol):
@@ -129,6 +146,8 @@ class CpuOracleBatchedObservationRenderer:
         )
 
     def render(self, request: SourceStateBatchedRenderRequest) -> SourceStateBatchedRenderResult:
+        if bool(request.device_only):
+            raise ValueError("CPU oracle renderer cannot satisfy device_only=True")
         telemetry = _empty_telemetry()
 
         started = time.perf_counter()
@@ -143,16 +162,17 @@ class CpuOracleBatchedObservationRenderer:
         telemetry["pack_sec"] = _elapsed(started)
 
         started = time.perf_counter()
+        state = source_state_render_state_with_row_overlays(request.state, request.state_row_overlays)
         for output_row, source_row in enumerate(rows):
             controlled_player = int(controlled_players[output_row])
             render_source_state_canvas_gray64(
-                request.state,
+                state,
                 row=int(source_row),
                 out=out[output_row],
                 rgb_out=self._rgb_work,
                 downsample_scratch=self._downsample_scratch,
                 player_rgb=source_state_controlled_player_palette(
-                    request.state,
+                    state,
                     row=int(source_row),
                     controlled_player=controlled_player,
                 ),
@@ -183,27 +203,22 @@ class SourceStateBatchedObservationProfileFacade:
         source_physics_step_ms: float = SOURCE_PHYSICS_STEP_MS,
         death_mode: str = vector_runtime.DEATH_MODE_PROFILE_NO_DEATH,
         natural_bonus_spawn: bool = False,
-        observation_backend: str = DEFAULT_POLICY_OBSERVATION_BACKEND,
+        observation_backend: str = POLICY_OBSERVATION_BACKEND_CPU,
+        player_view_mode: str = SOURCE_STATE_BATCHED_OBSERVATION_PLAYER_VIEW_CONTROLLED_ROWS,
         renderer: SourceStateBatchedObservationRenderer | None = None,
     ) -> None:
         self.batch_size = _positive_int(batch_size, "batch_size")
         self.player_count = _positive_int(player_count, "player_count")
         if self.player_count < 2:
             raise ValueError("player_count must be at least 2")
+        self.player_view_mode = _player_view_mode(player_view_mode)
         self.controlled_players = _controlled_players(
             controlled_players,
             batch_size=self.batch_size,
             player_count=self.player_count,
         )
         self.observation_backend = str(observation_backend)
-        if self.observation_backend != POLICY_OBSERVATION_BACKEND_CPU:
-            raise ValueError(
-                "profile facade currently permits only cpu_oracle; "
-                f"future boundary is {SOURCE_STATE_BATCHED_OBSERVATION_FUTURE_GPU_BACKEND!r}"
-            )
-        self.renderer = renderer if renderer is not None else CpuOracleBatchedObservationRenderer()
-        if self.renderer.backend_name != POLICY_OBSERVATION_BACKEND_CPU:
-            raise ValueError("custom renderers must keep backend_name='cpu_oracle' for this facade")
+        self.renderer = self._resolve_renderer(renderer)
 
         self.env = VectorMultiplayerEnv(
             self.batch_size,
@@ -218,12 +233,17 @@ class SourceStateBatchedObservationProfileFacade:
         )
         self._seed = int(seed)
         self._has_reset = False
-        self._row_indices = np.arange(self.batch_size, dtype=np.int64)
+        self._row_indices = self._profile_render_row_indices()
+        self._render_controlled_players = self._profile_render_controlled_players()
         self._raw_frames = np.zeros(
-            (self.batch_size, *SOURCE_STATE_CANVAS_GRAY64_SHAPE),
+            (self._row_indices.shape[0], *SOURCE_STATE_CANVAS_GRAY64_SHAPE),
             dtype=np.uint8,
         )
-        self._stacks = np.zeros((self.batch_size, *POLICY_STACK_SHAPE), dtype=np.float32)
+        if self.player_view_mode == SOURCE_STATE_BATCHED_OBSERVATION_PLAYER_VIEW_BOTH_PLAYERS:
+            stack_shape = (self.batch_size, self.player_count, *POLICY_STACK_SHAPE)
+        else:
+            stack_shape = (self.batch_size, *POLICY_STACK_SHAPE)
+        self._stacks = np.zeros(stack_shape, dtype=np.float32)
         self._last_telemetry = _empty_telemetry()
 
     @property
@@ -290,6 +310,7 @@ class SourceStateBatchedObservationProfileFacade:
             done_rows = np.flatnonzero(batch.done).astype(np.int64)
             final_observation[done_rows] = self._stacks[done_rows]
             telemetry["final_obs_sec"] = _elapsed(started)
+            # TODO: model autoreset ordering when the profile grows an env-manager row reuse path.
 
         self._last_telemetry = telemetry
         return SourceStateBatchedObservationStep(
@@ -302,6 +323,8 @@ class SourceStateBatchedObservationProfileFacade:
                 telemetry=telemetry,
                 vector_info=batch.info,
                 joint_actions=joint_actions,
+                final_observation=final_observation,
+                done=batch.done,
             ),
         )
 
@@ -311,6 +334,7 @@ class SourceStateBatchedObservationProfileFacade:
             player_count=self.player_count,
             controlled_players=self.controlled_players,
             backend=self.observation_backend,
+            player_view_mode=self.player_view_mode,
         )
 
     def render_boundary(self) -> dict[str, Any]:
@@ -319,11 +343,41 @@ class SourceStateBatchedObservationProfileFacade:
     def close(self) -> None:
         return None
 
+    def _resolve_renderer(
+        self,
+        renderer: SourceStateBatchedObservationRenderer | None,
+    ) -> SourceStateBatchedObservationRenderer:
+        if self.observation_backend == POLICY_OBSERVATION_BACKEND_CPU:
+            resolved = renderer if renderer is not None else CpuOracleBatchedObservationRenderer()
+            if resolved.backend_name != POLICY_OBSERVATION_BACKEND_CPU:
+                raise ValueError(
+                    "cpu_oracle observation_backend requires renderer.backend_name='cpu_oracle'"
+                )
+            return resolved
+        if self.observation_backend == SOURCE_STATE_BATCHED_OBSERVATION_GPU_CANDIDATE_BACKEND:
+            if renderer is None:
+                raise ValueError(
+                    "jax_gpu_batched_profile requires an explicit renderer; "
+                    "no hidden CPU fallback is allowed"
+                )
+            if renderer.backend_name != SOURCE_STATE_BATCHED_OBSERVATION_GPU_CANDIDATE_BACKEND:
+                raise ValueError(
+                    "jax_gpu_batched_profile requires renderer.backend_name="
+                    f"{SOURCE_STATE_BATCHED_OBSERVATION_GPU_CANDIDATE_BACKEND!r}"
+                )
+            return renderer
+        raise ValueError(
+            "profile facade currently supports only cpu_oracle or explicit "
+            f"{SOURCE_STATE_BATCHED_OBSERVATION_GPU_CANDIDATE_BACKEND!r}; "
+            f"got {self.observation_backend!r}. Scalar {POLICY_OBSERVATION_BACKEND_GPU!r} "
+            "is not the batched speed path."
+        )
+
     def _render_all_rows(self) -> SourceStateBatchedRenderResult:
         request = SourceStateBatchedRenderRequest(
             state=self.env.state,
             row_indices=self._row_indices,
-            controlled_players=self.controlled_players,
+            controlled_players=self._render_controlled_players,
             out=self._raw_frames,
             trail_render_mode=POLICY_TRAIL_RENDER_MODE,
             bonus_render_mode=POLICY_BONUS_RENDER_MODE,
@@ -332,15 +386,51 @@ class SourceStateBatchedObservationProfileFacade:
 
     def _push_frames(self, frames: np.ndarray) -> float:
         started = time.perf_counter()
-        raw = _validate_render_out(frames, row_count=self.batch_size)
-        self._stacks[:, :-1] = self._stacks[:, 1:]
-        np.multiply(
-            raw[:, 0],
-            np.float32(1.0 / 255.0),
-            out=self._stacks[:, -1],
-            casting="unsafe",
-        )
+        raw = _validate_render_out(frames, row_count=self._row_indices.shape[0])
+        if self.player_view_mode == SOURCE_STATE_BATCHED_OBSERVATION_PLAYER_VIEW_BOTH_PLAYERS:
+            raw_view = raw.reshape(
+                self.batch_size,
+                self.player_count,
+                *SOURCE_STATE_CANVAS_GRAY64_SHAPE,
+            )
+            self._stacks[:, :, :-1] = self._stacks[:, :, 1:]
+            np.multiply(
+                raw_view[:, :, 0],
+                np.float32(1.0 / 255.0),
+                out=self._stacks[:, :, -1],
+                casting="unsafe",
+            )
+        else:
+            self._stacks[:, :-1] = self._stacks[:, 1:]
+            np.multiply(
+                raw[:, 0],
+                np.float32(1.0 / 255.0),
+                out=self._stacks[:, -1],
+                casting="unsafe",
+            )
         return _elapsed(started)
+
+    def _profile_render_row_indices(self) -> np.ndarray:
+        rows = np.arange(self.batch_size, dtype=np.int64)
+        if self.player_view_mode == SOURCE_STATE_BATCHED_OBSERVATION_PLAYER_VIEW_BOTH_PLAYERS:
+            return np.repeat(rows, self.player_count)
+        return rows
+
+    def _profile_render_controlled_players(self) -> np.ndarray:
+        if self.player_view_mode == SOURCE_STATE_BATCHED_OBSERVATION_PLAYER_VIEW_BOTH_PLAYERS:
+            players = np.arange(self.player_count, dtype=np.int64)
+            return np.tile(players, self.batch_size)
+        return self.controlled_players.copy()
+
+    def _profile_render_row_major_pairs(self) -> list[list[int]]:
+        return [
+            [int(row), int(player)]
+            for row, player in zip(
+                self._row_indices,
+                self._render_controlled_players,
+                strict=True,
+            )
+        ]
 
     def _joint_actions(
         self,
@@ -375,6 +465,8 @@ class SourceStateBatchedObservationProfileFacade:
         telemetry: Mapping[str, float],
         vector_info: Mapping[str, Any],
         joint_actions: np.ndarray | None = None,
+        final_observation: np.ndarray | None = None,
+        done: np.ndarray | None = None,
     ) -> dict[str, Any]:
         info: dict[str, Any] = {
             "event": event,
@@ -389,6 +481,24 @@ class SourceStateBatchedObservationProfileFacade:
         }
         if joint_actions is not None:
             info["joint_actions"] = joint_actions.copy()
+        if final_observation is not None:
+            if done is None:
+                raise ValueError("done is required when final_observation is present")
+            done_mask = np.asarray(done, dtype=bool).copy()
+            final_rows = np.flatnonzero(done_mask).astype(np.int32)
+            info["final_observation"] = final_observation.copy()
+            info["final_observation_rows"] = final_rows
+            info["final_observation_row_mask"] = done_mask
+            info["final_observation_policy"] = {
+                "schema_id": "profile_only_terminal_stack_before_reset/v0",
+                "array": "final_observation",
+                "row_mask": done_mask.copy(),
+                "rows": final_rows.copy(),
+                "source": "source_state_batched_observation_profile.stacked_observation",
+                "observation_shape": list(final_observation.shape),
+                "player_view_mode": self.player_view_mode,
+                "autoreset": "not modeled",
+            }
         return info
 
 
@@ -431,8 +541,21 @@ def source_state_batched_observation_profile_contract(
     player_count: int,
     controlled_players: Sequence[int] | np.ndarray,
     backend: str,
+    player_view_mode: str = SOURCE_STATE_BATCHED_OBSERVATION_PLAYER_VIEW_CONTROLLED_ROWS,
 ) -> dict[str, Any]:
     controlled = np.asarray(controlled_players, dtype=np.int64)
+    view_mode = _player_view_mode(player_view_mode)
+    if view_mode == SOURCE_STATE_BATCHED_OBSERVATION_PLAYER_VIEW_BOTH_PLAYERS:
+        observation_shape = [int(batch_size), int(player_count), *POLICY_STACK_SHAPE]
+        render_row_count = int(batch_size) * int(player_count)
+        render_output_shape = [
+            int(batch_size) * int(player_count),
+            *SOURCE_STATE_CANVAS_GRAY64_SHAPE,
+        ]
+    else:
+        observation_shape = [int(batch_size), *POLICY_STACK_SHAPE]
+        render_row_count = int(batch_size)
+        render_output_shape = [int(batch_size), *SOURCE_STATE_CANVAS_GRAY64_SHAPE]
     return {
         "schema_id": SOURCE_STATE_BATCHED_OBSERVATION_PROFILE_SCHEMA_ID,
         "impl_id": SOURCE_STATE_BATCHED_OBSERVATION_PROFILE_IMPL_ID,
@@ -445,7 +568,11 @@ def source_state_batched_observation_profile_contract(
         "trainer_defaults_changed": False,
         "batch_size": int(batch_size),
         "player_count": int(player_count),
+        "action_controlled_players": controlled.astype(int).tolist(),
         "controlled_players": controlled.astype(int).tolist(),
+        "player_view_mode": view_mode,
+        "player_view_modes": list(SOURCE_STATE_BATCHED_OBSERVATION_PLAYER_VIEW_MODES),
+        "observation_shape": observation_shape,
         "stack_shape": list(POLICY_STACK_SHAPE),
         "stack_depth": int(POLICY_FRAME_STACK_DEPTH),
         "single_frame_shape": list(SOURCE_STATE_CANVAS_GRAY64_SHAPE),
@@ -455,6 +582,7 @@ def source_state_batched_observation_profile_contract(
         "bonus_render_mode": POLICY_BONUS_RENDER_MODE,
         "current_backend": str(backend),
         "current_backend_expected": POLICY_OBSERVATION_BACKEND_CPU,
+        "profile_gpu_candidate_backend": SOURCE_STATE_BATCHED_OBSERVATION_GPU_CANDIDATE_BACKEND,
         "production_default_backend": DEFAULT_POLICY_OBSERVATION_BACKEND,
         "lab_scalar_gpu_backend": POLICY_OBSERVATION_BACKEND_GPU,
         "telemetry_fields": list(SOURCE_STATE_BATCHED_OBSERVATION_TELEMETRY_FIELDS),
@@ -462,9 +590,21 @@ def source_state_batched_observation_profile_contract(
         "future_gpu_render_boundary": {
             "backend_name": SOURCE_STATE_BATCHED_OBSERVATION_FUTURE_GPU_BACKEND,
             "input_state": "VectorMultiplayerEnv.state arrays plus row_indices",
-            "input_control": "controlled_players per output row",
+            "input_control": "render_controlled_players per output row",
+            "player_view_mode": view_mode,
+            "render_row_count": render_row_count,
+            "render_row_indices": (
+                "row-major repeated env rows for both_players; one row per env for controlled_rows"
+            ),
+            "render_controlled_players": (
+                "row-major [0..P-1] per env row for both_players; action_controlled_players "
+                "for controlled_rows"
+            ),
+            "render_order": "row-major [(row0,p0), (row0,p1), ...] for both_players",
+            "autoreset": "TODO: not modeled; terminal final_observation is captured before any reset",
             "input_surface": "browser_lines + simple_symbols",
-            "output": "uint8 [B, 1, 64, 64] host-visible gray frames",
+            "output_shape": render_output_shape,
+            "output": "host-visible uint8 gray frames matching output_shape",
             "readback_slot": "explicit telemetry slot even when current CPU path is no-op",
             "not_implemented_here": True,
         },
@@ -476,6 +616,14 @@ def _positive_int(value: int, name: str) -> int:
     if parsed < 1:
         raise ValueError(f"{name} must be positive")
     return parsed
+
+
+def _player_view_mode(value: str) -> str:
+    mode = str(value)
+    if mode not in SOURCE_STATE_BATCHED_OBSERVATION_PLAYER_VIEW_MODES:
+        valid = ", ".join(SOURCE_STATE_BATCHED_OBSERVATION_PLAYER_VIEW_MODES)
+        raise ValueError(f"player_view_mode must be one of: {valid}; got {mode!r}")
+    return mode
 
 
 def _controlled_players(
@@ -524,10 +672,73 @@ def _validate_render_out(out: np.ndarray, *, row_count: int) -> np.ndarray:
     return array
 
 
+def source_state_render_state_with_row_overlays(
+    state: Mapping[str, np.ndarray],
+    overlays: Sequence[SourceStateBatchedRenderStateRowOverlay] = (),
+    *,
+    batch_size: int | None = None,
+) -> dict[str, np.ndarray]:
+    result = {str(key): np.asarray(value) for key, value in state.items()}
+    overlay_rows_seen: set[int] = set()
+    copied_keys: set[str] = set()
+    for overlay in overlays:
+        rows_raw = np.asarray(overlay.rows)
+        if rows_raw.ndim != 1:
+            raise ValueError(f"state row overlay rows must be rank 1, got {rows_raw.shape}")
+        if not np.issubdtype(rows_raw.dtype, np.integer):
+            raise ValueError("state row overlay rows must be integers")
+        rows = rows_raw.astype(np.int64, copy=False)
+        if bool((rows < 0).any()):
+            raise ValueError("state row overlay rows must be nonnegative")
+        if batch_size is not None and bool((rows >= int(batch_size)).any()):
+            raise ValueError(f"state row overlay rows must be in [0, {int(batch_size)})")
+        if np.unique(rows).shape[0] != rows.shape[0]:
+            raise ValueError("state row overlay rows must be duplicate-free")
+        duplicate_rows = {int(row) for row in rows if int(row) in overlay_rows_seen}
+        if duplicate_rows:
+            raise ValueError("state row overlay rows must be duplicate-free")
+        overlay_rows_seen.update(int(row) for row in rows)
+        overlay_state = {str(key): np.asarray(value) for key, value in overlay.state.items()}
+        for key, overlay_value in overlay_state.items():
+            if key not in result:
+                raise ValueError(f"state row overlay key {key!r} is missing from base state")
+            base_value = result[key]
+            if base_value.ndim < 1:
+                raise ValueError(f"state row overlay key {key!r} does not have a row dimension")
+            if batch_size is None:
+                key_batch_size = int(base_value.shape[0])
+            else:
+                key_batch_size = int(batch_size)
+                if int(base_value.shape[0]) < key_batch_size:
+                    raise ValueError(
+                        f"state row overlay base key {key!r} has too few rows: "
+                        f"{base_value.shape[0]} < {key_batch_size}"
+                    )
+            if bool((rows >= key_batch_size).any()):
+                raise ValueError(
+                    f"state row overlay rows for key {key!r} must be in [0, {key_batch_size})"
+                )
+            expected_shape = (int(rows.shape[0]), *base_value.shape[1:])
+            if overlay_value.shape != expected_shape:
+                raise ValueError(
+                    f"state row overlay key {key!r} must have shape {expected_shape}, "
+                    f"got {overlay_value.shape}"
+                )
+            if key not in copied_keys:
+                result[key] = np.asarray(base_value).copy()
+                copied_keys.add(key)
+            result[key][rows] = overlay_value
+    return result
+
+
 __all__ = [
     "CpuOracleBatchedObservationRenderer",
     "SOURCE_STATE_BATCHED_OBSERVATION_DRIFT_FIELDS",
     "SOURCE_STATE_BATCHED_OBSERVATION_FUTURE_GPU_BACKEND",
+    "SOURCE_STATE_BATCHED_OBSERVATION_GPU_CANDIDATE_BACKEND",
+    "SOURCE_STATE_BATCHED_OBSERVATION_PLAYER_VIEW_BOTH_PLAYERS",
+    "SOURCE_STATE_BATCHED_OBSERVATION_PLAYER_VIEW_CONTROLLED_ROWS",
+    "SOURCE_STATE_BATCHED_OBSERVATION_PLAYER_VIEW_MODES",
     "SOURCE_STATE_BATCHED_OBSERVATION_PROFILE_IMPL_ID",
     "SOURCE_STATE_BATCHED_OBSERVATION_PROFILE_SCHEMA_ID",
     "SOURCE_STATE_BATCHED_OBSERVATION_STRAIGHT_ACTION_ID",
@@ -537,6 +748,8 @@ __all__ = [
     "SourceStateBatchedObservationStep",
     "SourceStateBatchedRenderRequest",
     "SourceStateBatchedRenderResult",
+    "SourceStateBatchedRenderStateRowOverlay",
     "source_state_batched_observation_profile_contract",
     "source_state_controlled_player_palette",
+    "source_state_render_state_with_row_overlays",
 ]
