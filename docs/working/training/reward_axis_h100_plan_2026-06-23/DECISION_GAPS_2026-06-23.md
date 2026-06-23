@@ -73,6 +73,8 @@ What could be wrong:
   scale.
 - `state_dict` exists, but full reward-model checkpoint/resume round-trip is
   not promotion-grade proof yet.
+- Terminal and final-observation RND behavior may be wrong or unmeasured. A
+  death frame can be exactly where novelty is most misleading or most useful.
 
 Evidence that closes the gap:
 
@@ -80,6 +82,10 @@ Evidence that closes the gap:
 - A low-weight `rnd_replay_target_v0` canary proving finite nonzero target
   reward deltas.
 - At least one checkpoint, eval artifact, GIF artifact, and RND metrics JSONL.
+- An RND save/resume round trip proving predictor, target, optimizer, counters,
+  config hash, and metrics survive the actual training checkpoint path.
+- A sampled-batch test or artifact proving latest-frame extraction on terminal
+  and final-observation batches.
 - Later: survival AUC/best/retention beats both stock and meter controls, then
   transfers beyond blank-canvas opponents.
 
@@ -134,6 +140,7 @@ What we know:
 - Historical best seed is the r18fresh plus-outcome `iteration_180000` ref.
 - Bestseed Wave A manifests have passed the current no-launch anchor and packet
   audits in the docs.
+- Wave A is auditable today as a prelaunch package, not as a learning result.
 
 What could be wrong:
 
@@ -142,6 +149,8 @@ What could be wrong:
 - Historical ranking evidence is not the same as current Modal existence.
 - `top4nz` is launchable opponent/ref material, not automatically the global
   best learner seed.
+- Saved capacity snapshots are volatile. They are context for operator review,
+  not launch permission.
 
 Evidence that closes the gap:
 
@@ -149,6 +158,8 @@ Evidence that closes the gap:
   ref existence, observation contract, reward contract, and loadability.
 - Fresh audit before every medium or long launch.
 - Clear label for seed role in every manifest.
+- After launch: actual nonzero checkpoints, eval curves, RND metrics where
+  relevant, and retention readouts at the useful horizons.
 
 Primary doc:
 
@@ -158,8 +169,10 @@ Primary doc:
 
 What we know:
 
-- CurvyZero stock learning uses source-state gray64 visual stacks.
-- CurvyZero also has a flat 1v1 egocentric ray observation path.
+- CurvyZero stock learning uses source-state gray64 visual stacks with the CPU
+  oracle backend as the current reliable default.
+- That stack is source-state raster, not browser-pixel parity.
+- CurvyZero also has a flat 1v1/no-bonus egocentric ray observation path.
 - Flash `raycast_v1` is a fast GPU-resident structured observation.
 - Fast GPU rendering prototypes exist, but they are profile/canary lanes.
 
@@ -171,6 +184,8 @@ What could be wrong:
   bonus timers, precise heading, or subcell geometry.
 - A faster observation can still produce a weaker agent.
 - A richer observation can be too expensive or too hard to optimize.
+- GPU visual prototypes may look fast while still failing freshness, metadata,
+  no-fallback, terminal-observation, or trainer-integration gates.
 
 Evidence that closes the gap:
 
@@ -306,11 +321,15 @@ Run broad, but keep the rows interpretable.
 
 1. RND real-path health gate:
    `none` versus `rnd_meter_v0` versus low positive `rnd_replay_target_v0`,
-   matched seed and horizon, requiring metrics, checkpoints, eval, and GIF.
+   matched seed and horizon, requiring metrics, checkpoints, eval, GIF, and
+   explicit save/resume and terminal-batch checks.
 
 2. Wave A bestseed controlled sweep:
    keep non-RND reward/cadence controls alive beside RND; use long tiers only
-   within the H100 operating limits in `OPERATING_PATTERNS.md`.
+   within the H100 operating limits in `OPERATING_PATTERNS.md`. For an 8h+
+   first read, prefer the capacity-cleared `long17_no_highest_weight_bestseed`
+   shape over the full 90-row packet unless the operator explicitly chooses a
+   different tier after fresh audits.
 
 3. Observation scenario suite:
    compare ray, visual, and hybrid information on fixed states before declaring
@@ -350,4 +369,3 @@ hard strategic evals and long-run retention:
 faithful game + useful observation + stable learning + retained checkpoints
 + honest evals + acceptable wall-clock
 ```
-
