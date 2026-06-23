@@ -235,12 +235,8 @@ def _dry_run_payload(audit, spec, rows: list[dict]) -> dict:
     }
 
 
-def _modal_ref_audit_payload(audit) -> dict:
-    refs = [
-        "training/lightzero-curvytron-visual-survival/source-run/"
-        f"attempts/try-source/train/lightzero_exp/ckpt/iteration_{rank * 10000}.pth.tar"
-        for rank in range(1, 5)
-    ]
+def _modal_ref_audit_payload(audit, manifest: dict) -> dict:
+    refs = sorted(audit._manifest_checkpoint_refs(manifest))
     return {
         "schema_id": audit.REF_AUDIT_SCHEMA_ID,
         "runs_volume_name": audit.RUNS_VOLUME_NAME,
@@ -248,7 +244,7 @@ def _modal_ref_audit_payload(audit) -> dict:
         "check_modal": True,
         "syntax_only": False,
         "existence_checked": True,
-        "ref_count": 4,
+        "ref_count": len(refs),
         "bad_ref_count": 0,
         "missing_ref_count": 0,
         "modal_parent_error_count": 0,
@@ -256,8 +252,8 @@ def _modal_ref_audit_payload(audit) -> dict:
     }
 
 
-def _write_packet(repo_root: Path, audit) -> None:
-    for spec in audit._default_lane_specs():
+def _write_packet(repo_root: Path, audit, non_rnd_seed_profile: str = "top4nz") -> None:
+    for spec in audit._default_lane_specs(non_rnd_seed_profile):
         if spec.lane_group == "rnd":
             manifest = _rnd_manifest(audit, spec)
         else:
@@ -265,7 +261,10 @@ def _write_packet(repo_root: Path, audit) -> None:
         _write_json(repo_root / spec.manifest_relpath, manifest)
         _write_json(repo_root / spec.dry_run_relpath, _dry_run_payload(audit, spec, manifest["rows"]))
         if spec.modal_ref_audit_relpath is not None:
-            _write_json(repo_root / spec.modal_ref_audit_relpath, _modal_ref_audit_payload(audit))
+            _write_json(
+                repo_root / spec.modal_ref_audit_relpath,
+                _modal_ref_audit_payload(audit, manifest),
+            )
 
 
 def test_wave_a_launch_packet_audit_accepts_complete_no_launch_packet(tmp_path):
@@ -281,6 +280,27 @@ def test_wave_a_launch_packet_audit_accepts_complete_no_launch_packet(tmp_path):
     assert report["launch_artifacts"] == []
 
 
+def test_wave_a_launch_packet_audit_can_check_bestseed_packet_names(tmp_path):
+    audit = _load_script()
+    _write_packet(tmp_path, audit, non_rnd_seed_profile="bestseed")
+
+    report = audit.build_report(
+        audit.parse_args(
+            [
+                "--repo-root",
+                str(tmp_path),
+                "--non-rnd-seed-profile",
+                "bestseed",
+            ]
+        )
+    )
+
+    assert report["ok"] is True
+    assert report["non_rnd_seed_profile"] == "bestseed"
+    assert any(lane["lane_id"] == "static-bestseed-top4nz" for lane in report["lanes"])
+    assert not any(lane["lane_id"] == "static-top4nz" for lane in report["lanes"])
+
+
 def test_wave_a_launch_packet_audit_rejects_missing_modal_ref_audit(tmp_path):
     audit = _load_script()
     _write_packet(tmp_path, audit)
@@ -291,6 +311,53 @@ def test_wave_a_launch_packet_audit_rejects_missing_modal_ref_audit(tmp_path):
 
     assert report["ok"] is False
     assert any(error["message"] == "missing Modal ref audit artifact" for error in report["errors"])
+
+
+def test_wave_a_launch_packet_audit_accepts_independent_initial_checkpoint_ref(tmp_path):
+    audit = _load_script()
+    _write_packet(tmp_path, audit)
+    spec = audit._default_lane_specs()[1]
+    manifest_path = tmp_path / spec.manifest_relpath
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    initial_ref = (
+        "training/lightzero-curvytron-visual-survival/best-seed/"
+        "attempts/try-best-seed/train/lightzero_exp/ckpt/iteration_180000.pth.tar"
+    )
+    for row in manifest["rows"]:
+        row["initial_policy_checkpoint_ref"] = initial_ref
+        row["train_kwargs"]["initial_policy_checkpoint_ref"] = initial_ref
+    _write_json(manifest_path, manifest)
+    _write_json(
+        tmp_path / spec.modal_ref_audit_relpath,
+        _modal_ref_audit_payload(audit, manifest),
+    )
+
+    report = audit.build_report(audit.parse_args(["--repo-root", str(tmp_path)]))
+
+    assert report["ok"] is True
+    static_lane = next(lane for lane in report["lanes"] if lane["lane_id"] == spec.lane_id)
+    assert static_lane["modal_ref_count"] == 5
+
+
+def test_wave_a_launch_packet_audit_rejects_modal_ref_set_drift(tmp_path):
+    audit = _load_script()
+    _write_packet(tmp_path, audit)
+    spec = audit._default_lane_specs()[1]
+    audit_path = tmp_path / spec.modal_ref_audit_relpath
+    payload = json.loads(audit_path.read_text(encoding="utf-8"))
+    payload["refs"][0]["ref"] = (
+        "training/lightzero-curvytron-visual-survival/wrong/"
+        "attempts/try-wrong/train/lightzero_exp/ckpt/iteration_999999.pth.tar"
+    )
+    _write_json(audit_path, payload)
+
+    report = audit.build_report(audit.parse_args(["--repo-root", str(tmp_path)]))
+
+    assert report["ok"] is False
+    assert any(
+        error["message"] == "Modal ref audit refs do not match manifest checkpoint refs"
+        for error in report["errors"]
+    )
 
 
 def test_wave_a_launch_packet_audit_rejects_launch_artifacts_by_default(tmp_path):

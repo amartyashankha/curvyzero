@@ -166,7 +166,8 @@ most of:
 Blank-canvas promotion means "RND deserves the next experiment," not "RND is
 production reward." The next experiment should add fixed opponents or tournament
 exposure with a builder that makes assignment refresh and checkpoint refs
-explicit.
+explicit. Use `LONG_HORIZON_CURRICULUM.md` for the exact-ref curriculum bridge
+and `LONG_TERM_PLANNING_RND_STRATEGY.md` for the broader planning/RND doctrine.
 
 ## Failure Modes
 

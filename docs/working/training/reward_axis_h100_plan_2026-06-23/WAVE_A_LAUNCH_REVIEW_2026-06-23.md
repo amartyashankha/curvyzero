@@ -2,9 +2,14 @@
 
 Status: approval packet draft. No Modal training jobs were launched.
 
+Current recommendation: use the bestseed non-RND repair family for medium and
+long learning reads. The top4nz-seeded packet in this note remains launchable
+only if the approval explicitly chooses the top4nz repair seed as the comparison
+anchor.
+
 ## Scope
 
-This note packages the current repaired Wave A launch candidate:
+This note packages the original repaired top4nz Wave A launch candidate:
 
 - RND blank sweep: `45` rows.
 - Static top4nz exact-ref repair: `18` rows.
@@ -13,12 +18,25 @@ This note packages the current repaired Wave A launch candidate:
 
 Total prepared H100 rows: `90`, balanced as `45` RND and `45` non-RND.
 
+A preferred bestseed sibling now exists with the same row shape, but with the
+learner initial policy pinned to the historical r18fresh plus-outcome
+`iteration_180000` checkpoint while keeping the top4nz exact refs as static
+opponent rank slots. Its packet audit is:
+
+```text
+artifacts/local/curvytron_wave_a_launch_packet_audit_bestseed_20260623a.json
+```
+
+Use the bestseed packet unless the launch note explicitly says the experiment is
+testing the top4nz repair seed itself.
+
 Use this only with:
 
 - `LAUNCH_QUEUE.md` for current lane state
 - `WAVE_A_MANIFESTS.md` for manifest ledger
 - `PRELAUNCH_AUDIT_2026-06-23.md` for the blocked original refs
 - `PRELAUNCH_REPAIR_2026-06-23.md` for repaired non-RND artifact checklist
+- `CHECKPOINT_ANCHOR_POLICY.md` for the learner-seed versus opponent-ref split
 - `MONITORING_SIGNALS.md` and `CONTINGENCY_PLANS.md` for first reads and
   responses
 
@@ -30,7 +48,13 @@ approves the exact command set and intended row count.
 Do not launch positive RND alone. The full repaired packet is intentionally
 balanced as `45` RND rows and `45` non-RND rows.
 
-Before approval, rerun the no-launch packet audit:
+Before approval, rerun the no-launch packet audit. Preferred bestseed form:
+
+```bash
+uv run python scripts/audit_curvytron_wave_a_launch_packet.py --non-rnd-seed-profile bestseed --output artifacts/local/curvytron_wave_a_launch_packet_audit_bestseed_20260623a.json
+```
+
+Top4nz comparison form, only if the launch note chooses top4nz seeding:
 
 ```bash
 uv run python scripts/audit_curvytron_wave_a_launch_packet.py --output artifacts/local/curvytron_wave_a_launch_packet_audit_20260623a.json
@@ -52,19 +76,19 @@ Then rerun active capacity through the capacity auditor:
 uv run python scripts/audit_curvytron_wave_a_capacity.py --output artifacts/local/curvytron_wave_a_capacity_snapshot_20260623a.json
 ```
 
-Last no-launch capacity read,
-`artifacts/local/curvytron_wave_a_capacity_snapshot_20260623a.json`:
+For staged profiles, use the profile-specific capacity command embedded in the
+staged artifact. Current bestseed frontier:
 
-- `app_count=122`
-- `total_tasks=78`
-- `detached_running=58`
-- `detached_tasks=69`
-- `projected_total_tasks=168` after adding the requested `90` Wave A rows
-- `max_additional_rows_under_task_proxy=22`
-- `full_launch_within_task_proxy=false`
-- CurvyTron train app: deployed, `tasks=0`
-- CurvyTron status app: deployed, `tasks=0`
-- `approval_recommendation=operator_capacity_review_required`
+- `artifacts/local/curvytron_wave_a_capacity_snapshot_long17_no_highest_weight_bestseed_20260623a.json`:
+  `17` rows, `capacity_proxy_clear`, `projected_total_tasks=100`
+- `artifacts/local/curvytron_wave_a_capacity_snapshot_long18_all_weights_bestseed_20260623a.json`:
+  `18` rows, `operator_capacity_review_required`, `projected_total_tasks=101`
+- `artifacts/local/curvytron_wave_a_capacity_snapshot_long19_low_weight_replicated_bestseed_20260623a.json`:
+  `19` rows, `operator_capacity_review_required`, `projected_total_tasks=101`
+- `artifacts/local/curvytron_wave_a_capacity_snapshot_mid36_bestseed_20260623a.json`:
+  `36` rows, `operator_capacity_review_required`, `projected_total_tasks=118`
+- `artifacts/local/curvytron_wave_a_capacity_snapshot_short90_bestseed_20260623a.json`:
+  `90` rows, `operator_capacity_review_required`, `projected_total_tasks=172`
 
 Treat this capacity read as volatile context and a coarse task-count proxy only.
 It does not prove H100 availability or unavailability because Modal task counts
@@ -74,7 +98,22 @@ approval: the 90-row packet is appropriate for a short `<=2h` breadth/health
 sweep if capacity is clear, but `2h-8h` runs should launch or retain at most 40
 active rows and `8h+` runs should launch or retain only 10-20 rows.
 
-Then rerun the checkpoint-anchor policy audit:
+Then rerun the checkpoint-anchor policy audit. Preferred bestseed form:
+
+```bash
+uv run python scripts/audit_curvytron_checkpoint_anchor_policy.py --non-rnd-seed-profile bestseed --require-best-known-seed --output artifacts/local/curvytron_checkpoint_anchor_policy_audit_bestseed_20260623a.json
+```
+
+Last bestseed anchor read,
+`artifacts/local/curvytron_checkpoint_anchor_policy_audit_bestseed_20260623a.json`:
+
+- `ok=true`
+- historical best seed: r18fresh plus-outcome `iteration_180000`
+- repaired bestseed non-RND manifests audited: `10`
+- `historical_best_seed_manifest_count=10`
+- `top4nz_seed_manifest_count=0`
+
+Top4nz comparison form, only if the launch note chooses top4nz seeding:
 
 ```bash
 uv run python scripts/audit_curvytron_checkpoint_anchor_policy.py --output artifacts/local/curvytron_checkpoint_anchor_policy_audit_20260623a.json
@@ -91,21 +130,25 @@ Last no-launch anchor read,
 - warning: current repaired manifests do not use the historical r18fresh rank-1
   checkpoint as their initial seed
 
-Approval must explicitly choose whether to launch the currently repaired
-top4nz-seeded manifests, or regenerate non-RND manifests with the historical
-best-known seed and rerun the launch packet.
+Approval must explicitly choose bestseed or top4nz seed policy. If the approval
+is silent, do not launch.
 
 ## Launch Commands
 
-For runtime-tier staged commands, prefer the generated planner artifacts:
+For runtime-tier staged commands, prefer the generated bestseed planner
+artifacts:
 
 ```bash
-uv run python scripts/plan_curvytron_wave_a_staged_launch.py --profile mid36 --output artifacts/local/curvytron_wave_a_staged_launch_mid36_20260623a.json
-uv run python scripts/plan_curvytron_wave_a_staged_launch.py --profile long19_low_weight_replicated --output artifacts/local/curvytron_wave_a_staged_launch_long19_low_weight_replicated_20260623a.json
+uv run python scripts/plan_curvytron_wave_a_staged_launch.py --profile mid36_bestseed --output artifacts/local/curvytron_wave_a_staged_launch_mid36_bestseed_20260623a.json
+uv run python scripts/plan_curvytron_wave_a_staged_launch.py --profile long17_no_highest_weight_bestseed --output artifacts/local/curvytron_wave_a_staged_launch_long17_no_highest_weight_bestseed_20260623a.json
+uv run python scripts/plan_curvytron_wave_a_staged_launch.py --profile long18_all_weights_bestseed --output artifacts/local/curvytron_wave_a_staged_launch_long18_all_weights_bestseed_20260623a.json
+uv run python scripts/plan_curvytron_wave_a_staged_launch.py --profile long19_low_weight_replicated_bestseed --output artifacts/local/curvytron_wave_a_staged_launch_long19_low_weight_replicated_bestseed_20260623a.json
 ```
 
-The commands below are the full prepared packet shape, not the only approved
-runtime shape.
+The commands below are the full prepared top4nz packet shape, not the preferred
+bestseed launch shape. For bestseed launches, generate exact commands from the
+bestseed staged artifacts or from the bestseed manifest paths recorded in
+`WAVE_A_MANIFESTS.md`.
 
 RND full sweep, `45` rows:
 

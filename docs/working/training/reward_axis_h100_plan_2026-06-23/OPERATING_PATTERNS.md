@@ -27,6 +27,21 @@ resource allocator. If current capacity is ambiguous, stage at or below the
 capacity audit's conservative room or wait for an explicit operator capacity
 decision.
 
+Parallelism is a rule at every level:
+
+- parallel lanes: reward/RND, non-RND controls, checkpoint anchors, monitoring,
+  temporal abstraction, and bounded PPO/Puffer/planner spikes
+- parallel rows: weights, replicas, reward arms, opponent recipes, and cadence
+  knobs inside one audited manifest where possible
+- parallel readouts: status, eval curves, RND metrics, action histograms, and
+  artifact integrity checks prepared before launch
+- parallel agents: delegate bounded audits or implementation slices with
+  disjoint scopes, then integrate through this doc set
+
+Do not use "parallel" to mean uncontrolled factorial explosion. Each extra axis
+must name the claim it answers, the controls that make it interpretable, and the
+runtime tier it can afford.
+
 Non-RND testing is mandatory, not optional. Every RND claim needs matched
 `none` and `rnd_meter_v0` controls, and the overall campaign must keep
 independent non-RND extrinsic reward, exact-ref curriculum, and cadence/support
@@ -87,9 +102,79 @@ Run lanes in parallel, read them separately:
   leaderboard feedback.
 - Tournament lane: head-to-head selection hypothesis.
 - Compact speed lane: throughput hypothesis.
+- Pure/raw-tick MCTS lane: quarantined search research and profiling hypothesis,
+  not a production learning lane.
+- Long-term planning lane: recurrence, macro-actions, dense trajectory
+  planners, reanalysis, or Gumbel/MuZero search under separate denominators.
 
 Never use a win in one lane to close another lane unless a bridge experiment
 was designed for that purpose.
+
+## Pure MCTS Quarantine
+
+The current conceptual read makes raw-tick pure MCTS a suspected misfit for
+production learning spend. It may still be useful as a profiling/control lane,
+but only with an explicit profile split:
+
+- policy only
+- recurrent/model only
+- tree only
+- full search
+
+Do not launch or keep long production-style H100 runs whose only thesis is
+"more raw-tick MCTS will learn" unless they already have policy-only controls,
+equal GPU-second/action-latency comparisons, D2H/H2D copy counts, root batch,
+simulation count, max depth, and action-latency distribution.
+
+Before stopping anything, prove it is actually a CurvyTron pure/raw-tick MCTS
+run. Required evidence:
+
+- Modal app description or run id maps to CurvyZero/CurvyTron.
+- Recent logs or manifest metadata mention CurvyTron, LightZero/MuZero,
+  `train_muzero`, MCTS/search settings, or the source-state env.
+- It is not an unrelated timing, LLM, dashboard, benchmark, or Flash playable
+  service.
+
+If a verified live pure MCTS run lacks the gates, stop it after preserving the
+latest checkpoint, profile artifact, exact app id, run id, attempt id, and stop
+reason. Never infer from capacity pressure alone.
+
+This does not kill all search work. It moves search into measured research:
+macro-action search, dense trajectory planning, reanalysis/distillation, or
+Gumbel/joint-action MuZero can return only through separate manifests and
+promotion gates.
+
+## Long-Term Planning And RND
+
+Use `LONG_TERM_PLANNING_RND_STRATEGY.md` before adding planning or curiosity
+rows. The standing split is:
+
+- recurrence and value learning carry most long-horizon memory
+- strategic observations and auxiliary targets expose territory and reachable
+  space
+- macro-actions/action repeat make explicit decisions cover meaningful geometry
+- dense planners search over macro-action sequences or selected states
+- RND is training-only exploration pressure, not a production reward
+
+For the policy-first baseline branch, use
+`../curvytron_flash_comparison_2026-06-23/PUFFERLIB_STRATEGY.md` as the current
+PPO/Puffer gap analysis. Puffer/Flash rows remain PPO or raw-env controls unless
+a bridge experiment explicitly makes them comparable to CurvyZero MuZero/search
+or reward/RND quality evidence.
+
+Do not combine planner actions with vanilla PPO old-policy logprobs. If search
+chooses actions, the bridge is imitation, reanalysis, or a separate search
+training objective.
+
+Any PPO/self-play/planner-hybrid row must declare its behavior-policy contract:
+`ppo`, `imitation`, `off_policy_mixture`, or `search_training`. It must also
+declare reward perspective, value perspective, action-mask/logprob convention,
+entropy or top-action collapse threshold, and opponent-pool/frozen-checkpoint
+policy if it makes a self-play claim.
+
+Do not use RND as proof of planning. A positive RND result means novelty
+pressure helped the training lane only after stock, meter, survival, retention,
+and action-distribution controls agree.
 
 ## Before Launch
 
@@ -118,6 +203,9 @@ Hard launch gates:
 - Confirm intended runtime tier and the active H100 row cap for that tier.
 - Confirm initial policy seed policy: historical best-known seed versus
   current launchable repair seed, with an audit artifact.
+- Confirm the two checkpoint roles separately: opponent rank slots come from
+  `--checkpoint-refs-file`; learner seed comes from
+  `--initial-policy-checkpoint-ref` or the documented fallback.
 - Confirm compute is `gpu-h100-cpu40` where intended.
 - Confirm at least one active non-RND lane is launching or already healthy
   unless the launch is explicitly an RND plumbing-only preflight.
@@ -126,6 +214,12 @@ Hard launch gates:
 - Confirm stock RND control rows do not require RND metrics.
 - Confirm seeded checkpoint refs are exact immutable `iteration_N.pth.tar`
   refs, not `latest` aliases.
+- For PPO/self-play/planner-hybrid rows, confirm behavior-policy contract,
+  reward/value perspective, action mask convention, and planner-action training
+  contract.
+- For environment, macro-action, planner, PPO/Puffer, or self-play branches,
+  confirm the relevant `CURVYTRON_GAME_MECHANICS_GATES.md` checks are satisfied
+  or explicitly relabel the row as a diagnostic/non-source-faithful control.
 - Confirm the launch is full-manifest or explicitly uses
   `--allow-partial-launch` with pasted row ids.
 
@@ -157,7 +251,7 @@ Launch order should favor interpretability:
 1. Static exact-ref reward isolate and RND blank sweep are independent and
    should launch broadly if capacity is clear.
 2. Long-horizon pretrained replicas should reuse the same exact initial
-   checkpoint and only vary the intended seed or selected knob.
+   checkpoint; vary only run ids, selected rows, or explicit knob settings.
 3. Cadence/support rows should be launched as a support question, not as a
    reward variant conclusion.
 

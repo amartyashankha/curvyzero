@@ -78,10 +78,15 @@ artifacts/local/curvytron_restart_source_refs/restart18-source-loop18-top96-nonz
 
 Use it for:
 
-- initial policy seed, preferably one shared trained checkpoint
 - static rank slots in opponent mixtures
 - fixed-opponent RND bridge rows after the blank-canvas RND sweep
 - long-horizon reward rows without live feedback
+
+Choose the learner initial policy separately from the opponent refs. Prefer one
+shared trained checkpoint for medium and long reads, currently the historical
+r18fresh plus-outcome `iteration_180000` seed from
+`CHECKPOINT_ANCHOR_POLICY.md`, while keeping the static opponent refs frozen for
+matched comparisons.
 
 Use scratch only when the explicit question is cold-start learnability or RND
 blank-canvas novelty. Scratch rows are slower to read and should not dominate
@@ -141,7 +146,10 @@ requirement.
 
 RND should still start with blank-canvas controls because that isolates novelty
 plumbing. But if low weights show a real signal, the next RND bridge should use
-the same exact-ref curriculum above, not a live leaderboard.
+the same exact-ref curriculum above, not a live leaderboard. See `RND_LANE.md`
+for RND promotion gates and `LONG_TERM_PLANNING_RND_STRATEGY.md` for how this
+bridge relates to recurrence, macro-actions, PPO/Puffer baselines, and later
+planner work.
 
 Also pass RND cadence explicitly. The builder default for
 `--rnd-update-per-collect` is not the serious setting from the old RND notes.

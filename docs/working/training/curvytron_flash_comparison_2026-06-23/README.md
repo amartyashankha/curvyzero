@@ -37,9 +37,10 @@ which differences are algorithmic and therefore not directly comparable
 
 1. `README.md`: verdict and current status.
 2. `COMPARISON_MATRIX.md`: decisions, denominators, and organization verdicts.
-3. `PROFILE_RUN_PLAN.md`: exact local/Modal/H100 ladder.
-4. `SYSTEM_MAPS.md`: compact source map for both systems.
-5. `EVIDENCE_LEDGER.md`: recovery artifacts, checksums, and run outputs.
+3. `PUFFERLIB_STRATEGY.md`: PPO/Puffer gap analysis and baseline-lane strategy.
+4. `PROFILE_RUN_PLAN.md`: exact local/Modal/H100 ladder.
+5. `SYSTEM_MAPS.md`: compact source map for both systems.
+6. `EVIDENCE_LEDGER.md`: recovery artifacts, checksums, and run outputs.
 
 ## Source Anchors
 

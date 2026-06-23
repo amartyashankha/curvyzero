@@ -96,6 +96,45 @@ def test_mid36_profile_preserves_rnd_and_static_controls(tmp_path):
     assert any(lane["lane_id"] == "rnd-blank-sweep" and lane["partial_launch"] for lane in report["lanes"])
 
 
+def test_mid36_bestseed_profile_uses_bestseed_static_lane(tmp_path):
+    planner = _load_script()
+    _write_default_manifests(tmp_path, planner)
+
+    report = planner.build_report(
+        planner.parse_args(["--repo-root", str(tmp_path), "--profile", "mid36_bestseed"])
+    )
+
+    assert report["ok"] is True
+    assert report["total_selected_rows"] == 36
+    assert report["rnd_selected_rows"] == 18
+    assert report["non_rnd_selected_rows"] == 18
+    assert report["non_rnd_seed_profile"] == "bestseed"
+    assert any(lane["lane_id"] == "static-bestseed-top4nz" for lane in report["lanes"])
+    assert not any(lane["lane_id"] == "static-top4nz" for lane in report["lanes"])
+    prelaunch_commands = [check["command"] for check in report["prelaunch_checks"]]
+    assert any("--non-rnd-seed-profile bestseed" in command for command in prelaunch_commands)
+    assert any("--require-best-known-seed" in command for command in prelaunch_commands)
+    capacity_checks = [
+        check for check in report["prelaunch_checks"] if check["check"] == "capacity_snapshot"
+    ]
+    assert capacity_checks == [
+        {
+            "check": "capacity_snapshot",
+            "required": True,
+            "command": (
+                "uv run python scripts/audit_curvytron_wave_a_capacity.py "
+                "--requested-h100-rows 36 "
+                "--output artifacts/local/curvytron_wave_a_capacity_snapshot_mid36_bestseed_20260623a.json"
+            ),
+            "expected": {
+                "requested_h100_rows": 36,
+                "approval_recommendation": "capacity_proxy_clear or operator_capacity_review_required",
+                "max_active_h100_rows": 40,
+            },
+        }
+    ]
+
+
 def test_long19_profile_focuses_low_weight_rnd_with_non_rnd_triad(tmp_path):
     planner = _load_script()
     _write_default_manifests(tmp_path, planner)
@@ -115,6 +154,76 @@ def test_long19_profile_focuses_low_weight_rnd_with_non_rnd_triad(tmp_path):
     assert "rnd_replay_target_v0:1.0" not in report["rnd_counts"]
     assert all("--allow-launch" in command for command in report["commands"])
     assert any("--allow-partial-launch" in command for command in report["commands"])
+
+
+def test_top4nz_profile_prelaunch_checks_do_not_require_bestseed(tmp_path):
+    planner = _load_script()
+    _write_default_manifests(tmp_path, planner)
+
+    report = planner.build_report(
+        planner.parse_args(["--repo-root", str(tmp_path), "--profile", "mid36"])
+    )
+
+    assert report["ok"] is True
+    assert report["non_rnd_seed_profile"] == "top4nz"
+    prelaunch_commands = [check["command"] for check in report["prelaunch_checks"]]
+    assert not any("--non-rnd-seed-profile bestseed" in command for command in prelaunch_commands)
+    assert not any("--require-best-known-seed" in command for command in prelaunch_commands)
+
+
+def test_long19_bestseed_capacity_check_uses_profile_row_count(tmp_path):
+    planner = _load_script()
+    _write_default_manifests(tmp_path, planner)
+
+    report = planner.build_report(
+        planner.parse_args(
+            [
+                "--repo-root",
+                str(tmp_path),
+                "--profile",
+                "long19_low_weight_replicated_bestseed",
+            ]
+        )
+    )
+
+    assert report["ok"] is True
+    assert report["total_selected_rows"] == 19
+    capacity_check = next(
+        check for check in report["prelaunch_checks"] if check["check"] == "capacity_snapshot"
+    )
+    assert "--requested-h100-rows 19" in capacity_check["command"]
+    assert "capacity_snapshot_long19_low_weight_replicated_bestseed_20260623a.json" in capacity_check["command"]
+    assert capacity_check["expected"]["requested_h100_rows"] == 19
+
+
+def test_long17_bestseed_drops_only_highest_rnd_weight_for_capacity_fit(tmp_path):
+    planner = _load_script()
+    _write_default_manifests(tmp_path, planner)
+
+    report = planner.build_report(
+        planner.parse_args(
+            [
+                "--repo-root",
+                str(tmp_path),
+                "--profile",
+                "long17_no_highest_weight_bestseed",
+            ]
+        )
+    )
+
+    assert report["ok"] is True
+    assert report["total_selected_rows"] == 17
+    assert report["rnd_selected_rows"] == 8
+    assert report["non_rnd_selected_rows"] == 9
+    assert report["non_rnd_seed_profile"] == "bestseed"
+    assert report["rnd_counts"]["none:0.0"] == 1
+    assert report["rnd_counts"]["rnd_meter_v0:0.0"] == 1
+    assert report["rnd_counts"]["rnd_replay_target_v0:0.6"] == 1
+    assert "rnd_replay_target_v0:1.0" not in report["rnd_counts"]
+    capacity_check = next(
+        check for check in report["prelaunch_checks"] if check["check"] == "capacity_snapshot"
+    )
+    assert "--requested-h100-rows 17" in capacity_check["command"]
 
 
 def test_profile_reports_missing_manifest(tmp_path):

@@ -15,6 +15,8 @@ Primary learning signals:
 5. Tournament head-to-head exposure and game duration, if attached.
 6. For RND rows only: intrinsic reward scale, predictor loss, and positive
    weight performance versus both stock and meter controls.
+7. For planner/PPO hybrids only: behavior-policy provenance, planned-action
+   value lift, and latency distribution versus policy-only.
 
 Secondary health signals:
 
@@ -29,6 +31,7 @@ Misleading if read alone:
 
 - latest checkpoint only
 - raw trainer reward across reward variants
+- survival AUC without opponent pressure, death-cause, or head-to-head context
 - job still running
 - checkpoint exists
 - GIF looks different
@@ -121,6 +124,9 @@ Check at 100k-170k:
 - action collapse history
 - reward component sanity within each variant
 - sparse outcome telemetry side by side with survival
+- death-cause distribution and game duration by opponent class when available
+- improvement over initial policy, especially for bestseed rows that may already
+  contain the old regime's strengths
 - for RND, positive weights beat both `none` and `rnd_meter_v0` on AUC or
   best-so-far without worse collapse
 - independent non-RND static/cadence rows are healthy enough to be real
@@ -174,6 +180,9 @@ RND is promising when:
 - `rnd_meter_v0` behaves like stock on survival, proving the meter is passive.
 - low positive weights improve survival AUC or best-so-far over both stock and
   meter rows.
+- intrinsic reward is high on useful unfamiliar states: near-wall recovery,
+  narrow corridors, opponent approach, gap transitions, trail-density changes,
+  or bonus-contact situations.
 - predictor loss and intrinsic reward stats are finite and nontrivial.
 - intrinsic scale does not swamp extrinsic reward components.
 - action histograms do not collapse or turn into obvious novelty seeking.
@@ -183,10 +192,40 @@ RND is not promising when:
 
 - only RND metrics improve while survival stays flat.
 - high weights win only by causing erratic action distributions.
+- intrinsic reward concentrates on cosmetic frame changes, spinning, unusual
+  trail painting, bonus chasing, or novel deaths without extrinsic gain.
 - meter rows diverge from stock rows.
 - blank-canvas gains vanish when fixed opponents or tournament exposure are
   attached.
 - independent non-RND lanes are missing or failed before the useful horizon.
+
+## Planner And PPO Hybrid Signals
+
+Planner or PPO-hybrid rows are promising when:
+
+- behavior-policy provenance is explicit: PPO, planner, mixture, imitation, or
+  search training
+- policy-only versus planned-action agreement is measured on fixed state batches
+- planned actions show value/survival lift over policy-only actions before
+  distillation is credited
+- planner latency distribution fits the intended control cadence
+- planner-imitation or reanalysis loss decreases if distillation is attached
+- invalid-action probability is measured before and after masking
+- old and new logprobs use the same action-mask convention for PPO rows
+- entropy/top-action collapse is reported by player slot or ego seat
+- survival/win/death-cause split by player slot does not reveal reward-sign or
+  value-perspective bugs
+
+Planner or PPO-hybrid rows are not promising when:
+
+- planner actions are logged as PPO actions without the correct behavior
+  logprob
+- hidden-state planner information is used but the result is promoted as
+  deployable-policy evidence
+- planned-action lift exists only on selected states and vanishes after
+  distillation or eval
+- macro-action rows improve raw throughput but lose survival/AUC/retention
+- per-player outcomes suggest one seat is being trained to help the other
 
 ## Stop Or Pivot Conditions
 
@@ -226,6 +265,10 @@ Do not promote RND when:
 - independent non-RND reward/cadence lanes were not launched
 - non-RND lanes failed health before the useful horizon
 - positive RND is only better than weak or broken controls
+- positive RND only improves blank-canvas survival and has not passed a
+  fixed-opponent bridge
+- survival gains are passive: longer games with less opponent pressure and no
+  head-to-head or heldout-opponent improvement
 
 ## Reporting Template
 

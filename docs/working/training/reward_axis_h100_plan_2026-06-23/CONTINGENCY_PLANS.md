@@ -31,8 +31,9 @@ The default response should be:
 | Repair refs are overclaimed | Docs or launch notes describe top4nz repair refs as stable leaderboard truth | Correct the claim before launch. The refs are audited static exact refs, not a production leaderboard source. |
 | Wave A packet audit fails | `scripts/audit_curvytron_wave_a_launch_packet.py` reports stale refs, wrong row counts, missing dry-runs, launch artifacts, or selected-row drift | Do not launch. Repair the manifest/dry-run/audit artifact first, then rerun the packet audit before checking capacity. |
 | Capacity proxy requires operator review | `scripts/audit_curvytron_wave_a_capacity.py` reports `operator_capacity_review_required` | Do not treat this as either launch approval or hard H100 denial. Rerun near approval time, identify whether active tasks are H100-relevant, and either launch within the remaining room, stage the launch, or wait. |
+| Capacity frontier is one or two rows below the preferred long profile | `long18` or `long19` exceeds the proxy but the `17`-row check is clear | Use `long17_no_highest_weight_bestseed` rather than improvising row drops. It preserves stock, meter, low/mid RND weights, and the non-RND triad while dropping only the highest RND weight. |
 | Row count exceeds intended runtime tier | Generated row count or retained active jobs exceed the chosen tier: broad `<=2h`, 40 rows for `2h-8h`, or 10-20 rows for `8h+` | Launch by row group using `--row-id` or `--limit`, split into Wave A/B, shorten timeout, or wait. Do not let a broad short sweep silently become a long run. |
-| Seed anchor is implicit | Anchor audit shows repaired rows use top4nz seed, but launch note calls it best-known seed or says nothing | Stop approval. Either accept top4nz as a launchable repair seed, or regenerate with the historical r18fresh rank-1 seed and rerun audits. |
+| Seed anchor is implicit | Anchor audit shows repaired rows use top4nz seed, but launch note calls it best-known seed or says nothing | Stop approval. Either accept top4nz as a launchable repair seed, or regenerate with `--initial-policy-checkpoint-ref` set to the historical r18fresh `iteration_180000` ref while keeping `--checkpoint-refs-file` on the top4nz opponent refs. Rerun Modal ref, packet, staged-profile, and anchor audits. |
 | Run id collision | Dry-run or manifest validation reports duplicate run ids, or row ids map to old active runs | Regenerate with a new matrix name and run prefix. |
 | Checkpoint refs are stale or shape-mismatched | Seeded rows fail dry-run or first load | Switch that lane to scratch bootstrap, or use exact immutable refs from a freshly audited file. |
 | Submitter partial launch guard trips | `--allow-launch` with selected rows fails without `--allow-partial-launch` | Treat as a useful guard. Add `--allow-partial-launch` only after row ids are pasted into the run note. |
@@ -81,6 +82,10 @@ lanes.
 | RND intrinsic scale swamps extrinsic components | Cut maximum weight, add lower weights, and consider clipping/normalization audit before more GPUs. |
 | RND looks good but non-RND lanes are missing or unhealthy | Do not promote RND. Relaunch or repair the non-RND static/cadence controls first. |
 | Later leaderboard/refresh slice disagrees with static reward isolate | Assume opponent refresh/assignment is the confound. Run a no-refresh bridge row before picking a winner. |
+| Survival AUC improves but games look passive | Do not call it game strength. Add death-cause, opponent-pressure, heldout fixed-opponent, and later tournament checks. |
+| Bestseed rows improve but scratch/top4nz sentinels do not | Treat the result as checkpoint-regime continuation, not general learnability. Add seed-factor sentinels before promotion. |
+| RND intrinsic reward concentrates on visual oddities | Lower weight or change RND feature/readout; require useful-state attribution before widening. |
+| Macro/dense planner improves selected states only | Keep it as a planner benchmark. Add imitation/reanalysis proof before claiming training improvement. |
 
 ## Retention Horizon, 240k-300k
 
@@ -106,6 +111,11 @@ Fallback ladder:
 4. If low weights help blank-canvas survival, add a fixed-opponent RND builder
    extension.
 5. If fixed opponents erase the gain, archive RND as an exploration diagnostic.
+
+Do not interpret the `long17_no_highest_weight_bestseed` profile as a complete
+RND weight sweep. It is a capacity-shaped long run. The omitted highest weight
+still deserves a short sentinel or later medium-tier check if the question is
+whether intrinsic reward overpowers the extrinsic objective.
 
 ### Extrinsic Reward Lane
 

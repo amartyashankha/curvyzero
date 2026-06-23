@@ -38,6 +38,9 @@ healthy stock/meter controls and independent extrinsic reward/cadence lanes.
 - Always consider starting non-RND quality rows from the best-known checkpoint.
   If using the current top4nz repair seed instead, record that as an explicit
   availability/repair decision.
+- Keep learner seed and opponent refs separate. `--checkpoint-refs-file`
+  selects frozen opponent rank slots; `--initial-policy-checkpoint-ref` selects
+  the learner initial policy.
 - Keep `learner_seat_mode=random_per_episode`.
 - Keep background eval and learner metrics on.
 - Use H100 aggressively, but keep reward, RND, cadence/support, and tournament
@@ -81,11 +84,15 @@ Current launch state is tracked in `LAUNCH_QUEUE.md`. The RND wide blank sweep
 has a saved dry-run artifact. The original exact-ref non-RND manifests remain
 blocked by `PRELAUNCH_AUDIT_2026-06-23.md`, but the repaired top4nz non-RND
 family in `PRELAUNCH_REPAIR_2026-06-23.md` has passing Modal ref audits and
-dry-run evidence. The current packet audit
+dry-run evidence. The bestseed repair family in `WAVE_A_MANIFESTS.md` has
+passing Modal ref audits, dry-run evidence, and a best-known-seed anchor audit.
+The current top4nz packet audit
 `artifacts/local/curvytron_wave_a_launch_packet_audit_20260623a.json` reports
-`ok=true` for the repaired 90-row no-launch package. Real launch still requires
-human approval, exact command and row-count review, and active H100 capacity
-confirmation. The current capacity proxy artifact
+`ok=true`; the bestseed packet audit
+`artifacts/local/curvytron_wave_a_launch_packet_audit_bestseed_20260623a.json`
+also reports `ok=true` for the repaired 90-row no-launch package. Real launch
+still requires human approval, exact command and row-count review, and active
+H100 capacity confirmation. The current capacity proxy artifact
 `artifacts/local/curvytron_wave_a_capacity_snapshot_20260623a.json` requires
 operator capacity review because unrelated Modal task load is present; under
 the conservative task-count proxy, the current room is `22` additional rows
@@ -111,6 +118,8 @@ Recommended builder path:
 - `scripts/build_curvytron_tonight18_manifest.py`
 - current repaired ref source:
   `--checkpoint-refs-file artifacts/local/curvytron_no_tournament_control_20260516/source/static_top4_nonzero_refs.txt`
+- for bestseed non-RND rows:
+  `--initial-policy-checkpoint-ref training/lightzero-curvytron-visual-survival/curvy-r18fresh-survbonusout-blank20-wall5-rank1_70-rank1imm5-so10rep10-s134842423/attempts/try-r18fresh-survbonusout-blank20-wall5-rank1_70-rank1imm5-so10rep10-s134842423/train/lightzero_exp/ckpt/iteration_180000.pth.tar`
 - `--opponent-source mixture`
 - `--assignment-refresh-interval-train-iter 0`
 - `--compute gpu-h100-cpu40`
@@ -119,13 +128,13 @@ Recommended builder path:
 Required dry-run checks:
 
 - packet audit:
-  `uv run python scripts/audit_curvytron_wave_a_launch_packet.py --output artifacts/local/curvytron_wave_a_launch_packet_audit_20260623a.json`
+  `uv run python scripts/audit_curvytron_wave_a_launch_packet.py --non-rnd-seed-profile bestseed --output artifacts/local/curvytron_wave_a_launch_packet_audit_bestseed_20260623a.json`
 - capacity proxy:
   `uv run python scripts/audit_curvytron_wave_a_capacity.py --output artifacts/local/curvytron_wave_a_capacity_snapshot_20260623a.json`
 - checkpoint anchor policy:
-  `uv run python scripts/audit_curvytron_checkpoint_anchor_policy.py --output artifacts/local/curvytron_checkpoint_anchor_policy_audit_20260623a.json`
+  `uv run python scripts/audit_curvytron_checkpoint_anchor_policy.py --non-rnd-seed-profile bestseed --require-best-known-seed --output artifacts/local/curvytron_checkpoint_anchor_policy_audit_bestseed_20260623a.json`
 - staged launch profile:
-  `uv run python scripts/plan_curvytron_wave_a_staged_launch.py --profile mid36 --output artifacts/local/curvytron_wave_a_staged_launch_mid36_20260623a.json`
+  `uv run python scripts/plan_curvytron_wave_a_staged_launch.py --profile mid36_bestseed --output artifacts/local/curvytron_wave_a_staged_launch_mid36_bestseed_20260623a.json`
 - selected rows only
 - `assignment_write_count=0`
 - `refresh_pointer_write_count=0`

@@ -2,8 +2,10 @@
 
 Status: local manifests prepared, packet-audited, and submitter dry-runs
 passed. The original `curvy-n18conn-*` exact-ref non-RND manifests are
-remote-ref blocked, but a repaired `top4nz` non-RND family now has passing
-Modal ref audits and dry-runs. No Modal launch was performed from this doc set.
+remote-ref blocked. Two repaired non-RND families now exist: `top4nz-seeded`
+and `bestseed-seeded`. The bestseed family uses the historical r18fresh
+`iteration_180000` checkpoint as learner seed while keeping `top4nz` only as
+opponent refs. No Modal launch was performed from this doc set.
 
 ## Prepared Manifests
 
@@ -13,6 +15,9 @@ Modal ref audits and dry-runs. No Modal launch was performed from this doc set.
 | Static top4nz exact-ref repair | `artifacts/local/curvytron_tonight18_manifests/reward-static-top4nz-h100-wave-a-repair-20260623a/reward-static-top4nz-h100-wave-a-repair-20260623a.json` | 18 | manifest-ready, ref-audited, packet-audited | Current non-RND launch partner candidate. Full tonight18 reward/recipe/noise matrix, no refresh, seeded from audited `curvy-r18fresh-*` refs. |
 | Long-horizon top4nz replicas | `artifacts/local/curvytron_tonight18_manifests/reward-lhpre-top4nz-rep01-h100-wave-a-repair-20260623a/reward-lhpre-top4nz-rep01-h100-wave-a-repair-20260623a.json` through `rep06` | 18 selected | manifest-ready, ref-audited, packet-audited | Six repaired full 18-row manifests; intended launch selects `r005/r011/r017` from each. |
 | Cadence/support top4nz panel | `artifacts/local/curvytron_tonight18_manifests/reward-csupport-top4nz-s25-b128-td25-cap1024-wave-a-repair-20260623a/reward-csupport-top4nz-s25-b128-td25-cap1024-wave-a-repair-20260623a.json` plus two sibling knob manifests | 9 selected | manifest-ready, ref-audited, packet-audited | Three repaired full 18-row knob manifests; intended launch selects `r005/r011/r017` from each. |
+| Static bestseed top4nz repair | `artifacts/local/curvytron_tonight18_manifests/reward-static-bestseed-top4nz-h100-wave-a-20260623a/reward-static-bestseed-top4nz-h100-wave-a-20260623a.json` | 18 | manifest-ready, ref-audited, packet-audited | Same static matrix, but learner seed is historical r18fresh `iteration_180000`; opponent rank slots remain `top4nz`. Preferred non-RND partner for medium/long runs unless top4nz seed is explicitly chosen. |
+| Long-horizon bestseed replicas | `artifacts/local/curvytron_tonight18_manifests/reward-lhpre-bestseed-top4nz-rep01-h100-wave-a-20260623a/reward-lhpre-bestseed-top4nz-rep01-h100-wave-a-20260623a.json` through `rep06` | 18 selected | manifest-ready, ref-audited, packet-audited | Six repaired full 18-row manifests; intended launch selects `r005/r011/r017` from each. |
+| Cadence/support bestseed panel | `artifacts/local/curvytron_tonight18_manifests/reward-csupport-bestseed-top4nz-s25-b128-td25-cap1024-wave-a-20260623a/reward-csupport-bestseed-top4nz-s25-b128-td25-cap1024-wave-a-20260623a.json` plus two sibling knob manifests | 9 selected | manifest-ready, ref-audited, packet-audited | Three repaired full 18-row knob manifests; intended launch selects `r005/r011/r017` from each. |
 | Original static exact-ref reward isolate | `artifacts/local/curvytron_tonight18_manifests/reward-static-exactref-h100-wave-a-20260623a/reward-static-exactref-h100-wave-a-20260623a.json` | 18 | manifest-ready, ref-blocked | Historical candidate. Current Modal audit fails because shared `curvy-n18conn-*` refs are missing. |
 
 The older `reward-static-h100-wave-a-20260623a` manifest also exists locally,
@@ -34,7 +39,7 @@ historical-best-seeded.
 
 ## Packet Audit
 
-The current repaired packet is checked by:
+The current top4nz repaired packet is checked by:
 
 ```bash
 uv run python scripts/audit_curvytron_wave_a_launch_packet.py --output artifacts/local/curvytron_wave_a_launch_packet_audit_20260623a.json
@@ -59,6 +64,27 @@ Result:
 The auditor is no-launch only. By default it rejects existing
 `*.submit.launch.json` artifacts, broad `*wave-a*` legacy globs, missing Modal
 ref audits, RND metrics-guard drift, and selected-row mismatches.
+
+The current bestseed packet is checked by:
+
+```bash
+uv run python scripts/audit_curvytron_wave_a_launch_packet.py --non-rnd-seed-profile bestseed --output artifacts/local/curvytron_wave_a_launch_packet_audit_bestseed_20260623a.json
+```
+
+Saved result:
+
+```text
+artifacts/local/curvytron_wave_a_launch_packet_audit_bestseed_20260623a.json
+```
+
+Result:
+
+- `ok=true`
+- `actual_total_selected_rows=90`
+- `expected_total_selected_rows=90`
+- `launch_artifacts=[]`
+- `error_count=0`
+- bestseed non-RND lanes have `modal_ref_count=5`
 
 ## RND Wide Blank Sweep
 
@@ -190,6 +216,47 @@ For all three:
 - assignment writes: `0`
 - refresh pointer writes: `0`
 
+## Bestseed Top4NZ Non-RND Family
+
+Builder contract:
+
+- `--checkpoint-refs-file` points at
+  `artifacts/local/curvytron_no_tournament_control_20260516/source/static_top4_nonzero_refs.txt`
+- `--initial-policy-checkpoint-ref` points at the historical r18fresh
+  `iteration_180000` checkpoint
+- `--opponent-source mixture`
+- `--assignment-refresh-interval-train-iter 0`
+
+Static manifest:
+
+```text
+artifacts/local/curvytron_tonight18_manifests/reward-static-bestseed-top4nz-h100-wave-a-20260623a/reward-static-bestseed-top4nz-h100-wave-a-20260623a.json
+```
+
+Long-horizon replicas:
+
+```text
+artifacts/local/curvytron_tonight18_manifests/reward-lhpre-bestseed-top4nz-repNN-h100-wave-a-20260623a/reward-lhpre-bestseed-top4nz-repNN-h100-wave-a-20260623a.json
+```
+
+Cadence/support manifests:
+
+```text
+artifacts/local/curvytron_tonight18_manifests/reward-csupport-bestseed-top4nz-s25-b128-td25-cap1024-wave-a-20260623a/reward-csupport-bestseed-top4nz-s25-b128-td25-cap1024-wave-a-20260623a.json
+artifacts/local/curvytron_tonight18_manifests/reward-csupport-bestseed-top4nz-s25-b128-td25-cap2048-wave-a-20260623a/reward-csupport-bestseed-top4nz-s25-b128-td25-cap2048-wave-a-20260623a.json
+artifacts/local/curvytron_tonight18_manifests/reward-csupport-bestseed-top4nz-s25-b256-td25-cap2048-wave-a-20260623a/reward-csupport-bestseed-top4nz-s25-b256-td25-cap2048-wave-a-20260623a.json
+```
+
+Gate results:
+
+- Modal ref audits: `ok=true`, `ref_count=5`, `missing_ref_count=0`
+- static submitter dry-run: `dry_run=true`, `selected_row_count=18`
+- selected-row dry-runs for long/cadence lanes: `dry_run=true`,
+  `selected_row_count=3`
+- anchor audit:
+  `artifacts/local/curvytron_checkpoint_anchor_policy_audit_bestseed_20260623a.json`
+  reports `historical_best_seed_manifest_count=10`
+
 ## Static Exact-Ref Reward Isolate
 
 Historical/ref-blocked original candidate. Do not use this section's manifest
@@ -267,12 +334,17 @@ under names such as `reward-lhpre-repNN-h100-wave-a-20260623a` and
 ref-blocked for current operations. Their syntax-only audits are not enough,
 because the shared old exact refs are not visible in `curvyzero-runs-v2`.
 
-For current launch review, use only:
+For current top4nz comparison launch review, use only:
 
 - `reward-lhpre-top4nz-repNN-h100-wave-a-repair-20260623a`
 - `reward-csupport-top4nz-*-wave-a-repair-20260623a`
 
-Those repaired families are covered by the packet audit above and by
+For current preferred medium/long learning review, use the bestseed families:
+
+- `reward-lhpre-bestseed-top4nz-repNN-h100-wave-a-20260623a`
+- `reward-csupport-bestseed-top4nz-*-wave-a-20260623a`
+
+Both repaired profiles are covered by packet audits above and by
 `PRELAUNCH_REPAIR_2026-06-23.md`.
 
 ## Remaining Gates Before Launch
@@ -291,9 +363,11 @@ Do not promote any lane from `manifest-ready` to `launched` until:
 - `scripts/audit_curvytron_wave_a_launch_packet.py` passes with
   `launch_artifacts=[]` unless the audit is intentionally being run after a
   real launch
-- launch commands reference the repaired `top4nz` manifests in
-  `PRELAUNCH_REPAIR_2026-06-23.md`, or the failing original audit in
-  `PRELAUNCH_AUDIT_2026-06-23.md` is explicitly resolved by restored refs
+- launch commands reference the repaired bestseed manifests by default, or the
+  repaired `top4nz` manifests only when the launch note explicitly chooses the
+  top4nz seed comparison; the failing original audit in
+  `PRELAUNCH_AUDIT_2026-06-23.md` remains blocked until restored refs are
+  audited
 - the operator confirms whether to launch all prepared lanes together or in
   staged groups
 - the first monitoring command and artifact note path are chosen before launch

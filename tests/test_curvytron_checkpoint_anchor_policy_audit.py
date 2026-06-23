@@ -81,8 +81,13 @@ def _write_base_inputs(repo_root: Path, audit) -> None:
     )
 
 
-def _write_manifests(repo_root: Path, audit, seed_ref: str) -> None:
-    for spec in audit._default_manifest_specs():
+def _write_manifests(
+    repo_root: Path,
+    audit,
+    seed_ref: str,
+    non_rnd_seed_profile: str = "top4nz",
+) -> None:
+    for spec in audit._default_manifest_specs(non_rnd_seed_profile):
         rows = [
             {
                 "row_id": f"r{index:03d}",
@@ -133,3 +138,26 @@ def test_anchor_audit_passes_when_manifests_use_historical_best_seed(tmp_path):
     assert report["ok"] is True
     assert report["manifest_seed_summary"]["historical_best_seed_manifest_count"] == 10
     assert report["manifest_seed_summary"]["top4nz_seed_manifest_count"] == 0
+
+
+def test_anchor_audit_can_require_bestseed_manifest_family(tmp_path):
+    audit = _load_script()
+    _write_base_inputs(tmp_path, audit)
+    _write_manifests(tmp_path, audit, HISTORICAL_BEST, non_rnd_seed_profile="bestseed")
+
+    report = audit.build_report(
+        audit.parse_args(
+            [
+                "--repo-root",
+                str(tmp_path),
+                "--non-rnd-seed-profile",
+                "bestseed",
+                "--require-best-known-seed",
+            ]
+        )
+    )
+
+    assert report["ok"] is True
+    assert report["non_rnd_seed_profile"] == "bestseed"
+    assert report["manifest_seed_summary"]["historical_best_seed_manifest_count"] == 10
+    assert any(manifest["lane_id"] == "static-bestseed-top4nz" for manifest in report["manifests"])

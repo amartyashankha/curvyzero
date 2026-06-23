@@ -64,9 +64,17 @@ def _tonight18_relpath(family: str, filename: str) -> str:
     return f"artifacts/local/curvytron_tonight18_manifests/{family}/{filename}"
 
 
-def _default_lane_specs() -> list[LaneSpec]:
+def _default_lane_specs(non_rnd_seed_profile: str = "top4nz") -> list[LaneSpec]:
+    if non_rnd_seed_profile not in {"top4nz", "bestseed"}:
+        raise ValueError(f"unknown non-RND seed profile: {non_rnd_seed_profile}")
     rnd_family = "rnd-blank-h100-wave-a-20260623a"
     rnd_base = f"artifacts/local/curvytron_rnd_blank_sweep_manifests/{rnd_family}"
+    if non_rnd_seed_profile == "bestseed":
+        static_lane_id = "static-bestseed-top4nz"
+        static_family = "reward-static-bestseed-top4nz-h100-wave-a-20260623a"
+    else:
+        static_lane_id = "static-top4nz"
+        static_family = "reward-static-top4nz-h100-wave-a-repair-20260623a"
     specs = [
         LaneSpec(
             lane_id="rnd-blank-sweep",
@@ -77,29 +85,36 @@ def _default_lane_specs() -> list[LaneSpec]:
             expected_selected_rows=45,
         ),
         LaneSpec(
-            lane_id="static-top4nz",
+            lane_id=static_lane_id,
             lane_group="non_rnd_static",
             manifest_relpath=_tonight18_relpath(
-                "reward-static-top4nz-h100-wave-a-repair-20260623a",
-                "reward-static-top4nz-h100-wave-a-repair-20260623a.json",
+                static_family,
+                f"{static_family}.json",
             ),
             dry_run_relpath=_tonight18_relpath(
-                "reward-static-top4nz-h100-wave-a-repair-20260623a",
-                "reward-static-top4nz-h100-wave-a-repair-20260623a.submit.dryrun.json",
+                static_family,
+                f"{static_family}.submit.dryrun.json",
             ),
             modal_ref_audit_relpath=_tonight18_relpath(
-                "reward-static-top4nz-h100-wave-a-repair-20260623a",
-                "reward-static-top4nz-h100-wave-a-repair-20260623a.ref_audit.modal.json",
+                static_family,
+                f"{static_family}.ref_audit.modal.json",
             ),
             expected_manifest_rows=18,
             expected_selected_rows=18,
         ),
     ]
     for replica in range(1, 7):
-        family = f"reward-lhpre-top4nz-rep{replica:02d}-h100-wave-a-repair-20260623a"
+        if non_rnd_seed_profile == "bestseed":
+            lane_id = f"long-horizon-bestseed-rep{replica:02d}"
+            family = (
+                f"reward-lhpre-bestseed-top4nz-rep{replica:02d}-h100-wave-a-20260623a"
+            )
+        else:
+            lane_id = f"long-horizon-rep{replica:02d}"
+            family = f"reward-lhpre-top4nz-rep{replica:02d}-h100-wave-a-repair-20260623a"
         specs.append(
             LaneSpec(
-                lane_id=f"long-horizon-rep{replica:02d}",
+                lane_id=lane_id,
                 lane_group="non_rnd_long_horizon",
                 manifest_relpath=_tonight18_relpath(family, f"{family}.json"),
                 dry_run_relpath=_tonight18_relpath(
@@ -120,10 +135,15 @@ def _default_lane_specs() -> list[LaneSpec]:
         "s25-b128-td25-cap2048",
         "s25-b256-td25-cap2048",
     ):
-        family = f"reward-csupport-top4nz-{suffix}-wave-a-repair-20260623a"
+        if non_rnd_seed_profile == "bestseed":
+            lane_id = f"cadence-support-bestseed-{suffix}"
+            family = f"reward-csupport-bestseed-top4nz-{suffix}-wave-a-20260623a"
+        else:
+            lane_id = f"cadence-support-{suffix}"
+            family = f"reward-csupport-top4nz-{suffix}-wave-a-repair-20260623a"
         specs.append(
             LaneSpec(
-                lane_id=f"cadence-support-{suffix}",
+                lane_id=lane_id,
                 lane_group="non_rnd_cadence_support",
                 manifest_relpath=_tonight18_relpath(family, f"{family}.json"),
                 dry_run_relpath=_tonight18_relpath(
@@ -214,6 +234,37 @@ def _artifact_refs(row_or_record: dict[str, Any]) -> dict[str, Any]:
 
 def _train_kwargs(row: dict[str, Any]) -> dict[str, Any]:
     return _mapping(row.get("train_kwargs"))
+
+
+def _add_checkpoint_ref(refs: set[str], value: Any) -> None:
+    ref = str(value or "").strip()
+    if ref:
+        refs.add(ref)
+
+
+def _collect_mixture_checkpoint_refs(refs: set[str], mixture: Any) -> None:
+    mixture_map = _mapping(mixture)
+    entries = mixture_map.get("entries")
+    if not isinstance(entries, list):
+        return
+    for entry in entries:
+        entry_map = _mapping(entry)
+        if entry_map.get("opponent_policy_kind") != "frozen_lightzero_checkpoint":
+            continue
+        _add_checkpoint_ref(refs, entry_map.get("opponent_checkpoint_ref"))
+
+
+def _manifest_checkpoint_refs(manifest: dict[str, Any]) -> set[str]:
+    refs: set[str] = set()
+    for row in _mapping(manifest.get("top_checkpoint_source")).values():
+        _add_checkpoint_ref(refs, _mapping(row).get("checkpoint_ref"))
+    for row in _rows(manifest):
+        _add_checkpoint_ref(refs, row.get("initial_policy_checkpoint_ref"))
+        train_kwargs = _train_kwargs(row)
+        _add_checkpoint_ref(refs, train_kwargs.get("initial_policy_checkpoint_ref"))
+        _collect_mixture_checkpoint_refs(refs, row.get("opponent_mixture_spec"))
+        _collect_mixture_checkpoint_refs(refs, train_kwargs.get("opponent_mixture_spec"))
+    return refs
 
 
 def _counter_items(counter: Counter[Any]) -> list[dict[str, Any]]:
@@ -719,12 +770,14 @@ def _validate_non_rnd_manifest(
 
 def _validate_modal_ref_audit(
     spec: LaneSpec,
+    manifest: dict[str, Any],
     repo_root: Path,
     errors: list[dict[str, Any]],
 ) -> dict[str, Any]:
     if spec.modal_ref_audit_relpath is None:
         return {}
     path = repo_root / spec.modal_ref_audit_relpath
+    expected_refs = _manifest_checkpoint_refs(manifest)
     payload = _load_json(path)
     if payload is None:
         _error(
@@ -741,7 +794,7 @@ def _validate_modal_ref_audit(
         "existence_checked": True,
         "syntax_only": False,
         "runs_volume_name": RUNS_VOLUME_NAME,
-        "ref_count": 4,
+        "ref_count": len(expected_refs),
         "bad_ref_count": 0,
         "missing_ref_count": 0,
         "modal_parent_error_count": 0,
@@ -755,12 +808,21 @@ def _validate_modal_ref_audit(
             message=f"Modal ref audit {key} mismatch",
             detail={"expected": expected_value, "actual": payload.get(key)},
         )
+    _expect(
+        errors,
+        condition=bool(expected_refs),
+        lane_id=spec.lane_id,
+        path=path,
+        message="manifest-derived Modal ref set is empty",
+    )
     bad_modal_refs = []
+    observed_refs: set[str] = set()
     for ref_entry in payload.get("refs") if isinstance(payload.get("refs"), list) else []:
         if not isinstance(ref_entry, dict):
             bad_modal_refs.append({"reason": "ref entry is not an object", "entry": ref_entry})
             continue
         ref = str(ref_entry.get("ref") or "")
+        _add_checkpoint_ref(observed_refs, ref)
         reasons = []
         if ref_entry.get("modal_exists") is not True:
             reasons.append("modal_exists is not true")
@@ -772,6 +834,17 @@ def _validate_modal_ref_audit(
             reasons.append("checkpoint basename is not iteration_N.pth.tar")
         if reasons:
             bad_modal_refs.append({"ref": ref, "reasons": reasons})
+    _expect(
+        errors,
+        condition=observed_refs == expected_refs,
+        lane_id=spec.lane_id,
+        path=path,
+        message="Modal ref audit refs do not match manifest checkpoint refs",
+        detail={
+            "missing_from_audit": sorted(expected_refs - observed_refs),
+            "unexpected_in_audit": sorted(observed_refs - expected_refs),
+        },
+    )
     _expect(
         errors,
         condition=not bad_modal_refs,
@@ -956,7 +1029,7 @@ def _audit_lane(spec: LaneSpec, repo_root: Path) -> tuple[dict[str, Any], list[d
         lane_report.update(
             _validate_non_rnd_manifest(spec, manifest, manifest_path, rows, errors)
         )
-        lane_report.update(_validate_modal_ref_audit(spec, repo_root, errors))
+        lane_report.update(_validate_modal_ref_audit(spec, manifest, repo_root, errors))
     lane_report.update(_validate_dry_run(spec, repo_root, selected_rows, errors))
     return lane_report, errors, warnings
 
@@ -981,7 +1054,7 @@ def _find_launch_artifacts(repo_root: Path, specs: Sequence[LaneSpec]) -> list[s
 
 def build_report(args: argparse.Namespace) -> dict[str, Any]:
     repo_root = args.repo_root.resolve()
-    specs = _default_lane_specs()
+    specs = _default_lane_specs(args.non_rnd_seed_profile)
     lanes: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
@@ -1021,6 +1094,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         "schema_id": SCHEMA_ID,
         "ok": not errors,
         "repo_root": str(repo_root),
+        "non_rnd_seed_profile": args.non_rnd_seed_profile,
         "allow_launch_artifacts": bool(args.allow_launch_artifacts),
         "expected_total_selected_rows": expected_total_selected,
         "actual_total_selected_rows": actual_total_selected,
@@ -1063,6 +1137,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--allow-launch-artifacts",
         action="store_true",
         help="allow existing *.submit.launch.json artifacts in the packet directories",
+    )
+    parser.add_argument(
+        "--non-rnd-seed-profile",
+        choices=("top4nz", "bestseed"),
+        default="top4nz",
+        help=(
+            "Choose the prepared non-RND manifest family to audit. RND rows stay "
+            "unchanged; bestseed uses the historical r18fresh learner seed while "
+            "keeping top4nz opponent rank slots."
+        ),
     )
     parser.add_argument("--output", type=Path, default=None)
     return parser.parse_args(argv)

@@ -40,6 +40,23 @@ Caveat: before using this as the next actual seed, rerun a Modal existence audit
 against `curvyzero-runs-v2`. Historical rank evidence is not a current
 existence proof.
 
+Current status: that audit has now passed for the prepared bestseed Wave A
+family. The bestseed manifests use this historical ref as the learner seed and
+still use `top4nz` refs only for opponent rank slots.
+
+## Tooling Contract
+
+The manifest builder now has two independent checkpoint knobs:
+
+- `--checkpoint-refs-file`: selects frozen opponent rank-slot refs.
+- `--initial-policy-checkpoint-ref`: selects the learner initial policy seed.
+
+If `--initial-policy-checkpoint-ref` is omitted, non-scratch manifests fall
+back to rank1 from the ratings snapshot or checkpoint refs file. For medium and
+long learning runs, prefer the explicit seed flag with the historical r18fresh
+`iteration_180000` ref unless the launch note explicitly chooses the top4nz
+repair seed.
+
 ## Current Launchable Repair Anchor
 
 The repaired Wave A non-RND manifests currently use the `top4nz` rank1 ref as
@@ -101,6 +118,34 @@ This warning is intentional. It forces an operator choice:
 
 For long `8h+` runs, prefer option 2 unless there is a clear reason to value
 current repair availability over the historically strongest seed.
+
+## Bestseed Repair Result
+
+The bestseed non-RND family has been regenerated with:
+
+- opponent refs from
+  `artifacts/local/curvytron_no_tournament_control_20260516/source/static_top4_nonzero_refs.txt`
+- learner seed from the historical r18fresh `iteration_180000` checkpoint
+
+Gates:
+
+```bash
+uv run python scripts/audit_curvytron_checkpoint_anchor_policy.py --non-rnd-seed-profile bestseed --require-best-known-seed --output artifacts/local/curvytron_checkpoint_anchor_policy_audit_bestseed_20260623a.json
+uv run python scripts/audit_curvytron_wave_a_launch_packet.py --non-rnd-seed-profile bestseed --output artifacts/local/curvytron_wave_a_launch_packet_audit_bestseed_20260623a.json
+```
+
+Saved results:
+
+- `artifacts/local/curvytron_checkpoint_anchor_policy_audit_bestseed_20260623a.json`
+- `artifacts/local/curvytron_wave_a_launch_packet_audit_bestseed_20260623a.json`
+
+Current result:
+
+- anchor audit: `ok=true`, `historical_best_seed_manifest_count=10`,
+  `top4nz_seed_manifest_count=0`
+- packet audit: `ok=true`, `actual_total_selected_rows=90`, `error_count=0`
+- every bestseed non-RND Modal ref audit has `ref_count=5`: four opponent refs
+  plus the independent historical learner seed
 
 ## How To Decide "Best" Programmatically
 

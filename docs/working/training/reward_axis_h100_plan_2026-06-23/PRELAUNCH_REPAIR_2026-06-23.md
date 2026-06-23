@@ -8,12 +8,18 @@ The original exact-ref non-RND Wave A manifests remain ref-blocked because their
 shared `curvy-n18conn-*` checkpoint refs are not visible in `curvyzero-runs-v2`.
 That failure is recorded in `PRELAUNCH_AUDIT_2026-06-23.md`.
 
-A repaired non-RND family now exists locally using currently visible
+Two repaired non-RND families now exist locally using currently visible
 `curvy-r18fresh-*` checkpoint refs:
 
 ```text
 artifacts/local/curvytron_no_tournament_control_20260516/source/static_top4_nonzero_refs.txt
 ```
+
+The top4nz family uses that refs file for both opponent rank slots and the
+learner initial policy fallback. The bestseed family keeps the same top4nz
+opponent rank slots, but pins the learner initial policy to the historical
+r18fresh plus-outcome `iteration_180000` checkpoint. The bestseed family is the
+preferred medium/long learning candidate.
 
 These refs are believable as a curated static exact-ref repair source. They are
 not a stable production leaderboard. The source was derived from the bounded
@@ -21,12 +27,11 @@ not a stable production leaderboard. The source was derived from the bounded
 already documented as an exact frozen-ref source rather than launch-quality
 leaderboard truth.
 
-Important seed caveat: these repaired manifests use the top4nz rank1 sparse
-`iteration_40000` checkpoint as their initial policy seed. The historical
-best-known seed from the old r18fresh tournament snapshot is the plus-outcome
-`iteration_180000` checkpoint recorded in `CHECKPOINT_ANCHOR_POLICY.md`. Launch
-approval must decide whether the current repair seed is acceptable or whether
-the manifests should be regenerated with the historical best-known seed.
+Important seed caveat: the top4nz manifests use the top4nz rank1 sparse
+`iteration_40000` checkpoint as their initial policy seed. The bestseed
+manifests use the historical best-known plus-outcome `iteration_180000`
+checkpoint recorded in `CHECKPOINT_ANCHOR_POLICY.md`. Launch approval must name
+which family is being launched.
 
 ## Source Ref Evidence
 
@@ -52,7 +57,7 @@ Provenance notes:
 - The source is suitable for static no-refresh repair and matched controls, not
   for a claim that the leaderboard is now production-ready.
 
-## Repaired Manifest Family
+## Repaired Top4NZ Manifest Family
 
 | Lane | Manifest family | Intended active rows | Gate result |
 | --- | --- | ---: | --- |
@@ -67,6 +72,38 @@ All repaired manifests:
 - use `compute=gpu-h100-cpu40`
 - use exact immutable `iteration_N.pth.tar` checkpoint refs
 - write zero assignments and zero refresh pointers in submitter dry-runs
+
+## Repaired Bestseed Manifest Family
+
+The bestseed sibling was generated after the initial repair to decouple learner
+seed from static opponent refs:
+
+```bash
+uv run python scripts/build_curvytron_tonight18_manifest.py ... --checkpoint-refs-file artifacts/local/curvytron_no_tournament_control_20260516/source/static_top4_nonzero_refs.txt --initial-policy-checkpoint-ref training/lightzero-curvytron-visual-survival/curvy-r18fresh-survbonusout-blank20-wall5-rank1_70-rank1imm5-so10rep10-s134842423/attempts/try-r18fresh-survbonusout-blank20-wall5-rank1_70-rank1imm5-so10rep10-s134842423/train/lightzero_exp/ckpt/iteration_180000.pth.tar
+```
+
+Prepared bestseed families:
+
+| Lane | Manifest family | Intended active rows | Gate result |
+| --- | --- | ---: | --- |
+| Static exact-ref reward isolate | `reward-static-bestseed-top4nz-h100-wave-a-20260623a` | 18 | Modal ref audit, anchor audit, packet audit, and full submit dry-run pass |
+| Long-horizon pretrained replicas | `reward-lhpre-bestseed-top4nz-rep01` through `rep06` | 18 selected | Modal ref audits, anchor audit, packet audit, and selected-row dry-runs pass |
+| Cadence/support panel | `reward-csupport-bestseed-top4nz-*` | 9 selected | Modal ref audits, anchor audit, packet audit, and selected-row dry-runs pass |
+
+Bestseed audit artifacts:
+
+```text
+artifacts/local/curvytron_checkpoint_anchor_policy_audit_bestseed_20260623a.json
+artifacts/local/curvytron_wave_a_launch_packet_audit_bestseed_20260623a.json
+```
+
+Results:
+
+- anchor audit: `ok=true`, `historical_best_seed_manifest_count=10`,
+  `top4nz_seed_manifest_count=0`
+- packet audit: `ok=true`, `actual_total_selected_rows=90`,
+  `launch_artifacts=[]`
+- manifest Modal ref audits: `ok=true`, `ref_count=5`, `missing_ref_count=0`
 
 ## Artifact Checklist
 

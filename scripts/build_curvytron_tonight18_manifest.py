@@ -66,6 +66,10 @@ ROW_SCHEMA_ID = "curvyzero_curvytron_tonight18_manifest_row/v0"
 OPPONENT_SOURCE_MIXTURE = "mixture"
 OPPONENT_SOURCE_ASSIGNMENT = "assignment"
 DEFAULT_OPPONENT_SOURCE = OPPONENT_SOURCE_ASSIGNMENT
+INITIAL_POLICY_SOURCE_SCRATCH = "scratch_random_initialization"
+INITIAL_POLICY_SOURCE_EXPLICIT = "explicit_initial_policy_checkpoint_ref"
+INITIAL_POLICY_SOURCE_CHECKPOINT_REFS_RANK1 = "checkpoint_refs_file_rank1_at_manifest_build_time"
+INITIAL_POLICY_SOURCE_RATINGS_RANK1 = "ranked_snapshot_rank1_at_manifest_build_time"
 
 DEFAULT_MATRIX_NAME = "curvy-restart18-allv2-20260515a"
 DEFAULT_RUN_PREFIX = "curvy-r18v2"
@@ -456,6 +460,63 @@ def _load_top_checkpoints(args: argparse.Namespace) -> dict[str, dict[str, Any]]
             "one of --scratch-bootstrap, --ratings-snapshot, or --checkpoint-refs-file is required"
         )
     return _load_top_checkpoints_from_ratings(args.ratings_snapshot)
+
+
+def _default_initial_policy_source(args: argparse.Namespace) -> str:
+    if args.checkpoint_refs_file:
+        return INITIAL_POLICY_SOURCE_CHECKPOINT_REFS_RANK1
+    return INITIAL_POLICY_SOURCE_RATINGS_RANK1
+
+
+def _initial_policy_checkpoint_ref(
+    args: argparse.Namespace,
+    top_checkpoints: dict[str, dict[str, Any]],
+) -> str | None:
+    if args.scratch_bootstrap:
+        return None
+    explicit_ref = getattr(args, "initial_policy_checkpoint_ref", None)
+    if explicit_ref:
+        return str(explicit_ref)
+    return str(top_checkpoints["rank1"]["checkpoint_ref"])
+
+
+def _initial_policy_checkpoint_source(
+    args: argparse.Namespace,
+    top_checkpoints: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    checkpoint_ref = _initial_policy_checkpoint_ref(args, top_checkpoints)
+    if checkpoint_ref is None:
+        return {
+            "source": INITIAL_POLICY_SOURCE_SCRATCH,
+            "checkpoint_ref": None,
+        }
+    explicit_ref = getattr(args, "initial_policy_checkpoint_ref", None)
+    if explicit_ref:
+        run_id, attempt_id = _checkpoint_run_attempt_from_ref(checkpoint_ref)
+        digest = hashlib.sha1(checkpoint_ref.encode("utf-8")).hexdigest()[:10]
+        return {
+            "source": INITIAL_POLICY_SOURCE_EXPLICIT,
+            "checkpoint_id": f"explicit-initial-{digest}",
+            "checkpoint_ref": checkpoint_ref,
+            "run_id": run_id,
+            "attempt_id": attempt_id,
+            "iteration": _checkpoint_iteration_from_ref(checkpoint_ref),
+            "status": "curated_exact_ref",
+        }
+    return {
+        "source": _default_initial_policy_source(args),
+        **top_checkpoints["rank1"],
+    }
+
+
+def _initial_policy_checkpoint_source_label(args: argparse.Namespace) -> str:
+    if args.scratch_bootstrap:
+        return INITIAL_POLICY_SOURCE_SCRATCH
+    if getattr(args, "initial_policy_checkpoint_ref", None):
+        return INITIAL_POLICY_SOURCE_EXPLICIT
+    if args.checkpoint_refs_file:
+        return "rank1_checkpoint_from_checkpoint_refs_file"
+    return "rank1_checkpoint_from_ratings_snapshot"
 
 
 def _assignment_bank_run_id(args: argparse.Namespace) -> str:
@@ -966,9 +1027,8 @@ def _row(
         )
         else None
     )
-    initial_policy_checkpoint_ref = (
-        None if args.scratch_bootstrap else str(top_checkpoints["rank1"]["checkpoint_ref"])
-    )
+    initial_policy_checkpoint_ref = _initial_policy_checkpoint_ref(args, top_checkpoints)
+    initial_policy_checkpoint_source = _initial_policy_checkpoint_source(args, top_checkpoints)
     mixture_spec = None if opponent_assignment_ref else preview_mixture
     row_id = f"r{row_number:03d}"
     label = f"{reward_tag}-{recipe.recipe_id}-{noise.tag}"
@@ -1043,21 +1103,7 @@ def _row(
         else None,
         "opponent_components": [entry["name"] for entry in preview_mixture["entries"]],
         "initial_policy_checkpoint_ref": initial_policy_checkpoint_ref,
-        "initial_policy_checkpoint_source": (
-            {
-                "source": "scratch_random_initialization",
-                "checkpoint_ref": None,
-            }
-            if args.scratch_bootstrap
-            else {
-                "source": (
-                    "checkpoint_refs_file_rank1_at_manifest_build_time"
-                    if args.checkpoint_refs_file
-                    else "ranked_snapshot_rank1_at_manifest_build_time"
-                ),
-                **top_checkpoints["rank1"],
-            }
-        ),
+        "initial_policy_checkpoint_source": initial_policy_checkpoint_source,
         "noise_mode": noise.mode_id,
         "noise_description": noise.description,
         "training_seed": seed,
@@ -1252,15 +1298,10 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
             "own_checkpoint_opponent_refresh_enabled": bool(args.own_checkpoint_opponent_refresh),
             "assignment_target_volume": args.assignment_target_volume,
             "assignment_refresh_pointer_volume": args.assignment_refresh_pointer_volume,
-            "initial_policy_checkpoint_source": (
-                "scratch_random_initialization"
-                if args.scratch_bootstrap
-                else (
-                    "rank1_checkpoint_from_checkpoint_refs_file"
-                    if args.checkpoint_refs_file
-                    else "rank1_checkpoint_from_ratings_snapshot"
-                )
-            ),
+            "initial_policy_checkpoint_source": _initial_policy_checkpoint_source_label(args),
+            "initial_policy_checkpoint_ref": rows[0]["initial_policy_checkpoint_ref"]
+            if rows
+            else None,
             "initial_policy_checkpoint_load_mode": "matching_shape",
         },
         "guards": {
@@ -1322,6 +1363,10 @@ def _validate_manifest(manifest: dict[str, Any]) -> None:
         raise ValueError("all rows must share one non-empty initial policy checkpoint ref")
     if scratch_bootstrap and shared_initial_ref:
         raise ValueError("scratch bootstrap rows must not carry an initial checkpoint ref")
+    fixed_knobs = manifest["fixed_knobs"]
+    fixed_initial_ref = str(fixed_knobs.get("initial_policy_checkpoint_ref") or "")
+    if fixed_initial_ref != shared_initial_ref:
+        raise ValueError("fixed knobs initial policy checkpoint ref does not match rows")
     for row in rows:
         train_kwargs = _expand_train_kwargs_for_manifest(row["train_kwargs"])
         poller_kwargs = row["poller_kwargs"]
@@ -1362,6 +1407,13 @@ def _validate_manifest(manifest: dict[str, Any]) -> None:
                 raise ValueError(
                     f"row {row['row_id']} initial checkpoint must use iteration_N.pth.tar"
                 )
+        if str(row.get("initial_policy_checkpoint_ref") or "") != initial_ref:
+            raise ValueError(f"row {row['row_id']} row/train initial checkpoint ref mismatch")
+        source = row.get("initial_policy_checkpoint_source")
+        if not isinstance(source, dict):
+            raise ValueError(f"row {row['row_id']} lacks initial checkpoint source metadata")
+        if str(source.get("checkpoint_ref") or "") != initial_ref:
+            raise ValueError(f"row {row['row_id']} initial checkpoint source/ref mismatch")
         if train_kwargs.get("initial_policy_checkpoint_load_mode") != "matching_shape":
             raise ValueError(f"row {row['row_id']} initial checkpoint load mode mismatch")
         preview_assignment = row.get("opponent_assignment_preview")
@@ -1430,7 +1482,6 @@ def _validate_manifest(manifest: dict[str, Any]) -> None:
             raise ValueError(f"row {row['row_id']} total immortal pressure below 20%")
         if immortal_fraction > 0.30:
             raise ValueError(f"row {row['row_id']} total immortal pressure above 30%")
-        fixed_knobs = manifest["fixed_knobs"]
         if train_kwargs["collector_env_num"] != fixed_knobs["collector_env_num"]:
             raise ValueError(f"row {row['row_id']} collector_env_num mismatch")
         if train_kwargs["n_episode"] != fixed_knobs["n_episode"]:
@@ -1597,6 +1648,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--initial-policy-checkpoint-ref",
+        default="",
+        help=(
+            "Exact iteration_N.pth.tar checkpoint ref for the learner's initial policy. "
+            "When omitted, non-scratch manifests still seed from rank1 of the ratings "
+            "snapshot or checkpoint-refs file. This does not change opponent rank slots."
+        ),
+    )
+    parser.add_argument(
         "--opponent-source",
         choices=(OPPONENT_SOURCE_MIXTURE, OPPONENT_SOURCE_ASSIGNMENT),
         default=DEFAULT_OPPONENT_SOURCE,
@@ -1689,6 +1749,19 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             "provide exactly one of --scratch-bootstrap, --ratings-snapshot, or "
             "--checkpoint-refs-file"
         )
+    explicit_initial_ref = str(args.initial_policy_checkpoint_ref or "").strip()
+    if explicit_initial_ref:
+        if args.scratch_bootstrap:
+            parser.error("--initial-policy-checkpoint-ref cannot be used with --scratch-bootstrap")
+        try:
+            args.initial_policy_checkpoint_ref = _validate_exact_checkpoint_ref(
+                explicit_initial_ref,
+                label="initial policy",
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
+    else:
+        args.initial_policy_checkpoint_ref = None
     if args.n_episode <= 0:
         args.n_episode = (
             DEFAULT_N_EPISODE

@@ -39,25 +39,43 @@ def _tonight18_relpath(family: str) -> str:
     return f"artifacts/local/curvytron_tonight18_manifests/{family}/{family}.json"
 
 
-def _default_manifest_specs() -> list[ManifestSpec]:
+def _default_manifest_specs(non_rnd_seed_profile: str = "top4nz") -> list[ManifestSpec]:
+    if non_rnd_seed_profile not in {"top4nz", "bestseed"}:
+        raise ValueError(f"unknown non-RND seed profile: {non_rnd_seed_profile}")
+    if non_rnd_seed_profile == "bestseed":
+        static_lane_id = "static-bestseed-top4nz"
+        static_family = "reward-static-bestseed-top4nz-h100-wave-a-20260623a"
+    else:
+        static_lane_id = "static-top4nz"
+        static_family = "reward-static-top4nz-h100-wave-a-repair-20260623a"
     specs = [
         ManifestSpec(
-            lane_id="static-top4nz",
-            manifest_relpath=_tonight18_relpath(
-                "reward-static-top4nz-h100-wave-a-repair-20260623a"
-            ),
+            lane_id=static_lane_id,
+            manifest_relpath=_tonight18_relpath(static_family),
         ),
     ]
     for replica in range(1, 7):
-        family = f"reward-lhpre-top4nz-rep{replica:02d}-h100-wave-a-repair-20260623a"
-        specs.append(ManifestSpec(lane_id=f"long-horizon-rep{replica:02d}", manifest_relpath=_tonight18_relpath(family)))
+        if non_rnd_seed_profile == "bestseed":
+            lane_id = f"long-horizon-bestseed-rep{replica:02d}"
+            family = (
+                f"reward-lhpre-bestseed-top4nz-rep{replica:02d}-h100-wave-a-20260623a"
+            )
+        else:
+            lane_id = f"long-horizon-rep{replica:02d}"
+            family = f"reward-lhpre-top4nz-rep{replica:02d}-h100-wave-a-repair-20260623a"
+        specs.append(ManifestSpec(lane_id=lane_id, manifest_relpath=_tonight18_relpath(family)))
     for suffix in (
         "s25-b128-td25-cap1024",
         "s25-b128-td25-cap2048",
         "s25-b256-td25-cap2048",
     ):
-        family = f"reward-csupport-top4nz-{suffix}-wave-a-repair-20260623a"
-        specs.append(ManifestSpec(lane_id=f"cadence-support-{suffix}", manifest_relpath=_tonight18_relpath(family)))
+        if non_rnd_seed_profile == "bestseed":
+            lane_id = f"cadence-support-bestseed-{suffix}"
+            family = f"reward-csupport-bestseed-top4nz-{suffix}-wave-a-20260623a"
+        else:
+            lane_id = f"cadence-support-{suffix}"
+            family = f"reward-csupport-top4nz-{suffix}-wave-a-repair-20260623a"
+        specs.append(ManifestSpec(lane_id=lane_id, manifest_relpath=_tonight18_relpath(family)))
     return specs
 
 
@@ -197,7 +215,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             historical_best_seed_ref=historical_best_ref,
             top4nz_rank1_ref=top4nz_rank1_ref,
         )
-        for spec in _default_manifest_specs()
+        for spec in _default_manifest_specs(args.non_rnd_seed_profile)
     ]
     missing_manifests = [row for row in manifest_reports if not row["exists"]]
     for row in missing_manifests:
@@ -240,14 +258,28 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             }
         )
 
+    if args.non_rnd_seed_profile == "bestseed":
+        recommendation = (
+            "Use the bestseed non-RND manifests only after fresh Modal ref, packet, "
+            "capacity, and explicit launch-approval checks pass."
+        )
+    else:
+        recommendation = (
+            "Decide explicitly whether to launch the repaired top4nz-seeded manifests "
+            "or switch to the prepared bestseed non-RND manifests after a fresh Modal "
+            "existence audit."
+        )
+
     report = {
         "schema_id": SCHEMA_ID,
         "ok": not errors,
         "policy": {
             "best_known_seed_default": "historical_r18fresh_rank1_iteration_180000",
             "launchable_repair_seed": "static_top4nz_rank1",
+            "preferred_medium_long_seed": "historical_r18fresh_rank1_iteration_180000",
             "require_best_known_seed": bool(args.require_best_known_seed),
         },
+        "non_rnd_seed_profile": args.non_rnd_seed_profile,
         "historical_top10_refs_file": args.top10_refs_file,
         "historical_best_seed": historical_best,
         "historical_top10_count": len(top10_entries),
@@ -268,11 +300,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             "mixed_seed_manifest_count": len(mixed_seed_manifests),
         },
         "manifests": manifest_reports,
-        "recommendation": (
-            "Decide explicitly whether to launch the repaired top4nz-seeded manifests "
-            "or regenerate non-RND manifests with the historical best-known seed after "
-            "a fresh Modal existence audit."
-        ),
+        "recommendation": recommendation,
         "errors": errors,
         "warnings": warnings,
         "error_count": len(errors),
@@ -287,6 +315,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--top10-refs-file", default=TOP10_REFS_FILE)
     parser.add_argument("--static-top4nz-refs-file", default=STATIC_TOP4NZ_REFS_FILE)
     parser.add_argument("--static-top4nz-modal-audit", default=STATIC_TOP4NZ_MODAL_AUDIT)
+    parser.add_argument(
+        "--non-rnd-seed-profile",
+        choices=("top4nz", "bestseed"),
+        default="top4nz",
+        help="Choose the prepared non-RND manifest family to audit.",
+    )
     parser.add_argument(
         "--require-best-known-seed",
         action="store_true",

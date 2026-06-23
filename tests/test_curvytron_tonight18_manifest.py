@@ -273,6 +273,98 @@ def test_tonight18_manifest_can_bootstrap_from_explicit_checkpoint_refs(
         assert 0.20 <= immortal_pressure / total_slots <= 0.30
 
 
+def test_tonight18_manifest_can_decouple_initial_checkpoint_from_opponent_refs(
+    tmp_path: Path,
+):
+    module = _load_module()
+    refs_file = _checkpoint_refs_file(tmp_path / "refs.txt")
+    initial_ref = (
+        "training/lightzero-curvytron-visual-survival/"
+        "curvy-r18fresh-survbonusout-blank20-wall5-rank1_70-rank1imm5-so10rep10-s134842423/"
+        "attempts/try-r18fresh-survbonusout-blank20-wall5-rank1_70-rank1imm5-so10rep10-s134842423/"
+        "train/lightzero_exp/ckpt/iteration_180000.pth.tar"
+    )
+    args = module.parse_args(
+        [
+            "--checkpoint-refs-file",
+            str(refs_file),
+            "--initial-policy-checkpoint-ref",
+            initial_ref,
+            "--output-root",
+            str(tmp_path / "out"),
+        ]
+    )
+
+    manifest = module.build_manifest(args)
+
+    rank1_opponent_ref = manifest["top_checkpoint_source"]["rank1"]["checkpoint_ref"]
+    assert rank1_opponent_ref.endswith("iteration_10000.pth.tar")
+    assert rank1_opponent_ref != initial_ref
+    assert (
+        manifest["fixed_knobs"]["initial_policy_checkpoint_source"]
+        == "explicit_initial_policy_checkpoint_ref"
+    )
+    assert manifest["fixed_knobs"]["initial_policy_checkpoint_ref"] == initial_ref
+    for row in manifest["rows"]:
+        train_kwargs = _expanded_train_kwargs(module, row)
+        assert row["initial_policy_checkpoint_ref"] == initial_ref
+        assert train_kwargs["initial_policy_checkpoint_ref"] == initial_ref
+        assert row["initial_policy_checkpoint_source"]["source"] == (
+            "explicit_initial_policy_checkpoint_ref"
+        )
+        assert row["initial_policy_checkpoint_source"]["checkpoint_ref"] == initial_ref
+        assert row["initial_policy_checkpoint_source"]["iteration"] == 180000
+        assignment_entries = row["opponent_assignment_preview"]["entries"]
+        frozen_rank1_entries = [
+            entry
+            for entry in assignment_entries
+            if entry.get("tags", {}).get("source_slot") == "rank1"
+        ]
+        assert frozen_rank1_entries
+        assert {
+            entry["opponent_checkpoint_ref"] for entry in frozen_rank1_entries
+        } == {rank1_opponent_ref}
+
+
+def test_tonight18_manifest_rejects_explicit_initial_checkpoint_for_scratch_bootstrap(
+    tmp_path: Path,
+):
+    module = _load_module()
+
+    with pytest.raises(SystemExit):
+        module.parse_args(
+            [
+                "--scratch-bootstrap",
+                "--initial-policy-checkpoint-ref",
+                (
+                    "training/lightzero-curvytron-visual-survival/run/attempts/attempt/"
+                    "train/lightzero_exp/ckpt/iteration_10000.pth.tar"
+                ),
+                "--output-root",
+                str(tmp_path / "out"),
+            ]
+        )
+
+
+def test_tonight18_manifest_rejects_mutable_explicit_initial_checkpoint_ref(
+    tmp_path: Path,
+):
+    module = _load_module()
+    refs_file = _checkpoint_refs_file(tmp_path / "refs.txt")
+
+    with pytest.raises(SystemExit):
+        module.parse_args(
+            [
+                "--checkpoint-refs-file",
+                str(refs_file),
+                "--initial-policy-checkpoint-ref",
+                "training/lightzero-curvytron-visual-survival/run/attempts/attempt/latest.pth.tar",
+                "--output-root",
+                str(tmp_path / "out"),
+            ]
+        )
+
+
 def test_tonight18_manifest_can_scratch_bootstrap_without_deleted_checkpoint_refs(
     tmp_path: Path,
 ):

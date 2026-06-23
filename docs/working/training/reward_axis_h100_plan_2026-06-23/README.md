@@ -11,11 +11,11 @@ The reward axis should therefore be judged by survival retention, tournament
 exposure, action collapse, and learner metrics, not by latest checkpoint or raw
 trainer reward alone.
 
-Most likely next main reward arm: `survival_plus_bonus_plus_outcome`, with a
+Current main reward hypothesis: `survival_plus_bonus_plus_outcome`, with a
 small alpha/support/cadence control around it. It was the least-bad latest
 survival arm in the r18fresh readouts and is favored by the later reward-axis
-notes. It is not a free win: dense support saturation and terminal-outcome
-volatility remain the main risks.
+notes, but this is still a hypothesis, not a promotion. Dense support saturation
+and terminal-outcome volatility remain the main risks.
 
 Most important control arm: `survival_plus_bonus_no_outcome`. It is the clean
 survival-plus-bonus objective, the compact default, and the easiest way to
@@ -57,14 +57,29 @@ checkpoints exist, not the first curriculum source.
   row counts, launch command shapes, status commands, and cleanup boundary.
 - `artifacts/local/curvytron_wave_a_launch_packet_audit_20260623a.json`: latest
   no-launch packet audit for the repaired 90-row Wave A package.
+- `artifacts/local/curvytron_wave_a_launch_packet_audit_bestseed_20260623a.json`:
+  latest no-launch packet audit for the bestseed 90-row Wave A package.
 - `artifacts/local/curvytron_wave_a_capacity_snapshot_20260623a.json`: latest
   no-launch Modal app-list capacity proxy for the Wave A approval gate.
 - `artifacts/local/curvytron_checkpoint_anchor_policy_audit_20260623a.json`:
   latest no-launch audit of historical-best seed versus current top4nz repair
   seed usage.
+- `artifacts/local/curvytron_checkpoint_anchor_policy_audit_bestseed_20260623a.json`:
+  no-launch audit proving the prepared bestseed non-RND manifests all use the
+  historical r18fresh `iteration_180000` learner seed.
 - `artifacts/local/curvytron_wave_a_staged_launch_mid36_20260623a.json` and
   `artifacts/local/curvytron_wave_a_staged_launch_long19_low_weight_replicated_20260623a.json`:
   generated staged launch profiles for the medium and long runtime tiers.
+- `artifacts/local/curvytron_wave_a_staged_launch_mid36_bestseed_20260623a.json`
+  and
+  `artifacts/local/curvytron_wave_a_staged_launch_long17_no_highest_weight_bestseed_20260623a.json`,
+  `artifacts/local/curvytron_wave_a_staged_launch_long18_all_weights_bestseed_20260623a.json`,
+  `artifacts/local/curvytron_wave_a_staged_launch_long19_low_weight_replicated_bestseed_20260623a.json`:
+  preferred staged launch profiles for medium and long tiers when using the
+  historical best-known learner seed.
+- `artifacts/local/curvytron_wave_a_capacity_snapshot_long17_no_highest_weight_bestseed_20260623a.json`:
+  current capacity-clear long-tier bestseed snapshot for the 17-row staged
+  profile.
 - `STOCK_PATH_RND_REORIENTATION.md`: why RND belongs on the original
   stock-ish LightZero path now, and why compact remains no-RND.
 - `CONTINGENCY_PLANS.md`: what can go wrong and the fallback ladder by horizon
@@ -73,6 +88,14 @@ checkpoints exist, not the first curriculum source.
   lanes without mixing claims.
 - `CRITICAL_RETROSPECTIVE.md`: the past lessons that should constrain the new
   campaign.
+- `CONCEPTUAL_LANDSCAPE_REVIEW_2026-06-23.md`: critical read of
+  `external/chatgpt/context.md` and the Flash comparison packet, including the
+  pure-MCTS quarantine rule and denominator boundaries.
+- `CURVYTRON_GAME_MECHANICS_GATES.md`: source-fidelity checklist for
+  macro-action, planner, PPO/Puffer, RND, and environment branches.
+- `LONG_TERM_PLANNING_RND_STRATEGY.md`: combined doctrine for long-horizon
+  planning, macro-actions, dense planners, PPO/Puffer baselines, and RND-based
+  exploration without mixing denominators.
 - `RND_LANE.md`: what happened to RND, the most believable implementation, and
   the first aggressive sweep.
 - `REWARD_INVENTORY.md`: all reward functions and where they are wired.
@@ -85,6 +108,9 @@ checkpoints exist, not the first curriculum source.
 - Reward contracts/supports: `src/curvyzero/training/reward_contracts.py`
 - Source-state reward implementation:
   `src/curvyzero/training/curvyzero_source_state_visual_survival_lightzero_env.py`
+- Source mechanics reference: `docs/sources/curvytron_reference.md`
+- Game-mechanics gate checklist:
+  `docs/working/training/reward_axis_h100_plan_2026-06-23/CURVYTRON_GAME_MECHANICS_GATES.md`
 - Manifest builder:
   `scripts/build_curvytron_tonight18_manifest.py`
 - Grouped submitter:
@@ -125,11 +151,22 @@ checkpoints exist, not the first curriculum source.
    not as launch approval.
 5. Run `scripts/audit_curvytron_checkpoint_anchor_policy.py` and explicitly
    choose whether the run uses the historical r18fresh best-known seed or the
-   current top4nz repair seed. Prefer seeded exact checkpoint refs for static
-   quality rows; keep scratch as an explicit diagnostic.
+   current top4nz repair seed. For bestseed lanes, use
+   `--non-rnd-seed-profile bestseed --require-best-known-seed`. Remember:
+   `--checkpoint-refs-file` chooses opponent refs and
+   `--initial-policy-checkpoint-ref` chooses the learner seed.
 6. Defer CZ26-style leaderboard/refresh slices until after static lanes show
    trainable nonzero checkpoints.
 7. Keep RND positive rows separate from compact speed and extrinsic reward
    claims until retained extrinsic quality is proven.
 8. Keep non-RND static reward and cadence/support lanes alive alongside RND;
    never interpret positive RND alone.
+9. Treat pure/raw-tick MCTS as a quarantined research/profile lane. Do not spend
+   production-style long H100 runs on it unless it beats policy-only at equal
+   GPU-seconds/action latency and passes the systems profile gates in
+   `CONCEPTUAL_LANDSCAPE_REVIEW_2026-06-23.md`.
+10. Use `LONG_TERM_PLANNING_RND_STRATEGY.md` as the bridge doctrine before
+    adding macro-action, dense-planner, PPO/Puffer, or RND-transfer experiments
+    to the current launch queue.
+11. Use `CURVYTRON_GAME_MECHANICS_GATES.md` before promoting any environment,
+    macro-action, planner, PPO/Puffer, or self-play branch as CurvyTron-faithful.

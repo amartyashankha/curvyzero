@@ -17,9 +17,21 @@ details in:
   latest no-launch Modal capacity proxy result
 - `artifacts/local/curvytron_checkpoint_anchor_policy_audit_20260623a.json`
   for the current best-known-checkpoint seed audit
+- `artifacts/local/curvytron_checkpoint_anchor_policy_audit_bestseed_20260623a.json`
+  for the bestseed non-RND seed audit
+- `artifacts/local/curvytron_wave_a_launch_packet_audit_bestseed_20260623a.json`
+  for the bestseed 90-row no-launch packet audit
 - `artifacts/local/curvytron_wave_a_staged_launch_mid36_20260623a.json` and
   `artifacts/local/curvytron_wave_a_staged_launch_long19_low_weight_replicated_20260623a.json`
   for staged launch command plans
+- `artifacts/local/curvytron_wave_a_staged_launch_mid36_bestseed_20260623a.json`
+  and
+  `artifacts/local/curvytron_wave_a_staged_launch_long19_low_weight_replicated_bestseed_20260623a.json`
+  for preferred bestseed medium/long command plans
+- `artifacts/local/curvytron_wave_a_staged_launch_long17_no_highest_weight_bestseed_20260623a.json`
+  for the current capacity-fit bestseed long plan
+- `artifacts/local/curvytron_wave_a_capacity_snapshot_long17_no_highest_weight_bestseed_20260623a.json`
+  for the latest 17-row capacity-clear snapshot
 - `EXPERIMENT_PLAN.md` and `AGGRESSIVE_REORIENTATION.md` for lane intent
 - `RND_LANE.md` and `STOCK_PATH_RND_REORIENTATION.md` for RND-specific rules
 - `MONITORING_SIGNALS.md` and `CONTINGENCY_PLANS.md` for readout and response
@@ -32,6 +44,9 @@ details in:
 | Static top4nz exact-ref repair | 18 | manifest-ready, ref-audited | Repaired local manifest, syntax audit, Modal ref audit, and full submitter dry-run pass. Uses currently visible `curvy-r18fresh-*` refs. | Human launch approval, active capacity check, launch note, and stop/cleanup procedure. |
 | Long-horizon top4nz replicas | 18 | manifest-ready, ref-audited | Six repaired 18-row manifests exist; selected rows `r005/r011/r017` from each pass Modal ref audit and dry-run. | Human launch approval, active capacity check, launch with row filters and `--allow-partial-launch`. |
 | Cadence/support top4nz panel | 9 | manifest-ready, ref-audited | Three repaired 18-row knob manifests exist; selected rows `r005/r011/r017` from each pass Modal ref audit and dry-run. | Human launch approval, active capacity check, launch with row filters and `--allow-partial-launch`. |
+| Static bestseed top4nz repair | 18 | manifest-ready, ref-audited | Same static matrix, but learner seed is historical r18fresh `iteration_180000`; opponent rank slots remain top4nz. Packet and anchor audits pass. | Preferred non-RND partner for medium/long runs after human approval and capacity check. |
+| Long-horizon bestseed replicas | 18 | manifest-ready, ref-audited | Six repaired 18-row manifests exist; selected rows `r005/r011/r017` pass Modal ref audit and dry-run with `ref_count=5`. | Preferred long-horizon non-RND triad unless top4nz seed is explicitly chosen. |
+| Cadence/support bestseed panel | 9 | manifest-ready, ref-audited | Three repaired knob manifests exist; selected rows `r005/r011/r017` pass Modal ref audit and dry-run with `ref_count=5`. | Preferred long-horizon support/cadence triad unless top4nz seed is explicitly chosen. |
 | Buffer | 10 | reserved | Capacity held for relaunch/debug/fixed-opponent RND bridge. | Spend only after first health read or an explicit bridge decision. |
 
 The prepared Wave A menu remains 90 H100 rows. All 90 repaired rows have local
@@ -40,27 +55,39 @@ passing Modal existence audits. No Modal jobs were launched from this doc set.
 The current packet audit reports `ok=true`, `actual_total_selected_rows=90`,
 and `launch_artifacts=[]`.
 
-The current capacity proxy reports `ok=true` but
+The current full-packet capacity proxy reports `ok=true` but
 `approval_recommendation=operator_capacity_review_required`: CurvyTron train and
 status apps are idle, while current Modal task count plus `90` requested rows
-exceeds the coarse `100`-task envelope proxy. The current conservative proxy
-allows only `22` additional rows unless existing tasks are classified as
-non-H100/non-conflicting. This does not prove H100 unavailability because Modal
-task counts can include non-H100 work, but it does require a fresh operator
-capacity decision before launch.
+exceeds the coarse `100`-task envelope proxy. Profile-specific capacity checks
+show the current conservative frontier:
+
+- `long17_no_highest_weight_bestseed`: `17` rows,
+  `capacity_proxy_clear`, `projected_total_tasks=100`
+- `long18_all_weights_bestseed`: `18` rows,
+  `operator_capacity_review_required`, `projected_total_tasks=101`
+- `long19_low_weight_replicated_bestseed`: `19` rows,
+  `operator_capacity_review_required`, `projected_total_tasks=101`
+- `mid36_bestseed`: `36` rows,
+  `operator_capacity_review_required`, `projected_total_tasks=118`
+- `short90_bestseed`: `90` rows,
+  `operator_capacity_review_required`, `projected_total_tasks=172`
+
+This does not prove H100 unavailability because Modal task counts can include
+non-H100 work, but it does require a fresh operator capacity decision before
+launching anything above the capacity-clear staged plan.
 
 The original `reward-static-exactref-*`, `reward-lhpre-repNN-*`, and
 `reward-csupport-s25-*` manifests that point at `curvy-n18conn-*` refs remain
 historical/ref-blocked by `PRELAUNCH_AUDIT_2026-06-23.md`. Use the `top4nz`
 repair manifests in `PRELAUNCH_REPAIR_2026-06-23.md` for current launch review.
 
-Checkpoint-anchor caveat: the repaired top4nz non-RND manifests currently use
-the top4nz rank1 sparse `iteration_40000` checkpoint as their initial policy
-seed. The historical best-known seed remains the r18fresh plus-outcome
-`iteration_180000` checkpoint. The current anchor audit is `ok=true` but warns
-about this difference. Medium/long launch approval must explicitly choose
-between accepting the launchable repair seed and regenerating with the
-historical best-known seed.
+Checkpoint-anchor rule: `--checkpoint-refs-file` chooses opponent rank-slot
+refs; `--initial-policy-checkpoint-ref` chooses the learner seed. The repaired
+top4nz non-RND manifests use the top4nz rank1 sparse `iteration_40000`
+checkpoint as learner seed. The bestseed manifests use the historical r18fresh
+plus-outcome `iteration_180000` checkpoint as learner seed and keep top4nz as
+opponents. Medium/long launch approval should default to the bestseed profiles
+unless the launch note explicitly chooses the top4nz repair seed.
 
 Non-RND coverage is required. The static top4nz exact-ref reward isolate is the
 prepared non-RND launch partner for the RND sweep. The long-horizon replicas and
@@ -73,21 +100,32 @@ The two primary prepared lanes are independent and can launch broadly together
 only after explicit approval and a fresh capacity check:
 
 1. `RND wide blank sweep`
-2. `Static top4nz exact-ref repair`
+2. `Static bestseed top4nz repair` for medium/long runs, or `Static top4nz
+   exact-ref repair` only when the repair seed is deliberately chosen
 
-This remains the broad-sweep default after ref repair. Do not serialize these
-into many days of tiny canaries. The canary logic is embedded in the broad RND
-manifest through stock and meter controls; health failures should trigger the
-contingencies, not prevent broad preparation.
+This remains the broad-sweep default after ref repair, with the seed profile
+chosen before launch approval. Do not serialize these into many days of tiny
+canaries. The canary logic is embedded in the broad RND manifest through stock
+and meter controls; health failures should trigger the contingencies, not
+prevent broad preparation.
+
+Current conservative launch candidate: `long17_no_highest_weight_bestseed`.
+It is an `8h+` 17-row plan with 8 RND rows (`none`, `rnd_meter_v0`, and
+positive RND weights through `0.6`) plus 9 bestseed non-RND rows. It drops only
+the highest RND weight to fit the current proxy room while preserving the
+non-RND triad. Read this as a capacity compromise, not a claim that the highest
+RND weight is scientifically unimportant.
 
 Required before launch:
 
 - explicit human approval for the exact launch command and row count
-- fresh `scripts/audit_curvytron_wave_a_launch_packet.py` pass
+- fresh `scripts/audit_curvytron_wave_a_launch_packet.py` pass; use
+  `--non-rnd-seed-profile bestseed` for bestseed lanes
 - fresh `scripts/audit_curvytron_wave_a_capacity.py` pass and active H100
   capacity decision
 - fresh `scripts/audit_curvytron_checkpoint_anchor_policy.py` pass and an
-  explicit seed-anchor decision
+  explicit seed-anchor decision; for bestseed lanes use
+  `--non-rnd-seed-profile bestseed --require-best-known-seed`
 - generated `scripts/plan_curvytron_wave_a_staged_launch.py` profile for the
   intended runtime tier
 - intended runtime tier:
