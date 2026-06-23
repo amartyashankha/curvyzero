@@ -45,6 +45,8 @@ checkpoints exist, not the first curriculum source.
   hierarchy, runtime-tier profiles, and the next 5-minute through 8-hour plan.
 - `CHECKPOINT_ANCHOR_POLICY.md`: how to choose and audit best-known checkpoint
   seeds versus launchable opponent refs.
+- `DECISION_GAPS_2026-06-23.md`: captain ledger of what is still unknown before
+  choosing rewards, RND, observations, PPO/Puffer, planning, or launch lanes.
 - `LAUNCH_QUEUE.md`: operator-facing queue of manifest-ready and reserved
   Wave A lanes.
 - `WAVE_A_MANIFESTS.md`: prepared local manifests, dry-run results, launch
@@ -170,3 +172,5 @@ checkpoints exist, not the first curriculum source.
     to the current launch queue.
 11. Use `CURVYTRON_GAME_MECHANICS_GATES.md` before promoting any environment,
     macro-action, planner, PPO/Puffer, or self-play branch as CurvyTron-faithful.
+12. Use `DECISION_GAPS_2026-06-23.md` before making architecture choices from
+    docs or single-row evidence.
