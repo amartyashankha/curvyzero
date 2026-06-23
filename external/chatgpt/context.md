@@ -1,5 +1,11 @@
 # CurvyZero: Algorithm and Systems Strategy
 
+_Living design document · Updated 2026-06-23_
+
+### Revision 2: long-horizon planning and exploration
+
+This revision adds a concrete multi-timescale planning design, a critical analysis of Random Network Distillation, an NGU-inspired episodic novelty design, model-disagreement exploration, simulator-state archives, PufferLib integration notes, and explicit ablation gates. The recommendation is deliberately conservative: **do not add intrinsic reward until measurements show that state-space exploration—not credit assignment, self-play cycling, or model error—is the bottleneck.**
+
 ## Executive conclusion
 
 Curvytron is not a normal board-game search problem and not quite an Atari problem. It is a **real-time, simultaneous-action, sparse-reward stochastic game** with:
@@ -22,10 +28,14 @@ The recommended path is:
 5. Prefer a **GPU-dense trajectory planner**—beam search, CEM, sequential halving, or batched MPC over action chunks—before investing further in fully general MCTS.
 6. Treat **joint-action Gumbel MuZero** as a research branch, not the default architecture. Use small search budgets, explicit opponent/chance modeling, reanalysis, and aggressive empirical gates.
 7. Keep PPO and search-based training semantics clean. Do not collect planner actions and train them as if they were sampled from PPO's old policy.
+8. Implement long-term planning as a **hierarchy**: a terminal-outcome value, multi-horizon strategic predictions, a slow goal/option policy, and a fast exact safety controller. Search over seconds-long commitments, then replan.
+9. Treat RND as an optional ablation, not the default exploration mechanism. For Curvytron, **league diversity, episodic strategic novelty, model-ensemble disagreement, and resettable hard-state archives** are usually better aligned with the real failure modes.
 
 The central diagnosis is:
 
 > The expensive synchronization may be partly an implementation bug, but ordinary MCTS is also structurally mismatched to a small-batch, 60 Hz, simultaneous-control workload. Moving the same algorithm to the GPU does not automatically make it GPU-shaped.
+
+> Long-term strategy does not require a raw-tick tree reaching the end of the round. It requires a value function that understands terminal consequences, strategic state abstractions, temporally extended actions, and enough explicit lookahead to choose among commitments whose consequences unfold over seconds.
 
 ---
 
@@ -260,6 +270,72 @@ Run the expensive planner when one of these is true:
 - a periodic strategic timer fires.
 
 Use the fast policy on ordinary frames.
+
+### 4.4 Discount in physical time, not decision count
+
+A fixed numerical discount has a different meaning at 60 Hz, 15 Hz, and a variable-duration option level. Define discount from a physical half-life:
+
+\[
+\gamma(\Delta t)
+=
+2^{-\Delta t/T_{1/2}}.
+\]
+
+At a 15 Hz control rate, examples are:
+
+| Return half-life | Per-control-step \(\gamma\) |
+|---:|---:|
+| 5 seconds | 0.9908 |
+| 10 seconds | 0.9954 |
+| 20 seconds | 0.9977 |
+| 30 seconds | 0.9985 |
+
+These are calibration examples, not recommended constants. A very high discount increases variance and critic difficulty. Curvytron can avoid much of this trade-off by separating:
+
+\[
+V_{\infty}(s)=\mathbb{E}[z\mid s],
+\qquad z\in\{-1,0,+1\},
+\]
+
+an undiscounted final-outcome prediction, from shorter-horizon survival, collision, and territory heads.
+
+For an option lasting \(d\) physics ticks, always use:
+
+\[
+\Gamma(d)=\gamma_{\text{physics}}^d.
+\]
+
+Do not accidentally discount a two-tick and a sixteen-tick option equally.
+
+### 4.5 Planning horizon should be measured in seconds
+
+Report all planning experiments in both abstract steps and physical time. A tree of depth 12 means almost nothing without the action duration:
+
+- depth 12 at 60 Hz covers 0.2 seconds;
+- depth 12 with four-tick actions covers 0.8 seconds;
+- depth 8 with 0.5-second options covers 4 seconds.
+
+For Curvytron, a useful planner should normally combine:
+
+- exact tactical prediction over roughly 0.2–1.0 seconds;
+- strategic option prediction over roughly 2–10 seconds;
+- a terminal-outcome value for everything beyond the explicit horizon.
+
+### 4.6 Receding-horizon commitment
+
+Planning should choose a *commitment*, not permanently surrender control. If the planner selects option \(u_t\) for nominal duration \(d\), the controller may replan early when:
+
+\[
+\text{risk}(s_t) > \rho,
+\quad
+\text{uncertainty}(s_t) > \upsilon,
+\quad
+\text{or}
+\quad
+\text{option-feasibility}(s_t,u_t)=0.
+\]
+
+This preserves strategic intent while allowing millisecond-scale reactions to a new trail, gap, or opponent turn.
 
 ---
 
@@ -569,6 +645,234 @@ Only after the recurrent baseline works, add a strategic option layer that selec
 
 The low-level controller remains responsible for exact steering and safety. The strategic planner reasons in the option space.
 
+### 8.5 What long-term planning should mean here
+
+A useful Curvytron planner has four layers of foresight:
+
+1. **Immediate safety:** exact collision checks for candidate actions over the next few tenths of a second.
+2. **Route commitment:** select a curvature pattern, target heading, waypoint, or corridor over the next 0.5–2 seconds.
+3. **Strategic topology:** estimate how the choice changes reachable territory, escape routes, and interception opportunities over several seconds.
+4. **Terminal consequence:** estimate final win/loss probability after the explicit planning horizon.
+
+The planner does not need to render every future frame until the round ends. The decomposition is:
+
+\[
+Q(s,u)
+\approx
+R_{0:H}(s,u,u^-)
++
+\Gamma_H V_{\infty}(s_H),
+\]
+
+where \(u^-\) denotes an opponent option or sampled opponent trajectory. The hard part is ensuring that \(V_{\infty}\) and the strategic state at \(s_H\) preserve the consequences of enclosure, route loss, and future turning room.
+
+### 8.6 Multi-horizon value and hazard heads
+
+One scalar critic is a weak training signal for a game in which the final outcome can be tens of seconds away. Use a shared representation with several heads:
+
+\[
+V_{\infty}(s)=\mathbb{E}[z\mid s]
+\]
+
+\[
+S_h(s)=P(\text{alive at }t+h\mid s),
+\qquad
+h\in\{0.5,1,2,4,8\}\text{ seconds}
+\]
+
+\[
+C_h(s)=P(\text{collision before }t+h\mid s)
+\]
+
+\[
+W_h(s)=P(\text{eventual win}\mid s,\text{survive to }t+h).
+\]
+
+An equivalent formulation predicts a discrete time-to-death or outcome distribution. These heads improve representation learning, provide calibrated planning cutoffs, and expose whether the agent lacks short-term safety or long-term strategy.
+
+Do not sum all heads into the environment reward. They are supervised predictions and planner inputs.
+
+### 8.7 Start with interpretable goals, not unconstrained latent options
+
+A hierarchical policy can be written as:
+
+\[
+g_k\sim\pi_H(g\mid z_{kK}),
+\]
+
+\[
+a_t\sim\pi_L(a\mid o_t,g_k),
+\qquad kK\le t<(k+1)K.
+\]
+
+The first goal space should be easy to inspect and simulate:
+
+- target heading and curvature;
+- target point or map sector;
+- target corridor mouth;
+- desired clearance from obstacles;
+- an opponent-relative intercept point;
+- a route represented by two or three waypoints.
+
+A fully learned latent goal space is attractive, but it creates three problems at once: semantic drift, option collapse, and a search space whose geometry is unknown. Director-style latent goals are a valuable later experiment, not the first implementation.
+
+Use fixed option durations initially. Learned termination is useful only after options are stable; otherwise the high-level action space changes while the planner and critic are learning it.
+
+A second non-stationarity appears when the low-level controller improves: the same goal no longer induces the same state transition. Prefer geometrically defined goals, train the high level mostly on-policy, update the low level more slowly, or relabel old high-level transitions using the behavior low-level policy. Off-policy high-level replay without such correction can learn from an action space that no longer exists.
+
+### 8.8 Multi-timescale dynamics models
+
+A one-step model repeatedly unrolled for hundreds of physics ticks accumulates error and is expensive. Train skip models at several temporal scales:
+
+\[
+G_K(z_t,u_t,u_t^-)
+\rightarrow
+(\hat z_{t+K},\hat R_{t:t+K},\hat d_{t:t+K}),
+\]
+
+for, for example, \(K\in\{4,16,64\}\) physics ticks. The targets should include:
+
+- next strategic latent state;
+- cumulative reward and discount;
+- collision/death event;
+- head pose and heading;
+- coarse future trail occupancy;
+- change in reachable-space topology.
+
+Use consistency or latent-overshooting losses so the long skip model agrees with encoded future observations:
+
+\[
+\mathcal{L}_{\text{skip}}
+=
+\left\|G_K(z_t,u_t,u_t^-)-\operatorname{sg}(h(o_{t+K}))\right\|^2.
+\]
+
+The exact simulator should remain the source of truth for immediate collision geometry. The learned coarse model is for ranking strategic routes, not certifying safety.
+
+### 8.9 Strategic maps and topological state
+
+A global occupancy image is necessary but not sufficient. Add derived representations that make future topology easier to learn:
+
+#### Curvature-constrained reachability
+
+Estimate the free states reachable by a Dubins-like vehicle in \((x,y,\theta)\), not by an unconstrained flood fill.
+
+#### Earliest-arrival fields
+
+For player \(i\), estimate:
+
+\[
+T_i(x,y)=\text{earliest feasible arrival time}.
+\]
+
+Then an influence field can be approximated by:
+
+\[
+I(x,y)=T_{\text{opp}}(x,y)-T_{\text{self}}(x,y).
+\]
+
+Positive margin suggests controllable space; a sign change identifies contested boundaries.
+
+#### Corridor graph
+
+Compress free space into regions connected by narrow passages. Candidate options can target corridor entrances, and the planner can reason about cutting an edge rather than individual pixels.
+
+#### Future occupancy
+
+Predict discounted trail occupancy maps:
+
+\[
+M(s)=\mathbb{E}\left[\sum_{k\ge0}\gamma^k\phi(s_k)\mid s\right].
+\]
+
+Separate own and opponent occupancy. This is close to a spatial successor representation and directly exposes enclosure and interception consequences.
+
+These maps are best introduced as observations and auxiliary targets. If used as dense rewards, they can be gamed.
+
+### 8.10 Robust opponent-aware planning
+
+A plan that succeeds only when the opponent follows its modal action is brittle. For every candidate self plan \(U\), evaluate several plausible opponent plans \(U^-_m\):
+
+\[
+J_m(U)=J(U,U^-_m).
+\]
+
+Possible robust objectives are:
+
+\[
+J_{\text{robust}}(U)
+=
+\frac{1}{M}\sum_m J_m(U)-\lambda\operatorname{Std}_m[J_m(U)],
+\]
+
+or a lower-tail conditional value at risk:
+
+\[
+J_{\text{robust}}(U)=\operatorname{CVaR}_{\alpha}\{J_m(U)\}.
+\]
+
+For 1v1 with three primitive actions, the first joint-action step has only nine possibilities and can often be evaluated exactly. Farther ahead, sample opponent options from:
+
+- the current opponent policy;
+- historical opponent checkpoints;
+- an opponent-intent ensemble;
+- adversarial scripted responses.
+
+Pure maximin planning can become excessively conservative; pure expectation can be exploitable. Compare both against a risk-adjusted middle ground.
+
+### 8.11 A practical two-level planner
+
+A concrete implementation is:
+
+#### Strategic planner, 1–3 Hz
+
+- state: coarse global map, reachability fields, opponent intent, recurrent memory;
+- action: waypoint, target heading, corridor, or 0.5–2 second curvature option;
+- horizon: roughly 3–10 seconds;
+- search: beam search, categorical CEM, Gumbel top-\(k\), or small option-level MCTS;
+- transition: coarse exact rollout where possible, otherwise a skip model;
+- leaf: terminal-outcome value plus calibrated risk.
+
+#### Tactical controller, 15–30 Hz
+
+- follows the selected option;
+- uses the high-resolution local crop;
+- checks exact short-horizon collisions;
+- can veto an unsafe option;
+- triggers early replanning.
+
+A safety veto should choose the safest feasible primitive action, not silently change the training target into the planner action. Log veto frequency; frequent vetoes mean the high-level model is untrustworthy.
+
+Use territory, corridor width, and reachability primarily as constraints, auxiliary predictions, or tie-breakers. Adding all of them to the planner score can double-count information already represented in the terminal value and create a hand-shaped policy that wins the heuristic rather than the game. Every additive planning heuristic needs an ablation against outcome-only leaf values.
+
+Variable-duration options also require semi-Markov accounting. Otherwise the planner may prefer short options merely because they create more branch points, or long options merely because they incur fewer decision penalties. Compare plans at equal physical horizon and use duration-aware discounting.
+
+### 8.12 Reuse plans and search only where leverage is high
+
+Warm-start the next planning call by shifting the previous sequence forward. Preserve beams or tree statistics when the root transition is consistent with the predicted next state.
+
+Define strategic leverage as sensitivity of outcome value to available commitments:
+
+\[
+L(s)=\max_u Q(s,u)-\min_u Q(s,u).
+\]
+
+Spend more planning compute when leverage, uncertainty, or collision risk is high. Low-leverage open-space cruising should normally use the policy directly.
+
+### 8.13 Long-horizon benchmark scenarios
+
+Average self-play Elo can hide a policy that never learned delayed consequences. Build deterministic scenario tests such as:
+
+- a wide corridor that becomes a dead end only after 4–8 seconds;
+- an early escape turn needed to avoid later enclosure;
+- a short-term loss of free area that enables an opponent cut;
+- a choice between a safe loop and a risky intercept;
+- a corridor whose owner is determined by earliest arrival, not nearest Euclidean distance;
+- a gap that enables a route only if approached several seconds early;
+- an adversary that deliberately baits a greedy space-maximizing policy.
+
+For each scenario, report success as a function of explicit planning horizon, value-network checkpoint, opponent model, and compute budget. This directly measures long-term planning rather than hoping Elo reveals it.
+
 ---
 
 ## 9. Model-free baseline: why PufferLib is useful
@@ -606,6 +910,12 @@ PufferLib and JAX `mctx` also belong to different hot-loop ecosystems. Crossing 
 - **All-Torch search:** Torch model plus a custom static CUDA/Triton search implementation.
 
 Do not combine all three in one per-frame loop without a measured zero-copy design.
+
+### Current PufferLib integration caveat
+
+The current PufferLib 4.0 Torch backend stores a single reward stream and a single value stream in its rollout buffers, and its GPU environment path calls `torch.cuda.synchronize()` after each environment step. A dual-stream intrinsic/extrinsic critic therefore requires a fork of the rollout buffers, model outputs, advantage calculation, and loss. The Torch backend is useful for prototyping, but it should not be the production hot path for GPU planning.
+
+The native backend is architecturally better suited to static buffers and CUDA Graphs, but adding RND or episodic neural novelty inside the captured path still requires deliberate static allocation. Avoid Python callbacks or per-step tensor creation; they discard the systems advantage PufferLib was chosen for.
 
 ---
 
@@ -652,7 +962,397 @@ For multiplayer, use a normalized rank or constant-sum transformation and evalua
 
 ---
 
-## 11. Atari-style approaches: what transfers and what does not
+## 11. Exploration: RND and better alternatives
+
+### 11.1 Diagnose the failure before adding novelty
+
+Curvytron always supplies a terminal outcome, so it is not necessarily a hard-exploration problem in the Montezuma's-Revenge sense. A policy can fail despite visiting a broad set of states because the true bottleneck is delayed credit, self-play cycling, weak opponent diversity, or model error.
+
+| Observed symptom | Likely bottleneck | First intervention |
+|---|---|---|
+| Agents repeat a tiny set of loops and never enter large safe regions | State/behavior exploration | Episodic strategic novelty or simple counts |
+| Agents visit broadly but choose locally safe, globally losing routes | Credit and hierarchy | Multi-horizon values and option planning |
+| Training alternates among rock-paper-scissors-like tactics | Opponent-policy exploration | Historical league, exploiters, PSRO-like mixtures |
+| Planner fails mainly in rare collision configurations | Model coverage | Joint-action model ensemble and targeted data |
+| Strong self-play policy loses to simple held-out scripts | Overfitting | Opponent population and best-response evaluation |
+| Intrinsic score rises while external win rate stagnates | Objective misalignment | Reduce/remove intrinsic reward |
+
+Collect these diagnostics before deciding that RND is needed.
+
+### 11.2 RND, carefully stated
+
+RND uses a fixed random target network \(f_{\xi}\) and a trainable predictor \(\hat f_{\psi}\). For an input representation \(x_t\):
+
+\[
+r_t^{\text{RND}}
+=
+\left\|\hat f_{\psi}(x_t)-f_{\xi}(x_t)\right\|_2^2,
+\]
+
+and the predictor minimizes:
+
+\[
+\mathcal{L}_{\text{RND}}(\psi)
+=
+\mathbb{E}_{x\sim\mathcal{D}}
+\left[\left\|\hat f_{\psi}(x)-f_{\xi}(x)\right\|_2^2\right].
+\]
+
+States unlike the predictor's training data tend to retain larger error. A minimal correct implementation needs:
+
+- frozen target parameters;
+- normalized inputs to target and predictor;
+- normalized or clipped intrinsic returns;
+- a predictor update rate controlled independently of actor count;
+- a small replay reservoir or old-state audit to detect predictor forgetting;
+- separate intrinsic and extrinsic value estimates;
+- capped or suppressed terminal-frame novelty so rare deaths do not become attractive;
+- no intrinsic reward during evaluation or checkpoint selection.
+
+For PPO, use:
+
+\[
+\delta_t^{E}
+=r_t^{E}+\gamma_E V_E(s_{t+1})-V_E(s_t),
+\]
+
+\[
+\delta_t^{I}
+=r_t^{I}+\gamma_I V_I(s_{t+1})-V_I(s_t),
+\]
+
+and combine advantages only after computing them separately:
+
+\[
+A_t=A_t^E+\beta A_t^I.
+\]
+
+A single critic for the sum is possible but less stable because the extrinsic target is stationary while novelty decays as the predictor learns.
+
+### 11.3 What should enter the novelty encoder?
+
+Do not feed arbitrary raw state directly. Construct a canonical strategic input \(x_t=\phi(s_t)\) containing:
+
+- a coarse occupancy map in an egocentric or symmetry-canonical frame;
+- own pose and heading;
+- opponent-relative geometry;
+- curvature-constrained reachable-space summary;
+- corridor and enclosure features;
+- gap/bonus state only when it is observable and strategically controllable.
+
+Exclude or canonicalize:
+
+- player IDs and colors;
+- absolute rotations or reflections that are strategically equivalent;
+- wall-clock time;
+- random seeds;
+- unobservable hidden timers;
+- high-frequency animation or rendering noise.
+
+Compute novelty at the control or strategic rate, not every 60 Hz physics tick. Otherwise a smooth turn produces many almost-identical bonuses and the intrinsic return becomes dominated by duration.
+
+### 11.4 Why pure lifelong RND is a questionable default
+
+### The arena is finite
+
+Once the predictor covers common occupancy patterns, lifelong novelty can disappear even though the agent still needs to practice difficult counterstrategies. Conversely, changing opponents can continually manufacture rare joint configurations that are not under the agent's control.
+
+### Novel geometry is not necessarily useful strategy
+
+RND can reward:
+
+- unusual spirals;
+- narrow but losing corridors;
+- novel death locations;
+- rapidly changing trail patterns;
+- encounters generated by eccentric opponents.
+
+The random target knows nothing about win probability, reachability, or strategic leverage.
+
+### Intrinsic rewards break the zero-sum game
+
+If both players receive positive state novelty, the training objective becomes general-sum. Agents can implicitly cooperate to visit unusual states or synchronize into elaborate but strategically weak behavior. Keep the main game value purely extrinsic and evaluate only the \(\beta=0\) policy.
+
+### Scale changes the bonus lifetime
+
+More actors generate more predictor training data. If predictor batch size or update count scales automatically with environment throughput, novelty may collapse much faster. The original RND work explicitly controlled predictor training rate across different actor counts.
+
+### Randomness can still be a trap
+
+RND avoids predicting a stochastic next state because its target is deterministic. It does not prevent rare random observations, random bonuses, or opponent-generated patterns from looking novel. A random target over nuisance features is still a nuisance detector.
+
+### Predictor forgetting can manufacture novelty
+
+If the predictor is trained only on the newest rollout distribution, it can forget old regions and assign them high error again. That may look like healthy recurrent exploration while actually producing cycles. Track prediction error on a fixed probe set and use a modest reservoir of historical strategic embeddings when forgetting is substantial.
+
+### 11.5 Recommended exploration stack
+
+The recommended order is:
+
+### 1. Opponent-policy exploration
+
+Use a historical league, exploiters, scripted specialists, and approximate best responses to mixtures. This explores *strategy space*, which is the most important source of novelty in a competitive game.
+
+A PSRO-like loop is conceptually:
+
+1. maintain a population \(\Pi=\{\pi_1,\ldots,\pi_n\}\);
+2. estimate the empirical payoff matrix;
+3. compute an opponent mixture \(\sigma\);
+4. train an approximate best response to \(\sigma\);
+5. add it to the population.
+
+Full PSRO may be more machinery than needed, but the principle—train against mixtures rather than only the latest policy—is directly relevant. Empirical payoff estimates can be noisy, so retain held-out opponents and do not let the same matchup matrix both choose the meta-strategy and certify progress.
+
+### 2. Episodic strategic novelty
+
+Reset novelty memory every round. Let \(e_t=\phi(s_t)\) be a controllable strategic embedding and \(\mathcal{M}_t\) the current round's memory. A simple kernel count is:
+
+\[
+n_t
+=
+\sum_{m\in\mathcal{M}_t}
+K\!\left(\frac{\|e_t-m\|^2}{\sigma^2}\right),
+\]
+
+\[
+r_t^{\text{epi}}
+=
+\frac{1}{\sqrt{n_t+\epsilon}}.
+\]
+
+This encourages new routes *within the current arena* without permanently declaring useful strategic motifs boring. An inverse-dynamics or action-prediction objective can bias the embedding toward controllable changes, as in NGU-style exploration.
+
+For Curvytron, inverse dynamics should account for simultaneous play. Predict our action from own pose change and local geometry, and either condition on the opponent action or prevent opponent-only motion from dominating the embedding.
+
+### 3. Model-disagreement exploration
+
+Train an ensemble of joint-action dynamics or outcome models \(g_j\). A disagreement score can be:
+
+\[
+u_t
+=
+\operatorname{Var}_{j}
+\left[g_j(z_t,a_t,a_t^-)\right].
+\]
+
+Prefer disagreement over controllable quantities:
+
+- head pose;
+- collision probability;
+- trail occupancy;
+- reachable-area change;
+- reward/outcome logits.
+
+Use this uncertainty primarily for:
+
+- selecting replay samples;
+- choosing simulator start states;
+- deciding when to invoke planning;
+- collecting targeted exploratory rollouts;
+- rejecting untrustworthy long-horizon plans.
+
+Directly rewarding raw disagreement can recreate a noisy-TV problem when the opponent or chance process is unpredictable. Joint-action conditioning and an explicit stochastic model help separate epistemic uncertainty from aleatoric randomness.
+
+For explorer-conditioned actors, the strategic planner can seek *expected future* epistemic uncertainty rather than paying novelty only after arrival:
+
+\[
+J_{\text{explore}}(U)
+=
+J_E(U)
++
+\beta
+\sum_{h=0}^{H-1}\Gamma^h u(z_h).
+\]
+
+This is a Plan2Explore-like use of the world model. Keep it restricted to explorer policies; the production policy should plan with \(\beta=0\).
+
+### 4. A resettable hard-state archive
+
+The simulator can save exact reachable snapshots. Archive states that are:
+
+- strategically novel;
+- high leverage;
+- high value/model disagreement;
+- near an enclosure transition;
+- frequently mishandled;
+- rare under the current league.
+
+Sample archived states as curriculum starts, preserving:
+
+- all trails and trail ages;
+- player poses and active effects;
+- gap/bonus timers;
+- RNG state;
+- score and round phase;
+- recurrent burn-in context or enough state to reconstruct it.
+
+This is a Curvytron-friendly version of “first return, then explore.” It avoids repeatedly replaying a long easy prefix merely to practice one rare strategic decision.
+
+The archive must contain only actually reachable states. Always validate improvements from full-game starts because an agent can overfit to an artificial reset distribution.
+
+### 5. Optional lifelong RND as a gate
+
+If episodic novelty repeatedly rewards the same globally familiar states, combine it with a bounded lifelong term:
+
+\[
+r_t^I
+=
+r_t^{\text{epi}}
+\left(1+\eta\,\operatorname{clip}(\tilde r_t^{\text{RND}},0,L)\right).
+\]
+
+This is preferable to simply adding two unbounded novelty bonuses. RND says whether a state is globally unfamiliar; episodic novelty says whether the current route is new within this round.
+
+### 11.6 A cheaper baseline than RND
+
+Before adding two neural networks, try a count over a coarse strategic descriptor:
+
+\[
+d(s)=
+(\text{position bin},
+\text{heading bin},
+\text{reachable-area bin},
+\text{corridor-count bin},
+\text{opponent-relative bin},
+\text{enclosure-risk bin}).
+\]
+
+Then:
+
+\[
+r_t^{\text{count}}
+=
+\frac{1}{\sqrt{N_{\text{episode}}(d(s_t))+1}}.
+\]
+
+Use a hash or random projection if the descriptor is large. This is:
+
+- cheap enough to implement in the C environment;
+- easy to inspect;
+- naturally episodic;
+- less likely to reward irrelevant pixel novelty;
+- a strong test of whether exploration is actually the bottleneck.
+
+If this does not improve downstream extrinsic strength, a more complex RND module probably will not fix the underlying problem.
+
+### 11.7 Exploration-conditioned policies
+
+Do not force one policy to use one fixed intrinsic weight. Condition the policy and critics on an exploration setting:
+
+\[
+\pi(a\mid s,\beta),
+\qquad
+V_E(s,\beta),
+\qquad
+V_I(s,\beta).
+\]
+
+Run a family ranging from \(\beta=0\) to strongly exploratory. The exact weights must be selected after reward normalization; raw constants are not portable.
+
+Practical rules:
+
+- keep a large fraction of actors at \(\beta=0\);
+- sample exploratory settings independently for the two players;
+- do not use intrinsic reward in Elo or match outcomes;
+- distill discoveries into the \(\beta=0\) policy through shared representation, imitation, replay, or curriculum;
+- adapt actor allocation based on external learning progress, not intrinsic return.
+
+This is closer to the NGU/Agent57 idea of learning a family of exploration policies than to globally annealing one coefficient.
+
+### 11.8 Techniques that are less suitable
+
+### Raw forward-prediction curiosity
+
+Opponent actions, gap randomness, and bonuses make prediction error high for reasons unrelated to useful novelty. Without careful stochastic modeling, the policy may seek unpredictability.
+
+### RIDE-style raw impact reward
+
+Every Curvytron step extends or changes a trail. Rewarding representational change can therefore pay the agent simply for drawing more unusual geometry, even when it reduces winning chances.
+
+### Pure state-entropy maximization
+
+RE3-style entropy is simple and stable, but maximum state entropy is not the game objective. It is a useful ablation or pretraining signal, especially on a canonical strategic embedding, not a replacement for competitive self-play.
+
+### Symmetric intrinsic self-play
+
+Giving both copies of the same policy the same novelty objective can create correlated loops and implicit collusion. Randomize exploration settings and use frozen or historical opponents for explorer actors.
+
+### 11.9 PufferLib implementation sketch
+
+A clean PPO integration needs the policy to output:
+
+```text
+policy logits
+extrinsic value V_E
+intrinsic value V_I
+optional strategic embedding e(s)
+```
+
+Rollout storage needs:
+
+```text
+extrinsic reward
+intrinsic reward
+old V_E and V_I
+beta/exploration-policy id
+per-environment episodic memory state
+```
+
+Training computes separate advantages and then combines them for the policy loss. Predictor loss is optimized separately:
+
+\[
+\mathcal{L}
+=
+\mathcal{L}_{\text{PPO}}
++c_E\mathcal{L}_{V_E}
++c_I\mathcal{L}_{V_I}
++c_R\mathcal{L}_{\text{RND}}
+-c_H\mathcal{H}.
+\]
+
+For the native PufferLib backend, preserve its static-memory design:
+
+- allocate all novelty buffers at initialization;
+- use fixed embedding and memory sizes;
+- avoid dynamic k-nearest-neighbor structures in Python;
+- use a fixed-size episodic reservoir or hashed count table;
+- include the exploration-policy ID in the observation;
+- capture predictor/value work in stable CUDA graphs only after shapes are fixed.
+
+The lowest-risk first implementation is a C-side strategic count bonus. The next is a GPU RND predictor computed in batches after rollout collection. Online neural episodic kNN across thousands of environments is the most systems-complex option and should come last.
+
+### 11.10 Exploration ablation matrix
+
+Run at least:
+
+| Variant | League | Episodic novelty | Lifelong novelty | Model uncertainty | Archive |
+|---|---:|---:|---:|---:|---:|
+| A | latest only | no | no | no | no |
+| B | historical | no | no | no | no |
+| C | historical | strategic count | no | no | no |
+| D | historical | kNN | no | no | no |
+| E | historical | no | RND | no | no |
+| F | historical | kNN | bounded RND | no | no |
+| G | historical | kNN | optional | ensemble | no |
+| H | historical | kNN | optional | ensemble | yes |
+
+Measure:
+
+- held-out win rate and payoff matrix;
+- exploitability proxy against trained best responses;
+- strategic descriptor coverage;
+- diversity of trajectories and options;
+- terminal outcome calibration;
+- model error in rare states;
+- early-suicide and passive-loop rates;
+- fraction of policy advantage coming from intrinsic reward;
+- strength of the \(\beta=0\) policy after intrinsic rewards are disabled.
+
+The go/no-go criterion is **external competitive strength**, not novelty score.
+
+---
+
+## 12. Atari-style approaches: what transfers and what does not
 
 ### What transfers
 
@@ -693,7 +1393,7 @@ Potentially more GPU-friendly than MuZero because actor/value learning occurs th
 
 ---
 
-## 12. A clean MuZero branch
+## 13. A clean MuZero branch
 
 MuZero is justified only if one or more of these are true:
 
@@ -705,7 +1405,7 @@ MuZero is justified only if one or more of these are true:
 
 It is **not** automatically justified merely because Curvytron is a game. The environment rules are known, and collision errors are catastrophic.
 
-### 12.1 Model
+### 13.1 Model
 
 Use:
 
@@ -728,7 +1428,7 @@ If chance is hidden, either:
 - sample deterministic realizations;
 - or defer random features.
 
-### 12.2 Losses
+### 13.2 Losses
 
 A useful loss is:
 
@@ -748,7 +1448,7 @@ c_x\mathcal{L}_{\text{geometry}}.
 
 Geometry auxiliaries should include collision, occupancy, and perhaps future head position. MuZero's value-equivalent latent is not required to reconstruct the world; for this game, some grounding is valuable because search can exploit tiny geometric model errors.
 
-### 12.3 Search
+### 13.3 Search
 
 Use Gumbel MuZero before classic PUCT when the budget is small.
 
@@ -763,7 +1463,7 @@ Starting research sweep:
 
 Do not assume more simulations are better. Model exploitation can make additional search worse.
 
-### 12.4 Simultaneous-node policy
+### 13.4 Simultaneous-node policy
 
 Ordinary PUCT chooses one action as though the agent controls the transition. A simultaneous two-player node is a matrix game with estimates:
 
@@ -782,7 +1482,7 @@ Possible practical solvers:
 
 Theoretical work on simultaneous-move MCTS shows that naive selection is not automatically equivalent to equilibrium play. Start with opponent-policy expectation for engineering simplicity, then evaluate exploitability against best-response-style opponents.
 
-### 12.5 Reanalysis and distillation
+### 13.5 Reanalysis and distillation
 
 Do not require online search for every actor state forever.
 
@@ -796,7 +1496,7 @@ This is often a better use of search compute than blocking every real-time actio
 
 ---
 
-## 13. PPO, imitation, and search must not be mixed incorrectly
+## 14. PPO, imitation, and search must not be mixed incorrectly
 
 There are three clean training contracts.
 
@@ -831,7 +1531,7 @@ A safe hybrid is:
 
 ---
 
-## 14. Recommended implementation phases
+## 15. Recommended implementation phases
 
 ## Phase 0: rules and simulator
 
@@ -877,26 +1577,43 @@ Do not proceed until the agent reliably:
 - generalizes across spawn seeds;
 - remains symmetric across player slots.
 
-## Phase 2: strategic learning
+## Phase 2: strategic learning and diagnosis
 
 Add:
 
 - reachability and collision auxiliary heads;
 - opponent intent prediction;
-- multi-horizon value/outcome targets;
-- stronger league;
-- strategic metrics;
-- curriculum for random gaps and bonuses.
+- multi-horizon survival and terminal-outcome heads;
+- stronger historical league and exploiters;
+- long-horizon scenario benchmarks;
+- strategic coverage and self-play cycling diagnostics.
 
-## Phase 3: dense planner
+Do not add intrinsic reward until these measurements distinguish under-exploration from delayed credit or opponent overfitting.
+
+## Phase 2B: exploration experiments
+
+In this order:
+
+1. strategic episodic counts;
+2. resettable archive of reachable hard states;
+3. model-ensemble disagreement for data selection and planning triggers;
+4. NGU-like episodic kNN;
+5. bounded RND as an optional lifelong gate.
+
+Keep a \(\beta=0\) policy and evaluate only external outcomes.
+
+## Phase 3: hierarchical dense planner
 
 Implement batched macro-action beam/CEM/MPC using:
 
-- exact simulator if practical;
-- otherwise a jointly conditioned learned model;
+- interpretable options or waypoint goals;
+- an exact short-horizon simulator;
+- multi-timescale skip models for longer horizons;
 - terminal learned value;
-- sampled opponent sequences;
-- fixed-shape GPU batches.
+- sampled historical and current opponent sequences;
+- risk-adjusted scoring;
+- fixed-shape GPU batches;
+- warm starts and event-triggered replanning.
 
 ## Phase 4: Gumbel MuZero experiment
 
@@ -922,7 +1639,7 @@ Only after Phase 3 provides a fair planning baseline:
 
 ---
 
-## 15. Decision gates
+## 16. Decision gates
 
 A planner should remain in the system only if it passes all of these.
 
@@ -965,6 +1682,18 @@ Search should not collapse against:
 - player-slot swaps;
 - long loops and near-ties.
 
+### Exploration gate
+
+An intrinsic mechanism remains only if it improves the externally evaluated \(\beta=0\) policy across held-out opponents. Reject it when it primarily increases:
+
+- novelty return;
+- trajectory entropy;
+- unusual death states;
+- collusive behavior;
+- model disagreement caused by opponent or chance noise.
+
+Require ablations at matched environment steps and wall-clock time. Also measure performance after intrinsic reward is turned off; otherwise the policy may depend on a training-only objective.
+
 ### Systems gate
 
 The search hot path should have:
@@ -981,43 +1710,50 @@ If online search fails the compute gate but improves targets, retain it as an of
 
 ---
 
-## 16. Recommended default architecture
+## 17. Recommended default architecture
 
 ```text
-                    ┌──────────────────────────────┐
+                           TRAINING POPULATION
+      ┌──────────────────────────────────────────────────────────┐
+      │ β=0 main policy │ historical league │ explorer policies │
+      │ exploiters      │ scripted bots     │ archived states   │
+      └───────────────────────────┬──────────────────────────────┘
+                                  │
+                    ┌─────────────▼────────────────┐
 60 Hz fixed physics │ Exact deterministic C env    │
                     │ seeded RNG, two-phase update │
-                    └──────────────┬───────────────┘
-                                   │ every 2–6 ticks
-                    ┌──────────────▼───────────────┐
+                    └─────────────┬────────────────┘
+                                  │ every 2–6 ticks
+                    ┌─────────────▼────────────────┐
                     │ Multiscale recurrent policy  │
-                    │ global map + local crop      │
-                    │ vectors + MinGRU/GRU         │
+                    │ global + local + strategic   │
+                    │ policy, V∞, Vh, uncertainty  │
                     └───────┬──────────────┬───────┘
                             │              │
-                    fast action      value/uncertainty
+                    fast primitive   1–3 Hz or event trigger
                             │              │
-                            │     periodic or critical
-                            │              ▼
-                            │    ┌──────────────────────┐
-                            │    │ Dense macro planner  │
-                            │    │ beam/CEM/MPC first   │
-                            │    │ joint opponent model │
-                            │    └──────────┬───────────┘
-                            └───────────────▼
-                                    chosen control
+                 ┌──────────▼───┐   ┌──────▼──────────────────┐
+                 │ Exact safety │   │ Hierarchical planner     │
+                 │ short rollout│   │ options/waypoints        │
+                 └──────────┬───┘   │ beam/CEM/Gumbel/MCTS    │
+                            │       │ joint opponent model     │
+                            │       └──────────┬──────────────┘
+                            └──────────────────▼
+                                      chosen control
 
-Training:
-Puffer PPO self-play → checkpoint league → strategic auxiliaries
-                         │
-                         └→ selected-state reanalysis/planner distillation
+Learning loops:
+external PPO/self-play ───────────────→ β=0 competitive policy
+strategic auxiliaries ────────────────→ long-horizon representation
+ensemble disagreement/archive ────────→ targeted data and scenarios
+offline planner reanalysis ───────────→ imitation/value targets
+optional episodic novelty/RND ────────→ explorer-conditioned policies
 ```
 
-The MuZero branch can replace the dense planner later, but it should be compared against this architecture rather than assumed to be the destination.
+The MuZero branch can replace the strategic planner later, but it should be compared against this architecture rather than assumed to be the destination. The default exploitative policy remains defined by external game outcomes; exploration modules are training infrastructure, not game rules.
 
 ---
 
-## 17. Bottom line
+## 18. Bottom line
 
 The likely correct answer for Curvytron is **not pure PPO, pure MCTS, or a direct copy of Atari MuZero**.
 
@@ -1033,9 +1769,15 @@ It is:
 - dense accelerator-friendly planning where possible;
 - Gumbel MuZero only after the simpler planner and model-free baseline are strong;
 - reanalysis and imitation to amortize planning;
+- opponent-population exploration before raw state novelty;
+- episodic strategic novelty and hard-state archives when coverage is deficient;
+- model disagreement for targeted data and planning triggers;
+- RND only as a bounded, measured auxiliary;
 - hard profiling and ablation gates.
 
-The most likely current mistake is trying to make an inherently sequential, irregular, raw-timestep tree look like a dense GPU workload. First remove true synchronization bugs. Then test whether the remaining sequential cost is fundamental. If it is, change the planner—not merely the kernel.
+The most likely current planning mistake is trying to make an inherently sequential, irregular, raw-timestep tree look like a dense GPU workload. First remove true synchronization bugs. Then test whether the remaining sequential cost is fundamental. If it is, change the planner—not merely the kernel.
+
+The most likely exploration mistake would be assuming that sparse terminal reward automatically implies a need for RND. In Curvytron, failure is at least as likely to come from delayed credit, weak strategic abstractions, or self-play overfitting. Add novelty only after diagnosing those alternatives, and keep the final objective anchored to competitive outcomes.
 
 ---
 
@@ -1050,3 +1792,16 @@ The most likely current mistake is trying to make an inherently sequential, irre
 - [PufferLib documentation](https://puffer.ai/docs.html)
 - [Recurrent Experience Replay in Distributed Reinforcement Learning](https://openreview.net/forum?id=r1lyTjAqYX)
 - [DreamerV3](https://arxiv.org/abs/2301.04104)
+- [Exploration by Random Network Distillation](https://arxiv.org/abs/1810.12894)
+- [Never Give Up: Learning Directed Exploration Strategies](https://arxiv.org/abs/2002.06038)
+- [Agent57: Outperforming the Atari Human Benchmark](https://arxiv.org/abs/2003.13350)
+- [Episodic Curiosity through Reachability](https://arxiv.org/abs/1810.02274)
+- [Planning to Explore via Self-Supervised World Models](https://arxiv.org/abs/2005.05960)
+- [State Entropy Maximization with Random Encoders for Efficient Exploration](https://arxiv.org/abs/2102.09430)
+- [RIDE: Rewarding Impact-Driven Exploration](https://arxiv.org/abs/2002.12292)
+- [First Return, Then Explore](https://arxiv.org/abs/2004.12919)
+- [Deep Hierarchical Planning from Pixels](https://arxiv.org/abs/2206.04114)
+- [The Option-Critic Architecture](https://arxiv.org/abs/1609.05140)
+- [Data-Efficient Hierarchical Reinforcement Learning](https://arxiv.org/abs/1805.08296)
+- [A Unified Game-Theoretic Approach to Multiagent Reinforcement Learning](https://arxiv.org/abs/1711.00832)
+- [PufferLib 4.0 Torch backend](https://github.com/PufferAI/PufferLib/blob/4.0/pufferlib/torch_pufferl.py)
