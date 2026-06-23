@@ -28,6 +28,10 @@ Use `PRELAUNCH_REPAIR_2026-06-23.md` as the current artifact checklist for the
 repaired non-RND family. Use `PRELAUNCH_AUDIT_2026-06-23.md` as the record of
 why the original exact-ref family remains blocked.
 
+Use `CHECKPOINT_ANCHOR_POLICY.md` before launching medium or long rows. The
+current repaired non-RND manifests are Modal-ref-audited but top4nz-seeded, not
+historical-best-seeded.
+
 ## Packet Audit
 
 The current repaired packet is checked by:
@@ -280,6 +284,8 @@ Do not promote any lane from `manifest-ready` to `launched` until:
   runtime tier
 - the launch note says whether this is a short `<=2h` breadth sweep, a
   `2h-8h` run capped at 40 rows, or an `8h+` run capped at 10-20 rows
+- the launch note says whether non-RND rows use the current top4nz repair seed
+  or regenerated historical best-known seed
 - all exact-ref non-RND manifests selected for launch pass a Modal existence
   audit, not just syntax
 - `scripts/audit_curvytron_wave_a_launch_packet.py` passes with

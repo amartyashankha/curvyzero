@@ -15,6 +15,11 @@ details in:
   latest no-launch packet audit result
 - `artifacts/local/curvytron_wave_a_capacity_snapshot_20260623a.json` for the
   latest no-launch Modal capacity proxy result
+- `artifacts/local/curvytron_checkpoint_anchor_policy_audit_20260623a.json`
+  for the current best-known-checkpoint seed audit
+- `artifacts/local/curvytron_wave_a_staged_launch_mid36_20260623a.json` and
+  `artifacts/local/curvytron_wave_a_staged_launch_long19_low_weight_replicated_20260623a.json`
+  for staged launch command plans
 - `EXPERIMENT_PLAN.md` and `AGGRESSIVE_REORIENTATION.md` for lane intent
 - `RND_LANE.md` and `STOCK_PATH_RND_REORIENTATION.md` for RND-specific rules
 - `MONITORING_SIGNALS.md` and `CONTINGENCY_PLANS.md` for readout and response
@@ -49,6 +54,14 @@ The original `reward-static-exactref-*`, `reward-lhpre-repNN-*`, and
 historical/ref-blocked by `PRELAUNCH_AUDIT_2026-06-23.md`. Use the `top4nz`
 repair manifests in `PRELAUNCH_REPAIR_2026-06-23.md` for current launch review.
 
+Checkpoint-anchor caveat: the repaired top4nz non-RND manifests currently use
+the top4nz rank1 sparse `iteration_40000` checkpoint as their initial policy
+seed. The historical best-known seed remains the r18fresh plus-outcome
+`iteration_180000` checkpoint. The current anchor audit is `ok=true` but warns
+about this difference. Medium/long launch approval must explicitly choose
+between accepting the launchable repair seed and regenerating with the
+historical best-known seed.
+
 Non-RND coverage is required. The static top4nz exact-ref reward isolate is the
 prepared non-RND launch partner for the RND sweep. The long-horizon replicas and
 cadence/support panel are also prepared as row-filtered local manifests, not as
@@ -73,6 +86,10 @@ Required before launch:
 - fresh `scripts/audit_curvytron_wave_a_launch_packet.py` pass
 - fresh `scripts/audit_curvytron_wave_a_capacity.py` pass and active H100
   capacity decision
+- fresh `scripts/audit_curvytron_checkpoint_anchor_policy.py` pass and an
+  explicit seed-anchor decision
+- generated `scripts/plan_curvytron_wave_a_staged_launch.py` profile for the
+  intended runtime tier
 - intended runtime tier:
   - `<=2h`: broad 90-row packet is allowed if capacity is explicitly clear;
     more than 100 simultaneous H100s needs explicit operator override and a

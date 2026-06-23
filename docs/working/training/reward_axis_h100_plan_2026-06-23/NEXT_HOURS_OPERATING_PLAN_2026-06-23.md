@@ -25,6 +25,7 @@ Primary references:
 - `REWARD_INVENTORY.md` for what each reward arm means.
 - `RND_LANE.md` and `STOCK_PATH_RND_REORIENTATION.md` for RND scope.
 - `MONITORING_SIGNALS.md` for readout gates.
+- `CHECKPOINT_ANCHOR_POLICY.md` for best-known checkpoint seed policy.
 - `CONTINGENCY_PLANS.md` for response ladders.
 - `LAUNCH_QUEUE.md` and `WAVE_A_LAUNCH_REVIEW_2026-06-23.md` for launch state.
 
@@ -98,13 +99,20 @@ Interpretation notes:
   deserve fixed-opponent bridge experiments.
 - Exact launch commands must be written from manifest paths and `--row-id`
   filters before approval; do not reconstruct row ids from memory.
+- Current generated profile artifacts:
+  `artifacts/local/curvytron_wave_a_staged_launch_mid36_20260623a.json`,
+  `artifacts/local/curvytron_wave_a_staged_launch_long19_low_weight_replicated_20260623a.json`,
+  and `artifacts/local/curvytron_wave_a_staged_launch_short90_20260623a.json`.
 
 ## Time-Scale Plan
 
 ### 5 Minutes
 
 - Rerun or inspect the latest packet audit and capacity proxy.
+- Rerun or inspect the checkpoint-anchor audit.
 - Choose the intended runtime tier before any launch approval request.
+- Choose historical best-known seed versus current top4nz repair seed for
+  non-RND rows.
 - Confirm that the next command set includes non-RND controls or that healthy
   non-RND controls already exist.
 - Record the proposed profile name and row count in `LAUNCH_QUEUE.md` or a
@@ -115,7 +123,8 @@ Interpretation notes:
 - If launch is being requested, paste the exact command set, output paths, row
   count, timeout, and profile name into the approval note.
 - If launch is not being requested, prepare the staged row subset for
-  `mid36` or `long19_low_weight_replicated`.
+  `mid36` or `long19_low_weight_replicated` using
+  `scripts/plan_curvytron_wave_a_staged_launch.py`.
 - Confirm first status command and health note path before the first
   FunctionCall is submitted.
 

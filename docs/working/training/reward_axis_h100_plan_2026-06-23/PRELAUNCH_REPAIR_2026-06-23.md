@@ -21,6 +21,13 @@ not a stable production leaderboard. The source was derived from the bounded
 already documented as an exact frozen-ref source rather than launch-quality
 leaderboard truth.
 
+Important seed caveat: these repaired manifests use the top4nz rank1 sparse
+`iteration_40000` checkpoint as their initial policy seed. The historical
+best-known seed from the old r18fresh tournament snapshot is the plus-outcome
+`iteration_180000` checkpoint recorded in `CHECKPOINT_ANCHOR_POLICY.md`. Launch
+approval must decide whether the current repair seed is acceptable or whether
+the manifests should be regenerated with the historical best-known seed.
+
 ## Source Ref Evidence
 
 Refs-file Modal audit:
@@ -138,6 +145,7 @@ This is still not a launch. Remaining gates:
 
 - explicit human approval for the exact launch command and row count
 - fresh active H100 capacity check and capacity proxy review
+- fresh checkpoint-anchor policy audit and seed decision
 - runtime-tier choice: broad `<=2h`, at most 40 rows for `2h-8h`, and 10-20
   rows for `8h+`
 - stage below the capacity proxy room or wait when active task type is ambiguous

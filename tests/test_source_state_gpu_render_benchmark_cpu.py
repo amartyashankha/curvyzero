@@ -34,6 +34,50 @@ def _minimal_production_state():
     }
 
 
+def _direct_bonus_symbol_state(*, bonus_types):
+    bonus_types = np.asarray(bonus_types, dtype=np.int32)
+    batch_size = int(bonus_types.shape[0])
+    player_count = 2
+    trail_slots = 1
+    bonus_count = 1
+    target_size = 64
+    map_size = 704.0
+    center = map_size / 2.0
+    state = {
+        "trail_x": np.zeros((batch_size, trail_slots), dtype=np.float32),
+        "trail_y": np.zeros((batch_size, trail_slots), dtype=np.float32),
+        "trail_radius": np.zeros((batch_size, trail_slots), dtype=np.float32),
+        "trail_owner": np.zeros((batch_size, trail_slots), dtype=np.int32),
+        "trail_active": np.zeros((batch_size, trail_slots), dtype=np.uint8),
+        "trail_break_before": np.zeros((batch_size, trail_slots), dtype=np.uint8),
+        "trail_write_cursor": np.zeros((batch_size,), dtype=np.int32),
+        "head_x": np.zeros((batch_size, player_count), dtype=np.float32),
+        "head_y": np.zeros((batch_size, player_count), dtype=np.float32),
+        "head_radius": np.full((batch_size, player_count), 7.0, dtype=np.float32),
+        "head_alive": np.zeros((batch_size, player_count), dtype=np.uint8),
+        "bonus_x": np.full((batch_size, bonus_count), center, dtype=np.float32),
+        "bonus_y": np.full((batch_size, bonus_count), center, dtype=np.float32),
+        "bonus_radius": np.full((batch_size, bonus_count), 7.0, dtype=np.float32),
+        "bonus_active": np.ones((batch_size, bonus_count), dtype=np.uint8),
+        "bonus_type": bonus_types.reshape(batch_size, bonus_count).astype(np.int32),
+        "avatar_color": np.tile(np.array([[0, 1]], dtype=np.int32), (batch_size, 1)),
+    }
+    config = bench._validate_config(
+        {
+            "batch_size": batch_size,
+            "player_count": player_count,
+            "trail_slots": trail_slots,
+            "bonus_count": bonus_count,
+            "target_size": target_size,
+            "map_size": map_size,
+            "controlled_player": 0,
+            "render_surface": bench.RENDER_SURFACE_DIRECT_GRAY64,
+            "trail_composition": bench.TRAIL_COMPOSITION_PRIORITY_BUFFER,
+        }
+    )
+    return state, config
+
+
 def test_production_to_benchmark_masks_visual_trail_active_slots_past_cursor():
     state = bench._production_to_benchmark_source_state(
         np=np,
@@ -255,6 +299,57 @@ def test_owner_ordered_compact_adversarial_fixture_matches_cpu_oracle_without_gp
     np.testing.assert_array_equal(got, expected)
 
 
+def test_both_view_config_preserves_two_controlled_view_cpu_oracle_order():
+    config = bench._validate_config(
+        {
+            "state_source": bench.STATE_SOURCE_ADVERSARIAL_FIXTURE,
+            "batch_size": 4,
+            "player_count": 3,
+            "trail_slots": 10,
+            "bonus_count": 3,
+            "controlled_player": 0,
+            "render_surface": bench.RENDER_SURFACE_BLOCK_704_GRAY64,
+            "trail_composition": bench.TRAIL_COMPOSITION_OWNER_ORDERED_COMPACT,
+            "render_views": bench.RENDER_VIEWS_BOTH,
+        }
+    )
+    production = bench._adversarial_fixture_production_state(np=np, config=config)
+    p0 = bench._cpu_render_original_production_canvas_gray64(
+        np=np,
+        production_state=production,
+        config={**config, "controlled_player": 0},
+    )
+    p1 = bench._cpu_render_original_production_canvas_gray64(
+        np=np,
+        production_state=production,
+        config={**config, "controlled_player": 1},
+    )
+
+    both = np.concatenate([p0, p1], axis=0)
+
+    assert config["render_views"] == bench.RENDER_VIEWS_BOTH
+    assert both.shape == (8, 1, 64, 64)
+    np.testing.assert_array_equal(both[:4], p0)
+    np.testing.assert_array_equal(both[4:], p1)
+    assert int(np.count_nonzero(both[:4] != both[4:])) > 0
+
+
+def test_render_views_rejects_unknown_value():
+    with pytest.raises(ValueError, match="render_views"):
+        bench._validate_config({"render_views": "many"})
+
+
+def test_validate_config_accepts_float64_geometry_dtype():
+    config = bench._validate_config({"geometry_dtype": bench.GEOMETRY_DTYPE_FLOAT64})
+
+    assert config["geometry_dtype"] == bench.GEOMETRY_DTYPE_FLOAT64
+
+
+def test_validate_config_rejects_unknown_geometry_dtype():
+    with pytest.raises(ValueError, match="geometry_dtype"):
+        bench._validate_config({"geometry_dtype": "float16"})
+
+
 def test_adversarial_fixture_cpu_oracle_renders_both_controlled_views():
     base_config = {
         "state_source": bench.STATE_SOURCE_ADVERSARIAL_FIXTURE,
@@ -328,6 +423,221 @@ def test_adversarial_fixture_jax_parity_when_jax_is_available(trail_composition)
         np=np,
         production_state=production,
         config=config,
+    )
+
+    np.testing.assert_array_equal(got, expected)
+
+
+@pytest.mark.parametrize(
+    "trail_composition",
+    [
+        bench.TRAIL_COMPOSITION_PRIORITY_BUFFER,
+        bench.TRAIL_COMPOSITION_OWNER_ORDERED_COMPACT,
+    ],
+)
+def test_adversarial_fixture_jax_two_view_parity_when_jax_is_available(trail_composition):
+    jax = pytest.importorskip("jax")
+    import jax.numpy as jnp
+
+    config = bench._validate_config(
+        {
+            "state_source": bench.STATE_SOURCE_ADVERSARIAL_FIXTURE,
+            "batch_size": 4,
+            "player_count": 3,
+            "trail_slots": 10,
+            "bonus_count": 3,
+            "controlled_player": 0,
+            "render_surface": bench.RENDER_SURFACE_BLOCK_704_GRAY64,
+            "trail_composition": trail_composition,
+            "render_views": bench.RENDER_VIEWS_BOTH,
+            "verify_rows": 4,
+        }
+    )
+    state, production = bench._source_state_and_reference_for_benchmark(
+        np=np,
+        config=config,
+    )
+    assert production is not None
+    render_fn = bench._make_jax_two_view_render_fn(
+        jax=jax,
+        jnp=jnp,
+        config=config,
+        render_mode_id=bench.RENDER_MODE_IDS[bench.RENDER_MODE_BROWSER_LINES],
+        bonus_render_mode_id=bench.BONUS_RENDER_MODE_IDS[bench.BONUS_RENDER_MODE_SIMPLE_SYMBOLS],
+    )
+
+    got = np.asarray(render_fn(bench._copy_state_to_device(jax=jax, state=state)))
+    p0 = bench._cpu_render_original_production_canvas_gray64(
+        np=np,
+        production_state=production,
+        config={**config, "controlled_player": 0},
+    )
+    p1 = bench._cpu_render_original_production_canvas_gray64(
+        np=np,
+        production_state=production,
+        config={**config, "controlled_player": 1},
+    )
+    expected = np.concatenate([p0, p1], axis=0)
+
+    assert got.shape == (8, 1, 64, 64)
+    np.testing.assert_array_equal(got, expected)
+
+
+def test_direct_gray64_jax_two_view_parity_when_jax_is_available():
+    jax = pytest.importorskip("jax")
+    import jax.numpy as jnp
+
+    config = bench._validate_config(
+        {
+            "state_source": bench.STATE_SOURCE_ADVERSARIAL_FIXTURE,
+            "batch_size": 4,
+            "player_count": 3,
+            "trail_slots": 10,
+            "bonus_count": 3,
+            "controlled_player": 0,
+            "render_surface": bench.RENDER_SURFACE_DIRECT_GRAY64,
+            "trail_composition": bench.TRAIL_COMPOSITION_PRIORITY_BUFFER,
+            "render_views": bench.RENDER_VIEWS_BOTH,
+            "verify_rows": 4,
+        }
+    )
+    state, _production = bench._source_state_and_reference_for_benchmark(
+        np=np,
+        config=config,
+    )
+    render_fn = bench._make_jax_two_view_render_fn(
+        jax=jax,
+        jnp=jnp,
+        config=config,
+        render_mode_id=bench.RENDER_MODE_IDS[bench.RENDER_MODE_BROWSER_LINES],
+        bonus_render_mode_id=bench.BONUS_RENDER_MODE_IDS[bench.BONUS_RENDER_MODE_SIMPLE_SYMBOLS],
+    )
+
+    got = np.asarray(render_fn(bench._copy_state_to_device(jax=jax, state=state)))
+    p0 = bench._cpu_render_direct_gray64(
+        np=np,
+        state=state,
+        config={**config, "controlled_player": 0},
+        render_mode_id=bench.RENDER_MODE_IDS[bench.RENDER_MODE_BROWSER_LINES],
+        bonus_render_mode_id=bench.BONUS_RENDER_MODE_IDS[bench.BONUS_RENDER_MODE_SIMPLE_SYMBOLS],
+        player_luma_by_index=bench._player_luma_by_index({**config, "controlled_player": 0}),
+    )
+    p1 = bench._cpu_render_direct_gray64(
+        np=np,
+        state=state,
+        config={**config, "controlled_player": 1},
+        render_mode_id=bench.RENDER_MODE_IDS[bench.RENDER_MODE_BROWSER_LINES],
+        bonus_render_mode_id=bench.BONUS_RENDER_MODE_IDS[bench.BONUS_RENDER_MODE_SIMPLE_SYMBOLS],
+        player_luma_by_index=bench._player_luma_by_index({**config, "controlled_player": 1}),
+    )
+    expected = np.concatenate([p0, p1], axis=0)
+
+    assert got.shape == (8, 1, 64, 64)
+    np.testing.assert_array_equal(got, expected)
+
+
+def test_direct_gray64_simple_symbols_keep_all_twelve_bonus_identities():
+    state, config = _direct_bonus_symbol_state(bonus_types=np.arange(1, 13))
+
+    got = bench._cpu_render_direct_gray64(
+        np=np,
+        state=state,
+        config=config,
+        render_mode_id=bench.RENDER_MODE_IDS[bench.RENDER_MODE_BROWSER_LINES],
+        bonus_render_mode_id=bench.BONUS_RENDER_MODE_IDS[bench.BONUS_RENDER_MODE_SIMPLE_SYMBOLS],
+        player_luma_by_index=bench._player_luma_by_index(config),
+    )
+
+    frame_patterns = [got[row, 0].tobytes() for row in range(12)]
+    assert len(set(frame_patterns)) == 12
+    non_background_values = set(np.unique(got).tolist()) - {bench.SYNTHETIC_BACKGROUND_LUMA}
+    assert len(non_background_values) >= 5
+
+
+def test_direct_gray64_simple_symbol_bonus_overwrites_underlying_trail():
+    state, config = _direct_bonus_symbol_state(bonus_types=[1])
+    state["trail_active"][0, 0] = 1
+    state["trail_owner"][0, 0] = 1
+    state["trail_x"][0, 0] = state["bonus_x"][0, 0]
+    state["trail_y"][0, 0] = state["bonus_y"][0, 0]
+    state["trail_radius"][0, 0] = 14.0
+    state_without_trail = {key: np.array(value, copy=True) for key, value in state.items()}
+    state_without_trail["trail_active"][0, 0] = 0
+
+    with_trail = bench._cpu_render_direct_gray64(
+        np=np,
+        state=state,
+        config=config,
+        render_mode_id=bench.RENDER_MODE_IDS[bench.RENDER_MODE_BROWSER_LINES],
+        bonus_render_mode_id=bench.BONUS_RENDER_MODE_IDS[bench.BONUS_RENDER_MODE_SIMPLE_SYMBOLS],
+        player_luma_by_index=bench._player_luma_by_index(config),
+    )
+    bonus_only = bench._cpu_render_direct_gray64(
+        np=np,
+        state=state_without_trail,
+        config=config,
+        render_mode_id=bench.RENDER_MODE_IDS[bench.RENDER_MODE_BROWSER_LINES],
+        bonus_render_mode_id=bench.BONUS_RENDER_MODE_IDS[bench.BONUS_RENDER_MODE_SIMPLE_SYMBOLS],
+        player_luma_by_index=bench._player_luma_by_index(config),
+    )
+
+    symbol_mask = bonus_only[0, 0] != bench.SYNTHETIC_BACKGROUND_LUMA
+    assert int(np.count_nonzero(symbol_mask)) > 0
+    np.testing.assert_array_equal(with_trail[0, 0][symbol_mask], bonus_only[0, 0][symbol_mask])
+
+
+def test_direct_gray64_heads_overwrite_bonus_symbols():
+    state, config = _direct_bonus_symbol_state(bonus_types=[9])
+    state["head_alive"][0, 0] = 1
+    state["head_x"][0, 0] = state["bonus_x"][0, 0]
+    state["head_y"][0, 0] = state["bonus_y"][0, 0]
+    state["head_radius"][0, 0] = 14.0
+    state_without_head = {key: np.array(value, copy=True) for key, value in state.items()}
+    state_without_head["head_alive"][0, 0] = 0
+
+    with_head = bench._cpu_render_direct_gray64(
+        np=np,
+        state=state,
+        config=config,
+        render_mode_id=bench.RENDER_MODE_IDS[bench.RENDER_MODE_BROWSER_LINES],
+        bonus_render_mode_id=bench.BONUS_RENDER_MODE_IDS[bench.BONUS_RENDER_MODE_SIMPLE_SYMBOLS],
+        player_luma_by_index=bench._player_luma_by_index(config),
+    )
+    bonus_only = bench._cpu_render_direct_gray64(
+        np=np,
+        state=state_without_head,
+        config=config,
+        render_mode_id=bench.RENDER_MODE_IDS[bench.RENDER_MODE_BROWSER_LINES],
+        bonus_render_mode_id=bench.BONUS_RENDER_MODE_IDS[bench.BONUS_RENDER_MODE_SIMPLE_SYMBOLS],
+        player_luma_by_index=bench._player_luma_by_index(config),
+    )
+
+    bonus_mask = bonus_only[0, 0] != bench.SYNTHETIC_BACKGROUND_LUMA
+    assert int(np.count_nonzero(bonus_mask)) > 0
+    assert int(np.count_nonzero(with_head[0, 0][bonus_mask] == bench.PERSPECTIVE_SELF_LUMA)) > 0
+
+
+def test_direct_gray64_simple_symbols_jax_parity_when_jax_is_available():
+    jax = pytest.importorskip("jax")
+    import jax.numpy as jnp
+
+    state, config = _direct_bonus_symbol_state(bonus_types=np.arange(1, 13))
+    render_fn = bench._make_jax_render_fn(
+        jax=jax,
+        jnp=jnp,
+        config=config,
+        render_mode_id=bench.RENDER_MODE_IDS[bench.RENDER_MODE_BROWSER_LINES],
+        bonus_render_mode_id=bench.BONUS_RENDER_MODE_IDS[bench.BONUS_RENDER_MODE_SIMPLE_SYMBOLS],
+    )
+
+    got = np.asarray(render_fn(bench._copy_state_to_device(jax=jax, state=state)))
+    expected = bench._cpu_render_direct_gray64(
+        np=np,
+        state=state,
+        config=config,
+        render_mode_id=bench.RENDER_MODE_IDS[bench.RENDER_MODE_BROWSER_LINES],
+        bonus_render_mode_id=bench.BONUS_RENDER_MODE_IDS[bench.BONUS_RENDER_MODE_SIMPLE_SYMBOLS],
+        player_luma_by_index=bench._player_luma_by_index(config),
     )
 
     np.testing.assert_array_equal(got, expected)

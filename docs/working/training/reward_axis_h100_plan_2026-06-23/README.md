@@ -43,6 +43,8 @@ checkpoints exist, not the first curriculum source.
   and the simplified no-leaderboard Wave A shape.
 - `NEXT_HOURS_OPERATING_PLAN_2026-06-23.md`: high-level objective, signal
   hierarchy, runtime-tier profiles, and the next 5-minute through 8-hour plan.
+- `CHECKPOINT_ANCHOR_POLICY.md`: how to choose and audit best-known checkpoint
+  seeds versus launchable opponent refs.
 - `LAUNCH_QUEUE.md`: operator-facing queue of manifest-ready and reserved
   Wave A lanes.
 - `WAVE_A_MANIFESTS.md`: prepared local manifests, dry-run results, launch
@@ -57,6 +59,12 @@ checkpoints exist, not the first curriculum source.
   no-launch packet audit for the repaired 90-row Wave A package.
 - `artifacts/local/curvytron_wave_a_capacity_snapshot_20260623a.json`: latest
   no-launch Modal app-list capacity proxy for the Wave A approval gate.
+- `artifacts/local/curvytron_checkpoint_anchor_policy_audit_20260623a.json`:
+  latest no-launch audit of historical-best seed versus current top4nz repair
+  seed usage.
+- `artifacts/local/curvytron_wave_a_staged_launch_mid36_20260623a.json` and
+  `artifacts/local/curvytron_wave_a_staged_launch_long19_low_weight_replicated_20260623a.json`:
+  generated staged launch profiles for the medium and long runtime tiers.
 - `STOCK_PATH_RND_REORIENTATION.md`: why RND belongs on the original
   stock-ish LightZero path now, and why compact remains no-RND.
 - `CONTINGENCY_PLANS.md`: what can go wrong and the fallback ladder by horizon
@@ -85,6 +93,10 @@ checkpoints exist, not the first curriculum source.
   `scripts/audit_curvytron_wave_a_launch_packet.py`
 - Wave A capacity auditor:
   `scripts/audit_curvytron_wave_a_capacity.py`
+- Checkpoint anchor policy auditor:
+  `scripts/audit_curvytron_checkpoint_anchor_policy.py`
+- Wave A staged launch planner:
+  `scripts/plan_curvytron_wave_a_staged_launch.py`
 - RND blank-canvas builder:
   `scripts/build_curvytron_rnd_blank_sweep_manifest.py`
 - CZ26 next-batch builder, later live-refresh lane:
@@ -111,8 +123,10 @@ checkpoints exist, not the first curriculum source.
    `scripts/audit_curvytron_wave_a_capacity.py`; treat
    `operator_capacity_review_required` as a required human capacity decision,
    not as launch approval.
-5. Prefer seeded exact checkpoint refs for static quality rows; keep scratch as
-   an explicit diagnostic.
+5. Run `scripts/audit_curvytron_checkpoint_anchor_policy.py` and explicitly
+   choose whether the run uses the historical r18fresh best-known seed or the
+   current top4nz repair seed. Prefer seeded exact checkpoint refs for static
+   quality rows; keep scratch as an explicit diagnostic.
 6. Defer CZ26-style leaderboard/refresh slices until after static lanes show
    trainable nonzero checkpoints.
 7. Keep RND positive rows separate from compact speed and extrinsic reward

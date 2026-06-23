@@ -35,6 +35,9 @@ healthy stock/meter controls and independent extrinsic reward/cadence lanes.
 - Start with no tournament refresh for the first reward isolate.
 - Prefer exact immutable `iteration_N.pth.tar` checkpoint refs for quality rows.
   Use scratch only for explicit cold-start or RND blank-canvas diagnostics.
+- Always consider starting non-RND quality rows from the best-known checkpoint.
+  If using the current top4nz repair seed instead, record that as an explicit
+  availability/repair decision.
 - Keep `learner_seat_mode=random_per_episode`.
 - Keep background eval and learner metrics on.
 - Use H100 aggressively, but keep reward, RND, cadence/support, and tournament
@@ -119,6 +122,10 @@ Required dry-run checks:
   `uv run python scripts/audit_curvytron_wave_a_launch_packet.py --output artifacts/local/curvytron_wave_a_launch_packet_audit_20260623a.json`
 - capacity proxy:
   `uv run python scripts/audit_curvytron_wave_a_capacity.py --output artifacts/local/curvytron_wave_a_capacity_snapshot_20260623a.json`
+- checkpoint anchor policy:
+  `uv run python scripts/audit_curvytron_checkpoint_anchor_policy.py --output artifacts/local/curvytron_checkpoint_anchor_policy_audit_20260623a.json`
+- staged launch profile:
+  `uv run python scripts/plan_curvytron_wave_a_staged_launch.py --profile mid36 --output artifacts/local/curvytron_wave_a_staged_launch_mid36_20260623a.json`
 - selected rows only
 - `assignment_write_count=0`
 - `refresh_pointer_write_count=0`

@@ -52,6 +52,19 @@ TRAIL_COMPOSITIONS = {
     TRAIL_COMPOSITION_PRIORITY_BUFFER,
     TRAIL_COMPOSITION_OWNER_ORDERED_COMPACT,
 }
+RENDER_VIEWS_SINGLE = "single"
+RENDER_VIEWS_BOTH = "both"
+RENDER_VIEWS_CHOICES = {
+    RENDER_VIEWS_SINGLE,
+    RENDER_VIEWS_BOTH,
+}
+RENDER_OUTPUT_ORDER_VIEW_MAJOR = "view_major"
+GEOMETRY_DTYPE_FLOAT32 = "float32"
+GEOMETRY_DTYPE_FLOAT64 = "float64"
+GEOMETRY_DTYPES = {
+    GEOMETRY_DTYPE_FLOAT32,
+    GEOMETRY_DTYPE_FLOAT64,
+}
 STATE_SOURCE_SYNTHETIC = "synthetic"
 STATE_SOURCE_REAL_ENV_ROLLOUT = "real_env_rollout"
 STATE_SOURCE_ADVERSARIAL_FIXTURE = "adversarial_fixture"
@@ -121,25 +134,41 @@ def _run_source_state_gpu_render_benchmark_safe(config: dict[str, Any]) -> dict[
 
 def _run_source_state_gpu_render_benchmark_impl(config: dict[str, Any]) -> dict[str, Any]:
     import jax
-    import jax.numpy as jnp
     import numpy as np
+
+    if str(config.get("geometry_dtype", GEOMETRY_DTYPE_FLOAT32)) == GEOMETRY_DTYPE_FLOAT64:
+        jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
 
     checked = _validate_config(config)
     if bool(config.get("scalar_component_profile", False)):
         return _run_scalar_component_profile_impl(jax=jax, jnp=jnp, np=np, config=checked)
     render_mode_id = RENDER_MODE_IDS[checked["render_mode"]]
     bonus_render_mode_id = BONUS_RENDER_MODE_IDS[checked["bonus_render_mode"]]
-    state, production_reference_state = _source_state_and_reference_for_benchmark(
+    (
+        state,
+        production_reference_state,
+        setup_timings,
+    ) = _source_state_reference_and_setup_timings_for_benchmark(
         np=np,
         config=checked,
     )
-    render_fn = _make_jax_render_fn(
-        jax=jax,
-        jnp=jnp,
-        config=checked,
-        render_mode_id=render_mode_id,
-        bonus_render_mode_id=bonus_render_mode_id,
-    )
+    if checked["render_views"] == RENDER_VIEWS_BOTH:
+        render_fn = _make_jax_two_view_render_fn(
+            jax=jax,
+            jnp=jnp,
+            config=checked,
+            render_mode_id=render_mode_id,
+            bonus_render_mode_id=bonus_render_mode_id,
+        )
+    else:
+        render_fn = _make_jax_render_fn(
+            jax=jax,
+            jnp=jnp,
+            config=checked,
+            render_mode_id=render_mode_id,
+            bonus_render_mode_id=bonus_render_mode_id,
+        )
 
     timings = _benchmark_render(
         jax=jax,
@@ -188,11 +217,18 @@ def _run_source_state_gpu_render_benchmark_impl(config: dict[str, Any]) -> dict[
             "state_source": checked["state_source"],
             "controlled_player": checked["controlled_player"],
             "output_shape": [
-                checked["batch_size"],
+                checked["batch_size"] * (2 if checked["render_views"] == RENDER_VIEWS_BOTH else 1),
                 1,
                 checked["target_size"],
                 checked["target_size"],
             ],
+            "output_order": (
+                RENDER_OUTPUT_ORDER_VIEW_MAJOR
+                if checked["render_views"] == RENDER_VIEWS_BOTH
+                else "single_view_batch_major"
+            ),
+            "render_views": checked["render_views"],
+            "geometry_dtype": checked["geometry_dtype"],
             "render_surface": checked["render_surface"],
             "direct_gray64": (
                 "samples one point per 64x64 cell; fast economics probe, "
@@ -210,7 +246,9 @@ def _run_source_state_gpu_render_benchmark_impl(config: dict[str, Any]) -> dict[
             ),
             "bonus_render_mode": checked["bonus_render_mode"],
             "perspective": (
-                "controlled-player self/other luma"
+                "two controlled-player views for players 0 and 1"
+                if checked["render_views"] == RENDER_VIEWS_BOTH
+                else "controlled-player self/other luma"
                 if checked["controlled_player"] is not None
                 else "source/player-color luma"
             ),
@@ -227,6 +265,7 @@ def _run_source_state_gpu_render_benchmark_impl(config: dict[str, Any]) -> dict[
                 )
             ),
         },
+        "setup_timings": setup_timings,
         "known_gaps": [
             (
                 "Real env rows are benchmark-only when state_source=real_env_rollout; "
@@ -503,6 +542,8 @@ def _benchmark_render(
     compile_first_render_sec = None
     warmup_runs = int(config["warmup_runs"])
     steady_runs = int(config["steady_runs"])
+    view_count = 2 if config.get("render_views") == RENDER_VIEWS_BOTH else 1
+    frame_count = float(config["batch_size"]) * float(view_count)
 
     for iteration in range(warmup_runs + steady_runs):
         started = time.perf_counter()
@@ -529,28 +570,42 @@ def _benchmark_render(
             end_to_end_times.append(transfer_sec + render_sec + readback_sec)
 
     target_size = int(config["target_size"])
-    pixels = int(config["batch_size"]) * target_size * target_size
+    env_row_count = int(config["batch_size"])
+    frame_count_int = int(env_row_count * view_count)
+    env_row_pixels = env_row_count * target_size * target_size
+    rendered_frame_pixels = frame_count_int * target_size * target_size
     if config["render_surface"] == RENDER_SURFACE_BLOCK_704_GRAY64:
         block = int(config["frame_size"]) // target_size
-        effective_pixel_tests = pixels * block * block * int(config["trail_slots"])
+        effective_pixel_tests = (
+            rendered_frame_pixels
+            * block
+            * block
+            * int(config["trail_slots"])
+        )
     else:
-        effective_pixel_tests = pixels * int(config["trail_slots"])
+        effective_pixel_tests = rendered_frame_pixels * int(config["trail_slots"])
 
     return {
         "warmup_runs": warmup_runs,
         "steady_runs": steady_runs,
-        "pixel_count": pixels,
+        "env_row_count": env_row_count,
+        "frame_count": frame_count_int,
+        "env_row_pixel_count": env_row_pixels,
+        "rendered_frame_pixel_count": rendered_frame_pixels,
+        "pixel_count": rendered_frame_pixels,
         "effective_pixel_trail_slot_tests": effective_pixel_tests,
         "host_to_device_sec_median": _median(transfer_times),
         "compile_first_render_sec": compile_first_render_sec,
         "device_render_sec_median": _median(render_times),
         "device_to_host_sec_median": _median(readback_times) if config["transfer_output"] else None,
         "end_to_end_sec_median": _median(end_to_end_times),
-        "device_frames_per_sec": _rate(float(config["batch_size"]), _median(render_times)),
+        "device_frames_per_sec": _rate(frame_count, _median(render_times)),
         "end_to_end_frames_per_sec": _rate(
-            float(config["batch_size"]),
+            frame_count,
             _median(end_to_end_times),
         ),
+        "env_rows_per_sec": _rate(float(config["batch_size"]), _median(end_to_end_times)),
+        "render_views": str(config.get("render_views", RENDER_VIEWS_SINGLE)),
         "transfer_output_measured": bool(config["transfer_output"]),
     }
 
@@ -734,9 +789,9 @@ def _jax_render_direct_gray64(
         jnp.uint8(SYNTHETIC_INVALID_OWNER_LUMA),
         jnp.take_along_axis(
             player_luma,
-            jnp.mod(owner, player_luma.shape[1])[:, :, None],
+            jnp.mod(owner, player_luma.shape[1]),
             axis=1,
-        )[:, :, 0],
+        ),
     ).astype(jnp.uint8)
     trail_layer = jnp.max(
         jnp.where(hit, trail_value[:, :, None, None], jnp.zeros((), dtype=jnp.uint8)),
@@ -748,15 +803,19 @@ def _jax_render_direct_gray64(
     )
     out = _draw_direct_bonus_and_heads(
         jnp=jnp,
+        lax=lax,
         out=out,
         state=state,
         world_x=world_x,
         world_y=world_y,
+        target_size=target_size,
+        map_size=map_size,
         bonus_count=bonus_count,
         bonus_render_mode_id=bonus_render_mode_id,
         controlled_player=controlled_player,
         player_luma_by_index=player_luma_by_index,
     )
+    out = jnp.reshape(out, (state["trail_x"].shape[0], target_size, target_size))
     return out[:, None, :, :].astype(jnp.uint8)
 
 
@@ -778,14 +837,17 @@ def _jax_render_block_704_gray64(
     if frame_size % target_size != 0:
         raise ValueError("frame_size must be divisible by target_size")
     block = frame_size // target_size
-    source = (jnp.arange(frame_size, dtype=jnp.float32) + 0.5) * float(map_size) / float(frame_size)
+    geometry_dtype = state["trail_x"].dtype
+    source = (
+        jnp.arange(frame_size, dtype=geometry_dtype) + jnp.asarray(0.5, dtype=geometry_dtype)
+    ) * jnp.asarray(map_size / float(frame_size), dtype=geometry_dtype)
     source_blocks = source.reshape(target_size, block)
     world_x = source_blocks[None, None, :, None, :]
     world_y = source_blocks[None, :, None, :, None]
-    pixel_blocks = jnp.arange(frame_size, dtype=jnp.float32).reshape(target_size, block)
+    pixel_blocks = jnp.arange(frame_size, dtype=geometry_dtype).reshape(target_size, block)
     pixel_x = pixel_blocks[None, None, :, None, :]
     pixel_y = pixel_blocks[None, :, None, :, None]
-    pixel_scale = float(frame_size) / float(map_size)
+    pixel_scale = jnp.asarray(float(frame_size) / float(map_size), dtype=geometry_dtype)
     image = jnp.full(
         (state["trail_x"].shape[0], target_size, target_size, block, block),
         SYNTHETIC_BACKGROUND_LUMA_FLOAT,
@@ -934,14 +996,17 @@ def _jax_render_block_704_gray64_two_views(
         raise ValueError("frame_size must be divisible by target_size")
     block = frame_size // target_size
     view_count = len(player_luma_float_by_view)
-    source = (jnp.arange(frame_size, dtype=jnp.float32) + 0.5) * float(map_size) / float(frame_size)
+    geometry_dtype = state["trail_x"].dtype
+    source = (
+        jnp.arange(frame_size, dtype=geometry_dtype) + jnp.asarray(0.5, dtype=geometry_dtype)
+    ) * jnp.asarray(map_size / float(frame_size), dtype=geometry_dtype)
     source_blocks = source.reshape(target_size, block)
     world_x = source_blocks[None, None, :, None, :]
     world_y = source_blocks[None, :, None, :, None]
-    pixel_blocks = jnp.arange(frame_size, dtype=jnp.float32).reshape(target_size, block)
+    pixel_blocks = jnp.arange(frame_size, dtype=geometry_dtype).reshape(target_size, block)
     pixel_x = pixel_blocks[None, None, :, None, :]
     pixel_y = pixel_blocks[None, :, None, :, None]
-    pixel_scale = float(frame_size) / float(map_size)
+    pixel_scale = jnp.asarray(float(frame_size) / float(map_size), dtype=geometry_dtype)
     image = jnp.full(
         (view_count, state["trail_x"].shape[0], target_size, target_size, block, block),
         SYNTHETIC_BACKGROUND_LUMA_FLOAT,
@@ -1263,36 +1328,50 @@ def _segment_hits_one_slot(
 def _draw_direct_bonus_and_heads(
     *,
     jnp: Any,
+    lax: Any,
     out: Any,
     state: dict[str, Any],
     world_x: Any,
     world_y: Any,
+    target_size: int,
+    map_size: float,
     bonus_count: int,
     bonus_render_mode_id: int,
     controlled_player: int | None,
     player_luma_by_index: tuple[int, ...],
 ) -> Any:
-    if bonus_count > 0:
-        bonus_dx = world_x - state["bonus_x"][:, :, None, None]
-        bonus_dy = world_y - state["bonus_y"][:, :, None, None]
-        bonus_hit = (
-            bonus_dx * bonus_dx + bonus_dy * bonus_dy
-            <= state["bonus_radius"][:, :, None, None] ** 2
-        ) & (state["bonus_active"][:, :, None, None] != 0)
-        bonus_value = _direct_bonus_value(
-            jnp=jnp,
-            bonus_type=state["bonus_type"],
-            bonus_render_mode_id=bonus_render_mode_id,
+    pixel_x = jnp.arange(target_size, dtype=state["trail_x"].dtype)[None, None, :]
+    pixel_y = jnp.arange(target_size, dtype=state["trail_x"].dtype)[None, :, None]
+
+    def draw_bonus(index: Any, current: Any) -> Any:
+        if bonus_render_mode_id == BONUS_RENDER_MODE_IDS[BONUS_RENDER_MODE_SIMPLE_SYMBOLS]:
+            hit, value = _direct_simple_symbol_bonus_hit_value(
+                jnp=jnp,
+                state=state,
+                index=index,
+                pixel_x=pixel_x,
+                pixel_y=pixel_y,
+                target_size=target_size,
+                map_size=map_size,
+            )
+            return jnp.where(hit, value, current)
+
+        bonus_x = jnp.take(state["bonus_x"], index, axis=1)
+        bonus_y = jnp.take(state["bonus_y"], index, axis=1)
+        radius = jnp.take(state["bonus_radius"], index, axis=1)
+        active = jnp.take(state["bonus_active"], index, axis=1)
+        bonus_type = jnp.take(state["bonus_type"], index, axis=1)
+        dx = world_x - bonus_x[:, None, None]
+        dy = world_y - bonus_y[:, None, None]
+        radius = radius[:, None, None]
+        hit = (dx * dx + dy * dy <= radius * radius) & (
+            active[:, None, None] != 0
         )
-        bonus_layer = jnp.max(
-            jnp.where(
-                bonus_hit,
-                bonus_value[:, :, None, None],
-                jnp.zeros((), dtype=jnp.uint8),
-            ),
-            axis=1,
-        )
-        out = jnp.maximum(out, bonus_layer)
+        value = (144 + (bonus_type % 4) * 24).astype(jnp.uint8)
+        return jnp.where(hit, value[:, None, None], current)
+
+    for index in range(bonus_count):
+        out = draw_bonus(index, out)
 
     player_count = state["head_x"].shape[1]
     player_luma = _player_luma_for_state(
@@ -1302,31 +1381,24 @@ def _draw_direct_bonus_and_heads(
         fallback_luma=player_luma_by_index,
         dtype=jnp.uint8,
     )
-    player_indices = jnp.arange(player_count, dtype=jnp.int32)
-    player_values = jnp.take_along_axis(
-        player_luma,
-        jnp.mod(player_indices, player_luma.shape[1])[None, :],
-        axis=1,
-    )
-    head_dx = world_x - state["head_x"][:, :, None, None]
-    head_dy = world_y - state["head_y"][:, :, None, None]
-    head_hit = (
-        head_dx * head_dx + head_dy * head_dy <= state["head_radius"][:, :, None, None] ** 2
-    ) & (state["head_alive"][:, :, None, None] != 0)
-    head_layer = jnp.max(
-        jnp.where(head_hit, player_values[:, :, None, None], jnp.zeros((), dtype=jnp.uint8)),
-        axis=1,
-    )
-    return jnp.maximum(out, head_layer)
 
+    def draw_head(index: Any, current: Any) -> Any:
+        head_x = jnp.take(state["head_x"], index, axis=1)
+        head_y = jnp.take(state["head_y"], index, axis=1)
+        radius = jnp.take(state["head_radius"], index, axis=1)
+        alive = jnp.take(state["head_alive"], index, axis=1)
+        dx = world_x - head_x[:, None, None]
+        dy = world_y - head_y[:, None, None]
+        radius = radius[:, None, None]
+        hit = (dx * dx + dy * dy <= radius * radius) & (
+            alive[:, None, None] != 0
+        )
+        value = jnp.take(player_luma, jnp.mod(index, player_luma.shape[1]), axis=1)
+        return jnp.where(hit, value[:, None, None], current)
 
-def _direct_bonus_value(*, jnp: Any, bonus_type: Any, bonus_render_mode_id: int) -> Any:
-    if bonus_render_mode_id == BONUS_RENDER_MODE_IDS[BONUS_RENDER_MODE_SIMPLE_SYMBOLS]:
-        code = _bonus_type_code(jnp=jnp, bonus_type=bonus_type)
-        outer_index = (code - 1) // 4
-        outer_luma = jnp.asarray(BONUS_SYMBOL_OUTER_LUMA_BY_SHAPE, dtype=jnp.uint8)
-        return jnp.take(outer_luma, outer_index).astype(jnp.uint8)
-    return (144 + (bonus_type % 4) * 24).astype(jnp.uint8)
+    for index in range(player_count):
+        out = draw_head(index, out)
+    return out
 
 
 def _draw_block_bonus_and_heads(
@@ -1472,9 +1544,11 @@ def _block_simple_symbol_bonus_hit_value(
     frame_size: int,
     map_size: float,
 ) -> tuple[Any, Any]:
-    x = state["bonus_x"][:, index]
-    y = state["bonus_y"][:, index]
-    radius = state["bonus_radius"][:, index]
+    x = jnp.take(state["bonus_x"], index, axis=1)
+    y = jnp.take(state["bonus_y"], index, axis=1)
+    radius = jnp.take(state["bonus_radius"], index, axis=1)
+    active = jnp.take(state["bonus_active"], index, axis=1)
+    bonus_type = jnp.take(state["bonus_type"], index, axis=1)
     radius_px = jnp.maximum(
         3.0,
         jnp.ceil(radius * float(frame_size) / float(map_size)),
@@ -1497,7 +1571,7 @@ def _block_simple_symbol_bonus_hit_value(
         & (local_y >= 0.0)
         & (local_x < dst_size[:, None, None, None, None])
         & (local_y < dst_size[:, None, None, None, None])
-        & (state["bonus_active"][:, index, None, None, None, None] != 0)
+        & (active[:, None, None, None, None] != 0)
         & (radius[:, None, None, None, None] > 0.0)
     )
     scale = float(BONUS_SYMBOL_BASE_SIZE - 1)
@@ -1509,10 +1583,65 @@ def _block_simple_symbol_bonus_hit_value(
         jnp=jnp,
         base_x=base_x,
         base_y=base_y,
-        bonus_type=state["bonus_type"][:, index],
+        bonus_type=bonus_type,
     )
     hit = in_bounds & (stamp_value > 0.0)
     return hit, stamp_value
+
+
+def _direct_simple_symbol_bonus_hit_value(
+    *,
+    jnp: Any,
+    state: dict[str, Any],
+    index: Any,
+    pixel_x: Any,
+    pixel_y: Any,
+    target_size: int,
+    map_size: float,
+) -> tuple[Any, Any]:
+    x = jnp.take(state["bonus_x"], index, axis=1)
+    y = jnp.take(state["bonus_y"], index, axis=1)
+    radius = jnp.take(state["bonus_radius"], index, axis=1)
+    active = jnp.take(state["bonus_active"], index, axis=1)
+    bonus_type = jnp.take(state["bonus_type"], index, axis=1)
+    radius_px = jnp.maximum(
+        3.0,
+        jnp.ceil(radius * float(target_size) / float(map_size)),
+    )
+    center_x = jnp.clip(
+        jnp.rint(x * float(target_size - 1) / float(map_size)),
+        0.0,
+        float(target_size - 1),
+    )
+    center_y = jnp.clip(
+        jnp.rint(y * float(target_size - 1) / float(map_size)),
+        0.0,
+        float(target_size - 1),
+    )
+    dst_size = radius_px * 2.0 + 1.0
+    local_x = pixel_x - (center_x[:, None, None] - radius_px[:, None, None])
+    local_y = pixel_y - (center_y[:, None, None] - radius_px[:, None, None])
+    in_bounds = (
+        (local_x >= 0.0)
+        & (local_y >= 0.0)
+        & (local_x < dst_size[:, None, None])
+        & (local_y < dst_size[:, None, None])
+        & (active[:, None, None] != 0)
+        & (radius[:, None, None] > 0.0)
+    )
+    scale = float(BONUS_SYMBOL_BASE_SIZE - 1)
+    base_x = jnp.rint(local_x * scale / jnp.maximum(dst_size[:, None, None] - 1.0, 1.0))
+    base_y = jnp.rint(local_y * scale / jnp.maximum(dst_size[:, None, None] - 1.0, 1.0))
+    base_x = jnp.clip(base_x, 0.0, scale).astype(jnp.int32)
+    base_y = jnp.clip(base_y, 0.0, scale).astype(jnp.int32)
+    stamp_value = _simple_symbol_luma(
+        jnp=jnp,
+        base_x=base_x,
+        base_y=base_y,
+        bonus_type=bonus_type,
+    )
+    hit = in_bounds & (stamp_value > 0.0)
+    return hit, stamp_value.astype(jnp.uint8)
 
 
 def _simple_symbol_luma(*, jnp: Any, base_x: Any, base_y: Any, bonus_type: Any) -> Any:
@@ -1520,6 +1649,8 @@ def _simple_symbol_luma(*, jnp: Any, base_x: Any, base_y: Any, bonus_type: Any) 
     symbol_index = code - 1
     outer_index = symbol_index // 4
     inner_index = symbol_index % 4
+    expand_shape = outer_index.shape + (1,) * (base_x.ndim - outer_index.ndim)
+    outer = outer_index.reshape(expand_shape)
     center = (BONUS_SYMBOL_BASE_SIZE - 1) // 2
     dx = jnp.abs(base_x - center)
     dy = jnp.abs(base_y - center)
@@ -1527,9 +1658,9 @@ def _simple_symbol_luma(*, jnp: Any, base_x: Any, base_y: Any, bonus_type: Any) 
     outer_diamond = dx + dy <= center + 1
     outer_square = jnp.ones_like(outer_circle, dtype=bool)
     outer_mask = jnp.where(
-        outer_index[:, None, None, None, None] == 0,
+        outer == 0,
         outer_circle,
-        jnp.where(outer_index[:, None, None, None, None] == 1, outer_diamond, outer_square),
+        jnp.where(outer == 1, outer_diamond, outer_square),
     )
     inner = _simple_symbol_inner_mask(
         jnp=jnp,
@@ -1540,8 +1671,8 @@ def _simple_symbol_luma(*, jnp: Any, base_x: Any, base_y: Any, bonus_type: Any) 
     )
     outer_luma = jnp.asarray(BONUS_SYMBOL_OUTER_LUMA_BY_SHAPE, dtype=jnp.float32)
     inner_luma = jnp.asarray(BONUS_SYMBOL_INNER_LUMA_BY_SHAPE, dtype=jnp.float32)
-    outer_value = jnp.take(outer_luma, outer_index)[:, None, None, None, None]
-    inner_value = jnp.take(inner_luma, outer_index)[:, None, None, None, None]
+    outer_value = jnp.take(outer_luma, outer_index).reshape(expand_shape)
+    inner_value = jnp.take(inner_luma, outer_index).reshape(expand_shape)
     return jnp.where(outer_mask & inner, inner_value, jnp.where(outer_mask, outer_value, 0.0))
 
 
@@ -1553,8 +1684,9 @@ def _simple_symbol_inner_mask(
     outer_index: Any,
     inner_index: Any,
 ) -> Any:
-    outer = outer_index[:, None, None, None, None]
-    inner = inner_index[:, None, None, None, None]
+    expand_shape = outer_index.shape + (1,) * (base_x.ndim - outer_index.ndim)
+    outer = outer_index.reshape(expand_shape)
+    inner = inner_index.reshape(expand_shape)
     center = (BONUS_SYMBOL_BASE_SIZE - 1) // 2
     plus_01 = ((base_y >= center - 1) & (base_y <= center + 1) & (base_x >= 1) & (base_x <= 5)) | (
         (base_x >= center - 1) & (base_x <= center + 1) & (base_y >= 1) & (base_y <= 5)
@@ -1606,10 +1738,16 @@ def _bonus_type_code(*, jnp: Any, bonus_type: Any) -> Any:
     return jnp.where((code >= 1) & (code <= 12), code, jnp.ones_like(code))
 
 
-def _copy_state_to_device(*, jax: Any, state: dict[str, Any]) -> dict[str, Any]:
+def _copy_state_to_device(
+    *,
+    jax: Any,
+    state: dict[str, Any],
+    block_until_ready: bool = True,
+) -> dict[str, Any]:
     copied = {key: jax.device_put(value) for key, value in state.items()}
-    for value in copied.values():
-        value.block_until_ready()
+    if block_until_ready:
+        for value in copied.values():
+            value.block_until_ready()
     return copied
 
 
@@ -1630,7 +1768,14 @@ def _verify_against_cpu(
         return {"rows": 0, "status": "skipped"}
 
     target_size = int(config["target_size"])
-    operations = verify_rows * target_size * target_size * int(config["trail_slots"])
+    view_count = 2 if config.get("render_views") == RENDER_VIEWS_BOTH else 1
+    operations = (
+        verify_rows
+        * view_count
+        * target_size
+        * target_size
+        * int(config["trail_slots"])
+    )
     if operations > int(config["cpu_verify_max_pixel_trail_tests"]):
         return {
             "rows": verify_rows,
@@ -1640,13 +1785,23 @@ def _verify_against_cpu(
         }
 
     sliced_state = _slice_batch_state(np=np, state=state, rows=verify_rows)
-    verify_render_fn = _make_jax_render_fn(
-        jax=jax,
-        jnp=jnp,
-        config={**config, "batch_size": verify_rows},
-        render_mode_id=render_mode_id,
-        bonus_render_mode_id=bonus_render_mode_id,
-    )
+    verify_config = {**config, "batch_size": verify_rows}
+    if config.get("render_views") == RENDER_VIEWS_BOTH:
+        verify_render_fn = _make_jax_two_view_render_fn(
+            jax=jax,
+            jnp=jnp,
+            config=verify_config,
+            render_mode_id=render_mode_id,
+            bonus_render_mode_id=bonus_render_mode_id,
+        )
+    else:
+        verify_render_fn = _make_jax_render_fn(
+            jax=jax,
+            jnp=jnp,
+            config=verify_config,
+            render_mode_id=render_mode_id,
+            bonus_render_mode_id=bonus_render_mode_id,
+        )
     device_state = _copy_state_to_device(jax=jax, state=sliced_state)
     started = time.perf_counter()
     gpu_device = verify_render_fn(device_state)
@@ -1657,13 +1812,41 @@ def _verify_against_cpu(
     started = time.perf_counter()
     cpu_reference_kind = "synthetic_direct_gray64"
     if config["render_surface"] == RENDER_SURFACE_DIRECT_GRAY64:
-        cpu = _cpu_render_direct_gray64(
-            np=np,
-            state=sliced_state,
-            config={**config, "batch_size": verify_rows},
-            render_mode_id=render_mode_id,
-            player_luma_by_index=_player_luma_by_index(config),
-        )
+        if config.get("render_views") == RENDER_VIEWS_BOTH:
+            cpu = np.concatenate(
+                [
+                    _cpu_render_direct_gray64(
+                        np=np,
+                        state=sliced_state,
+                        config={**config, "batch_size": verify_rows, "controlled_player": 0},
+                        render_mode_id=render_mode_id,
+                        bonus_render_mode_id=bonus_render_mode_id,
+                        player_luma_by_index=_player_luma_by_index(
+                            {**config, "controlled_player": 0}
+                        ),
+                    ),
+                    _cpu_render_direct_gray64(
+                        np=np,
+                        state=sliced_state,
+                        config={**config, "batch_size": verify_rows, "controlled_player": 1},
+                        render_mode_id=render_mode_id,
+                        bonus_render_mode_id=bonus_render_mode_id,
+                        player_luma_by_index=_player_luma_by_index(
+                            {**config, "controlled_player": 1}
+                        ),
+                    ),
+                ],
+                axis=0,
+            )
+        else:
+            cpu = _cpu_render_direct_gray64(
+                np=np,
+                state=sliced_state,
+                config={**config, "batch_size": verify_rows},
+                render_mode_id=render_mode_id,
+                bonus_render_mode_id=bonus_render_mode_id,
+                player_luma_by_index=_player_luma_by_index(config),
+            )
     else:
         cpu_reference_kind = (
             "production_render_source_state_canvas_gray64_"
@@ -1678,21 +1861,72 @@ def _verify_against_cpu(
                 "target_size": int(config["target_size"]),
             }
         if production_reference_state is not None:
-            cpu = _cpu_render_original_production_canvas_gray64(
+            sliced_production = _slice_batch_state(
                 np=np,
-                production_state=_slice_batch_state(
+                state=production_reference_state,
+                rows=verify_rows,
+            )
+            if config.get("render_views") == RENDER_VIEWS_BOTH:
+                cpu = np.concatenate(
+                    [
+                        _cpu_render_original_production_canvas_gray64(
+                            np=np,
+                            production_state=sliced_production,
+                            config={
+                                **config,
+                                "batch_size": verify_rows,
+                                "controlled_player": 0,
+                            },
+                        ),
+                        _cpu_render_original_production_canvas_gray64(
+                            np=np,
+                            production_state=sliced_production,
+                            config={
+                                **config,
+                                "batch_size": verify_rows,
+                                "controlled_player": 1,
+                            },
+                        ),
+                    ],
+                    axis=0,
+                )
+            else:
+                cpu = _cpu_render_original_production_canvas_gray64(
                     np=np,
-                    state=production_reference_state,
-                    rows=verify_rows,
-                ),
-                config={**config, "batch_size": verify_rows},
-            )
+                    production_state=sliced_production,
+                    config={**config, "batch_size": verify_rows},
+                )
         else:
-            cpu = _cpu_render_production_canvas_gray64(
-                np=np,
-                state=sliced_state,
-                config={**config, "batch_size": verify_rows},
-            )
+            if config.get("render_views") == RENDER_VIEWS_BOTH:
+                cpu = np.concatenate(
+                    [
+                        _cpu_render_production_canvas_gray64(
+                            np=np,
+                            state=sliced_state,
+                            config={
+                                **config,
+                                "batch_size": verify_rows,
+                                "controlled_player": 0,
+                            },
+                        ),
+                        _cpu_render_production_canvas_gray64(
+                            np=np,
+                            state=sliced_state,
+                            config={
+                                **config,
+                                "batch_size": verify_rows,
+                                "controlled_player": 1,
+                            },
+                        ),
+                    ],
+                    axis=0,
+                )
+            else:
+                cpu = _cpu_render_production_canvas_gray64(
+                    np=np,
+                    state=sliced_state,
+                    config={**config, "batch_size": verify_rows},
+                )
     cpu_sec = time.perf_counter() - started
 
     diff = np.abs(gpu.astype(np.int16) - cpu.astype(np.int16))
@@ -1716,6 +1950,12 @@ def _verify_against_cpu(
         "rows": verify_rows,
         "status": "checked",
         "cpu_reference_kind": cpu_reference_kind,
+        "render_views": str(config.get("render_views", RENDER_VIEWS_SINGLE)),
+        "output_order": (
+            RENDER_OUTPUT_ORDER_VIEW_MAJOR
+            if config.get("render_views") == RENDER_VIEWS_BOTH
+            else "single_view_batch_major"
+        ),
         "exact_parity": bool(mismatch_count == 0),
         "mismatch_count": mismatch_count,
         "mismatch_fraction": float(mismatch_count / total_values) if total_values else 0.0,
@@ -1734,6 +1974,7 @@ def _cpu_render_direct_gray64(
     state: dict[str, Any],
     config: dict[str, Any],
     render_mode_id: int,
+    bonus_render_mode_id: int,
     player_luma_by_index: tuple[int, ...],
 ) -> Any:
     batch_size = int(config["batch_size"])
@@ -1750,6 +1991,13 @@ def _cpu_render_direct_gray64(
     prev_x, prev_y, prev_active = _cpu_previous_owner_trail_slots(np=np, state=state)
 
     for row in range(batch_size):
+        row_player_luma = _cpu_player_luma_for_state_row(
+            state=state,
+            row=row,
+            player_count=player_count,
+            controlled_player=config.get("controlled_player"),
+            fallback_luma=player_luma_by_index,
+        )
         for py in range(target_size):
             world_y = (float(py) + 0.5) * map_size / float(target_size)
             for px in range(target_size):
@@ -1780,16 +2028,30 @@ def _cpu_render_direct_gray64(
                             radius=radius,
                         )
                     if hit:
-                        value = max(value, _owner_luma(owner, player_luma_by_index))
+                        value = max(value, _owner_luma(owner, row_player_luma))
 
                 for bonus in range(bonus_count):
                     if not bool(state["bonus_active"][row, bonus]):
                         continue
-                    dx = world_x - float(state["bonus_x"][row, bonus])
-                    dy = world_y - float(state["bonus_y"][row, bonus])
                     radius = float(state["bonus_radius"][row, bonus])
-                    if dx * dx + dy * dy <= radius * radius:
-                        value = max(value, 144 + int(state["bonus_type"][row, bonus] % 4) * 24)
+                    if bonus_render_mode_id == BONUS_RENDER_MODE_IDS[BONUS_RENDER_MODE_SIMPLE_SYMBOLS]:
+                        symbol_value = _cpu_direct_simple_symbol_bonus_luma(
+                            np=np,
+                            state=state,
+                            row=row,
+                            bonus=bonus,
+                            px=px,
+                            py=py,
+                            target_size=target_size,
+                            map_size=map_size,
+                        )
+                        if symbol_value > 0:
+                            value = symbol_value
+                    else:
+                        dx = world_x - float(state["bonus_x"][row, bonus])
+                        dy = world_y - float(state["bonus_y"][row, bonus])
+                        if dx * dx + dy * dy <= radius * radius:
+                            value = 144 + int(state["bonus_type"][row, bonus] % 4) * 24
 
                 for player in range(player_count):
                     if not bool(state["head_alive"][row, player]):
@@ -1798,10 +2060,151 @@ def _cpu_render_direct_gray64(
                     dy = world_y - float(state["head_y"][row, player])
                     radius = float(state["head_radius"][row, player])
                     if dx * dx + dy * dy <= radius * radius:
-                        value = max(value, _owner_luma(player, player_luma_by_index))
+                        value = _owner_luma(player, row_player_luma)
 
                 out[row, 0, py, px] = np.uint8(value)
     return out
+
+
+def _cpu_player_luma_for_state_row(
+    *,
+    state: dict[str, Any],
+    row: int,
+    player_count: int,
+    controlled_player: int | None,
+    fallback_luma: tuple[int, ...],
+) -> tuple[int, ...]:
+    if controlled_player is None or "avatar_color" not in state:
+        return fallback_luma[:player_count]
+    controlled = int(controlled_player)
+    avatar_color = state["avatar_color"][row, :player_count]
+    if controlled < 0 or controlled >= player_count:
+        return fallback_luma[:player_count]
+    self_color = int(avatar_color[controlled])
+    return tuple(
+        PERSPECTIVE_SELF_LUMA if int(color) == self_color else PERSPECTIVE_OTHER_LUMA
+        for color in avatar_color
+    )
+
+
+def _cpu_direct_simple_symbol_bonus_luma(
+    *,
+    np: Any,
+    state: dict[str, Any],
+    row: int,
+    bonus: int,
+    px: int,
+    py: int,
+    target_size: int,
+    map_size: float,
+) -> int:
+    radius = float(state["bonus_radius"][row, bonus])
+    if radius <= 0.0:
+        return 0
+    radius_px = max(3.0, float(np.ceil(radius * float(target_size) / float(map_size))))
+    center_x = float(
+        np.clip(
+            np.rint(float(state["bonus_x"][row, bonus]) * float(target_size - 1) / float(map_size)),
+            0.0,
+            float(target_size - 1),
+        )
+    )
+    center_y = float(
+        np.clip(
+            np.rint(float(state["bonus_y"][row, bonus]) * float(target_size - 1) / float(map_size)),
+            0.0,
+            float(target_size - 1),
+        )
+    )
+    dst_size = radius_px * 2.0 + 1.0
+    local_x = float(px) - (center_x - radius_px)
+    local_y = float(py) - (center_y - radius_px)
+    if local_x < 0.0 or local_y < 0.0 or local_x >= dst_size or local_y >= dst_size:
+        return 0
+    scale = float(BONUS_SYMBOL_BASE_SIZE - 1)
+    base_x = int(np.clip(np.rint(local_x * scale / max(dst_size - 1.0, 1.0)), 0.0, scale))
+    base_y = int(np.clip(np.rint(local_y * scale / max(dst_size - 1.0, 1.0)), 0.0, scale))
+    return _cpu_simple_symbol_luma(
+        base_x=base_x,
+        base_y=base_y,
+        bonus_type=int(state["bonus_type"][row, bonus]),
+    )
+
+
+def _cpu_simple_symbol_luma(*, base_x: int, base_y: int, bonus_type: int) -> int:
+    code = bonus_type if 1 <= bonus_type <= 12 else 1
+    symbol_index = code - 1
+    outer_index = symbol_index // 4
+    inner_index = symbol_index % 4
+    center = (BONUS_SYMBOL_BASE_SIZE - 1) // 2
+    dx = abs(base_x - center)
+    dy = abs(base_y - center)
+    if outer_index == 0:
+        outer_mask = dx * dx + dy * dy <= center * center
+    elif outer_index == 1:
+        outer_mask = dx + dy <= center + 1
+    else:
+        outer_mask = True
+    if not outer_mask:
+        return 0
+
+    if inner_index == 0:
+        if outer_index == 2:
+            inner_mask = (base_y >= center and base_y <= 5) or (base_x >= center and base_x <= 5)
+        else:
+            inner_mask = (
+                base_y >= center - 1
+                and base_y <= center + 1
+                and base_x >= 1
+                and base_x <= 5
+            ) or (
+                base_x >= center - 1
+                and base_x <= center + 1
+                and base_y >= 1
+                and base_y <= 5
+            )
+    elif inner_index == 1:
+        if outer_index == 0:
+            inner_mask = abs(base_x - base_y) <= 1 or (
+                (base_y == 0 and base_x == 5)
+                or (base_y == 1 and base_x == 4)
+                or (base_y == 2 and base_x == 3)
+                or (base_y == 3 and base_x == 2)
+                or (base_y == 4 and base_x == 1)
+                or (base_y == 5 and base_x == 0)
+            )
+        elif outer_index == 1:
+            inner_mask = (
+                base_x == base_y
+                or base_x == 6 - base_y
+                or base_x == base_y + 1
+                or (base_y > 0 and base_x == 7 - base_y)
+            )
+        else:
+            inner_mask = (
+                base_x == 6 - base_y
+                or base_x == 5 - base_y
+                or (base_y >= 2 and base_x == base_y - 1)
+                or (base_y >= 2 and base_x == base_y)
+            )
+    elif inner_index == 2:
+        if outer_index == 0:
+            inner_mask = base_y >= center - 2 and base_y <= center
+        elif outer_index == 1:
+            inner_mask = base_y >= 1 and base_y <= center
+        else:
+            inner_mask = base_y >= center and base_y <= 5
+    else:
+        if outer_index == 0:
+            inner_mask = base_x >= center and base_x <= center + 2
+        elif outer_index == 1:
+            inner_mask = base_x >= 1 and base_x <= center
+        else:
+            inner_mask = base_x >= center and base_x <= 5
+
+    if inner_mask:
+        return int(BONUS_SYMBOL_INNER_LUMA_BY_SHAPE[outer_index])
+    return int(BONUS_SYMBOL_OUTER_LUMA_BY_SHAPE[outer_index])
 
 
 def _cpu_previous_owner_trail_slots(
@@ -1972,42 +2375,72 @@ def _source_state_and_reference_for_benchmark(
     np: Any,
     config: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    if config["state_source"] == STATE_SOURCE_REAL_ENV_ROLLOUT:
-        production_state = _real_env_rollout_production_state(np=np, config=config)
-        return (
-            _prepare_compact_state_for_render(
-                np=np,
-                state=_production_to_benchmark_source_state(
-                    np=np,
-                    production_state=production_state,
-                    config=config,
-                ),
-                config=config,
-            ),
-            production_state,
-        )
-    if config["state_source"] == STATE_SOURCE_ADVERSARIAL_FIXTURE:
-        production_state = _adversarial_fixture_production_state(np=np, config=config)
-        return (
-            _prepare_compact_state_for_render(
-                np=np,
-                state=_production_to_benchmark_source_state(
-                    np=np,
-                    production_state=production_state,
-                    config=config,
-                ),
-                config=config,
-            ),
-            production_state,
-        )
-    return (
-        _prepare_compact_state_for_render(
-            np=np,
-            state=_synthetic_source_state(np=np, config=config),
-            config=config,
-        ),
-        None,
+    state, production_reference_state, _ = _source_state_reference_and_setup_timings_for_benchmark(
+        np=np,
+        config=config,
     )
+    return state, production_reference_state
+
+
+def _source_state_reference_and_setup_timings_for_benchmark(
+    *,
+    np: Any,
+    config: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any] | None, dict[str, float | bool]]:
+    total_started = time.perf_counter()
+    production_reference_state = None
+    production_source_sec = 0.0
+    production_to_compact_sec = 0.0
+    synthetic_source_sec = 0.0
+    owner_ordered_pack_sec = 0.0
+
+    if config["state_source"] == STATE_SOURCE_REAL_ENV_ROLLOUT:
+        started = time.perf_counter()
+        production_state = _real_env_rollout_production_state(np=np, config=config)
+        production_source_sec = time.perf_counter() - started
+        production_reference_state = production_state
+        started = time.perf_counter()
+        state = _production_to_benchmark_source_state(
+            np=np,
+            production_state=production_state,
+            config=config,
+        )
+        production_to_compact_sec = time.perf_counter() - started
+    elif config["state_source"] == STATE_SOURCE_ADVERSARIAL_FIXTURE:
+        started = time.perf_counter()
+        production_state = _adversarial_fixture_production_state(np=np, config=config)
+        production_source_sec = time.perf_counter() - started
+        production_reference_state = production_state
+        started = time.perf_counter()
+        state = _production_to_benchmark_source_state(
+            np=np,
+            production_state=production_state,
+            config=config,
+        )
+        production_to_compact_sec = time.perf_counter() - started
+    else:
+        started = time.perf_counter()
+        state = _synthetic_source_state(np=np, config=config)
+        synthetic_source_sec = time.perf_counter() - started
+
+    if config.get("trail_composition") == TRAIL_COMPOSITION_OWNER_ORDERED_COMPACT:
+        started = time.perf_counter()
+        state = _pack_compact_trails_in_owner_draw_order(
+            np=np,
+            state=state,
+            config=config,
+        )
+        owner_ordered_pack_sec = time.perf_counter() - started
+
+    setup_timings = {
+        "production_source_sec": production_source_sec,
+        "production_to_compact_sec": production_to_compact_sec,
+        "synthetic_source_sec": synthetic_source_sec,
+        "owner_ordered_pack_sec": owner_ordered_pack_sec,
+        "total_setup_sec": time.perf_counter() - total_started,
+        "included_in_render_timing": False,
+    }
+    return state, production_reference_state, setup_timings
 
 
 def _prepare_compact_state_for_render(
@@ -2257,10 +2690,15 @@ def _production_to_benchmark_source_state(
     player_count = int(config["player_count"])
     trail_slots = int(config["trail_slots"])
     bonus_count = int(config["bonus_count"])
+    geometry_dtype = (
+        np.float64
+        if str(config.get("geometry_dtype", GEOMETRY_DTYPE_FLOAT32)) == GEOMETRY_DTYPE_FLOAT64
+        else np.float32
+    )
 
     if "visual_trail_pos" in production_state and "visual_trail_active" in production_state:
-        trail_pos = np.asarray(production_state["visual_trail_pos"], dtype=np.float32)
-        trail_radius = np.asarray(production_state["visual_trail_radius"], dtype=np.float32)
+        trail_pos = np.asarray(production_state["visual_trail_pos"], dtype=geometry_dtype)
+        trail_radius = np.asarray(production_state["visual_trail_radius"], dtype=geometry_dtype)
         trail_owner = np.asarray(production_state["visual_trail_owner"], dtype=np.int32)
         trail_active = np.asarray(production_state["visual_trail_active"], dtype=np.uint8)
         trail_write_cursor = np.asarray(
@@ -2278,8 +2716,8 @@ def _production_to_benchmark_source_state(
             dtype=np.uint8,
         )
     else:
-        trail_pos = np.asarray(production_state["body_pos"], dtype=np.float32)
-        trail_radius = np.asarray(production_state["body_radius"], dtype=np.float32)
+        trail_pos = np.asarray(production_state["body_pos"], dtype=geometry_dtype)
+        trail_radius = np.asarray(production_state["body_radius"], dtype=geometry_dtype)
         trail_owner = np.asarray(production_state["body_owner"], dtype=np.int32)
         trail_active = np.asarray(production_state["body_active"], dtype=np.uint8)
         trail_write_cursor = np.asarray(
@@ -2297,8 +2735,8 @@ def _production_to_benchmark_source_state(
             dtype=np.uint8,
         )
 
-    pos = np.asarray(production_state["pos"], dtype=np.float32)
-    radius = np.asarray(production_state["radius"], dtype=np.float32)
+    pos = np.asarray(production_state["pos"], dtype=geometry_dtype)
+    radius = np.asarray(production_state["radius"], dtype=geometry_dtype)
     alive = np.asarray(production_state["alive"], dtype=np.uint8)
     present = np.asarray(production_state.get("present", alive), dtype=np.uint8)
     head_alive = (alive[:, :player_count] & present[:, :player_count]).astype(np.uint8)
@@ -2311,15 +2749,15 @@ def _production_to_benchmark_source_state(
     )
 
     state = {
-        "trail_x": np.zeros((batch_size, trail_slots), dtype=np.float32),
-        "trail_y": np.zeros((batch_size, trail_slots), dtype=np.float32),
-        "trail_radius": np.zeros((batch_size, trail_slots), dtype=np.float32),
+        "trail_x": np.zeros((batch_size, trail_slots), dtype=geometry_dtype),
+        "trail_y": np.zeros((batch_size, trail_slots), dtype=geometry_dtype),
+        "trail_radius": np.zeros((batch_size, trail_slots), dtype=geometry_dtype),
         "trail_owner": np.full((batch_size, trail_slots), -1, dtype=np.int32),
         "trail_active": np.zeros((batch_size, trail_slots), dtype=np.uint8),
         "trail_break_before": np.zeros((batch_size, trail_slots), dtype=np.uint8),
-        "head_x": pos[:batch_size, :player_count, 0].astype(np.float32, copy=True),
-        "head_y": pos[:batch_size, :player_count, 1].astype(np.float32, copy=True),
-        "head_radius": radius[:batch_size, :player_count].astype(np.float32, copy=True),
+        "head_x": pos[:batch_size, :player_count, 0].astype(geometry_dtype, copy=True),
+        "head_y": pos[:batch_size, :player_count, 1].astype(geometry_dtype, copy=True),
+        "head_radius": radius[:batch_size, :player_count].astype(geometry_dtype, copy=True),
         "head_alive": head_alive[:batch_size, :player_count].astype(np.uint8, copy=True),
         "avatar_color": avatar_color[:batch_size, :player_count].astype(np.int32, copy=True),
         "trail_write_cursor": np.clip(
@@ -2327,9 +2765,9 @@ def _production_to_benchmark_source_state(
             0,
             trail_slots,
         ).astype(np.int32, copy=True),
-        "bonus_x": np.zeros((batch_size, bonus_count), dtype=np.float32),
-        "bonus_y": np.zeros((batch_size, bonus_count), dtype=np.float32),
-        "bonus_radius": np.zeros((batch_size, bonus_count), dtype=np.float32),
+        "bonus_x": np.zeros((batch_size, bonus_count), dtype=geometry_dtype),
+        "bonus_y": np.zeros((batch_size, bonus_count), dtype=geometry_dtype),
+        "bonus_radius": np.zeros((batch_size, bonus_count), dtype=geometry_dtype),
         "bonus_active": np.zeros((batch_size, bonus_count), dtype=np.uint8),
         "bonus_type": np.ones((batch_size, bonus_count), dtype=np.int32),
     }
@@ -2351,12 +2789,12 @@ def _production_to_benchmark_source_state(
         active = np.asarray(production_state["bonus_active"], dtype=np.uint8)
         copied_bonuses = min(bonus_count, int(active.shape[1]))
         if copied_bonuses:
-            bonus_pos = np.asarray(production_state["bonus_pos"], dtype=np.float32)
+            bonus_pos = np.asarray(production_state["bonus_pos"], dtype=geometry_dtype)
             state["bonus_x"][:, :copied_bonuses] = bonus_pos[:batch_size, :copied_bonuses, 0]
             state["bonus_y"][:, :copied_bonuses] = bonus_pos[:batch_size, :copied_bonuses, 1]
             state["bonus_radius"][:, :copied_bonuses] = np.asarray(
                 production_state["bonus_radius"],
-                dtype=np.float32,
+                dtype=geometry_dtype,
             )[:batch_size, :copied_bonuses]
             state["bonus_active"][:, :copied_bonuses] = active[:batch_size, :copied_bonuses]
             state["bonus_type"][:, :copied_bonuses] = np.asarray(
@@ -2722,6 +3160,14 @@ def _validate_config(config: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(
             f"trail_composition must be one of {allowed}, got {trail_composition!r}"
         )
+    geometry_dtype = str(config.get("geometry_dtype", GEOMETRY_DTYPE_FLOAT32))
+    if geometry_dtype not in GEOMETRY_DTYPES:
+        allowed = ", ".join(sorted(GEOMETRY_DTYPES))
+        raise ValueError(f"geometry_dtype must be one of {allowed}, got {geometry_dtype!r}")
+    render_views = str(config.get("render_views", RENDER_VIEWS_SINGLE))
+    if render_views not in RENDER_VIEWS_CHOICES:
+        allowed = ", ".join(sorted(RENDER_VIEWS_CHOICES))
+        raise ValueError(f"render_views must be one of {allowed}, got {render_views!r}")
     if (
         trail_composition == TRAIL_COMPOSITION_OWNER_ORDERED_COMPACT
         and render_surface != RENDER_SURFACE_BLOCK_704_GRAY64
@@ -2753,6 +3199,8 @@ def _validate_config(config: dict[str, Any]) -> dict[str, Any]:
         "bonus_render_mode": bonus_render_mode,
         "render_surface": render_surface,
         "trail_composition": trail_composition,
+        "render_views": render_views,
+        "geometry_dtype": geometry_dtype,
         "bonus_count": _nonnegative_int(config.get("bonus_count", 8), "bonus_count"),
         "frame_size": _positive_int(config.get("frame_size", 704), "frame_size"),
         "target_size": _positive_int(config.get("target_size", 64), "target_size"),
@@ -2854,6 +3302,8 @@ def main(
     bonus_render_mode: str = BONUS_RENDER_MODE_SIMPLE_SYMBOLS,
     render_surface: str = RENDER_SURFACE_DIRECT_GRAY64,
     trail_composition: str = TRAIL_COMPOSITION_PRIORITY_BUFFER,
+    render_views: str = RENDER_VIEWS_SINGLE,
+    geometry_dtype: str = GEOMETRY_DTYPE_FLOAT32,
     bonus_count: int = 8,
     frame_size: int = 704,
     target_size: int = 64,
@@ -2880,6 +3330,8 @@ def main(
         "bonus_render_mode": bonus_render_mode,
         "render_surface": render_surface,
         "trail_composition": trail_composition,
+        "render_views": render_views,
+        "geometry_dtype": geometry_dtype,
         "bonus_count": bonus_count,
         "frame_size": frame_size,
         "target_size": target_size,

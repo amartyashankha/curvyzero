@@ -1,9 +1,12 @@
+import json
+
 import numpy as np
 import pytest
 
 from curvyzero.env.observation_surface_contract import (
     POLICY_OBSERVATION_PERSPECTIVE_SCHEMA_ID,
 )
+from curvyzero.env.vector_visual_observation import normalize_source_state_gray64
 from curvyzero.training import curvyzero_source_state_visual_survival_lightzero_env as env_mod
 from curvyzero.training.curvyzero_source_state_visual_survival_lightzero_env import (
     CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv,
@@ -56,6 +59,92 @@ def test_fixed_learner_seat_1_resets_and_legacy_ego_config_rejects():
     assert env.last_reset_info["source_state_player_perspective"] is True
     assert env.last_reset_info["observation_perspective_player_id"] == "player_1"
 
+    state_view = env._render_state_view()
+    expected_player_1 = normalize_source_state_gray64(
+        env_mod.render_source_state_canvas_gray64(
+            state_view,
+            row=0,
+            player_rgb=env_mod._player_perspective_rgb_palette(
+                state_view,
+                row=0,
+                controlled_player=1,
+                player_count=2,
+            ),
+            trail_render_mode=env._source_state_trail_render_mode,
+            bonus_render_mode=env._model_bonus_render_mode,
+        )
+    )[0]
+    expected_player_0 = normalize_source_state_gray64(
+        env_mod.render_source_state_canvas_gray64(
+            state_view,
+            row=0,
+            player_rgb=env_mod._player_perspective_rgb_palette(
+                state_view,
+                row=0,
+                controlled_player=0,
+                player_count=2,
+            ),
+            trail_render_mode=env._source_state_trail_render_mode,
+            bonus_render_mode=env._model_bonus_render_mode,
+        )
+    )[0]
+    np.testing.assert_array_equal(observation["observation"][-1], expected_player_1)
+    assert float(np.max(np.abs(observation["observation"][-1] - expected_player_0))) > 0.0
+
+
+@pytest.mark.parametrize(
+    ("learner_seat_mode", "expected_player"),
+    [("fixed_player_0", 0), ("fixed_player_1", 1)],
+)
+def test_fixed_learner_seats_match_selected_controlled_player_renderer(
+    learner_seat_mode,
+    expected_player,
+):
+    env = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
+        {
+            "seed": 402,
+            "source_max_steps": 16,
+            "natural_bonus_spawn": False,
+            "learner_seat_mode": learner_seat_mode,
+        }
+    )
+
+    observation = env.reset(seed=402)
+
+    assert env.ego_player_index == expected_player
+    state_view = env._render_state_view()
+    expected = normalize_source_state_gray64(
+        env_mod.render_source_state_canvas_gray64(
+            state_view,
+            row=0,
+            player_rgb=env_mod._player_perspective_rgb_palette(
+                state_view,
+                row=0,
+                controlled_player=expected_player,
+                player_count=2,
+            ),
+            trail_render_mode=env._source_state_trail_render_mode,
+            bonus_render_mode=env._model_bonus_render_mode,
+        )
+    )[0]
+    other = normalize_source_state_gray64(
+        env_mod.render_source_state_canvas_gray64(
+            state_view,
+            row=0,
+            player_rgb=env_mod._player_perspective_rgb_palette(
+                state_view,
+                row=0,
+                controlled_player=1 - expected_player,
+                player_count=2,
+            ),
+            trail_render_mode=env._source_state_trail_render_mode,
+            bonus_render_mode=env._model_bonus_render_mode,
+        )
+    )[0]
+
+    np.testing.assert_array_equal(observation["observation"][-1], expected)
+    assert float(np.max(np.abs(observation["observation"][-1] - other))) > 0.0
+
 
 def test_fixed_learner_seat_1_routes_learner_action_to_player_1_and_reports_control():
     env = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
@@ -88,6 +177,47 @@ def test_fixed_learner_seat_1_routes_learner_action_to_player_1_and_reports_cont
     assert timestep.info["opponent_player_index"] == 0
     assert timestep.info["source_state_player_perspective"] is True
     assert timestep.info["observation_perspective_player_id"] == "player_1"
+
+
+def test_step_telemetry_records_learner_seat_and_policy_perspective(tmp_path):
+    telemetry_path = tmp_path / "seat_perspective_steps.jsonl"
+    env = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(
+        {
+            "seed": 404,
+            "source_max_steps": 16,
+            "natural_bonus_spawn": False,
+            "learner_seat_mode": "fixed_player_1",
+            "policy_action_repeat_min": 1,
+            "policy_action_repeat_max": 1,
+            "telemetry_path": telemetry_path,
+            "telemetry_stride": 1,
+        }
+    )
+    env.reset(seed=404)
+
+    env.step(STRAIGHT_ACTION_ID)
+
+    rows = [
+        json.loads(line)
+        for line in telemetry_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["learner_seat_mode"] == "fixed_player_1"
+    assert row["ego_player_index"] == 1
+    assert row["opponent_player_index"] == 0
+    assert row["learner_player_id"] == "player_1"
+    assert row["opponent_player_id"] == "player_0"
+    assert row["source_state_player_perspective"] is True
+    assert (
+        row["player_perspective_schema_id"]
+        == POLICY_OBSERVATION_PERSPECTIVE_SCHEMA_ID
+    )
+    assert row["observation_perspective"] == "controlled_player_view"
+    assert row["observation_perspective_player_index"] == 1
+    assert row["observation_perspective_player_id"] == "player_1"
+    assert row["opponent_observation_perspective_player_index"] == 0
+    assert row["opponent_observation_perspective_player_id"] == "player_0"
 
 
 def test_frozen_opponent_provider_for_fixed_learner_seat_1_controls_player_0(monkeypatch):
@@ -237,7 +367,7 @@ def _reset_seat_sequence(
     env = CurvyZeroSourceStateVisualSurvivalLightZeroLocalEnv(cfg)
     seats = []
     for _ in range(reset_count):
-        env.reset()
+        observation = env.reset()
         info = env.last_reset_info
         assert "ego_player_index" in info
         assert "opponent_player_index" in info
@@ -246,6 +376,22 @@ def _reset_seat_sequence(
         seats.append((ego_player_index, int(info["episode_seed"])))
         assert int(info["opponent_player_index"]) == 1 - ego_player_index
         assert info["learner_seat_assignment_schema_id"]
+        state_view = env._render_state_view()
+        expected = normalize_source_state_gray64(
+            env_mod.render_source_state_canvas_gray64(
+                state_view,
+                row=0,
+                player_rgb=env_mod._player_perspective_rgb_palette(
+                    state_view,
+                    row=0,
+                    controlled_player=ego_player_index,
+                    player_count=2,
+                ),
+                trail_render_mode=env._source_state_trail_render_mode,
+                bonus_render_mode=env._model_bonus_render_mode,
+            )
+        )[0]
+        np.testing.assert_array_equal(observation["observation"][-1], expected)
     return seats
 
 

@@ -66,15 +66,46 @@ Last no-launch capacity read,
 - CurvyTron status app: deployed, `tasks=0`
 - `approval_recommendation=operator_capacity_review_required`
 
-Treat this as volatile context and a coarse task-count proxy only. It does not
-prove H100 availability or unavailability because Modal task counts can include
-non-H100 work. Rerun immediately before approval and make an explicit operator
-capacity decision. Also choose the runtime tier before approval: the 90-row
-packet is appropriate for a short `<=2h` breadth/health sweep if capacity is
-clear, but `2h-8h` runs should launch or retain at most 40 active rows and
-`8h+` runs should launch or retain only 10-20 rows.
+Treat this capacity read as volatile context and a coarse task-count proxy only.
+It does not prove H100 availability or unavailability because Modal task counts
+can include non-H100 work. Rerun immediately before approval and make an
+explicit operator capacity decision. Also choose the runtime tier before
+approval: the 90-row packet is appropriate for a short `<=2h` breadth/health
+sweep if capacity is clear, but `2h-8h` runs should launch or retain at most 40
+active rows and `8h+` runs should launch or retain only 10-20 rows.
+
+Then rerun the checkpoint-anchor policy audit:
+
+```bash
+uv run python scripts/audit_curvytron_checkpoint_anchor_policy.py --output artifacts/local/curvytron_checkpoint_anchor_policy_audit_20260623a.json
+```
+
+Last no-launch anchor read,
+`artifacts/local/curvytron_checkpoint_anchor_policy_audit_20260623a.json`:
+
+- `ok=true`
+- historical best seed: r18fresh plus-outcome `iteration_180000`
+- repaired non-RND manifests audited: `10`
+- `historical_best_seed_manifest_count=0`
+- `top4nz_seed_manifest_count=10`
+- warning: current repaired manifests do not use the historical r18fresh rank-1
+  checkpoint as their initial seed
+
+Approval must explicitly choose whether to launch the currently repaired
+top4nz-seeded manifests, or regenerate non-RND manifests with the historical
+best-known seed and rerun the launch packet.
 
 ## Launch Commands
+
+For runtime-tier staged commands, prefer the generated planner artifacts:
+
+```bash
+uv run python scripts/plan_curvytron_wave_a_staged_launch.py --profile mid36 --output artifacts/local/curvytron_wave_a_staged_launch_mid36_20260623a.json
+uv run python scripts/plan_curvytron_wave_a_staged_launch.py --profile long19_low_weight_replicated --output artifacts/local/curvytron_wave_a_staged_launch_long19_low_weight_replicated_20260623a.json
+```
+
+The commands below are the full prepared packet shape, not the only approved
+runtime shape.
 
 RND full sweep, `45` rows:
 

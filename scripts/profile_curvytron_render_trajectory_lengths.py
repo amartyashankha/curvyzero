@@ -404,7 +404,11 @@ class _RenderStats:
 def _timed_gray64_render(stats: _RenderStats):
     original_scalar = env_mod.render_source_state_canvas_gray64
     original_perspective = env_mod.render_source_state_canvas_gray64_player_perspectives
-    original_direct_fast = env_mod.render_source_state_gray64_fast_player_perspectives
+    original_direct_fast = getattr(
+        env_mod,
+        "render_source_state_gray64_fast_player_perspectives",
+        None,
+    )
 
     def wrapped_scalar(*args: Any, **kwargs: Any) -> Any:
         started = time.perf_counter()
@@ -425,6 +429,10 @@ def _timed_gray64_render(stats: _RenderStats):
     def wrapped_direct_fast(*args: Any, **kwargs: Any) -> Any:
         started = time.perf_counter()
         try:
+            if original_direct_fast is None:
+                raise AttributeError(
+                    "render_source_state_gray64_fast_player_perspectives is not available"
+                )
             return original_direct_fast(*args, **kwargs)
         finally:
             stats.direct_fast_seconds += time.perf_counter() - started
@@ -432,13 +440,15 @@ def _timed_gray64_render(stats: _RenderStats):
 
     env_mod.render_source_state_canvas_gray64 = wrapped_scalar
     env_mod.render_source_state_canvas_gray64_player_perspectives = wrapped_perspective
-    env_mod.render_source_state_gray64_fast_player_perspectives = wrapped_direct_fast
+    if original_direct_fast is not None:
+        env_mod.render_source_state_gray64_fast_player_perspectives = wrapped_direct_fast
     try:
         yield
     finally:
         env_mod.render_source_state_canvas_gray64 = original_scalar
         env_mod.render_source_state_canvas_gray64_player_perspectives = original_perspective
-        env_mod.render_source_state_gray64_fast_player_perspectives = original_direct_fast
+        if original_direct_fast is not None:
+            env_mod.render_source_state_gray64_fast_player_perspectives = original_direct_fast
 
 
 def _summarize_cell(

@@ -67,6 +67,10 @@ Use current repo contracts as the source of truth before launching:
   `scripts/audit_curvytron_wave_a_launch_packet.py`
 - Wave A capacity auditor:
   `scripts/audit_curvytron_wave_a_capacity.py`
+- checkpoint anchor policy auditor:
+  `scripts/audit_curvytron_checkpoint_anchor_policy.py`
+- staged launch planner:
+  `scripts/plan_curvytron_wave_a_staged_launch.py`
 
 Older docs are evidence and memory, not launch contracts. If a prior note
 conflicts with the current manifest or source contract, resolve it explicitly in
@@ -112,6 +116,8 @@ Hard launch gates:
 - Dry-run grouped submitter.
 - Confirm row count and row ids.
 - Confirm intended runtime tier and the active H100 row cap for that tier.
+- Confirm initial policy seed policy: historical best-known seed versus
+  current launchable repair seed, with an audit artifact.
 - Confirm compute is `gpu-h100-cpu40` where intended.
 - Confirm at least one active non-RND lane is launching or already healthy
   unless the launch is explicitly an RND plumbing-only preflight.
@@ -131,6 +137,9 @@ Large Wave A launches also require:
 - Zero refresh pointer writes for no-refresh/static lanes.
 - A syntax audit for every checkpoint-ref manifest.
 - A Modal existence audit for exact checkpoint refs before launch.
+- A checkpoint-anchor audit showing whether non-RND rows use the historical
+  r18fresh rank-1 seed or the top4nz repair seed.
+- A staged launch plan artifact for the chosen runtime tier.
 - A chosen status command and note path before the first FunctionCall is
   submitted.
 - A known stop/cleanup procedure keyed by run-id prefix.
